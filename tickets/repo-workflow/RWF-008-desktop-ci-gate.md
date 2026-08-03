@@ -1,6 +1,6 @@
 # RWF-008 - CI gate for the desktop app (typecheck, tests, build)
 
-- Status: in_progress
+- Status: done
 - Priority: P2
 - Scope: `.github/workflows`
 - Parent: none
@@ -10,10 +10,9 @@
 - Spec: none
 - Plan: none
 - Created: 2026-08-02 02:35 MYT
-- Updated: 2026-08-02 03:05 MYT
+- Updated: 2026-08-02 03:13 MYT
 - Started: 2026-08-02 02:35 MYT
-- Completed:
-
+- Completed: 2026-08-02 03:13 MYT
 Standalone follow-up beyond the closed repo-workflow initiative — registered
 in `RWF-000`'s follow-ups, not as a child of that `done` parent. Sibling of
 `RWF-007`, which closed the same hole for the server suite.
@@ -64,12 +63,19 @@ to run three commands locally.
   files and fails when the workflow omits a member — so the gate polices
   its own trigger list. Verified it fails when a package is removed.
 
+- 2026-08-02 03:13 MYT - CLOSED OUT: PR #133 merged to main as `8ab688e` after one
+  review round (transitive auth-contracts path, fixed with a
+  self-verifying closure test). The gate ran on its own PR and passed in
+  33s, so the desktop app now has typecheck/test/build coverage on every
+  relevant PR — the hole RWF-007 left is closed.
+
 ## Validation
 
 - Commands:
   - `bun test tests/` (apps/desktop) — 111 passed, 0 failed (incl. the 2
     new path-filter closure tests)
   - `bunx tsc --noEmit` (apps/desktop) — clean
+  - CI: the `desktop` check passed on PR #133 itself (33s)
   - `bun run build` (apps/desktop, the exact command the workflow runs) —
     pass, 2026-08-02 02:36 MYT
 - Changed paths:

@@ -38,12 +38,21 @@ def _create_runtime_index(
     _corefs_keys: object | None,
     sqlcipher_key: bytes | None,
 ) -> CoreFSProgressiveIndex | None:
-    if sqlcipher_key is None:
-        return None
     from anima_server.config import settings
 
     if not settings.runtime_instance_data_dir:
         return None
+    if sqlcipher_key is None:
+        passphrase = settings.core_passphrase.strip()
+        if not passphrase:
+            return None
+        from anima_server.services.core import get_sqlcipher_kdf_salt
+        from anima_server.services.crypto import derive_sqlcipher_key
+
+        sqlcipher_key = derive_sqlcipher_key(
+            passphrase,
+            get_sqlcipher_kdf_salt(),
+        )
     local_instance_id = Path(settings.runtime_instance_data_dir).name
     index = CoreFSProgressiveIndex(get_core_id())
     index.unlock(
@@ -236,7 +245,54 @@ class UnlockSessionStore:
             if session is None or session.expires_at <= self._now():
                 session = None
         self._run_cleanup(cleanup)
+        if session is not None and session.runtime_index is None:
+            return self._repair_runtime_index(token)
         return session
+
+    def _repair_runtime_index(
+        self,
+        token: str,
+    ) -> UnlockSession | None:
+        """Attach a Runtime index after startup prerequisites become available."""
+        with self._runtime_conversion_lock:
+            with self._lock:
+                session = self._sessions.get(token)
+                if session is None or session.expires_at <= self._now():
+                    return None
+                if session.runtime_index is not None:
+                    return session
+                sqlcipher_key = self._sqlcipher_key
+
+            runtime_index = self._runtime_index_factory(
+                session.corefs_keys,
+                sqlcipher_key,
+            )
+            if runtime_index is None:
+                return session
+
+            try:
+                self._convert_runtime_index_rows(
+                    runtime_index,
+                    user_id=session.user_id,
+                    memory_dek=session.deks.get(DEFAULT_DOMAIN),
+                )
+                repaired = replace(session, runtime_index=runtime_index)
+                with self._lock:
+                    current = self._sessions.get(token)
+                    if current is not session:
+                        runtime_index.clear_unlocked_state()
+                        return current
+                    self._sessions = {
+                        current_token: repaired if current_session is session else current_session
+                        for current_token, current_session in self._sessions.items()
+                    }
+                    self._rebuild_latest_deks_locked()
+            except Exception:
+                runtime_index.clear_unlocked_state()
+                raise
+
+        self._notify_session_published(repaired)
+        return repaired
 
     async def resolve_async(self, token: str | None) -> UnlockSession | None:
         return await self._to_thread(self.resolve, token)

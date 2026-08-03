@@ -552,6 +552,11 @@ async def test_chat_route_forwards_attachments_to_run_agent(
         return AgentResult(response="ok", model="gpt-4o-mini", provider="openai")
 
     monkeypatch.setattr(chat_routes, "run_agent", _fake_run_agent)
+    monkeypatch.setattr(
+        chat_routes,
+        "runtime_index_for_sensitive_write",
+        lambda *_args, **_kwargs: None,
+    )
 
     from anima_server.services.sessions import unlock_session_store
     from starlette.requests import Request

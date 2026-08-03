@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from anima_server.api.routes import chat as chat_routes
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
+from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeStep, RuntimeThread
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.openai_compatible_client import (
@@ -80,6 +82,47 @@ def test_chat_requires_unlocked_session() -> None:
 
     assert response.status_code == 401
     assert response.json() == {"error": "Session locked. Please sign in again."}
+
+
+def test_chat_rejects_missing_runtime_index_before_opening_stream(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "core_passphrase", "test-core-passphrase")
+    with _scaffold_agent_settings(), _client() as client:
+        user = _register_user(client, username="missing-runtime-index")
+        token = str(user["unlockToken"])
+        headers = {"x-anima-unlock": token}
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        assert settings.runtime_instance_data_dir
+        assert session.runtime_index is not None
+        session.runtime_index.clear_unlocked_state()
+        with unlock_session_store._lock:
+            unlock_session_store._sessions[token] = replace(session, runtime_index=None)
+        with get_runtime_session_factory()() as runtime_db:
+            runtime_db.merge(
+                CoreFSRuntimeBinding(
+                    binding_slot=1,
+                    core_id="core-a",
+                    local_instance_id="instance-a",
+                )
+            )
+            runtime_db.commit()
+        monkeypatch.setattr(
+            unlock_session_store,
+            "_runtime_index_factory",
+            lambda _corefs_keys, _sqlcipher_key: None,
+        )
+
+        response = client.post(
+            "/api/chat",
+            headers=headers,
+            json={"message": "hello", "userId": int(user["id"]), "stream": True},
+        )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": "Request failed",
+        "details": {"code": "corefs_runtime_index_unavailable"},
+    }
 
 
 def test_chat_returns_scaffold_response_and_tracks_turns() -> None:
@@ -367,6 +410,11 @@ async def test_chat_stream_closes_service_stream_when_transport_stops(
         return None
 
     monkeypatch.setattr(chat_routes, "require_unlocked_user_async", _unlocked_ok)
+    monkeypatch.setattr(
+        chat_routes,
+        "runtime_index_for_sensitive_write",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
     monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
 
@@ -414,6 +462,11 @@ async def test_chat_stream_shields_cleanup_on_legacy_asgi_disconnect(
         return None
 
     monkeypatch.setattr(chat_routes, "require_unlocked_user_async", _unlocked_ok)
+    monkeypatch.setattr(
+        chat_routes,
+        "runtime_index_for_sensitive_write",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(chat_routes, "ensure_agent_ready", lambda: None)
     monkeypatch.setattr(chat_routes, "stream_agent", tracked_stream)
 
@@ -555,6 +608,11 @@ async def test_chat_returns_retrieval_metadata_when_present(monkeypatch) -> None
         )
 
     monkeypatch.setattr(chat_routes, "run_agent", _fake_run_agent)
+    monkeypatch.setattr(
+        chat_routes,
+        "runtime_index_for_sensitive_write",
+        lambda *_args, **_kwargs: None,
+    )
     token = unlock_session_store.create(42, {"memories": b"unit-test-dek"})
     request = Request(
         {

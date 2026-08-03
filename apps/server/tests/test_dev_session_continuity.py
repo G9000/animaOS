@@ -212,6 +212,39 @@ def test_restored_session_reconstructs_runtime_index_from_sqlcipher_key(
     assert calls == [(None, b"k" * 32)]
 
 
+def test_resolve_repairs_session_created_before_runtime_index_is_ready() -> None:
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+
+    runtime_ready = False
+    sentinel_index = CoreFSProgressiveIndex("core-a")
+    sentinel_index.unlock(sqlcipher_key=b"q" * 32, local_instance_id="instance-a")
+    calls: list[tuple[object | None, bytes | None]] = []
+
+    def runtime_index_factory(
+        corefs_keys: object | None,
+        sqlcipher_key: bytes | None,
+    ) -> object | None:
+        calls.append((corefs_keys, sqlcipher_key))
+        return sentinel_index if runtime_ready else None
+
+    store = UnlockSessionStore(
+        runtime_index_factory=runtime_index_factory,  # type: ignore[arg-type]
+    )
+    store.set_sqlcipher_key(b"q" * 32)
+    token = store.create(7, {"memories": b"m" * 32})
+
+    initial = store.resolve(token)
+    assert initial is not None
+    assert initial.runtime_index is None
+
+    runtime_ready = True
+    repaired = store.resolve(token)
+
+    assert repaired is not None
+    assert repaired.runtime_index is sentinel_index
+    assert calls[-1] == (None, b"q" * 32)
+
+
 def test_session_store_does_not_restore_session_that_had_corefs_keys(
     tmp_path: Path,
 ) -> None:
