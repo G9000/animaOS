@@ -1,6 +1,25 @@
 name: Desktop Tests
 
 on:
+  # Automatic PR runs are disabled to avoid consuming Actions minutes.
+#  pull_request:
+#    paths:
+#      - "apps/desktop/**"
+#      # Workspace packages the desktop app imports directly — a breaking
+#      # change in any of them surfaces as a desktop typecheck/build failure.
+#      - "packages/api-client/**"
+#      # Transitive: api-client depends on @anima/auth-contracts and
+#      # re-exports its types to the desktop, so a contract change can break
+#      # the desktop typecheck. The closure is asserted by
+#      # apps/desktop/tests/ci-path-filter.test.ts, which fails if a new
+#      # dependency edge is added without updating this list.
+#      - "packages/anima-auth-contracts/**"
+#      - "packages/standard-templates/**"
+#      - "packages/ascii-motion/**"
+#      - "packages/anima-runtime-daemon-contracts/**"
+#      - "package.json"
+#      - "bun.lock"
+#      - ".github/workflows/desktop-tests.yml"
   workflow_dispatch:
 
 permissions:

@@ -1,6 +1,35 @@
 name: CoreFS provenance
 
 on:
+  # Automatic PR runs are disabled to avoid consuming Actions minutes.
+#  pull_request:
+#    paths:
+#      - "packages/anima-file-tools/**"
+#      - "packages/anima-corefs/**"
+#      - "packages/anima-core/**"
+#      - "apps/animus/**"
+#      - "apps/server/src/anima_server/services/sessions.py"
+#      - "apps/server/src/anima_server/services/corefs/**"
+#      - "apps/server/src/anima_server/services/agent/**"
+#      - "apps/server/src/anima_server/api/deps/unlock.py"
+#      - "apps/server/src/anima_server/api/routes/**"
+#      - "apps/server/src/anima_server/api/ws/**"
+#      - "apps/server/src/anima_server/main.py"
+#      - "apps/server/tests/test_dev_session_continuity.py"
+#      - "apps/server/tests/test_corefs_api.py"
+#      - "apps/server/tests/test_corefs_logical.py"
+#      - "apps/server/tests/test_corefs_catalog_benchmark.py"
+#      - "apps/server/tests/test_ws.py"
+#      - "apps/server/tests/test_runtime_db.py"
+#      - "THIRD_PARTY_NOTICES.md"
+#      - "third_party/**"
+#      - "scripts/check_codex_attribution.py"
+#      - "scripts/check_corefs_release_notices.py"
+#      - "scripts/prepare-desktop-release.ts"
+#      - "apps/desktop/src-tauri/tauri.conf.json"
+#      - "Cargo.toml"
+#      - "Cargo.lock"
+#      - ".github/workflows/corefs-provenance.yml"
   workflow_dispatch:
 
 permissions:

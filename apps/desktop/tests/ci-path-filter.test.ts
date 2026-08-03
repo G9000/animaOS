@@ -17,8 +17,11 @@ describe("GitHub Actions triggers", () => {
       "utf8",
     );
 
-    expect(workflow).toMatch(/^on:\r?\n  workflow_dispatch:\s*$/m);
+    expect(workflow).toMatch(/^on:\s*$/m);
+    expect(workflow).toMatch(/^  workflow_dispatch:\s*$/m);
     expect(workflow).not.toMatch(/^\s+push:\s*$/m);
     expect(workflow).not.toMatch(/^\s+pull_request:\s*$/m);
+    expect(workflow).toMatch(/^#  pull_request:\s*$/m);
+    expect(workflow).toMatch(/^#    paths:\s*$/m);
   });
 });
