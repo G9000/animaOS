@@ -133,6 +133,19 @@ export function createSlashRenderer() {
     },
     onKeyDown({ event }: SuggestionKeyDownProps) {
       if (!current) return false;
+      // Round 7 fix (P2, regression from round 6): Escape (below) tears
+      // down `root`/`container` but round 6 left `current` set until
+      // `onExit`, so without this guard onKeyDown kept consuming
+      // ArrowUp/ArrowDown/Enter for the rest of the trigger session even
+      // though the popup was already gone — worse than the original bug,
+      // since Enter would silently invoke the last-selected (invisible)
+      // command instead of inserting a newline. `root`/`container` being
+      // null is exactly "dismissed for this session" (see onUpdate's
+      // comment above), so once that's true, stop handling keys entirely
+      // and let the editor do its normal thing. A fresh `/` trigger calls
+      // `onStart`, which unconditionally recreates both and this guard
+      // stops applying.
+      if (!root || !container) return false;
       const count = current.items.length;
       if (event.key === "ArrowDown") {
         selectedIndex = count ? (selectedIndex + 1) % count : 0;

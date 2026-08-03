@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { JSDOM } from "jsdom";
 
 // Same real-jsdom-plus-react-dom/client pattern as
@@ -125,5 +125,107 @@ describe("PR #139 round 6 (P2): Escape must actually dismiss the slash menu", ()
     });
     expect(handled).toBe(true);
     expect(selected).toEqual(SLASH_COMMANDS[1]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FINDING (P2, round 7 — regression from round 6): round 6 tore down
+// `root`/`container` on Escape but never cleared `current`, so `onKeyDown`
+// kept consuming ArrowUp/ArrowDown/Enter for the rest of the trigger
+// session even though the popup was already invisible — worst of all,
+// Enter still silently invoked the last-selected command instead of
+// inserting a newline. This is worse than the pre-round-6 bug (Escape
+// doing nothing visibly) because the menu now LOOKS closed while still
+// BEHAVING open.
+// ---------------------------------------------------------------------------
+describe("PR #139 round 7 (P2): onKeyDown must stop handling keys after Escape dismisses the menu", () => {
+  // Earlier tests in this file (and this describe block's own prior runs)
+  // intentionally leave stray `.diary-slash-menu` nodes in the shared jsdom
+  // `document.body` — nothing in this file unmounts between tests. That's
+  // harmless for them (they only check their own renderer's return values),
+  // but `popupNode()`'s `document.querySelector` would otherwise match a
+  // leftover node from an earlier test instead of this test's own, so start
+  // each test here from a clean DOM.
+  beforeEach(() => {
+    dom.window.document.querySelectorAll(".diary-slash-menu").forEach((node) => node.remove());
+  });
+
+  test("after Escape, ArrowDown and Enter return false (editor handles them) and Enter does not invoke a command", async () => {
+    const renderer = createSlashRenderer();
+    let commandInvoked: any = null;
+
+    await act(async () => {
+      renderer.onStart(
+        fakeSuggestionProps({
+          command: (item: any) => {
+            commandInvoked = item;
+          },
+        }),
+      );
+    });
+
+    await act(async () => {
+      renderer.onKeyDown({ event: { key: "Escape" } as KeyboardEvent } as any);
+    });
+    expect(popupNode()).toBeNull();
+
+    let arrowHandled = true;
+    await act(async () => {
+      arrowHandled = renderer.onKeyDown({ event: { key: "ArrowDown" } as KeyboardEvent } as any);
+    });
+    // FIXED: false means "not handled" — the editor gets the arrow key
+    // normally (e.g. to move the cursor), instead of the popup silently
+    // eating it while invisible.
+    expect(arrowHandled).toBe(false);
+
+    let enterHandled = true;
+    await act(async () => {
+      enterHandled = renderer.onKeyDown({ event: { key: "Enter" } as KeyboardEvent } as any);
+    });
+    // FIXED: false means the editor inserts a newline as normal.
+    expect(enterHandled).toBe(false);
+    // FIXED: the actual user-facing harm — no command was silently
+    // invoked on behalf of an invisible, dismissed menu.
+    expect(commandInvoked).toBeNull();
+  });
+
+  test("a fresh onStart after a dismissal resets full key handling (ArrowDown/Enter go back to being handled)", async () => {
+    const renderer = createSlashRenderer();
+    let commandInvoked: any = null;
+
+    await act(async () => {
+      renderer.onStart(fakeSuggestionProps());
+    });
+    await act(async () => {
+      renderer.onKeyDown({ event: { key: "Escape" } as KeyboardEvent } as any);
+    });
+    await act(async () => {
+      renderer.onExit();
+    });
+
+    // A brand-new trigger session ("/" typed again).
+    await act(async () => {
+      renderer.onStart(
+        fakeSuggestionProps({
+          command: (item: any) => {
+            commandInvoked = item;
+          },
+        }),
+      );
+    });
+    expect(popupNode()).not.toBeNull();
+
+    let arrowHandled = false;
+    await act(async () => {
+      arrowHandled = renderer.onKeyDown({ event: { key: "ArrowDown" } as KeyboardEvent } as any);
+    });
+    expect(arrowHandled).toBe(true);
+
+    let enterHandled = false;
+    await act(async () => {
+      enterHandled = renderer.onKeyDown({ event: { key: "Enter" } as KeyboardEvent } as any);
+    });
+    expect(enterHandled).toBe(true);
+    expect(commandInvoked).toEqual(SLASH_COMMANDS[1]);
   });
 });

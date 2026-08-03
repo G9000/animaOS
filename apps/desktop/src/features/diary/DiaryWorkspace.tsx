@@ -20,7 +20,7 @@ import {
 } from "./lib/pageLifecycle";
 import { dispatchDrawerUpdate } from "./lib/drawerUpdate";
 import {
-  drainOrphanUploadNotices,
+  drainAndShowOrphanUploadNotice,
   queueOrphanUploadNotice,
   subscribeOrphanUploadNotices,
 } from "./lib/orphanUploadNotices";
@@ -404,13 +404,7 @@ export default function DiaryWorkspace() {
   // resubscribing when `reload`'s identity changes (userId/entryLimit —
   // see useDiaryEntries) never re-shows an already-shown notice.
   useEffect(() => {
-    const showQueued = () => {
-      const message = drainOrphanUploadNotices();
-      if (message) {
-        setError(message);
-        void reload(false);
-      }
-    };
+    const showQueued = () => drainAndShowOrphanUploadNotice(setError, reload);
     showQueued();
     return subscribeOrphanUploadNotices(showQueued);
   }, [setError, reload]);

@@ -80,3 +80,26 @@ export function __resetOrphanUploadNoticesForTest(): void {
   pending = [];
   listener = null;
 }
+
+// Round 7 fix (P2, regression from round 6): drains whatever is queued and,
+// if there was anything, surfaces it through the given `setError`/`reload`
+// pair — factored out of DiaryWorkspace's drain effect so the fix has one
+// place to live and one place to test directly against a real `reload`.
+//
+// Round 6's version called `setError(message)` and THEN fired `reload`
+// without waiting for it. `reload`'s own success path unconditionally does
+// `setError(null)` (see hooks/useDiaryEntries.ts), so the notice was wiped
+// the instant that reload's request resolved — at best a one-frame flash,
+// which defeated the entire point of this module (a notice durable enough
+// to survive the workspace remounting). Awaiting `reload` FIRST and setting
+// the notice only once it settles makes our `setError(message)` the last
+// write, so it actually stays on screen; the two calls race by nature (this
+// is fire-and-forget from the caller), and reload must lose that race.
+export function drainAndShowOrphanUploadNotice(
+  setError: (message: string | null) => void,
+  reload: (showLoader?: boolean) => Promise<void>,
+): void {
+  const message = drainOrphanUploadNotices();
+  if (!message) return;
+  void reload(false).finally(() => setError(message));
+}
