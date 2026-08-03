@@ -364,7 +364,12 @@ def _finalize_ambient_dream(
                 expires_at=claim_expires_at(claim.claimed_at),
                 claim_token=claim_token(claim.claimed_at),
             )
-        _release_ambient_dream_claim(db, dream_id=claim.dream_id)
+        _release_ambient_dream_claim(
+            db,
+            dream_id=claim.dream_id,
+            user_id=user_id,
+            token=claim_token(claim.claimed_at),
+        )
         logger.info(
             "Ambient consent withdrawn during greeting generation for user %s; "
             "dream released unvoiced",
@@ -420,13 +425,28 @@ class _VoicedDream:
     claim_token: str | None = None
 
 
-def _release_ambient_dream_claim(db: Session, *, dream_id: int) -> None:
+def _release_ambient_dream_claim(
+    db: Session, *, dream_id: int, user_id: int, token: str
+) -> None:
     """Drop a claim this request took but will NOT voice (IL-015: clears
     ``claimed_at``; ``surfaced`` was never set, since only an acknowledged
-    receipt sets that)."""
+    receipt sets that).
+
+    Scoped to this request's own claim generation (PR #135 review): if the
+    claim lapsed during generation and another greeting took the dream, the
+    release must not clear THAT claim out from under a disclosure already in
+    flight.
+    """
     try:
-        release_claim(db, dream_id=dream_id)
+        released = release_claim(
+            db, dream_id=dream_id, user_id=user_id, token=token
+        )
         db.commit()
+        if not released:
+            logger.info(
+                "Ambient dream claim %s was already superseded; nothing released",
+                dream_id,
+            )
     except Exception:
         db.rollback()
         logger.warning(

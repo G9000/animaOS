@@ -221,11 +221,28 @@ def acknowledge_dream(
     return result.rowcount == 1
 
 
-def release_claim(db: Session, *, dream_id: int) -> None:
+def release_claim(db: Session, *, dream_id: int, user_id: int, token: str) -> bool:
     """Drop a claim the server knows was never voiced (consent withdrawn
-    mid-generation). Distinct from expiry: this is immediate and certain."""
-    db.execute(
+    mid-generation). Distinct from expiry: this is immediate and certain.
+
+    Scoped to the caller's own claim generation (PR #135 review, P1), like
+    the confirmation and the acknowledgement. Generation can outlast the
+    TTL — it is configurable, and two LLM calls are involved — so by the
+    time a request reaches its consent check another greeting may have
+    reclaimed the dream. An id-only release would then clear THAT claim,
+    unprotecting a disclosure already in flight. Returns whether the
+    caller's own claim was the one released.
+    """
+    claimed_at = _parse_claim_token(token)
+    if claimed_at is None:
+        return False
+    result = db.execute(
         update(DreamJournal)
-        .where(DreamJournal.id == dream_id)
+        .where(
+            DreamJournal.id == dream_id,
+            DreamJournal.user_id == user_id,
+            DreamJournal.claimed_at == claimed_at,
+        )
         .values(claimed_at=None)
     )
+    return result.rowcount == 1

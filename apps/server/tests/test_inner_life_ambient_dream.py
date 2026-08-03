@@ -1235,3 +1235,78 @@ def test_a_late_acknowledgement_is_still_honoured(soul_db) -> None:
     )
     soul_db.commit()
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is True
+
+
+def test_release_cannot_clear_a_newer_greetings_claim(soul_db) -> None:
+    """Regression (PR #135 review, P1): the release was id-only. Generation
+    can outlast the TTL — it is configurable and two LLM calls are involved
+    — so by the time a request reaches its consent check another greeting
+    may hold the dream. Releasing then would unprotect a disclosure already
+    in flight, and the newer greeting's acknowledgement would fail."""
+    from anima_server.config import settings
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+        claim_token,
+        release_claim,
+    )
+
+    user_id = _seed(soul_db)
+    first = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert first is not None
+    stale_token = claim_token(first.claimed_at)
+
+    # The first greeting is still generating when its claim lapses and a
+    # second greeting takes the dream.
+    row = soul_db.scalars(select(DreamJournal)).one()
+    row.claimed_at = datetime.now(UTC) - timedelta(
+        minutes=settings.dream_claim_ttl_minutes + 1
+    )
+    soul_db.commit()
+    second = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert second is not None
+
+    # The first request's consent check fails and it releases — its OWN
+    # generation, which no longer holds the row.
+    assert (
+        release_claim(
+            soul_db, dream_id=first.dream_id, user_id=user_id, token=stale_token
+        )
+        is False
+    )
+    soul_db.commit()
+    assert soul_db.scalars(select(DreamJournal)).one().claimed_at is not None
+
+    # The second greeting's receipt still lands.
+    assert (
+        acknowledge_dream(
+            soul_db,
+            user_id=user_id,
+            dream_id=second.dream_id,
+            token=claim_token(second.claimed_at),
+        )
+        is True
+    )
+
+
+def test_release_still_frees_the_callers_own_claim(soul_db) -> None:
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        claim_token,
+        offerable_dream_query,
+        release_claim,
+    )
+
+    user_id = _seed(soul_db)
+    claim = _resolve_ambient_dream(soul_db, user_id=user_id)
+    assert claim is not None
+    assert (
+        release_claim(
+            soul_db,
+            dream_id=claim.dream_id,
+            user_id=user_id,
+            token=claim_token(claim.claimed_at),
+        )
+        is True
+    )
+    soul_db.commit()
+    # Immediately offerable again — the whole point of releasing.
+    assert soul_db.scalars(offerable_dream_query(user_id)).first() is not None

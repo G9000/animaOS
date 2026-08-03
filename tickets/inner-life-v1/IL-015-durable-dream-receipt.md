@@ -10,7 +10,7 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-31 13:46 MYT
-- Updated: 2026-08-03 02:27 MYT
+- Updated: 2026-08-03 11:34 MYT
 - Started: 2026-08-02 04:10 MYT
 - Completed:
 
@@ -336,14 +336,27 @@ is its own ticket:
   established by the reservation. Verified the regression test fails without
   it.
 
+- 2026-08-03 11:34 MYT - PR #135 review round 18 (P1, Codex — an inconsistency of my own
+  making): rounds 3 and 4 scoped `confirm_claim` and `acknowledge_dream` to
+  the caller's claim generation, and round 4's reply named "clearing
+  unconditionally would clear a NEWER greeting's claim" as the reason not to
+  release on consent refusal — but `release_claim` itself stayed id-only, so
+  that hazard was live on the one path that does release. Generation can
+  outlast the TTL (configurable, two LLM calls), so a first request reaching
+  its consent check may find the dream already reclaimed; its release would
+  then unprotect a disclosure in flight and break the newer greeting's
+  receipt. `release_claim` now takes the user and the claim token, matches
+  `claimed_at == token`, and reports whether the caller's own claim was
+  released. Verified the regression test fails against the id-only version.
+
 ## Validation
 
 - Commands:
-  - `pytest tests/test_inner_life_ambient_dream.py` — 44 passed (2026-08-03 00:45 MYT)
+  - `pytest tests/test_inner_life_ambient_dream.py` — 46 passed (2026-08-03 11:34 MYT)
   - alembic `20260802_0001` up/down/up on temp SQLite — clean, single head
   - `bunx tsc --noEmit` (apps/desktop) — clean
-  - Full server suite (`pytest tests/ -p no:randomly`) — **3378 passed,
-    0 failed, 2 skipped, 11 deselected** in 14m52s, run 2026-08-03 02:27 MYT
+  - Full server suite (`pytest tests/ -p no:randomly`) — **3380 passed,
+    0 failed, 2 skipped, 11 deselected** in 15m08s, run 2026-08-03 11:34 MYT
   - `bun test tests/` (apps/desktop) — 143 passed, 0 failed (2026-08-03 00:09 MYT)
 - Changed paths:
   - `apps/server/src/anima_server/services/agent/inner_life/dream_receipt.py` (new)
