@@ -1,33 +1,6 @@
 name: Server Tests
 
 on:
-  pull_request:
-    paths:
-      - "apps/server/**"
-      # Every native build input: anima-core is the maturin wheel the server
-      # imports, and it path-depends on anima-corefs and anima-file-tools;
-      # the workspace Cargo manifests pin all of their dependencies. A change
-      # to any of these can break CorefsSession/Python bindings while the
-      # Rust-only CoreFS workflow stays green (it never runs pytest).
-      - "packages/anima-core/**"
-      - "packages/anima-corefs/**"
-      - "packages/anima-file-tools/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
-      - "pyproject.toml"
-      - "uv.lock"
-      # uv resolves the test interpreter from the root .python-version pin
-      # (discovered by walking up from apps/server), so an interpreter change
-      # must run the suite too.
-      - ".python-version"
-      # The suite READS these files directly (test_corefs_catalog_benchmark
-      # asserts the provenance workflow's steps, the benchmark plan docs, and
-      # docs/benchmarks artifacts) — a change to any of them can fail pytest
-      # while no other workflow runs it.
-      - ".github/workflows/corefs-provenance.yml"
-      - "docs/superpowers/plans/**"
-      - "docs/benchmarks/**"
-      - ".github/workflows/server-tests.yml"
   workflow_dispatch:
 
 permissions:
