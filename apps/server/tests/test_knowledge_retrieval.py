@@ -339,3 +339,59 @@ def test_text_fallback_excludes_section_spans(runtime_db) -> None:
     kinds = {hit.span_kind for hit in result.evidence_spans}
     assert "paragraph" in kinds
     assert "section" not in kinds
+
+
+def test_hybrid_retrieval_excludes_embedded_section_spans(runtime_db) -> None:
+    """The dense arm must scope to evidence spans like the lexical arm does.
+
+    `upsert_source_span_embedding` has no span-kind guard of its own — only
+    `artifacts._embed_source_spans` skips sections — so a section span can
+    carry an embedding. The dense query must still exclude it, and result
+    assembly must not let a filtered-out row consume a result slot.
+    """
+    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+    from anima_server.services.ingestion.retrieval import (
+        retrieve_knowledge,
+        upsert_source_span_embedding,
+    )
+
+    def _section_favoring_embedding(text: str) -> list[float]:
+        # The merged section body (both paragraphs) matches the query exactly,
+        # so the dense arm ranks it above its own child paragraph.
+        if "alpha" in text.lower() and "beta" in text.lower():
+            return [1.0, *([0.0] * (_EMBED_DIM - 1))]
+        if "alpha" in text.lower():
+            return [0.8, 0.6, *([0.0] * (_EMBED_DIM - 2))]
+        return [1.0, *([0.0] * (_EMBED_DIM - 1))]
+
+    _source, _artifacts, spans = ingest_markdown_content(
+        runtime_db,
+        user_id=1,
+        content="# Portable Core\n\nAlpha anchor line.\n\nBeta second line.",
+        filename="sections.md",
+        compile_knowledge=False,
+    )
+    section = next(span for span in spans if span.span_kind == "section")
+    paragraph = next(
+        span
+        for span in spans
+        if span.span_kind == "paragraph" and "Alpha" in span.content_text
+    )
+    for span in (section, paragraph):
+        upsert_source_span_embedding(
+            runtime_db, span=span, embedding_fn=_section_favoring_embedding
+        )
+
+    # "lumenwave" shares no token with any span, so BM25 returns nothing and
+    # the fused ranking is the dense arm alone — the section would otherwise
+    # take the only slot and be dropped, yielding zero evidence.
+    result = retrieve_knowledge(
+        runtime_db,
+        user_id=1,
+        query="lumenwave",
+        embedding_fn=_section_favoring_embedding,
+        limit_concepts=0,
+        limit_spans=1,
+    )
+
+    assert [hit.span_id for hit in result.evidence_spans] == [paragraph.id]
