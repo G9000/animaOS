@@ -65,6 +65,10 @@ export interface DiaryExtensionOptions {
   // itself.
   entryId?: number | null;
   onImageUpload?: (file: File) => Promise<number | null>;
+  // Round 5 fix (P1): forwarded straight through to DiaryImage — see the
+  // doc comment on DiaryImageOptions.onUploadOrphaned in
+  // nodes/AttachmentImage.tsx for the full mechanism.
+  onUploadOrphaned?: (entryId: number, attachmentId: number) => void;
 }
 
 export function createDiaryExtensions(options: DiaryExtensionOptions = {}): Extensions {
@@ -86,6 +90,7 @@ export function createDiaryExtensions(options: DiaryExtensionOptions = {}): Exte
     DiaryImage.configure({
       entryId: options.entryId ?? null,
       uploadImage: options.onImageUpload ?? (async () => null),
+      onUploadOrphaned: options.onUploadOrphaned,
     }),
     TaskList,
     TaskItem.configure({ nested: true }),

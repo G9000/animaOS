@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileIcon } from "@anima/standard-templates";
 import type {
   DiaryAttachmentData,
@@ -87,6 +87,7 @@ export default function DiaryWorkspace() {
     entries,
     folders,
     loading,
+    reload,
     error,
     setError,
     canLoadMore,
@@ -362,6 +363,28 @@ export default function DiaryWorkspace() {
     // directly, not the attachments array). Same contract: fired
     // synchronously, before this hook's own await.
     graduateSessionEntry(sessionCreatedEntryIdsRef.current, entryId),
+  );
+
+  // Round 5 fix (P1: "silent partial success"): fired by the diaryImage
+  // node when an inline upload finishes successfully after the NodeView
+  // that started it (and therefore this whole DiaryEditor instance) has
+  // already unmounted — see DiaryImageOptions.onUploadOrphaned's doc
+  // comment in editor/nodes/AttachmentImage.tsx. The server already has
+  // the attachment row against `entryId` (uploadInlineImage's own closure
+  // addressed the upload there directly, independent of NodeView
+  // lifetime), so there is nothing to redo — only to make visible.
+  // `reload(false)` is the same silent, no-loader refresh deleteEntry
+  // already uses; it re-fetches `entries` (attachments included) so the
+  // orphaned attachment shows up in that entry's details-drawer list
+  // without a full app restart. Never touches the editor, live or not.
+  const handleInlineUploadOrphaned = useCallback(
+    (_entryId: number, _attachmentId: number) => {
+      setError(
+        "An image finished uploading after you left the entry. It was saved as an attachment instead of appearing inline.",
+      );
+      void reload(false);
+    },
+    [setError, reload],
   );
 
   const {
@@ -776,6 +799,7 @@ export default function DiaryWorkspace() {
                     onChange={handleEditorChange}
                     onImageRequest={() => hiddenImageInputRef.current?.click()}
                     onImageUpload={uploadInlineImage}
+                    onUploadOrphaned={handleInlineUploadOrphaned}
                     onEditorReady={handleEditorReady}
                     onEditorDestroyed={handleEditorDestroyed}
                     onNonImageFilesDropped={handleNonImageFilesDropped}

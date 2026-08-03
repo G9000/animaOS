@@ -43,28 +43,8 @@ export interface DiaryImageOptions {
   // crosses this boundary. This node never imports the API client itself;
   // it only ever calls this callback.
   uploadImage: (file: File) => Promise<number | null>;
-  // Round 5 fix (P1: "silent partial success" — a successful upload
-  // discarded because the user navigated away before it resolved). Called
-  // when an upload finishes successfully AFTER this node's NodeView has
-  // already unmounted (entry switch, leaving /journal, etc.) — see
-  // `handleUploadResolution` below for the full mechanism. `uploadImage`
-  // has already produced a real attachment row against THIS options
-  // object's `entryId` (that's what the server call is addressed to,
-  // regardless of NodeView lifetime), so there is nothing unsafe to do
-  // here — this is purely a "go tell someone" callback, never a place
-  // that touches an editor.
-  onUploadOrphaned?: (entryId: number, attachmentId: number) => void;
 }
 
-// Round 5 fix: previously each NodeView instance owned its own `let
-// cancelled` flag, set on unmount, and skipped `updateAttributes` on a
-// completed upload if the flag was set. That discarded SUCCESSFUL uploads
-// silently — the server already has the attachment, but nothing ever
-// wrote its id anywhere the user could find it. `liveHandlers` replaces
-// that flag: instead of "was I torn down", the completion logic asks "is
-// there still a mounted NodeView for this localId that I can safely hand
-// the result to" — a fact tracked independently of the upload's own
-// effect lifetime, so it survives the NodeView unmounting mid-upload.
 interface DiaryImageStorage {
   // Files staged for upload, keyed by the transient `localId` attribute
   // generated at insertion time. Not schema state — never touches
@@ -73,52 +53,6 @@ interface DiaryImageStorage {
   // Cleared on successful upload; left in place on failure so Retry can
   // re-attempt without asking the user to re-select the file.
   pendingFiles: Map<string, File>;
-  // Registered by a mounted NodeView (see the dedicated mount-tracking
-  // effect below) for as long as it is alive, keyed by the same `localId`.
-  // Looked up by `handleUploadResolution` at the moment an upload
-  // resolves — NOT by anything captured when the upload started — so it
-  // always reflects whether THIS node is mounted right now, not whether
-  // it was mounted when the request went out.
-  liveHandlers: Map<string, (outcome: UploadOutcome) => void>;
-}
-
-export type UploadOutcome =
-  | { status: "ready"; attachmentId: number }
-  | { status: "error" };
-
-// Pure, unit-testable: "is the originating editor still available to
-// receive this upload's result" reduces to exactly this lookup. No React,
-// no network — safe to test with a bare Map.
-export function isEditorAvailable(storage: DiaryImageStorage, localId: string): boolean {
-  return storage.liveHandlers.has(localId);
-}
-
-// The other half of the completion contract, also pure and unit-testable:
-// given the upload's raw result, decide what happens next. Mounted ->
-// forward to the live handler (which calls updateAttributes on the correct
-// node). Not mounted and successful -> this is the "silent partial
-// success" case; clean up pendingFiles so it can't leak and report the
-// orphan via `onOrphaned` so the caller can surface a notice and refresh
-// the attachments list. Not mounted and failed -> deliberately left alone,
-// same as the pre-existing accepted limitation (Task 13): a discarded
-// FAILURE with no server-side trace is honest, unlike a discarded success.
-export function handleUploadResolution(
-  storage: DiaryImageStorage,
-  localId: string,
-  uploadedId: number | null,
-  onOrphaned: (attachmentId: number) => void,
-): void {
-  const handler = storage.liveHandlers.get(localId);
-  if (uploadedId === null) {
-    handler?.({ status: "error" });
-    return;
-  }
-  storage.pendingFiles.delete(localId);
-  if (handler) {
-    handler({ status: "ready", attachmentId: uploadedId });
-  } else {
-    onOrphaned(uploadedId);
-  }
 }
 
 let localIdCounter = 0;
@@ -138,70 +72,42 @@ function AttachmentImageView(props: NodeViewProps) {
   const options = extension.options as DiaryImageOptions;
   const storage = extension.storage as DiaryImageStorage;
 
-  // Round 5 fix: registers this instance's result handler in
-  // `storage.liveHandlers` for as long as it is mounted, and nothing else.
-  // Deliberately a SEPARATE effect from the upload-kicking one below —
-  // this one's only job is answering "is a NodeView for this localId alive
-  // right now" at whatever moment an upload happens to resolve, which may
-  // be long after (or long before) the upload effect below has re-run.
-  // `updateAttributes` is bound to THIS node instance via Tiptap's own
-  // getPos() tracking, so calling it from here is exactly as safe as
-  // calling it directly inside the upload effect used to be — this only
-  // changes WHEN it's safe to call, not how.
-  useEffect(() => {
-    if (!localId) return undefined;
-    storage.liveHandlers.set(localId, (outcome) => {
-      if (outcome.status === "ready") {
-        updateAttributes({ attachmentId: outcome.attachmentId, uploadState: "ready" });
-      } else {
-        updateAttributes({ uploadState: "error" });
-      }
-    });
-    return () => {
-      storage.liveHandlers.delete(localId);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localId]);
-
   // Drives BOTH the initial upload (fired once, right after insertion, when
   // uploadState starts as "uploading") and every retry (Retry just flips
   // uploadState back to "uploading" via updateAttributes, which re-runs
-  // this effect). There is no manual "find the node by position" step
-  // here — that sidesteps the position-drift hazard a manual position
-  // lookup would have if the document changed elsewhere while the upload
-  // was in flight.
-  //
-  // Round 5 fix: this effect's cleanup no longer flips a `cancelled` flag
-  // that the completion handlers below check — that was the bug (P1: a
-  // successful upload silently discarded because the user navigated away
-  // before it resolved, while the server had already created the
-  // attachment — see `handleUploadResolution`'s doc comment). The upload's
-  // completion is now unconditional; what happens with the RESULT is
-  // decided by `handleUploadResolution` at resolution time, based on
-  // whether a NodeView is still registered in `storage.liveHandlers` —
-  // not by whether THIS effect instance is still alive.
+  // this effect). `updateAttributes` is bound to THIS node instance via
+  // Tiptap's own getPos() tracking, so there is no manual "find the node
+  // by position" step here — that sidesteps the position-drift hazard a
+  // manual position lookup would have if the document changed elsewhere
+  // while the upload was in flight.
   useEffect(() => {
     if (uploadState !== "uploading") return;
     const file = localId ? storage.pendingFiles.get(localId) : undefined;
-    if (!file || !localId) {
+    if (!file) {
       // No cached file to (re)upload — e.g. storage was cleared by a full
       // page reload mid-upload. Surface as an error rather than spinning
       // forever; there is nothing left to retry against.
       updateAttributes({ uploadState: "error" });
       return;
     }
+    let cancelled = false;
     options
       .uploadImage(file)
       .then((uploadedId) => {
-        handleUploadResolution(storage, localId, uploadedId, (attachmentId) => {
-          if (options.entryId !== null) {
-            options.onUploadOrphaned?.(options.entryId, attachmentId);
-          }
-        });
+        if (cancelled) return;
+        if (uploadedId === null) {
+          updateAttributes({ uploadState: "error" });
+          return;
+        }
+        if (localId) storage.pendingFiles.delete(localId);
+        updateAttributes({ attachmentId: uploadedId, uploadState: "ready" });
       })
       .catch(() => {
-        handleUploadResolution(storage, localId, null, () => {});
+        if (!cancelled) updateAttributes({ uploadState: "error" });
       });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadState, localId]);
 
@@ -301,12 +207,11 @@ export const DiaryImage = Node.create<DiaryImageOptions, DiaryImageStorage>({
     return {
       entryId: null,
       uploadImage: async () => null,
-      onUploadOrphaned: undefined,
     };
   },
 
   addStorage() {
-    return { pendingFiles: new Map(), liveHandlers: new Map() };
+    return { pendingFiles: new Map() };
   },
 
   addAttributes() {

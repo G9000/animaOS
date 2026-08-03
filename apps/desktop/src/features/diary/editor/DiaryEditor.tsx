@@ -66,6 +66,13 @@ export interface DiaryEditorProps {
   // same live editor instance handed back via onEditorReady) — not just
   // paste, hence the rename from the pre-Task-13 `onImagePaste`.
   onImageUpload: (file: File) => Promise<number | null>;
+  // Round 5 fix (P1): fired when an inline image finishes uploading
+  // successfully AFTER this editor instance (and therefore the NodeView
+  // that started the upload) has already been torn down — see the doc
+  // comment on DiaryImageOptions.onUploadOrphaned in
+  // editor/nodes/AttachmentImage.tsx. Optional because tests/harnesses
+  // that never trigger an inline upload have no need to wire it.
+  onUploadOrphaned?: (entryId: number, attachmentId: number) => void;
   // Deviation from the brief's literal prop list: a few pre-existing,
   // externally-triggered behaviors — inline-image embedding from a hidden
   // file input owned by the parent (still fed by `onImageRequest`),
@@ -112,6 +119,7 @@ export function DiaryEditor(props: DiaryEditorProps) {
     onChange,
     onImageRequest,
     onImageUpload,
+    onUploadOrphaned,
     onEditorReady,
     onEditorDestroyed,
     onNonImageFilesDropped,
@@ -130,6 +138,7 @@ export function DiaryEditor(props: DiaryEditorProps) {
       onImageRequest,
       entryId,
       onImageUpload,
+      onUploadOrphaned,
     }),
     content: props.initialHtml,
     editorProps: {
