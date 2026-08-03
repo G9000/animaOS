@@ -146,6 +146,16 @@ export interface DetailsDrawerProps {
   // lifetime because the parent keys it by `entry.id` (fix round 1,
   // Finding 3) — a fresh mount is guaranteed for every entry switch.
   onUpdate: (entryId: number, data: DiaryEntryUpdateData) => void;
+  // PR #139 round 3, Finding 1: fires synchronously on every mood
+  // keystroke, unlike `onUpdate` which only reaches the parent on commit
+  // (600ms debounce, blur, or unmount flush — see `commitMoodValue`
+  // below). The workspace's untitled-page cleanup needs to see what the
+  // user has actually typed at the moment it evaluates discardability,
+  // not just the last value it committed — see lib/pageLifecycle.ts's
+  // `resolveLiveMood`. Optional only so existing/other test harnesses that
+  // construct this component without caring about the cleanup don't need
+  // to supply a no-op.
+  onMoodDraftChange?: (entryId: number, mood: string) => void;
   onDelete: () => void;
   // Deviations beyond the brief's literal prop list: cover/attachment
   // upload need a real File (not expressible in DiaryEntryUpdateData), and
@@ -172,6 +182,7 @@ export function DetailsDrawer({
   open,
   onClose,
   onUpdate,
+  onMoodDraftChange,
   onDelete,
   onCoverFileSelected,
   onFilesSelected,
@@ -325,6 +336,7 @@ export function DetailsDrawer({
             onChange={(event) => {
               const { value } = event.target;
               setMoodValue(value);
+              onMoodDraftChange?.(entry.id, value);
               scheduleMoodCommit(value);
             }}
             onBlur={(event) => commitMoodValue(event.target.value)}

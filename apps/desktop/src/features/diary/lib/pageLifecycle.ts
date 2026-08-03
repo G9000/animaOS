@@ -164,6 +164,118 @@ export function isDiscardablePage(input: DiscardablePageInput): boolean {
   );
 }
 
+export interface SessionDiscardEligibilityInput extends DiscardablePageInput {
+  // Whether THIS entry is one the current workspace session itself POSTed
+  // (via `startNewEntry`) and has not yet graduated out of eligibility
+  // (see `graduateSessionEntry` below) — never whether it merely looks
+  // blank right now.
+  createdThisSession: boolean;
+}
+
+/**
+ * PR #139 round 3, Finding 2 (P1): `isDiscardablePage` alone judges only
+ * the entry's CONTENT — it has no notion of where the entry came from.
+ * Before this fix, DiaryWorkspace's untitled-page cleanup called it
+ * unconditionally against whatever entry was being left, on every one of
+ * its three call sites (unmount, startNewEntry, selectEntry). So a
+ * pre-existing entry loaded from the server that simply happened to be
+ * blank (no title, body, attachments, mood, or cover — exactly the state
+ * an intentionally-cleared entry is left in after fix round 1's Finding 1)
+ * was silently and permanently deleted just by being opened and left.
+ *
+ * The cleanup only ever exists for scratch pages THIS workspace session
+ * POSTed via `startNewEntry` and the user abandoned untouched — never for
+ * anything the user is reopening. `createdThisSession` is the gate: false
+ * unconditionally refuses to discard, regardless of how blank the entry's
+ * content looks (see DiaryWorkspace.tsx's `sessionCreatedEntryIdsRef`,
+ * which is in-memory only for this mount's lifetime and never persisted
+ * to browser storage).
+ *
+ * Ruling on "created, typed, then cleared, then left" (round 3 review's
+ * open question — both keeping and deleting are individually defensible):
+ * once a session-created entry has had ANY real, user-driven edit — a
+ * significant body edit, a title keystroke, or a drawer field commit
+ * (mood/date/folder/cover) — it graduates out of session-eligibility
+ * PERMANENTLY for the rest of this session (see `graduateSessionEntry`
+ * and its call sites in DiaryWorkspace.tsx), even if the user later clears
+ * every field back to exactly the blank state a freshly-created page
+ * starts in. This errs toward keeping rather than deleting, consistent
+ * with every other fail-safe default in this module (`hasNonTextContent`
+ * defaulting to `true`, `snapshotBelongsToEntry` refusing an unmatched or
+ * absent tag): "looks blank right now" and "was never a real entry" are
+ * NOT the same fact, and conflating them is exactly what caused this
+ * round's bug. A page that once held real, saved content is
+ * indistinguishable — to the user, and therefore to this code — from any
+ * other saved entry that happens to be blank, and none of those are ever
+ * auto-deleted.
+ */
+export function isSessionDiscardable(input: SessionDiscardEligibilityInput): boolean {
+  if (!input.createdThisSession) return false;
+  return isDiscardablePage(input);
+}
+
+/**
+ * Removes `entryId` from the in-memory set of entries still eligible for
+ * the untitled-page cleanup — see the graduation ruling on
+ * `isSessionDiscardable` above. Called from DiaryWorkspace.tsx at every
+ * point a session-created entry receives a real, user-driven edit: a
+ * significant body edit (`handleEditorChange`), a title keystroke
+ * (`handleTitleChange`), or a drawer field commit (`handleDrawerUpdate` —
+ * mood, date, folder, cover). A no-op if `entryId` was never in the set
+ * (already graduated, or was never session-created to begin with) —
+ * `Set.delete` is idempotent, so callers never need to check membership
+ * first.
+ */
+export function graduateSessionEntry(sessionCreatedIds: Set<number>, entryId: number): void {
+  sessionCreatedIds.delete(entryId);
+}
+
+export interface MoodDraft {
+  entryId: number;
+  mood: string;
+}
+
+/**
+ * PR #139 round 3, Finding 1 (P1): the untitled-page cleanup used to read
+ * `entry.mood` directly — the last server-COMMITTED value. DetailsDrawer
+ * commits mood on a 600ms debounce (or blur, or its own unmount flush —
+ * see panels/DetailsDrawer.tsx's `commitMoodValue`), so a user who types a
+ * mood and switches entries before any of those fire leaves `entry.mood`
+ * still at its old (often null) value at the exact moment
+ * `evaluateAndMaybeDiscard` runs — `selectEntry` calls it BEFORE changing
+ * selection, and the outgoing keyed DetailsDrawer has not unmounted yet.
+ * Fed `entry.mood` directly, the predicate would see an empty mood, judge
+ * the page untouched, and (composing with round 3 Finding 2) delete it
+ * outright — after which the drawer's own unmount-flush PATCH still
+ * fires, targeting an entry that no longer exists.
+ *
+ * `resolveLiveMood` is the fix: prefer the live, possibly-uncommitted
+ * draft DetailsDrawer has reported for THIS entry (DiaryWorkspace.tsx's
+ * `liveMoodDraftRef`, updated on every keystroke via the `onMoodDraftChange`
+ * prop — never persisted to browser storage), falling back to the
+ * server-committed value only when no draft has been recorded for this
+ * entry (nothing typed yet, or the only draft on hand belongs to some
+ * OTHER entry — the `entryId` tag disambiguates the same way
+ * `snapshotBelongsToEntry` does for the body snapshot).
+ *
+ * A scan of every other field DetailsDrawer can dispatch (entryDate,
+ * folderId, cover, attachments) found mood is the ONLY one with a
+ * debounced/deferred commit path today — entryDate and folderId call
+ * `onUpdate` synchronously from their own onChange, and cover/attachment
+ * changes go through immediate, non-debounced calls (see
+ * DetailsDrawer.tsx). If a future field grows its own debounce, it needs
+ * the same treatment: a live-draft ref reported on every keystroke, read
+ * in preference to whatever the server last confirmed.
+ */
+export function resolveLiveMood(
+  draft: MoodDraft | null,
+  entryId: number,
+  committedMood: string | null,
+): string | null {
+  if (draft && draft.entryId === entryId) return draft.mood;
+  return committedMood;
+}
+
 /**
  * Task 12 review, Finding 2: guards `isDiscardablePage` against being
  * evaluated with a content snapshot that describes a DIFFERENT entry than

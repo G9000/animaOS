@@ -10,10 +10,12 @@ import { useAuth } from "../../context/AuthContext";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
 import { stripUnresolvedAttachmentImages } from "./lib/attachmentImages";
 import {
+  graduateSessionEntry,
   hasNonTextNode,
-  isDiscardablePage,
+  isSessionDiscardable,
   isSignificantEdit,
   resolveBodyForSave,
+  resolveLiveMood,
   snapshotBelongsToEntry,
 } from "./lib/pageLifecycle";
 import { dispatchDrawerUpdate } from "./lib/drawerUpdate";
@@ -154,6 +156,33 @@ export default function DiaryWorkspace() {
     bodyPlainText: "",
     hasNonTextContent: true,
   });
+
+  // PR #139 round 3, Finding 2: the untitled-page cleanup
+  // (evaluateAndMaybeDiscard) must only ever discard an entry THIS
+  // workspace session itself created via startNewEntry — an entry loaded
+  // from the server must never be silently deleted, no matter how blank
+  // it looks (e.g. one intentionally cleared back to blank in an earlier
+  // session, per fix round 1's Finding 1). Populated in startNewEntry
+  // right after a create succeeds; an id is removed the moment that entry
+  // receives any real, user-driven edit (see graduateSessionEntry's call
+  // sites in handleEditorChange, handleTitleChange, and
+  // handleDrawerUpdate) and never added back — see the graduation ruling
+  // on lib/pageLifecycle.ts's isSessionDiscardable for why that's
+  // permanent rather than reversible. In-memory only for this component's
+  // lifetime; never persisted to browser storage.
+  const sessionCreatedEntryIdsRef = useRef<Set<number>>(new Set());
+
+  // PR #139 round 3, Finding 1: the last mood DetailsDrawer has reported
+  // as typed (not yet necessarily committed to the server) for a given
+  // entry, via the onMoodDraftChange prop fired on every keystroke (see
+  // panels/DetailsDrawer.tsx). Read by evaluateAndMaybeDiscard through
+  // lib/pageLifecycle.ts's resolveLiveMood so the untitled-page cleanup
+  // can never mistake "not committed yet" for "never typed" — see that
+  // function's doc comment for the full race. Tagged with the entry id it
+  // was captured for, same technique as lastContentSnapshotRef, so a
+  // stale draft from a previous entry is never mistaken for the one being
+  // evaluated. In-memory only; never persisted to browser storage.
+  const liveMoodDraftRef = useRef<{ entryId: number; mood: string } | null>(null);
 
   const selectedEntry = useMemo(
     () => entries.find((entry) => entry.id === selectedId) ?? null,
@@ -344,19 +373,29 @@ export default function DiaryWorkspace() {
     // the same as Finding 1b's fail-safe direction: keep the page rather
     // than delete on unverified grounds.
     if (!snapshotBelongsToEntry(snapshot.entryId, entry.id)) return;
-    const discardable = isDiscardablePage({
+    // PR #139 round 3, Finding 1: never trust entry.mood (server-committed)
+    // directly — prefer whatever DetailsDrawer has reported as live-typed
+    // for this exact entry, which may be ahead of the server by up to the
+    // 600ms debounce. See lib/pageLifecycle.ts's resolveLiveMood.
+    const liveMood = resolveLiveMood(liveMoodDraftRef.current, entry.id, entry.mood ?? null);
+    const discardable = isSessionDiscardable({
+      // PR #139 round 3, Finding 2: never discard anything this workspace
+      // session did not itself create. See sessionCreatedEntryIdsRef and
+      // isSessionDiscardable's doc comment for the graduation ruling.
+      createdThisSession: sessionCreatedEntryIdsRef.current.has(entry.id),
       title: titleRef.current,
       bodyPlainText: snapshot.bodyPlainText,
       attachmentCount: entry.attachments.length,
       coverAttachmentId: entry.coverAttachmentId,
       hasNonTextContent: snapshot.hasNonTextContent,
-      mood: entry.mood ?? null,
+      mood: liveMood,
       folderId: entry.folderId ?? null,
       initialFolderId: initialFolderIdRef.current,
       entryDate: entry.entryDate,
       initialEntryDate: initialEntryDateRef.current,
     });
     if (!discardable) return;
+    sessionCreatedEntryIdsRef.current.delete(entry.id);
     await discardEntrySilently(entry.id);
   };
 
@@ -402,6 +441,12 @@ export default function DiaryWorkspace() {
     // reverting to the pristine loaded state after an intermediate save
     // would never be recognized as a real edit needing its own save.
     lastLoadedBodyRef.current = html;
+    // PR #139 round 3, Finding 2: a real, user-driven body edit graduates
+    // this entry out of session-only discard eligibility permanently —
+    // see the ruling on lib/pageLifecycle.ts's isSessionDiscardable. Even
+    // if the user clears everything back to blank before leaving, this
+    // entry must never be silently deleted again.
+    graduateSessionEntry(sessionCreatedEntryIdsRef.current, entry.id);
 
     const body = resolveBodyForSave({
       editorIsEmpty: ed ? ed.isEmpty : plainText.trim() === "",
@@ -420,6 +465,12 @@ export default function DiaryWorkspace() {
     // No eligibility gate here (fix round 1, Finding 1, Task 11):
     // PageHeader's title input only calls this from its own onChange,
     // which only fires on a genuine keystroke.
+    //
+    // PR #139 round 3, Finding 2: a real, user-driven title keystroke is
+    // exactly the kind of edit that permanently graduates this entry out
+    // of session-only discard eligibility — see the ruling on
+    // lib/pageLifecycle.ts's isSessionDiscardable.
+    graduateSessionEntry(sessionCreatedEntryIdsRef.current, entry.id);
     //
     // Task 13 fix round 1, Finding 2: a title-only edit computes its own
     // saved body independently of DiaryEditor's onUpdate, so it needs the
@@ -477,7 +528,15 @@ export default function DiaryWorkspace() {
     try {
       if (leaving) await evaluateAndMaybeDiscard(leaving);
       const created = await createEntry({ folderId: activeFolderId });
-      if (created) setSelectedId(created.id);
+      if (created) {
+        // PR #139 round 3, Finding 2: this is the ONLY place an entry id
+        // becomes eligible for the untitled-page cleanup — see
+        // sessionCreatedEntryIdsRef's doc comment. An entry loaded from
+        // the server (or any id this workspace did not itself POST) is
+        // never added here and therefore never discardable.
+        sessionCreatedEntryIdsRef.current.add(created.id);
+        setSelectedId(created.id);
+      }
     } finally {
       setCreatingEntry(false);
     }
@@ -567,6 +626,11 @@ export default function DiaryWorkspace() {
     if (!selectedEntry) return;
     const uploaded = await uploadAttachment(selectedEntry.id, file, "Failed to set cover image.");
     if (!uploaded) return;
+    // PR #139 round 3, Finding 2: setting a cover is a real, user-driven
+    // edit — graduate it the same as any other (belt-and-suspenders here,
+    // since the attachment upload above already keeps attachmentCount > 0
+    // permanently, which independently keeps isDiscardablePage false).
+    graduateSessionEntry(sessionCreatedEntryIdsRef.current, selectedEntry.id);
     await updateEntry(selectedEntry.id, { coverAttachmentId: uploaded.id }, "Failed to set cover image.");
   };
 
@@ -581,10 +645,25 @@ export default function DiaryWorkspace() {
   // different entry by the time a deferred commit (mood's debounce/
   // unmount flush) arrives. See lib/drawerUpdate.ts.
   const handleDrawerUpdate = (entryId: number, data: DiaryEntryUpdateData) => {
+    // PR #139 round 3, Finding 2: any drawer-originated commit (mood,
+    // date, folder, cover) is a real, user-driven edit — graduate the
+    // originating entry out of session-only discard eligibility
+    // permanently. See the ruling on lib/pageLifecycle.ts's
+    // isSessionDiscardable.
+    graduateSessionEntry(sessionCreatedEntryIdsRef.current, entryId);
     dispatchDrawerUpdate(entryId, data, selectedEntryRef.current?.id ?? null, {
       moveEntryToFolder: (id, folderId) => void moveEntryToFolder(id, folderId),
       updateEntry: (id, updateData, errorMessage) => void updateEntry(id, updateData, errorMessage),
     });
+  };
+
+  // PR #139 round 3, Finding 1: recorded on every mood keystroke (see
+  // panels/DetailsDrawer.tsx's onMoodDraftChange prop), read by
+  // evaluateAndMaybeDiscard through lib/pageLifecycle.ts's resolveLiveMood
+  // so the untitled-page cleanup never reads a stale, not-yet-committed
+  // entry.mood.
+  const handleMoodDraftChange = (entryId: number, mood: string) => {
+    liveMoodDraftRef.current = { entryId, mood };
   };
 
   return (
@@ -724,6 +803,7 @@ export default function DiaryWorkspace() {
           open={drawerOpen}
           onClose={() => setDrawerOpen(false)}
           onUpdate={handleDrawerUpdate}
+          onMoodDraftChange={handleMoodDraftChange}
           onDelete={() => setPendingDeleteId(selectedEntry.id)}
           onCoverFileSelected={(file) => void handleCoverFileSelected(file)}
           onFilesSelected={handleFilesSelected}
