@@ -29,19 +29,19 @@ export function AtmosphereControls() {
           className="h-full gap-2 px-3 rounded-none"
         >
           <span
-            className="font-mono text-[9px] select-none text-muted-foreground transition-colors group-hover:text-accent-foreground"
+            className="font-mono text-label select-none text-muted-foreground transition-colors group-hover:text-accent-foreground"
           >
             ♫
           </span>
           <span className="flex items-baseline gap-1 select-none">
             {track?.trackNum && (
-              <span className="font-mono text-[7.5px] tracking-[0.12em] text-muted-foreground uppercase transition-colors group-hover:text-accent-foreground">
+              <span className="font-mono text-[7.5px] tracking-caps-2 text-muted-foreground uppercase transition-colors group-hover:text-accent-foreground">
                 {track.trackNum}
               </span>
             )}
             <span
               className={cn(
-                "font-mono text-[7.5px] tracking-[0.14em] uppercase transition-colors duration-200 group-hover:text-accent-foreground text-muted-foreground",
+                "font-mono text-[7.5px] tracking-caps-2 uppercase transition-colors duration-200 group-hover:text-accent-foreground text-muted-foreground",
             
               )}
             >

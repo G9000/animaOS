@@ -44,7 +44,7 @@ export function AgentBirthdayNode({ data, id }: NodeProps<BirthdayNode>) {
         icon={<SparkleIcon size="sm" className="text-foreground/25" />}
         headerExtra={
           agentBirthdaySaved
-            ? <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-accent/70">Saved</span>
+            ? <span className="font-mono text-micro tracking-caps-2 uppercase text-accent/70">Saved</span>
             : null
         }
         onClose={onClose}
@@ -53,7 +53,7 @@ export function AgentBirthdayNode({ data, id }: NodeProps<BirthdayNode>) {
         className="w-64"
         footer={
           <div className="px-3.5 py-2.5 flex items-center justify-between">
-            <span className="font-mono text-[8px] tracking-[0.2em] uppercase text-foreground/30">Override</span>
+            <span className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">Override</span>
             <input
               type="checkbox"
               checked={identityOverrideAllowed}
@@ -65,7 +65,7 @@ export function AgentBirthdayNode({ data, id }: NodeProps<BirthdayNode>) {
         }
       >
         <div className="p-3 space-y-2">
-          <p className="font-mono text-[9px] text-muted-foreground/50 leading-relaxed">
+          <p className="font-mono text-label text-muted-foreground/50 leading-relaxed">
             Canonical birth timestamp. It cannot be changed after setup unless override is enabled.
           </p>
           <input
@@ -78,14 +78,14 @@ export function AgentBirthdayNode({ data, id }: NodeProps<BirthdayNode>) {
             onKeyDown={(event) => {
               if (event.key === "Enter" && identityOverrideAllowed) onAgentBirthdaySave();
             }}
-            className={`nodrag w-full bg-secondary/40 border border-border/40 px-2.5 py-2 font-mono text-[10px] outline-none transition-colors [color-scheme:dark] ${identityOverrideAllowed ? "text-foreground/70 focus:border-border cursor-text" : "text-foreground/30 cursor-default select-none"}`}
+            className={`nodrag w-full bg-secondary/40 border border-border/40 px-2.5 py-2 font-mono text-caption outline-none transition-colors [color-scheme:dark] ${identityOverrideAllowed ? "text-foreground/70 focus:border-border cursor-text" : "text-foreground/30 cursor-default select-none"}`}
             aria-label="Agent birthday"
           />
-          <p className="font-mono text-[8px] leading-relaxed text-accent/50">
+          <p className="font-mono text-micro leading-relaxed text-accent/50">
             Override changes the displayed agent birthday, while the original creation time remains stored.
           </p>
           {!agentBirthdayDraft && (
-            <p className="font-mono text-[8px] leading-relaxed text-foreground/30">
+            <p className="font-mono text-micro leading-relaxed text-foreground/30">
               Current: {formatAgentBirthday(agentBirthday)}
             </p>
           )}

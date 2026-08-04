@@ -82,7 +82,7 @@ export function TableList({
                   <div className="font-mono text-sm group-hover:text-primary transition-colors">
                     {t.name}
                   </div>
-                  <div className="text-[11px] text-muted-foreground">
+                  <div className="text-detail text-muted-foreground">
                     {t.rowCount.toLocaleString()} rows
                   </div>
                 </div>
@@ -123,7 +123,7 @@ export function TableList({
                     onSetSql(`SELECT * FROM "${t.name}" LIMIT 100`);
                     onSetView("query");
                   }}
-                  className="px-2 py-1 text-[10px] bg-input border border-border rounded hover:border-primary/50"
+                  className="px-2 py-1 text-caption bg-input border border-border rounded hover:border-primary/50"
                 >
                   Query
                 </button>

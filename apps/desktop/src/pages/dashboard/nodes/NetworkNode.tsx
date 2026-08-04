@@ -39,14 +39,14 @@ export function NetworkNode({ data }: NodeProps<NetworkNode>) {
         <div className="flex-1 flex flex-col gap-2">
           {/* Speed pair */}
           <div className="flex items-baseline justify-between gap-3">
-            <span className="font-mono text-[8px] tracking-[0.25em] uppercase text-foreground/30 leading-none">
+            <span className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30 leading-none">
               Speed
             </span>
             <div className="flex items-baseline gap-2">
-              <span className={cn("font-mono text-[9px] leading-none tabular-nums", active ? "text-foreground/30" : "text-foreground/15")}>
+              <span className={cn("font-mono text-label leading-none tabular-nums", active ? "text-foreground/30" : "text-foreground/15")}>
                 ↓ {formatSpeed(dl)}
               </span>
-              <span className={cn("font-mono text-[9px] leading-none tabular-nums", active ? "text-foreground/30" : "text-foreground/15")}>
+              <span className={cn("font-mono text-label leading-none tabular-nums", active ? "text-foreground/30" : "text-foreground/15")}>
                 ↑ {formatSpeed(ul)}
               </span>
             </div>
@@ -54,9 +54,9 @@ export function NetworkNode({ data }: NodeProps<NetworkNode>) {
 
           {/* Total throughput as primary value */}
           <div className="flex items-baseline justify-between">
-            <span className="font-mono text-[7px] text-foreground/20 leading-none">total</span>
+            <span className="font-mono text-nano text-foreground/20 leading-none">total</span>
             <span className={cn(
-              "font-mono text-[12px] leading-none tabular-nums",
+              "font-mono text-body leading-none tabular-nums",
               active ? "text-foreground/70" : "text-foreground/25",
             )}>
               {formatSpeed(total)}

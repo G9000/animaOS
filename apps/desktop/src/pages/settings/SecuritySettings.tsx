@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api, setUnlockToken } from "../../lib/api";
 import { useCoreFSReadiness } from "../../context/CoreFSReadinessContext";
+import { glass } from "@anima/standard-templates";
 import {
   beginRecoveryPhraseReview,
   completeRecoveryPhraseReview,
@@ -9,8 +10,7 @@ import {
   type RecoveryPhraseReview,
 } from "./recoveryCredential";
 
-const glass = "bg-background/25 backdrop-blur-[40px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.22)]";
-const INPUT_CLASS = "w-full bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-foreground/[0.18] transition-colors font-mono";
+const INPUT_CLASS = "w-full bg-foreground/[0.04] border border-hairline px-3 py-2 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-hairline-strong transition-colors font-mono";
 
 export default function SecuritySettings() {
   const {
@@ -178,20 +178,20 @@ export default function SecuritySettings() {
     <div className={`${glass} p-6 space-y-5`}>
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-4">
-          <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">
             Portable Core
           </h2>
           <button
             type="button"
             onClick={() => void refreshCoreFS()}
             disabled={coreFSLoading}
-            className="font-mono text-[8px] tracking-[0.16em] uppercase text-foreground/35 hover:text-foreground/70 disabled:opacity-30 transition-colors"
+            className="font-mono text-micro tracking-caps-3 uppercase text-foreground/35 hover:text-foreground/70 disabled:opacity-30 transition-colors"
           >
             {coreFSLoading ? "Checking..." : "Refresh"}
           </button>
         </div>
         {coreFSStatus ? (
-          <div className="grid grid-cols-2 gap-3 font-mono text-[9px] tracking-wide">
+          <div className="grid grid-cols-2 gap-3 font-mono text-label tracking-wide">
             <StatusCell
               label="Index"
               value={coreFSStatus.readiness.state.replace(/_/g, " ")}
@@ -234,7 +234,7 @@ export default function SecuritySettings() {
             />
           </div>
         ) : (
-          <p className="font-mono text-[9px] text-foreground/30 tracking-wide">
+          <p className="font-mono text-label text-foreground/30 tracking-wide">
             {coreFSError ?? "CoreFS status is not available while locked."}
           </p>
         )}
@@ -243,21 +243,21 @@ export default function SecuritySettings() {
       <div className="h-px bg-foreground/[0.06]" />
 
       <section className="space-y-4">
-        <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+        <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">
           Filesystem Root Key
         </h2>
-        <p className="font-mono text-[10px] text-foreground/30 tracking-wide leading-relaxed">
+        <p className="font-mono text-caption text-foreground/30 tracking-wide leading-relaxed">
           Rewraps the committed Core catalog under a new filesystem root. Both
           credential paths are verified before the new generation is activated.
         </p>
         {coreFSStatus && (
-          <div className="border border-foreground/[0.06] bg-foreground/[0.02] p-3">
-            <p className="font-mono text-[9px] uppercase tracking-[0.16em] text-foreground/45">
+          <div className="border border-hairline-faint bg-foreground/[0.02] p-3">
+            <p className="font-mono text-label uppercase tracking-caps-3 text-foreground/45">
               Old-key retirement:{" "}
               {coreFSStatus.rotation.oldKeyRetirementSafe ? "safe" : "blocked"}
             </p>
             {!coreFSStatus.rotation.oldKeyRetirementSafe && (
-              <p className="mt-1 font-mono text-[8px] tracking-wide text-foreground/30">
+              <p className="mt-1 font-mono text-micro tracking-wide text-foreground/30">
                 {coreFSStatus.rotation.oldKeyRetirementBlockers
                   .map((blocker) => blocker.replace(/_/g, " "))
                   .join(" · ")}
@@ -289,18 +289,18 @@ export default function SecuritySettings() {
           <button
             type="submit"
             disabled={rotating}
-            className="font-mono text-[9px] tracking-[0.18em] uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent hover:bg-accent/[0.04] disabled:opacity-30 transition-all"
+            className="font-mono text-label tracking-caps-3 uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent hover:bg-accent/[0.04] disabled:opacity-30 transition-all"
           >
             {rotating ? "Rotating..." : "Rotate Filesystem Key"}
           </button>
         </form>
         {rotationStatus && (
-          <span className="block font-mono text-[9px] text-accent/60 tracking-wide">
+          <span className="block font-mono text-label text-accent/60 tracking-wide">
             {rotationStatus}
           </span>
         )}
         {rotationError && (
-          <span className="block font-mono text-[9px] text-destructive/70 tracking-wide">
+          <span className="block font-mono text-label text-destructive/70 tracking-wide">
             {rotationError}
           </span>
         )}
@@ -308,10 +308,10 @@ export default function SecuritySettings() {
 
       <div className="h-px bg-foreground/[0.06]" />
 
-      <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+      <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">
         Master Password
       </h2>
-      <p className="font-mono text-[10px] text-foreground/30 tracking-wide leading-relaxed">
+      <p className="font-mono text-caption text-foreground/30 tracking-wide leading-relaxed">
         This password rewraps the vault DEK and controls future unlock sessions.
       </p>
 
@@ -334,28 +334,28 @@ export default function SecuritySettings() {
           <button
             type="submit"
             disabled={changing}
-            className="font-mono text-[9px] tracking-[0.18em] uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent hover:bg-accent/[0.04] disabled:opacity-30 transition-all"
+            className="font-mono text-label tracking-caps-3 uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent hover:bg-accent/[0.04] disabled:opacity-30 transition-all"
           >
             {changing ? "Updating..." : "Change Password"}
           </button>
-          {changeStatus && <span className="font-mono text-[9px] text-accent/60 tracking-[0.18em] uppercase">{changeStatus}</span>}
-          {changeError && <span className="font-mono text-[9px] text-destructive/70 tracking-wider">{changeError}</span>}
+          {changeStatus && <span className="font-mono text-label text-accent/60 tracking-caps-3 uppercase">{changeStatus}</span>}
+          {changeError && <span className="font-mono text-label text-destructive/70 tracking-wider">{changeError}</span>}
         </div>
       </form>
 
       <div className="h-px bg-foreground/[0.06]" />
 
       <section className="space-y-4">
-        <h2 className="font-mono text-[9px] tracking-[0.22em] uppercase text-foreground/40">
+        <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/40">
           Recovery Credential
         </h2>
-        <p className="font-mono text-[10px] text-foreground/30 tracking-wide leading-relaxed">
+        <p className="font-mono text-caption text-foreground/30 tracking-wide leading-relaxed">
           Replaces the recovery wrappers for the Soul and every retained filesystem root. The new phrase is shown once.
         </p>
 
         {recoveryReview?.phase === "review" && recoveryReview.phrase ? (
           <div className="space-y-4 border border-accent/20 bg-accent/[0.03] p-4">
-            <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-accent/70">
+            <p className="font-mono text-label uppercase tracking-caps-3 text-accent/70">
               Record this new phrase now
             </p>
             <pre className="whitespace-pre-wrap break-words font-mono text-sm text-foreground" data-testid="new-recovery-phrase">
@@ -373,12 +373,12 @@ export default function SecuritySettings() {
             <button
               type="button"
               onClick={handleConfirmRecovery}
-              className="font-mono text-[9px] tracking-[0.18em] uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent transition-all"
+              className="font-mono text-label tracking-caps-3 uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent transition-all"
             >
               Confirm Phrase
             </button>
             {recoveryReview.error && (
-              <span className="block font-mono text-[9px] text-destructive/70 tracking-wider">
+              <span className="block font-mono text-label text-destructive/70 tracking-wider">
                 {recoveryReview.error}
               </span>
             )}
@@ -406,7 +406,7 @@ export default function SecuritySettings() {
             <button
               type="submit"
               disabled={replacingRecovery}
-              className="font-mono text-[9px] tracking-[0.18em] uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent hover:bg-accent/[0.04] disabled:opacity-30 transition-all"
+              className="font-mono text-label tracking-caps-3 uppercase px-5 py-2.5 border border-accent/30 text-accent/70 hover:border-accent/60 hover:text-accent hover:bg-accent/[0.04] disabled:opacity-30 transition-all"
             >
               {replacingRecovery ? "Replacing..." : "Replace Recovery Phrase"}
             </button>
@@ -415,7 +415,7 @@ export default function SecuritySettings() {
                 type="button"
                 disabled={replacingRecovery}
                 onClick={() => void prepareRecoveryReplacement(true)}
-                className="font-mono text-[9px] tracking-[0.18em] uppercase px-5 py-2.5 border border-destructive/30 text-destructive/70 hover:border-destructive/60 hover:text-destructive disabled:opacity-30 transition-all"
+                className="font-mono text-label tracking-caps-3 uppercase px-5 py-2.5 border border-destructive/30 text-destructive/70 hover:border-destructive/60 hover:text-destructive disabled:opacity-30 transition-all"
               >
                 Discard Pending Phrase and Generate Again
               </button>
@@ -423,12 +423,12 @@ export default function SecuritySettings() {
           </form>
         )}
         {recoveryStatus && (
-          <span className="font-mono text-[9px] text-accent/60 tracking-[0.18em] uppercase">
+          <span className="font-mono text-label text-accent/60 tracking-caps-3 uppercase">
             {recoveryStatus}
           </span>
         )}
         {recoveryError && (
-          <span className="font-mono text-[9px] text-destructive/70 tracking-wider">
+          <span className="font-mono text-label text-destructive/70 tracking-wider">
             {recoveryError}
           </span>
         )}
@@ -440,7 +440,7 @@ export default function SecuritySettings() {
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1.5">
-      <h3 className="font-mono text-[9px] tracking-[0.18em] uppercase text-foreground/30">{label}</h3>
+      <h3 className="font-mono text-label tracking-caps-3 uppercase text-foreground/30">{label}</h3>
       {children}
     </div>
   );
@@ -448,8 +448,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function StatusCell({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border border-foreground/[0.06] bg-foreground/[0.02] px-3 py-2.5">
-      <p className="text-[8px] uppercase tracking-[0.18em] text-foreground/25">
+    <div className="border border-hairline-faint bg-foreground/[0.02] px-3 py-2.5">
+      <p className="text-micro uppercase tracking-caps-3 text-foreground/25">
         {label}
       </p>
       <p className="mt-1 capitalize text-foreground/60">{value}</p>

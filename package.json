@@ -43,5 +43,8 @@
   "devDependencies": {
     "nx": "^23.0.1",
     "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "prosemirror-model": "1.25.11"
   }
 }

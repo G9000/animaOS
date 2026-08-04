@@ -43,7 +43,7 @@ export function AgentRelationshipNode({ data, id }: NodeProps<RelationshipNode>)
         icon={<LinkIcon size="sm" className="text-foreground/25" />}
         headerExtra={
           relationshipSaved
-            ? <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-accent/70">Saved</span>
+            ? <span className="font-mono text-micro tracking-caps-2 uppercase text-accent/70">Saved</span>
             : null
         }
         onClose={onClose}
@@ -52,7 +52,7 @@ export function AgentRelationshipNode({ data, id }: NodeProps<RelationshipNode>)
         className="w-64"
         footer={
           <div className="px-3.5 py-2.5 flex items-center justify-between">
-            <span className="font-mono text-[8px] tracking-[0.2em] uppercase text-foreground/30">Override</span>
+            <span className="font-mono text-micro tracking-caps-4 uppercase text-foreground/30">Override</span>
             <input
               type="checkbox"
               checked={identityOverrideAllowed}
@@ -64,7 +64,7 @@ export function AgentRelationshipNode({ data, id }: NodeProps<RelationshipNode>)
         }
       >
         <div className="p-3 space-y-2">
-          <p className="font-mono text-[9px] text-muted-foreground/50 leading-relaxed">
+          <p className="font-mono text-label text-muted-foreground/50 leading-relaxed">
             Canonical relationship field. It cannot be changed after setup unless override is enabled.
           </p>
           <input
@@ -76,10 +76,10 @@ export function AgentRelationshipNode({ data, id }: NodeProps<RelationshipNode>)
               if (event.key === "Enter" && identityOverrideAllowed) onRelationshipSave();
             }}
             placeholder="companion"
-            className={`nodrag w-full bg-secondary/40 border border-border/40 px-2.5 py-2 font-mono text-[10px] outline-none transition-colors placeholder:text-muted-foreground/30 ${identityOverrideAllowed ? "text-foreground/70 focus:border-border cursor-text" : "text-foreground/30 cursor-default select-none"}`}
+            className={`nodrag w-full bg-secondary/40 border border-border/40 px-2.5 py-2 font-mono text-caption outline-none transition-colors placeholder:text-muted-foreground/30 ${identityOverrideAllowed ? "text-foreground/70 focus:border-border cursor-text" : "text-foreground/30 cursor-default select-none"}`}
             aria-label="Agent relationship"
           />
-          <p className="font-mono text-[8px] leading-relaxed text-accent/50">
+          <p className="font-mono text-micro leading-relaxed text-accent/50">
             Override rewrites the canonical profile and supersedes the previous relationship memory.
           </p>
         </div>

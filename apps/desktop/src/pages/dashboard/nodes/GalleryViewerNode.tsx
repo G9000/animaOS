@@ -2,6 +2,7 @@ import { useState, useMemo, useRef } from "react";
 import { NodeResizer, type NodeProps } from "@xyflow/react";
 import type { GalleryViewerNode, GalleryImage } from "./node-types";
 import { AuthImage } from "../../../components/AuthImage";
+import { cn, glassPanel } from "@anima/standard-templates";
 
 type Cols = 2 | 3 | 4;
 type Source = "all" | "chat" | "diary";
@@ -95,23 +96,23 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-foreground/[0.07] font-mono text-[8px] text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover/node:opacity-100 transition-all duration-200 backdrop-blur-sm"
+          className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-hairline-faint font-mono text-micro text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover/node:opacity-100 transition-all duration-200 backdrop-blur-sm"
           aria-label="Close gallery"
         >
           ×
         </button>
 
         {/* Glass card */}
-        <div className="w-full h-full overflow-hidden rounded-xl bg-background/25 backdrop-blur-[36px] border border-foreground/[0.08] shadow-[0_4px_28px_rgba(0,0,0,0.2)] flex flex-col">
+        <div className={cn(glassPanel, "w-full h-full overflow-hidden flex flex-col")}>
 
           {/* ── Header ── */}
-          <div className="shrink-0 flex items-center gap-1.5 px-3 h-9 border-b border-foreground/[0.06]">
-            <span className="font-mono text-[8px] tracking-[0.3em] uppercase text-foreground/30 mr-auto">
+          <div className="shrink-0 flex items-center gap-1.5 px-3 h-9 border-b border-hairline-faint">
+            <span className="font-mono text-micro tracking-caps-5 uppercase text-foreground/30 mr-auto">
               Gallery
             </span>
 
             {/* Image count */}
-            <span className="font-mono text-[8px] text-foreground/20">
+            <span className="font-mono text-micro text-foreground/20">
               {isFiltered ? `${filtered.length}/${images.length}` : images.length}
             </span>
 
@@ -124,7 +125,7 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
                   key={c}
                   onClick={() => setCols(c)}
                   className={[
-                    "font-mono text-[8px] w-5 h-5 flex items-center justify-center rounded transition-all duration-100",
+                    "font-mono text-micro w-5 h-5 flex items-center justify-center rounded transition-all duration-100",
                     cols === c
                       ? "text-foreground/70 bg-foreground/[0.09]"
                       : "text-foreground/20 hover:text-foreground/50",
@@ -142,7 +143,7 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
                 <button
                   onClick={cycleSource}
                   className={[
-                    "font-mono text-[7px] tracking-[0.14em] uppercase px-1.5 h-4 rounded transition-all duration-100",
+                    "font-mono text-nano tracking-caps-2 uppercase px-1.5 h-4 rounded transition-all duration-100",
                     source !== "all"
                       ? "bg-accent/[0.12] text-accent/70 border border-accent/20"
                       : "text-foreground/20 hover:text-foreground/50",
@@ -173,7 +174,7 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
 
           {/* ── Search bar (collapsible) ── */}
           {searchOpen && (
-            <div className="shrink-0 flex items-center gap-2 px-3 h-8 border-b border-foreground/[0.06] bg-foreground/[0.025]">
+            <div className="shrink-0 flex items-center gap-2 px-3 h-8 border-b border-hairline-faint bg-foreground/[0.025]">
               <span className="text-foreground/20 shrink-0"><SearchIcon /></span>
               <input
                 ref={searchRef}
@@ -181,12 +182,12 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="search by filename or caption…"
-                className="flex-1 min-w-0 bg-transparent font-mono text-[9px] tracking-wide text-foreground/60 placeholder:text-foreground/20 focus:outline-none"
+                className="flex-1 min-w-0 bg-transparent font-mono text-label tracking-wide text-foreground/60 placeholder:text-foreground/20 focus:outline-none"
               />
               {query && (
                 <button
                   onClick={() => setQuery("")}
-                  className="font-mono text-[10px] text-foreground/20 hover:text-foreground/50 transition-colors shrink-0"
+                  className="font-mono text-caption text-foreground/20 hover:text-foreground/50 transition-colors shrink-0"
                 >
                   ×
                 </button>
@@ -198,7 +199,7 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
           {filtered.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
               <div className="text-center space-y-2 px-6">
-                <p className="font-mono text-[8px] tracking-[0.24em] uppercase text-foreground/20">
+                <p className="font-mono text-micro tracking-caps-4 uppercase text-foreground/20">
                   {query
                     ? "No matches"
                     : source !== "all"
@@ -206,7 +207,7 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
                       : "No images yet"}
                 </p>
                 {!query && source === "all" && (
-                  <p className="font-mono text-[8px] text-foreground/12 leading-relaxed">
+                  <p className="font-mono text-micro text-foreground/12 leading-relaxed">
                     share photos in chat to see them here
                   </p>
                 )}
@@ -244,7 +245,7 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
                     {/* Source badge */}
                     <span
                       className={[
-                        "absolute top-1.5 right-1.5 font-mono text-[6px] tracking-wider uppercase px-1 py-px rounded-sm leading-tight",
+                        "absolute top-1.5 right-1.5 font-mono text-nano tracking-wider uppercase px-1 py-px rounded-sm leading-tight",
                         "opacity-0 group-hover/thumb:opacity-100 transition-opacity duration-150",
                         img.source === "chat"
                           ? "bg-sky-500/25 text-sky-200/90"
@@ -270,13 +271,13 @@ export function GalleryViewerNode({ data }: NodeProps<GalleryViewerNode>) {
 
           {/* Footer */}
           {images.length > 0 && (
-            <div className="shrink-0 px-3 h-7 border-t border-foreground/[0.05] flex items-center justify-between">
-              <span className="font-mono text-[7px] tracking-wider text-foreground/18">
+            <div className="shrink-0 px-3 h-7 border-t border-hairline-faint flex items-center justify-between">
+              <span className="font-mono text-nano tracking-wider text-foreground/18">
                 {images.length > MAX_IMAGES ? `showing ${MAX_IMAGES} of ${images.length}` : `${images.length} image${images.length === 1 ? "" : "s"}`}
               </span>
               <button
                 onClick={() => onNavigate("/memory/images")}
-                className="font-mono text-[7px] tracking-wider text-foreground/25 hover:text-foreground/55 transition-colors"
+                className="font-mono text-nano tracking-wider text-foreground/25 hover:text-foreground/55 transition-colors"
               >
                 open
               </button>

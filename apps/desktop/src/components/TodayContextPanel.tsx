@@ -71,7 +71,7 @@ export function TodayContextPanel({
     <div className="mb-2 border border-border bg-card px-3 py-2.5">
       <div className="mb-2 flex items-center justify-between gap-3">
         <div className="min-w-0">
-          <span className="font-mono text-[9px] tracking-[0.2em] uppercase text-muted-foreground/55">
+          <span className="font-mono text-label tracking-caps-4 uppercase text-muted-foreground/55">
             Today
           </span>
           {summaryText && (
@@ -85,7 +85,7 @@ export function TodayContextPanel({
             <button
               type="button"
               onClick={onClear}
-              className="font-mono text-[9px] tracking-[0.18em] text-muted-foreground/35 hover:text-muted-foreground"
+              className="font-mono text-label tracking-caps-3 text-muted-foreground/35 hover:text-muted-foreground"
             >
               CLEAR
             </button>
@@ -95,7 +95,7 @@ export function TodayContextPanel({
               type="button"
               onClick={() => commitDraft({ mood, energy, note })}
               disabled={!hasDraft}
-              className="border border-border px-2.5 py-1 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground disabled:opacity-30"
+              className="border border-border px-2.5 py-1 font-mono text-label tracking-caps-3 text-muted-foreground hover:text-foreground disabled:opacity-30"
             >
               UPDATE
             </button>
@@ -108,7 +108,7 @@ export function TodayContextPanel({
                 : "Show more today context controls"
             }
             onClick={() => setExpanded((value) => !value)}
-            className="border border-border px-2 py-1 font-mono text-[10px] leading-none text-muted-foreground hover:text-foreground"
+            className="border border-border px-2 py-1 font-mono text-caption leading-none text-muted-foreground hover:text-foreground"
           >
             {expanded ? "-" : "+"}
           </button>
@@ -122,21 +122,21 @@ export function TodayContextPanel({
       {!hasContext && suggestion && suggestionItems.length > 0 && (
         <div className="mb-2 border-t border-border/60 pt-2">
           <div className="mb-1.5 flex items-center justify-between gap-3">
-            <span className="font-mono text-[9px] tracking-[0.18em] uppercase text-muted-foreground/45">
+            <span className="font-mono text-label tracking-caps-3 uppercase text-muted-foreground/45">
               Suggested
             </span>
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={onDismissSuggestion}
-                className="font-mono text-[9px] tracking-[0.18em] text-muted-foreground/35 hover:text-muted-foreground"
+                className="font-mono text-label tracking-caps-3 text-muted-foreground/35 hover:text-muted-foreground"
               >
                 DISMISS
               </button>
               <button
                 type="button"
                 onClick={onAcceptSuggestion}
-                className="border border-border px-2 py-1 font-mono text-[9px] tracking-[0.18em] text-muted-foreground hover:text-foreground"
+                className="border border-border px-2 py-1 font-mono text-label tracking-caps-3 text-muted-foreground hover:text-foreground"
               >
                 ACCEPT
               </button>
@@ -146,7 +146,7 @@ export function TodayContextPanel({
             {suggestionItems.map((item) => (
               <span
                 key={item}
-                className="max-w-full break-words border border-border/70 px-1.5 py-0.5 text-[11px] leading-snug text-muted-foreground"
+                className="max-w-full break-words border border-border/70 px-1.5 py-0.5 text-detail leading-snug text-muted-foreground"
               >
                 {item}
               </span>
@@ -167,7 +167,7 @@ export function TodayContextPanel({
                 commitDraft({ mood: option.value, energy, note });
               }}
               className={[
-                "min-w-0 border px-1.5 py-1.5 text-[11px] leading-tight transition-colors",
+                "min-w-0 border px-1.5 py-1.5 text-detail leading-tight transition-colors",
                 selected
                   ? "border-foreground/40 bg-foreground/10 text-foreground"
                   : "border-border bg-background text-muted-foreground hover:text-foreground",
@@ -194,7 +194,7 @@ export function TodayContextPanel({
                 commitDraft({ mood, energy: value, note });
               }}
               className={[
-                "border px-2 py-1.5 font-mono text-[9px] uppercase tracking-[0.16em] transition-colors",
+                "border px-2 py-1.5 font-mono text-label uppercase tracking-caps-3 transition-colors",
                 selected
                   ? "border-foreground/40 bg-foreground/10 text-foreground"
                   : "border-border bg-background text-muted-foreground hover:text-foreground",

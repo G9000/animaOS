@@ -240,6 +240,17 @@ def managed_test_client(
     # against the developer data directory.
     sys.modules.pop("anima_server.main", None)
 
+    # The patches below rebind names on the *defining* module, but consumers
+    # bind them at their own import time (`from ...core import
+    # ensure_core_manifest`). Any consumer first imported inside the patch
+    # context would therefore keep the `lambda: None` stub for the rest of the
+    # session — and every later user registration would fail in
+    # provision_initial_key_hierarchy with "'NoneType' object is not
+    # subscriptable". Import them now, unpatched, so only anima_server.main
+    # (popped above, re-imported below) picks the stubs up as intended.
+    import anima_server.db.user_store
+    import anima_server.services.corefs.keyslots  # noqa: F401
+
     with (
         patch("anima_server.services.core.acquire_core_lock", lambda: True),
         patch("anima_server.config.load_persisted_runtime_settings", lambda: None),

@@ -65,7 +65,7 @@ export function ChatAvatar({
         className,
       )}
     >
-      <span className="font-mono text-[10px] text-primary/60">AI</span>
+      <span className="font-mono text-caption text-primary/60">AI</span>
     </div>
   );
 }

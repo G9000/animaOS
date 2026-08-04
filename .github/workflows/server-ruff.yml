@@ -1,13 +1,14 @@
 name: Server Ruff
 
 on:
-  pull_request:
-    paths:
-      - "apps/server/**/*.py"
-      - "apps/server/pyproject.toml"
-      - "pyproject.toml"
-      - "uv.lock"
-      - ".github/workflows/server-ruff.yml"
+  # Automatic PR runs are disabled to avoid consuming Actions minutes.
+#  pull_request:
+#    paths:
+#      - "apps/server/**/*.py"
+#      - "apps/server/pyproject.toml"
+#      - "pyproject.toml"
+#      - "uv.lock"
+#      - ".github/workflows/server-ruff.yml"
   workflow_dispatch:
 
 permissions:

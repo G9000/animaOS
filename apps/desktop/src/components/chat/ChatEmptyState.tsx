@@ -22,12 +22,12 @@ export function ChatEmptyState({ onPrompt }: ChatEmptyStateProps) {
         {/* Pulsing accent dot */}
         <div className="relative flex items-center gap-2.5">
           <span className="w-1.5 h-1.5 bg-accent rounded-full animate-pulse" />
-          <span className="font-mono text-[11px] tracking-[0.35em] uppercase text-accent/80">
+          <span className="font-mono text-detail tracking-caps-5 uppercase text-accent/80">
             Anima
           </span>
         </div>
 
-        <p className="font-mono text-[9px] tracking-[0.2em] text-foreground/30 uppercase">
+        <p className="font-mono text-label tracking-caps-4 text-foreground/30 uppercase">
           online · ready
         </p>
       </div>
@@ -38,7 +38,7 @@ export function ChatEmptyState({ onPrompt }: ChatEmptyStateProps) {
           <button
             key={starter}
             onClick={() => onPrompt?.(starter)}
-            className="relative overflow-hidden bg-background/20 backdrop-blur-[24px] shadow-[0_2px_12px_rgba(0,0,0,0.20)] px-4 py-2 text-foreground/45 hover:text-foreground/80 font-mono text-[10px] tracking-[0.1em] transition-all duration-150 hover:bg-background/[0.32] hover:shadow-[0_4px_20px_rgba(0,0,0,0.28)]"
+            className="relative overflow-hidden bg-background/20 backdrop-blur-[24px] shadow-[0_2px_12px_rgba(0,0,0,0.20)] px-4 py-2 text-foreground/45 hover:text-foreground/80 font-mono text-caption tracking-caps-1 transition-all duration-150 hover:bg-background/[0.32] hover:shadow-[0_4px_20px_rgba(0,0,0,0.28)]"
           >
             <div className={`absolute inset-0 pointer-events-none opacity-30 ${scanLines}`} />
             <span className="relative">{starter}</span>

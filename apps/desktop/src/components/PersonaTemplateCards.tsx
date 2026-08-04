@@ -1,4 +1,4 @@
-import { cn, Button } from "@anima/standard-templates";
+import { cn, Button, glass } from "@anima/standard-templates";
 
 export interface PersonaCardData {
   id: string;
@@ -16,7 +16,6 @@ interface PersonaTemplateCardsProps {
   disabled?: boolean;
 }
 
-const glass = "bg-background/20 backdrop-blur-[44px] border border-foreground/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.24)]";
 
 export function PersonaTemplateCards({
   templates,
@@ -46,11 +45,11 @@ export function PersonaTemplateCards({
             style={{ animationDelay: `${i * 80}ms`, animationFillMode: "backwards" }}
           >
             {/* Accent label */}
-            <div className="relative z-10 bg-accent/0 group-hover:bg-accent/20 transition-colors px-3 py-1.5 border-b border-foreground/[0.08] group-hover:border-accent/30 flex items-center justify-between">
-              <span className="font-mono text-ui font-semibold tracking-[0.22em] text-foreground uppercase">
+            <div className="relative z-10 bg-accent/0 group-hover:bg-accent/20 transition-colors px-3 py-1.5 border-b border-hairline group-hover:border-accent/30 flex items-center justify-between">
+              <span className="font-mono text-ui font-semibold tracking-caps-4 text-foreground uppercase">
                 {t.label}
               </span>
-              <span className="font-mono text-detail text-muted-foreground/40 group-hover:text-accent/60 border border-foreground/[0.08] group-hover:border-accent/40 px-1.5 py-0.5 transition-colors tabular-nums">
+              <span className="font-mono text-detail text-muted-foreground/40 group-hover:text-accent/60 border border-hairline group-hover:border-accent/40 px-1.5 py-0.5 transition-colors tabular-nums">
                 {i + 1}
               </span>
             </div>

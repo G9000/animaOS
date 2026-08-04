@@ -77,7 +77,7 @@ function AppRoutes() {
       <div className="max-w-5xl mx-auto space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.24em] text-foreground/40">
+            <p className="font-mono text-caption uppercase tracking-caps-4 text-foreground/40">
               Daemon recovery
             </p>
             <h1 className="text-2xl font-light tracking-[-0.03em]">
@@ -86,13 +86,13 @@ function AppRoutes() {
           </div>
           <div className="flex gap-2">
             <Link
-              className="border border-foreground/15 px-3 py-2 rounded-sm font-mono text-[10px] uppercase tracking-[0.16em] hover:bg-foreground/8"
+              className="border border-foreground/15 px-3 py-2 rounded-sm font-mono text-caption uppercase tracking-caps-3 hover:bg-foreground/8"
               to="/login"
             >
               Login
             </Link>
             <Link
-              className="border border-foreground/15 px-3 py-2 rounded-sm font-mono text-[10px] uppercase tracking-[0.16em] hover:bg-foreground/8"
+              className="border border-foreground/15 px-3 py-2 rounded-sm font-mono text-caption uppercase tracking-caps-3 hover:bg-foreground/8"
               to="/settings/daemon"
             >
               Settings

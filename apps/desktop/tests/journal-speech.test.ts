@@ -6,7 +6,7 @@ import {
   chooseRecordingMimeType,
   extensionForAudioMimeType,
   getSpeechRecognitionConstructor,
-} from "../src/pages/journal/speech";
+} from "../src/features/diary/lib/speech";
 
 describe("journal speech helpers", () => {
   test("chooses the first supported recording mime type", () => {

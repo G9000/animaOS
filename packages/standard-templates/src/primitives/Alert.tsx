@@ -17,7 +17,7 @@ export interface AlertProps {
 
 export function Alert({ variant = "error", children, className }: AlertProps) {
   return (
-    <div className={cn("px-3.5 py-2.5 font-mono text-[10px] tracking-wider", variants[variant], className)}>
+    <div className={cn("px-3.5 py-2.5 font-mono text-caption tracking-wider", variants[variant], className)}>
       {children}
     </div>
   );

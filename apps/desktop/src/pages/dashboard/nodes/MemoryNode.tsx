@@ -1,4 +1,5 @@
 import { NodeResizer, type NodeProps } from "@xyflow/react";
+import { cn, liftXAccent, glassPanel } from "@anima/standard-templates";
 import type { MemoryNode } from "./node-types";
 
 function formatEpisodeDate(dateStr: string, timeStr: string | null): string {
@@ -37,21 +38,21 @@ export function MemoryNode({ data }: NodeProps<MemoryNode>) {
         {/* Close */}
         <button
           onClick={onClose}
-          className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-foreground/[0.07] font-mono text-[8px] text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover:opacity-100 transition-all duration-200 backdrop-blur-sm"
+          className="absolute -top-5 right-0 z-20 h-4 px-1.5 flex items-center rounded-sm bg-background/60 border border-hairline-faint font-mono text-micro text-foreground/25 hover:text-foreground/60 hover:bg-background/80 opacity-0 group-hover:opacity-100 transition-all duration-200 backdrop-blur-sm"
           aria-label="Close memories"
         >
           ×
         </button>
 
         {/* Glass card */}
-        <div className="w-full h-full overflow-hidden rounded-xl bg-background/25 backdrop-blur-[36px] border border-foreground/[0.08] shadow-[0_4px_28px_rgba(0,0,0,0.18)] flex flex-col">
+        <div className={cn(glassPanel, "w-full h-full overflow-hidden flex flex-col")}>
 
           {/* Header */}
-          <div className="shrink-0 flex items-center justify-between px-3.5 h-9 border-b border-foreground/[0.06]">
-            <span className="font-mono text-[8px] tracking-[0.3em] uppercase text-foreground/30">
+          <div className="shrink-0 flex items-center justify-between px-3.5 h-9 border-b border-hairline-faint">
+            <span className="font-mono text-micro tracking-caps-5 uppercase text-foreground/30">
               Memories
             </span>
-            <span className="font-mono text-[8px] text-foreground/20">
+            <span className="font-mono text-micro text-foreground/20">
               {episodes.length}
             </span>
           </div>
@@ -63,7 +64,7 @@ export function MemoryNode({ data }: NodeProps<MemoryNode>) {
           >
             {episodes.length === 0 ? (
               <div className="px-4 py-8 text-center">
-                <p className="font-mono text-[8px] tracking-[0.24em] uppercase text-foreground/18">
+                <p className="font-mono text-micro tracking-caps-4 uppercase text-foreground/18">
                   no memories yet
                 </p>
               </div>
@@ -78,18 +79,7 @@ export function MemoryNode({ data }: NodeProps<MemoryNode>) {
                 return (
                   <div
                     key={ep.id}
-                    className="group/ep flex hover:bg-accent"
-                    style={{ transition: "transform 150ms ease, box-shadow 150ms ease, background-color 150ms ease" }}
-                    onMouseEnter={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.transform = "translateX(6px)";
-                      el.style.boxShadow = "-2px 2px 0 var(--color-accent-dark), -4px 4px 0 color-mix(in oklch, var(--color-accent-dark) 50%, transparent)";
-                    }}
-                    onMouseLeave={(e) => {
-                      const el = e.currentTarget as HTMLElement;
-                      el.style.transform = "";
-                      el.style.boxShadow = "";
-                    }}
+                    className={cn(liftXAccent, "group/ep flex hover:bg-accent transition-colors")}
                   >
                     {/* Left accent bar — switches to accent-dark so it stays visible on accent bg */}
                     <div className="w-px shrink-0 self-stretch ml-3.5 bg-foreground/[0.07] group-hover/ep:bg-accent-dark transition-colors duration-150" />
@@ -98,17 +88,17 @@ export function MemoryNode({ data }: NodeProps<MemoryNode>) {
 
                       {/* Title + date */}
                       <div className="flex items-start gap-2">
-                        <span className="text-[11px] font-medium text-foreground/72 group-hover/ep:text-accent-foreground leading-tight truncate transition-colors duration-150">
+                        <span className="text-detail font-medium text-foreground/72 group-hover/ep:text-accent-foreground leading-tight truncate transition-colors duration-150">
                           {title}
                         </span>
-                        <span className="font-mono text-[7px] text-foreground/22 group-hover/ep:text-accent-foreground/60 tracking-wider ml-auto shrink-0 mt-px transition-colors duration-150">
+                        <span className="font-mono text-nano text-foreground/22 group-hover/ep:text-accent-foreground/60 tracking-wider ml-auto shrink-0 mt-px transition-colors duration-150">
                           {formatEpisodeDate(ep.date, ep.time)}
                         </span>
                       </div>
 
                       {/* Summary with fade */}
                       <p
-                        className="text-[10px] leading-relaxed text-foreground/38 group-hover/ep:text-accent-foreground/70 overflow-hidden transition-colors duration-150"
+                        className="text-caption leading-relaxed text-foreground/38 group-hover/ep:text-accent-foreground/70 overflow-hidden transition-colors duration-150"
                         style={{
                           maskImage:
                             "linear-gradient(to bottom, black 40%, transparent 100%)",
@@ -125,7 +115,7 @@ export function MemoryNode({ data }: NodeProps<MemoryNode>) {
                         {ep.topics.slice(0, 2).map((t) => (
                           <span
                             key={t}
-                            className="font-mono text-[7px] tracking-[0.16em] uppercase text-foreground/22 group-hover/ep:text-accent-foreground/60 border border-foreground/[0.07] group-hover/ep:border-accent-foreground/20 px-1 py-px rounded-sm transition-colors duration-150"
+                            className="font-mono text-nano tracking-caps-3 uppercase text-foreground/22 group-hover/ep:text-accent-foreground/60 border border-hairline-faint group-hover/ep:border-accent-foreground/20 px-1 py-px rounded-sm transition-colors duration-150"
                           >
                             {t}
                           </span>
@@ -156,8 +146,8 @@ export function MemoryNode({ data }: NodeProps<MemoryNode>) {
 
           {/* Footer — view all */}
           {episodes.length > 12 && (
-            <div className="shrink-0 px-3.5 h-8 border-t border-foreground/[0.05] flex items-center justify-between">
-              <span className="font-mono text-[7px] tracking-wider text-foreground/18">
+            <div className="shrink-0 px-3.5 h-8 border-t border-hairline-faint flex items-center justify-between">
+              <span className="font-mono text-nano tracking-wider text-foreground/18">
                 +{episodes.length - 12} more
               </span>
               <button

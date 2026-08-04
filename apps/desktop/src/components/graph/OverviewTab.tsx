@@ -17,13 +17,13 @@ export function OverviewTab({ overview, onEntityClick, onFilterClick }: Overview
       {/* Stats */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-card border border-border px-4 py-3">
-          <div className="font-mono text-[9px] text-muted-foreground/40 tracking-wider mb-1">
+          <div className="font-mono text-label text-muted-foreground/40 tracking-wider mb-1">
             TOTAL_ENTITIES
           </div>
           <div className="text-2xl font-mono text-foreground">{overview.entityCount}</div>
         </div>
         <div className="bg-card border border-border px-4 py-3">
-          <div className="font-mono text-[9px] text-muted-foreground/40 tracking-wider mb-1">
+          <div className="font-mono text-label text-muted-foreground/40 tracking-wider mb-1">
             TOTAL_RELATIONS
           </div>
           <div className="text-2xl font-mono text-foreground">{overview.relationCount}</div>
@@ -33,7 +33,7 @@ export function OverviewTab({ overview, onEntityClick, onFilterClick }: Overview
       {/* Type Distribution */}
       {Object.keys(overview.typeDistribution).length > 0 && (
         <div>
-          <h3 className="font-mono text-[9px] text-muted-foreground/50 tracking-wider mb-3">
+          <h3 className="font-mono text-label text-muted-foreground/50 tracking-wider mb-3">
             ENTITY_TYPES
           </h3>
           <div className="flex flex-wrap gap-2">
@@ -43,10 +43,10 @@ export function OverviewTab({ overview, onEntityClick, onFilterClick }: Overview
                 onClick={() => onFilterClick(type)}
                 className="px-3 py-1.5 bg-card border border-border hover:border-primary/30 transition-colors"
               >
-                <span className="font-mono text-[9px] text-muted-foreground/40 tracking-wider mr-2">
+                <span className="font-mono text-label text-muted-foreground/40 tracking-wider mr-2">
                   {type.toUpperCase()}
                 </span>
-                <span className="font-mono text-[10px] text-primary">{count}</span>
+                <span className="font-mono text-caption text-primary">{count}</span>
               </button>
             ))}
           </div>
@@ -56,7 +56,7 @@ export function OverviewTab({ overview, onEntityClick, onFilterClick }: Overview
       {/* Relation Type Distribution */}
       {Object.keys(overview.relationTypeDistribution).length > 0 && (
         <div>
-          <h3 className="font-mono text-[9px] text-muted-foreground/50 tracking-wider mb-3">
+          <h3 className="font-mono text-label text-muted-foreground/50 tracking-wider mb-3">
             RELATION_TYPES
           </h3>
           <div className="flex flex-wrap gap-2">
@@ -68,10 +68,10 @@ export function OverviewTab({ overview, onEntityClick, onFilterClick }: Overview
                   key={type}
                   className="px-3 py-1.5 bg-card border border-border"
                 >
-                  <span className={`font-mono text-[9px] tracking-wider mr-2 ${getRelationColor(type)}`}>
+                  <span className={`font-mono text-label tracking-wider mr-2 ${getRelationColor(type)}`}>
                     {type}
                   </span>
-                  <span className="font-mono text-[10px] text-muted-foreground">{count}</span>
+                  <span className="font-mono text-caption text-muted-foreground">{count}</span>
                 </div>
               ))}
           </div>
@@ -81,7 +81,7 @@ export function OverviewTab({ overview, onEntityClick, onFilterClick }: Overview
       {/* Top Entities */}
       {overview.topEntities.length > 0 && (
         <div>
-          <h3 className="font-mono text-[9px] text-muted-foreground/50 tracking-wider mb-3">
+          <h3 className="font-mono text-label text-muted-foreground/50 tracking-wider mb-3">
             TOP_ENTITIES
           </h3>
           <div className="space-y-1">
@@ -92,12 +92,12 @@ export function OverviewTab({ overview, onEntityClick, onFilterClick }: Overview
                 className="w-full flex items-center justify-between px-3 py-2 bg-card border border-border hover:border-primary/30 transition-colors text-left"
               >
                 <div className="flex items-center gap-3">
-                  <span className="font-mono text-[10px] text-foreground">{entity.name}</span>
-                  <span className="font-mono text-[8px] text-muted-foreground/40 tracking-wider">
+                  <span className="font-mono text-caption text-foreground">{entity.name}</span>
+                  <span className="font-mono text-micro text-muted-foreground/40 tracking-wider">
                     {entity.type.toUpperCase()}
                   </span>
                 </div>
-                <span className="font-mono text-[9px] text-muted-foreground/30">
+                <span className="font-mono text-label text-muted-foreground/30">
                   {entity.mentions}M
                 </span>
               </button>

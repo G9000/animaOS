@@ -34,7 +34,7 @@ export function Field({
     <div className={cn("space-y-1.5", containerClassName)}>
       <Label
         htmlFor={fieldId}
-        className="font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground"
+        className="font-mono text-label uppercase tracking-caps-4 text-muted-foreground"
       >
         {label}
       </Label>
@@ -49,11 +49,11 @@ export function Field({
         {...inputProps}
       />
       {hasError ? (
-        <p id={errorId} className="font-mono text-[9px] tracking-wider text-destructive">
+        <p id={errorId} className="font-mono text-label tracking-wider text-destructive">
           {error}
         </p>
       ) : hint ? (
-        <p id={hintId} className="font-mono text-[9px] tracking-wider text-muted-foreground/60">
+        <p id={hintId} className="font-mono text-label tracking-wider text-muted-foreground/60">
           {hint}
         </p>
       ) : null}

@@ -79,7 +79,7 @@ export function NodeShell({
       {handles}
 
       {hiddenActions.length > 0 && expanded && (
-        <div className="absolute right-3 top-10 z-30 bg-background/80 backdrop-blur-[24px] border border-foreground/[0.08] shadow-lg rounded-xl min-w-[140px] overflow-hidden">
+        <div className="absolute right-3 top-10 z-30 bg-background/80 backdrop-blur-[24px] border border-hairline shadow-lg rounded-xl min-w-[140px] overflow-hidden">
           {hiddenActions.map((action) => (
             <button
               key={action.id}
@@ -87,7 +87,7 @@ export function NodeShell({
               className="w-full text-left px-3 py-2 text-xs text-foreground/60 hover:text-foreground hover:bg-foreground/[0.05] transition-colors flex items-center gap-2"
             >
               {action.icon && <span className="text-xs">{action.icon}</span>}
-              <span className="font-mono text-[9px] tracking-wider uppercase">{action.label}</span>
+              <span className="font-mono text-label tracking-wider uppercase">{action.label}</span>
             </button>
           ))}
         </div>
@@ -95,7 +95,7 @@ export function NodeShell({
 
       <div className={cn(!fluid && "overflow-hidden", fluid && "h-full flex flex-col overflow-visible")}>
         {!hideHeader && (
-          <div className="px-3.5 h-9 flex items-center justify-between bg-accent/10 border-b border-foreground/[0.06]">
+          <div className="px-3.5 h-9 flex items-center justify-between bg-accent/10 border-b border-hairline-faint">
             <div className="min-w-0 flex items-center gap-1.5 pr-4">
               {icon}
               {typeof title === "string" ? (
@@ -139,7 +139,7 @@ export function NodeShell({
 
         {fluid ? <div className="flex-1 min-h-0">{children}</div> : children}
 
-        {footer && <div className="border-t border-foreground/[0.05] shrink-0">{footer}</div>}
+        {footer && <div className="border-t border-hairline-faint shrink-0">{footer}</div>}
       </div>
     </div>
   );

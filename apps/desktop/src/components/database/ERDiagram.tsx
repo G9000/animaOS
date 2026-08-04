@@ -165,7 +165,7 @@ export function ERDiagram({ tables: _tables, onOpenTable }: ERDiagramProps) {
             <div className="px-4 py-3 border-b border-border flex items-center justify-between">
               <div>
                 <h3 className="text-sm font-medium">Database Schema (ER Diagram)</h3>
-                <p className="text-[10px] text-muted-foreground">Drag to pan • Scroll to zoom</p>
+                <p className="text-caption text-muted-foreground">Drag to pan • Scroll to zoom</p>
               </div>
               <div className="flex items-center gap-2">
                 <button

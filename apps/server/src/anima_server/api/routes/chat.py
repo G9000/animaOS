@@ -330,6 +330,73 @@ async def get_brief(
     }
 
 
+@router.post("/greeting/dream-claim")
+async def confirm_greeting_dream_claim(
+    request: Request,
+    userId: int = Query(ge=0),
+    dreamId: int = Query(ge=1),
+    claimToken: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
+    """IL-015 (PR #135 review, P1): ask whether this dream is still ours to
+    voice, immediately before voicing it.
+
+    The client also tracks the claim's expiry locally, but that check
+    compares a server timestamp against the DEVICE clock — a skewed clock or
+    a delayed render can conclude "still mine" after the claim lapsed and
+    another channel took the dream, disclosing the same narrative twice.
+    This is the same question answered atomically by the row itself.
+
+    ``{"confirmed": false}`` means the claim is stale (expired and re-taken,
+    already acknowledged, or never the caller's): the client must voice the
+    dream-free copy instead. On success the claim is RENEWED — not surfaced
+    — so a client that dies before painting still loses nothing.
+    """
+    await require_unlocked_user_async(request, userId)
+
+    from anima_server.services.agent.inner_life.dream_receipt import confirm_claim
+
+    renewed = confirm_claim(db, user_id=userId, dream_id=dreamId, token=claimToken)
+    db.commit()
+    if renewed is None:
+        return {"confirmed": False, "claimToken": None, "expiresAt": None}
+    return {
+        "confirmed": True,
+        "claimToken": renewed.token,
+        "expiresAt": renewed.expires_at.isoformat(),
+    }
+
+
+@router.post("/greeting/dream-ack")
+async def acknowledge_greeting_dream(
+    request: Request,
+    userId: int = Query(ge=0),
+    dreamId: int = Query(ge=1),
+    claimToken: str = Query(min_length=1, max_length=64),
+    db: Session = Depends(get_db),
+) -> dict[str, bool]:
+    """IL-015: confirm the client received a dream-bearing greeting.
+
+    Marks the dream ``surfaced`` (the durable "never voice this again"
+    flag) and clears its claim. Idempotent, ownership-scoped and CLAIM-scoped:
+    acking a dream twice, one belonging to another user, or one whose claim
+    has since been superseded returns ``{"acknowledged": false}`` rather than
+    erroring — the client acks best-effort and must never be penalised for a
+    retry, and a stale ack must not clear a newer greeting's claim.
+    """
+    await require_unlocked_user_async(request, userId)
+
+    from anima_server.services.agent.inner_life.dream_receipt import (
+        acknowledge_dream,
+    )
+
+    acknowledged = acknowledge_dream(
+        db, user_id=userId, dream_id=dreamId, token=claimToken
+    )
+    db.commit()
+    return {"acknowledged": acknowledged}
+
+
 @router.get("/greeting")
 async def get_greeting(
     request: Request,
@@ -353,6 +420,25 @@ async def get_greeting(
         # (already marked surfaced). The client must treat such a greeting as
         # one-shot: display it now, never cache/replay it (PR #130 review).
         "ambientDream": result.context.ambient_dream is not None,
+        # IL-015: acknowledge with POST /api/chat/greeting/dream-ack once the
+        # client has actually rendered or durably stored this greeting. Until
+        # then the claim expires and the dream is offered again — a dropped
+        # response no longer silences it.
+        "ambientDreamId": result.ambient_dream_id,
+        # IL-015 (PR #135 review): when the claim behind this greeting goes
+        # stale. A client that STORES the response for a later mount instead
+        # of rendering it now must drop the stored copy at this deadline —
+        # past it the server may re-offer the same narrative, and replaying
+        # the stored greeting would disclose the dream twice.
+        # IL-015 (PR #135 review): names the claim generation this greeting
+        # holds. The client returns it to POST /chat/greeting/dream-claim
+        # before voicing the dream, and to dream-ack afterwards.
+        "ambientDreamClaimToken": result.ambient_dream_claim_token,
+        "ambientDreamExpiresAt": (
+            result.ambient_dream_expires_at.isoformat()
+            if result.ambient_dream_expires_at is not None
+            else None
+        ),
         # The same greeting WITHOUT the dream sentence, for surfaces that
         # forward greeting text into an LLM prompt (the dashboard "explore"
         # handoff). Null when `message` is already dream-free.

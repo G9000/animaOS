@@ -57,8 +57,8 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
   const taClass = isLarge
     ? [
         "nodrag nowheel w-full resize-none flex-1 min-h-0",
-        "bg-foreground/[0.04] border border-foreground/[0.08]",
-        "px-4 py-3.5 font-mono text-[13px] leading-relaxed text-foreground/80",
+        "bg-foreground/[0.04] border border-hairline",
+        "px-4 py-3.5 font-mono text-ui leading-relaxed text-foreground/80",
         "outline-none focus:border-foreground/20 transition-colors",
         "placeholder:text-foreground/[0.18] disabled:opacity-40",
       ].join(" ")
@@ -133,12 +133,12 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
         headerExtra={
           <div className="flex items-center gap-2">
             {version != null && (
-              <span className="font-mono text-[7px] text-muted-foreground/40 border border-border/40 px-1 py-0.5">
+              <span className="font-mono text-nano text-muted-foreground/40 border border-border/40 px-1 py-0.5">
                 v{version}
               </span>
             )}
             {saved && (
-              <span className="font-mono text-[8px] tracking-[0.14em] uppercase text-accent/70">Saved</span>
+              <span className="font-mono text-micro tracking-caps-2 uppercase text-accent/70">Saved</span>
             )}
           </div>
         }
@@ -151,7 +151,7 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
           <div className="px-3.5 py-2 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               {requiresOverride && onIdentityOverrideAllowedChange && (
-                <label className="nodrag flex items-center gap-1.5 font-mono text-[8px] tracking-[0.18em] uppercase text-accent/55">
+                <label className="nodrag flex items-center gap-1.5 font-mono text-micro tracking-caps-3 uppercase text-accent/55">
                   <input
                     type="checkbox"
                     checked={identityOverrideAllowed}
@@ -162,17 +162,17 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
                 </label>
               )}
               {readOnly && (
-                <span className="font-mono text-[8px] tracking-[0.18em] uppercase text-foreground/25">
+                <span className="font-mono text-micro tracking-caps-3 uppercase text-foreground/25">
                   Read only
                 </span>
               )}
             </div>
             <div className="flex items-center justify-end gap-2.5">
-              <span className="font-mono text-[8px] text-muted-foreground/30">
+              <span className="font-mono text-micro text-muted-foreground/30">
                 {draft.length.toLocaleString()} chars
               </span>
-              <span className="font-mono text-[8px] text-muted-foreground/20">/</span>
-              <span className="font-mono text-[8px] text-muted-foreground/30">
+              <span className="font-mono text-micro text-muted-foreground/20">/</span>
+              <span className="font-mono text-micro text-muted-foreground/30">
                 ~{Math.round(draft.length / 4).toLocaleString()} tokens
               </span>
             </div>
@@ -180,7 +180,7 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
         }
       >
         <div className={isLarge ? "p-4 flex flex-col gap-3 h-full min-h-0" : "p-3 space-y-2"}>
-          <p className={isLarge ? "shrink-0 font-mono text-[10px] text-foreground/35 leading-relaxed" : "font-mono text-[9px] text-muted-foreground/50 leading-relaxed"}>
+          <p className={isLarge ? "shrink-0 font-mono text-caption text-foreground/35 leading-relaxed" : "font-mono text-label text-muted-foreground/50 leading-relaxed"}>
             {description}
           </p>
           {lockedByOverride && (
@@ -194,7 +194,7 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
               <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
                 {listRows.map((line, index) => (
                   <div key={index} className="thinking-monologue-row flex items-center gap-2">
-                    <span className="w-6 shrink-0 text-right font-mono text-[8px] text-foreground/25">
+                    <span className="w-6 shrink-0 text-right font-mono text-micro text-foreground/25">
                       {(index + 1).toString().padStart(2, "0")}
                     </span>
                     <input
@@ -209,14 +209,14 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
                       onPaste={(event) => handleListPaste(event, index)}
                       aria-label={`Thinking monologue line ${index + 1}`}
                       placeholder="visible waiting line"
-                      className="w-full min-w-0 bg-foreground/[0.04] border border-foreground/[0.08] px-3 py-2 font-mono text-[11px] text-foreground/75 outline-none transition-colors placeholder:text-foreground/[0.18] focus:border-foreground/20 disabled:opacity-40"
+                      className="w-full min-w-0 bg-foreground/[0.04] border border-hairline px-3 py-2 font-mono text-detail text-foreground/75 outline-none transition-colors placeholder:text-foreground/[0.18] focus:border-foreground/20 disabled:opacity-40"
                     />
                     <button
                       type="button"
                       aria-label="Remove thinking monologue line"
                       disabled={listControlsDisabled}
                       onClick={() => removeListRow(index)}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center border border-foreground/[0.08] bg-foreground/[0.03] text-foreground/35 transition-colors hover:border-foreground/18 hover:text-foreground/65 disabled:pointer-events-none disabled:opacity-30"
+                      className="flex h-8 w-8 shrink-0 items-center justify-center border border-hairline bg-foreground/[0.03] text-foreground/35 transition-colors hover:border-foreground/18 hover:text-foreground/65 disabled:pointer-events-none disabled:opacity-30"
                     >
                       <XIcon size="sm" />
                     </button>
@@ -228,7 +228,7 @@ export function AgentTextNode({ data, id }: NodeProps<TextNode>) {
                 aria-label="Add thinking monologue line"
                 disabled={listControlsDisabled}
                 onClick={() => addListRow()}
-                className="flex h-8 items-center justify-center gap-2 border border-accent/20 bg-accent/[0.04] font-mono text-[8px] tracking-[0.18em] uppercase text-accent/60 transition-colors hover:border-accent/40 hover:text-accent/80 disabled:pointer-events-none disabled:opacity-30"
+                className="flex h-8 items-center justify-center gap-2 border border-accent/20 bg-accent/[0.04] font-mono text-micro tracking-caps-3 uppercase text-accent/60 transition-colors hover:border-accent/40 hover:text-accent/80 disabled:pointer-events-none disabled:opacity-30"
               >
                 <PlusIcon size="sm" />
                 Add line
