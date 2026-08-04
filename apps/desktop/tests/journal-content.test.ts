@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { canSaveDiaryEntry, resolveDiaryBody } from "../src/pages/journal/content";
+import { canSaveDiaryEntry, resolveDiaryBody } from "../src/features/diary/lib/snapshot";
 
 describe("diary editor content", () => {
   test("preserves inline-image-only editor HTML", () => {
