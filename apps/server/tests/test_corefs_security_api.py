@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from anima_server.api.routes import corefs_security
@@ -196,6 +197,59 @@ def test_corefs_security_status_exposes_only_progress_and_rotation_metadata(
         "blindIndexProgress": 0,
     }
     assert "private marker" not in response.text
+
+
+def test_corefs_security_status_reports_legacy_core_without_rotation_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"core_id": "legacy-core"}), encoding="utf-8")
+
+    monkeypatch.setattr(
+        corefs_security,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(runtime_index=index),
+    )
+    monkeypatch.setattr(corefs_security, "get_manifest_path", lambda: manifest)
+    monkeypatch.setattr(corefs_security, "get_core_id", lambda: "legacy-core")
+
+    with TestClient(_app()) as client:
+        response = client.get("/api/corefs/security/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["coreId"] == "legacy-core"
+    assert payload["filesystemAvailable"] is False
+    assert payload["rotation"]["activeFrkVersion"] == 1
+    assert payload["rotation"]["pendingFrkVersion"] is None
+    assert payload["rotation"]["decryptOnlyFrkVersions"] == []
+    assert payload["rotation"]["phase"] == "idle"
+
+
+def test_corefs_security_status_conflicts_when_manifest_is_unreadable(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    missing = tmp_path / "manifest.json"
+
+    monkeypatch.setattr(
+        corefs_security,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(runtime_index=index),
+    )
+    monkeypatch.setattr(corefs_security, "get_manifest_path", lambda: missing)
+    monkeypatch.setattr(corefs_security, "get_core_id", lambda: "legacy-core")
+
+    with TestClient(_app()) as client:
+        response = client.get("/api/corefs/security/status")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "corefs_rotation_state_unavailable"
 
 
 def test_corefs_rotation_replaces_unlock_session_and_returns_no_credentials(

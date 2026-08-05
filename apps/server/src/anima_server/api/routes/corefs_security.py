@@ -32,12 +32,29 @@ router = APIRouter(prefix="/api/corefs/security", tags=["corefs-security"])
 def _rotation_manifest_state() -> dict[str, object]:
     try:
         manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-        rotation = manifest["frk_rotation"]
-    except (OSError, KeyError, json.JSONDecodeError, TypeError) as exc:
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "corefs_rotation_state_unavailable"},
         ) from exc
+    if not isinstance(manifest, dict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_rotation_state_unavailable"},
+        )
+    rotation = manifest.get("frk_rotation")
+    if rotation is None:
+        # Legacy Core that has not yet completed the versioned-key-hierarchy
+        # upgrade (no FRK keyslots exist). Report the pre-upgrade idle state
+        # instead of a hard conflict so readiness polling stays meaningful;
+        # rotation itself still fails closed for this manifest state.
+        return {
+            "active_version": 1,
+            "pending_version": None,
+            "decrypt_only_versions": [],
+            "phase": "idle",
+            "object_key_epoch": 1,
+        }
     if not isinstance(rotation, dict):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
