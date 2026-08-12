@@ -80,6 +80,11 @@ temporal = ["dep:chrono-english"]
 # Decision replay traces
 replay = []
 
+# PyO3 0.22's exception macro probes this compatibility feature in the
+# consuming crate. Declaring it keeps strict check-cfg builds warning-free;
+# it remains disabled for the Bound API used here.
+gil-refs = []
+
 # AES-256-GCM encrypted capsules
 encryption = ["dep:aes-gcm", "dep:argon2", "dep:rand", "dep:zeroize"]
 

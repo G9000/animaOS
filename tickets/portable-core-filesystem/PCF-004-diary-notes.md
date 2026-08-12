@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-12 20:34 MYT
+- Updated: 2026-08-12 21:11 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -59,6 +59,8 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-12 20:00 MYT - Completed resumable-preparation Task 4. Added exact-CAS graph sealing with separately bounded encrypted final-intent segments, complete descriptor/role/policy/name/reference/revision/source/head validation, a body-free durable converter path, and one-lock reconstruction that authenticates ciphertext plus envelope metadata without materializing or decrypting object bodies before publishing exactly one `VALIDATION_HEAD` generation. Added HKDF-keyed deterministic encrypted completion receipts and idempotent recovery across pre/post-head, receipt, and pointer-clear seams; a different head fails closed and preserves Ready state, while a changed source explicitly returns Ready to Collecting. Required gates passed: seal/finalize `11`, post-head recovery `3`, validation-batch integration `7`, CoreFS library `229 passed`/`1 ignored`, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. Task 4 is complete; PCF-004 remains `in_progress`, and Task 5 terminal/rotation/session semantics is next.
 - 2026-08-12 20:34 MYT - Published the exact Task 4 commit `9f1d78cbb1f268176ca216395b3c0d9d3db2580b` to draft PR #142 on `codex/pcf-004-resumable-preparation`; the queried GitHub head matched the pushed OID. No review request, monitoring, or merge action was taken.
 - 2026-08-12 20:34 MYT - Completed resumable-preparation Task 5 locally. Exact-CAS abandonment now publishes a deterministic authenticated receipt before clearing the live pointer and never deletes prepared objects; corrupt raw pointers require an explicit hash-addressed operator quarantine whose authenticated receipt conservatively captures every trusted keyring generation. FRK activation fails closed for live, corrupt, incomplete-quarantine, or missing-retained-key state, and retirement accepts authenticated preparation-retention inventory. Session close rejects new terminal calls while in-flight calls retain the existing operation guard. The initial missing-API compile RED preceded implementation; final terminal `8`, quarantine `1`, rotation `14`, and CoreFS library `238 passed`/`1 ignored`, with adjusted strict Clippy, rustfmt, diff hygiene, and repository organization green. Task 6 bounded PyO3 exposure is next; this Task 5 commit remains local and unpushed.
+- 2026-08-12 20:46 MYT - Published Task 5 commit `3c388643bfa7af1abb1be5e099d3a7ef88135e63` to the existing `codex/pcf-004-resumable-preparation` branch and PR #142; GitHub reported that exact head. No PR metadata update, review request, monitoring, or merge action was taken. Task 6 continues locally.
+- 2026-08-12 21:11 MYT - Completed resumable-preparation Task 6 locally. Added seven versioned session-guarded PyO3 operations for begin/resume, bounded status/reconciliation, exactly-one-buffer object preparation, seal, finalize, abandon, and operator quarantine; their public Rust adapter and wire dictionaries omit physical names, wrapped DEKs, key material, and authenticated preparation secrets. Python receives typed conflict/corruption/source-fence errors, every operation is rejected after close admission stops, and active guards still drain before close releases the lease. The initial source-contract RED proved the methods and one-body transport were absent. Final gates passed: default boundary `2`, Python-feature boundary/integration `9`, targeted close-drain `1`, CoreFS library `238 passed`/`1 ignored`, Python feature check, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. The complete Python-feature session band remains `18/19` because the pre-existing pinned-root symlink case now rejects that symlink as an invalid CoreFS layout; all lifecycle/session accounting cases passed. Task 7 SQLCipher writing-source generation is next; legacy SQLCipher remains authoritative and no Task 6 publication is authorized.
 
 ## Validation
 
@@ -85,6 +87,14 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `cargo test -p anima-corefs preparation_tests::quarantine -- --nocapture` (Task 5 final: `1 passed`)
   - `cargo test -p anima-corefs --test rotation --no-fail-fast` (Task 5 final: `14 passed`)
   - `cargo test -p anima-corefs --lib --no-fail-fast` (Task 5 final: `238 passed`, `1 ignored`)
+  - `cargo test -p anima-core --lib corefs_preparation -- --nocapture` (Task 6 default boundary: `2 passed`)
+  - `cargo test -p anima-core --features python --lib corefs_preparation -- --nocapture` with embedded CPython link settings (Task 6 boundary/integration: `9 passed`)
+  - `cargo test -p anima-core --features python --lib corefs_session::operation_guard_drains_before_close_releases_lease -- --nocapture` with embedded CPython link settings (Task 6 close-drain: `1 passed`)
+  - `cargo test -p anima-core --lib corefs_session -- --nocapture` (passed with `0` selected because the session cases are Python-feature-gated); the stronger feature-enabled session band passed `18/19`, with only the pre-existing pinned-root symlink layout case failing before session creation
+  - `PYO3_PYTHON=.venv/bin/python cargo check -p anima-core --features python` (passed)
+  - `cargo clippy -p anima-corefs --lib -- -A clippy::too_many_arguments -D warnings` (Task 6 passed)
+  - `PYO3_PYTHON=.venv/bin/python cargo clippy -p anima-core --features python --lib -- -A clippy::too_many_arguments -A clippy::derivable_impls -A clippy::suspicious_open_options -A clippy::incompatible_msrv -D warnings` (Task 6 passed; the added allowances cover untouched baseline warnings outside the Task 6 diff)
+  - `cargo fmt -p anima-corefs -p anima-core --check`, `git diff --check`, and `bun run check:repo` (Task 6 passed)
   - `cargo fmt --check -p anima-corefs` and `git diff --check` (passed)
   - `cargo clippy -p anima-corefs --lib -- -A clippy::too_many_arguments -D warnings` (passed; the unmodified strict invocation stops on the pre-existing `prepare_object_inner` argument-count warning at `preparation.rs:1649`)
   - `bun run check:repo` (passed)
@@ -105,6 +115,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `apps/server/tests/{conftest.py,test_corefs_diary_migration.py,test_corefs_indexer.py,test_corefs_notes.py,test_diary_api.py}`
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
   - `packages/anima-core/{Cargo.toml,src/ffi.rs}`
+  - `packages/anima-core/src/lib.rs`
   - `packages/anima-corefs/src/{catalog/v2.rs,id.rs,transaction.rs}`
   - `packages/anima-corefs/src/rotation.rs`
   - `packages/anima-corefs/src/crypto.rs`
@@ -116,7 +127,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-004-diary-notes.md}`
 - Notes:
   - Legacy SQLCipher remains authoritative and `VALIDATION_HEAD` remains inactive; no partial or authoritative cutover occurred.
-  - Task 5 is complete locally. It closes abandonment, quarantine, FRK rotation/retirement, and terminal session-admission semantics without deleting prepared objects. Task 6 bounded PyO3 exposure is next; authoritative `HEAD` remains untouched.
+  - Task 6 is complete locally. Its bounded, versioned native boundary exposes one object body per call and secret-free metadata/status dictionaries under the existing session guard. Task 7 transactional SQLCipher source fencing is next; authoritative `HEAD` remains untouched.
   - A full `bun run test` was attempted twice but remained compute-active beyond five-minute tool bounds without a summary; no repository-wide pass is claimed.
   - Strict Clippy remains blocked only by documented untouched baseline warnings outside the PCF-004 diff.
   - The protocol direction, independently reviewed written spec, user approval, and independent implementation-plan review are complete. The reviewed plan is ready for execution-mode handoff.

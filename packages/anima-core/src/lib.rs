@@ -47,7 +47,7 @@ pub mod replay;
 
 pub mod path_engine;
 
-#[cfg(feature = "python")]
+#[cfg(any(feature = "python", test))]
 mod ffi;
 
 /// Crate-level error type.

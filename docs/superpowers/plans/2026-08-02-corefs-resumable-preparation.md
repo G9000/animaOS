@@ -263,7 +263,7 @@ git -c commit.gpgsign=false commit -m "corefs: close preparation lifecycle safel
 - Modify: `packages/anima-core/Cargo.toml`
 - Modify: `packages/anima-corefs/src/transaction.rs`
 
-- [ ] **Step 1: Write failing PyO3 boundary tests**
+- [x] **Step 1: Write failing PyO3 boundary tests**
 
 Add tests for these versioned methods:
 
@@ -279,11 +279,11 @@ preparation_quarantine_corrupt_pointer_v1
 
 Assert every method acquires `CorefsOperationGuard`; close waits for an in-flight operation; new calls fail after close begins; Python receives typed conflict/corruption/source-fence errors; and `prepare_object` accepts exactly one bytes-like body per call. Prove no new method accepts `Vec<Vec<u8>>`, `Vec<PyBytes>`, or a corpus-wide JSON body list.
 
-- [ ] **Step 2: Implement minimal wire mappings**
+- [x] **Step 2: Implement minimal wire mappings**
 
 Use bounded JSON only for metadata/status/intent pages and one Python buffer for one object. Convert native outcomes to the existing wire-dictionary style without exposing keys, wrapped DEKs, physical paths, or preparation secrets.
 
-- [ ] **Step 3: Run and commit PyO3 coverage**
+- [x] **Step 3: Run and commit PyO3 coverage**
 
 ```powershell
 cargo test -p anima-core --lib corefs_preparation -- --nocapture

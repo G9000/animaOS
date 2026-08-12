@@ -9,7 +9,10 @@ mod python {
     #![allow(clippy::useless_conversion)]
 
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use pyo3::buffer::PyBuffer;
     use pyo3::prelude::*;
+    #[cfg(test)]
+    use pyo3::types::PyByteArray;
     use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
     use pyo3::IntoPy;
     use serde::Deserialize;
@@ -245,6 +248,150 @@ mod python {
         }
     }
 
+    pyo3::create_exception!(
+        anima_core,
+        CorefsPreparationConflictError,
+        pyo3::exceptions::PyException
+    );
+    pyo3::create_exception!(
+        anima_core,
+        CorefsPreparationCorruptionError,
+        pyo3::exceptions::PyException
+    );
+    pyo3::create_exception!(
+        anima_core,
+        CorefsPreparationSourceFenceError,
+        pyo3::exceptions::PyException
+    );
+
+    fn corefs_preparation_error(
+        error: anima_corefs::transaction::PreparationSessionError,
+    ) -> PyErr {
+        use anima_corefs::transaction::PreparationSessionError;
+
+        match error {
+            PreparationSessionError::Invalid(message)
+            | PreparationSessionError::Missing(message) => {
+                pyo3::exceptions::PyValueError::new_err(message)
+            }
+            PreparationSessionError::Corruption(message) => {
+                CorefsPreparationCorruptionError::new_err(message)
+            }
+            PreparationSessionError::Conflict(message) => {
+                CorefsPreparationConflictError::new_err(message)
+            }
+            PreparationSessionError::SourceFence(message) => {
+                CorefsPreparationSourceFenceError::new_err(message)
+            }
+            PreparationSessionError::Io(error) => {
+                pyo3::exceptions::PyOSError::new_err(error.to_string())
+            }
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationBeginWire {
+        scope: String,
+        expected_validation_generation: Option<u64>,
+        expected_validation_catalog_sha256: Option<String>,
+        source_owner_id: String,
+        source_schema_version: u16,
+        source_mutation_generation: u64,
+        source_inventory_sha256: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationCasWire {
+        pointer_sha256: String,
+        snapshot_sequence: u64,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationIdentityWire {
+        object_id: String,
+        revision: u64,
+        content_sha256: String,
+        preparation_ordinal: u64,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationObjectWire {
+        object_id: String,
+        revision: u64,
+        object_key_epoch: u32,
+        kind: String,
+        parent_id: String,
+        name: String,
+        content_type: String,
+        body_encoding: String,
+        body_length: u64,
+        content_sha256: String,
+        created_at: String,
+        updated_at: String,
+        source_character_count: Option<usize>,
+        #[serde(default)]
+        references: Vec<String>,
+        policy: String,
+        stable_role: Option<String>,
+        #[serde(default)]
+        graph_metadata: BTreeMap<String, Value>,
+        source_fingerprint_sha256: String,
+        converter_format_version: u16,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationPrepareObjectWire {
+        expected: PreparationCasWire,
+        object: PreparationObjectWire,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationReconciliationWire {
+        cursor_position: Option<u64>,
+        max_items: u32,
+        max_bytes: u32,
+        #[serde(default)]
+        expected: Vec<PreparationIdentityWire>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationSealWire {
+        expected: PreparationCasWire,
+        source_mutation_generation: u64,
+        source_inventory_sha256: String,
+        folders: Vec<ValidationBatchFolderWire>,
+        objects: Vec<PreparationIdentityWire>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationFinalizeWire {
+        preparation_id: String,
+        expected: PreparationCasWire,
+        source_mutation_generation: u64,
+        source_inventory_sha256: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationAbandonWire {
+        preparation_id: String,
+        expected: PreparationCasWire,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationQuarantineWire {
+        expected_pointer_sha256: String,
+    }
+
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ValidationBatchWire {
@@ -301,6 +448,88 @@ mod python {
                 "validation batch policy must be user-write, inherit, or deny",
             )),
         }
+    }
+
+    fn decode_preparation_json<T: for<'de> Deserialize<'de>>(encoded: &str) -> PyResult<T> {
+        enforce_corefs_catalog_plaintext_limit(encoded.len())?;
+        serde_json::from_str(encoded)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
+    fn preparation_cas_wire(
+        value: PreparationCasWire,
+    ) -> anima_corefs::transaction::PreparationCasV1 {
+        anima_corefs::transaction::PreparationCasV1 {
+            pointer_sha256: value.pointer_sha256,
+            snapshot_sequence: value.snapshot_sequence,
+        }
+    }
+
+    fn preparation_identity_wire(
+        value: PreparationIdentityWire,
+    ) -> anima_corefs::transaction::PreparationIdentityV1 {
+        anima_corefs::transaction::PreparationIdentityV1 {
+            object_id: value.object_id,
+            revision: value.revision,
+            content_sha256: value.content_sha256,
+            preparation_ordinal: value.preparation_ordinal,
+        }
+    }
+
+    fn preparation_folder_wire(
+        value: ValidationBatchFolderWire,
+    ) -> PyResult<anima_corefs::transaction::ValidationBatchFolder> {
+        Ok(anima_corefs::transaction::ValidationBatchFolder {
+            stable_id: value.stable_id,
+            parent_id: value.parent_id,
+            name: value.name,
+            role: value.role,
+            policy: validation_batch_policy(&value.policy)?,
+            metadata: value.metadata,
+        })
+    }
+
+    fn preparation_object_wire(
+        value: PreparationObjectWire,
+    ) -> PyResult<anima_corefs::transaction::PreparationObjectV1> {
+        let kind =
+            anima_corefs::crypto::ObjectKind::parse(&value.kind).map_err(corefs_value_error)?;
+        let body_encoding = match value.body_encoding.as_str() {
+            "utf-8" => anima_corefs::envelope::BodyEncoding::Utf8,
+            "binary" => anima_corefs::envelope::BodyEncoding::Binary,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "preparation object bodyEncoding must be utf-8 or binary",
+                ))
+            }
+        };
+        Ok(anima_corefs::transaction::PreparationObjectV1 {
+            object_id: value.object_id,
+            revision: value.revision,
+            object_key_epoch: value.object_key_epoch,
+            kind,
+            parent_id: value.parent_id,
+            name: value.name,
+            content_type: value.content_type,
+            body_encoding,
+            body_length: value.body_length,
+            content_sha256: value.content_sha256,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            source_character_count: value.source_character_count,
+            references: value.references,
+            policy: validation_batch_policy(&value.policy)?,
+            stable_role: value.stable_role,
+            graph_metadata: value.graph_metadata,
+            source_fingerprint_sha256: value.source_fingerprint_sha256,
+            converter_format_version: value.converter_format_version,
+        })
+    }
+
+    fn preparation_to_py(py: Python<'_>, value: impl serde::Serialize) -> PyResult<PyObject> {
+        let value = serde_json::to_value(value)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        json_value_to_py(py, value)
     }
 
     fn decode_validation_batch_json(
@@ -875,6 +1104,206 @@ mod python {
 
         fn begin_close(&self) {
             self.begin_close_native();
+        }
+
+        fn preparation_begin_or_resume_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationBeginWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationBeginV1 {
+                scope: wire.scope,
+                expected_validation_generation: wire.expected_validation_generation,
+                expected_validation_catalog_sha256: wire.expected_validation_catalog_sha256,
+                source_owner_id: wire.source_owner_id,
+                source_schema_version: wire.source_schema_version,
+                source_mutation_generation: wire.source_mutation_generation,
+                source_inventory_sha256: wire.source_inventory_sha256,
+            };
+            let status = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_begin_or_resume_v1(&keys.inner, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, status)
+        }
+
+        #[pyo3(signature = (keys, reconciliation_json = None))]
+        fn preparation_status_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            reconciliation_json: Option<&str>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let status = py
+                .allow_threads(|| self.coordinator.preparation_status_v1(&keys.inner))
+                .map_err(corefs_preparation_error)?;
+            let mut value = serde_json::to_value(status)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            if let Some(encoded) = reconciliation_json {
+                let wire: PreparationReconciliationWire = decode_preparation_json(encoded)?;
+                let request = anima_corefs::transaction::PreparationReconciliationV1 {
+                    cursor_position: wire.cursor_position,
+                    max_items: wire.max_items,
+                    max_bytes: wire.max_bytes,
+                    expected: wire
+                        .expected
+                        .into_iter()
+                        .map(preparation_identity_wire)
+                        .collect(),
+                };
+                let page = py
+                    .allow_threads(|| {
+                        self.coordinator
+                            .preparation_reconciliation_v1(&keys.inner, &request)
+                    })
+                    .map_err(corefs_preparation_error)?;
+                value
+                    .as_object_mut()
+                    .expect("preparation status serializes as an object")
+                    .insert(
+                        "reconciliation".to_owned(),
+                        serde_json::to_value(page).map_err(|error| {
+                            pyo3::exceptions::PyValueError::new_err(error.to_string())
+                        })?,
+                    );
+            }
+            json_value_to_py(py, value)
+        }
+
+        fn preparation_prepare_object_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+            body: PyBuffer<u8>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationPrepareObjectWire = decode_preparation_json(request_json)?;
+            let expected = preparation_cas_wire(wire.expected);
+            let request = preparation_object_wire(wire.object)?;
+            let body = body.to_vec(py)?;
+            let outcome = py
+                .allow_threads(|| {
+                    let mut reader = io::Cursor::new(body.as_slice());
+                    self.coordinator.preparation_prepare_object_v1(
+                        &keys.inner,
+                        &expected,
+                        &request,
+                        &mut reader,
+                    )
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, outcome)
+        }
+
+        fn preparation_seal_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationSealWire = decode_preparation_json(request_json)?;
+            let expected = preparation_cas_wire(wire.expected);
+            let request = anima_corefs::transaction::PreparationSealV1 {
+                source_mutation_generation: wire.source_mutation_generation,
+                source_inventory_sha256: wire.source_inventory_sha256,
+                folders: wire
+                    .folders
+                    .into_iter()
+                    .map(preparation_folder_wire)
+                    .collect::<PyResult<Vec<_>>>()?,
+                objects: wire
+                    .objects
+                    .into_iter()
+                    .map(preparation_identity_wire)
+                    .collect(),
+            };
+            let status = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_seal_v1(&keys.inner, &expected, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, status)
+        }
+
+        fn preparation_finalize_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationFinalizeWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationFinalizeV1 {
+                preparation_id: wire.preparation_id,
+                expected: preparation_cas_wire(wire.expected),
+                source_mutation_generation: wire.source_mutation_generation,
+                source_inventory_sha256: wire.source_inventory_sha256,
+            };
+            let receipt = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_finalize_v1(&keys.inner, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, receipt)
+        }
+
+        fn preparation_abandon_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationAbandonWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationAbandonV1 {
+                preparation_id: wire.preparation_id,
+                expected: preparation_cas_wire(wire.expected),
+            };
+            let receipt = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_abandon_v1(&keys.inner, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, receipt)
+        }
+
+        fn preparation_quarantine_corrupt_pointer_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            active_keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationQuarantineWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationQuarantineV1 {
+                expected_pointer_sha256: wire.expected_pointer_sha256,
+            };
+            let keyring = anima_corefs::rotation::FrkKeyring::new(
+                retained_keys.iter().map(|keys| &keys.inner),
+            )
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            let receipt = py
+                .allow_threads(|| {
+                    self.coordinator.preparation_quarantine_corrupt_pointer_v1(
+                        &keyring,
+                        &active_keys.inner,
+                        &request,
+                    )
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, receipt)
         }
 
         fn validation_snapshot(
@@ -3959,6 +4388,18 @@ mod python {
         m.add_class::<PyCorefsWrappedRootKey>()?;
         m.add_class::<PyCorefsWrappedObjectDek>()?;
         m.add_class::<PyCorefsSession>()?;
+        m.add(
+            "CorefsPreparationConflictError",
+            m.py().get_type_bound::<CorefsPreparationConflictError>(),
+        )?;
+        m.add(
+            "CorefsPreparationCorruptionError",
+            m.py().get_type_bound::<CorefsPreparationCorruptionError>(),
+        )?;
+        m.add(
+            "CorefsPreparationSourceFenceError",
+            m.py().get_type_bound::<CorefsPreparationSourceFenceError>(),
+        )?;
         m.add_function(wrap_pyfunction!(corefs_atomic_publish, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_manifest_keyslot_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_soul_keyslot_aad, m)?)?;
@@ -4145,6 +4586,422 @@ mod python {
             Python::with_gil(f)
         }
 
+        mod corefs_preparation {
+            use super::*;
+
+            const FFI_SOURCE: &str = include_str!("ffi.rs");
+
+            fn session_methods() -> &'static str {
+                FFI_SOURCE
+                    .split("impl PyCorefsSession {")
+                    .nth(2)
+                    .expect("PyCorefsSession pymethods impl must exist")
+                    .split("#[pyclass(name = \"CorefsSubkeys\")]")
+                    .next()
+                    .expect("CorefsSubkeys must follow session methods")
+            }
+
+            #[test]
+            fn exposes_only_the_versioned_bounded_preparation_surface() {
+                for method in [
+                    "fn preparation_begin_or_resume_v1(",
+                    "fn preparation_status_v1(",
+                    "fn preparation_prepare_object_v1(",
+                    "fn preparation_seal_v1(",
+                    "fn preparation_finalize_v1(",
+                    "fn preparation_abandon_v1(",
+                    "fn preparation_quarantine_corrupt_pointer_v1(",
+                ] {
+                    assert!(session_methods().contains(method), "missing {method}");
+                }
+            }
+
+            #[test]
+            fn one_object_method_has_no_aggregate_body_transport() {
+                let method = session_methods()
+                    .split("fn preparation_prepare_object_v1(")
+                    .nth(1)
+                    .expect("preparation_prepare_object_v1 must exist")
+                    .split("\n        fn preparation_seal_v1(")
+                    .next()
+                    .expect("preparation_seal_v1 must follow prepare_object");
+                assert!(method.contains("body: PyBuffer<u8>"));
+                for forbidden in [
+                    "Vec<Vec<u8>>",
+                    "Vec<PyBytes",
+                    "content_parts",
+                    "contentBodies",
+                ] {
+                    assert!(
+                        !method.contains(forbidden),
+                        "one-object preparation accepted forbidden aggregate transport {forbidden}"
+                    );
+                }
+            }
+
+            #[test]
+            fn every_preparation_method_rejects_after_close_begins() {
+                let (_root, session) = super::corefs_session::native_session(
+                    "preparation-closed",
+                    "ffi-preparation-closed",
+                );
+                session.begin_close_native();
+
+                with_python(|py| {
+                    let keys = Py::new(
+                        py,
+                        PyCorefsSubkeys {
+                            inner: derive_corefs_subkeys(
+                                &SecretBytes::new(vec![0x71; 32]).unwrap(),
+                                1,
+                            )
+                            .unwrap(),
+                        },
+                    )
+                    .unwrap();
+                    let assert_closed = |error: PyErr| {
+                        assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                        assert!(error.to_string().contains("CoreFS session"));
+                    };
+
+                    assert_closed(
+                        session
+                            .preparation_begin_or_resume_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_status_v1(py, &keys.borrow(py), None)
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_prepare_object_v1(
+                                py,
+                                &keys.borrow(py),
+                                "{}",
+                                PyBuffer::get_bound(&PyBytes::new_bound(py, b"one body")).unwrap(),
+                            )
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_seal_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_finalize_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_abandon_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_quarantine_corrupt_pointer_v1(
+                                py,
+                                vec![keys.borrow(py)],
+                                &keys.borrow(py),
+                                "{}",
+                            )
+                            .unwrap_err(),
+                    );
+                });
+                session.close_native().unwrap();
+            }
+
+            #[test]
+            fn begin_status_and_newer_source_reconciliation_are_secret_free() {
+                let (_root, session) =
+                    super::corefs_session::native_session("preparation-roundtrip", OBJECT_ID);
+                let keys = PyCorefsSubkeys {
+                    inner: derive_corefs_subkeys(&SecretBytes::new(vec![0x72; 32]).unwrap(), 1)
+                        .unwrap(),
+                };
+                let owner_id = OpaqueId::derive_migration("owner", b"ffi-preparation").unwrap();
+                let request = |generation: u64, digest: char| {
+                    json!({
+                        "scope": "pcf004-writing-v1",
+                        "expectedValidationGeneration": null,
+                        "expectedValidationCatalogSha256": null,
+                        "sourceOwnerId": owner_id.as_str(),
+                        "sourceSchemaVersion": 1,
+                        "sourceMutationGeneration": generation,
+                        "sourceInventorySha256": digest.to_string().repeat(64),
+                    })
+                    .to_string()
+                };
+
+                with_python(|py| {
+                    let begun = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(1, 'a'))
+                        .unwrap();
+                    let begun = begun.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        begun
+                            .get_item("disposition")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "begun"
+                    );
+                    for secret in [
+                        "snapshotCiphertextSha256",
+                        "physicalName",
+                        "wrappedObjectDek",
+                        "requiredFrkVersion",
+                    ] {
+                        assert!(begun.get_item(secret).unwrap().is_none());
+                    }
+
+                    let reconciled = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(2, 'b'))
+                        .unwrap();
+                    let reconciled = reconciled.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        reconciled
+                            .get_item("disposition")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "reconciled"
+                    );
+                    assert_eq!(
+                        reconciled
+                            .get_item("sourceMutationGeneration")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        2
+                    );
+
+                    let stale = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(1, 'a'))
+                        .unwrap_err();
+                    assert!(stale.is_instance_of::<CorefsPreparationSourceFenceError>(py));
+                    let conflict = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(2, 'c'))
+                        .unwrap_err();
+                    assert!(conflict.is_instance_of::<CorefsPreparationConflictError>(py));
+                });
+            }
+
+            #[test]
+            fn prepares_exactly_one_body_and_pages_reconciliation_metadata() {
+                let (_root, session) =
+                    super::corefs_session::native_session("preparation-one-body", OBJECT_ID);
+                let keys = PyCorefsSubkeys {
+                    inner: derive_corefs_subkeys(&SecretBytes::new(vec![0x73; 32]).unwrap(), 1)
+                        .unwrap(),
+                };
+                let owner_id = OpaqueId::derive_migration("owner", b"ffi-one-body").unwrap();
+                let parent_id = OpaqueId::derive_migration("folder", b"ffi-parent").unwrap();
+                let object_id = OpaqueId::derive_migration("diary", b"ffi-object").unwrap();
+                let inventory_hash = "a".repeat(64);
+
+                with_python(|py| {
+                    let begun = session
+                        .preparation_begin_or_resume_v1(
+                            py,
+                            &keys,
+                            &json!({
+                                "scope": "pcf004-writing-v1",
+                                "expectedValidationGeneration": null,
+                                "expectedValidationCatalogSha256": null,
+                                "sourceOwnerId": owner_id.as_str(),
+                                "sourceSchemaVersion": 1,
+                                "sourceMutationGeneration": 1,
+                                "sourceInventorySha256": inventory_hash,
+                            })
+                            .to_string(),
+                        )
+                        .unwrap();
+                    let begun = begun.bind(py).downcast::<PyDict>().unwrap();
+                    let pointer_sha256 = begun
+                        .get_item("pointerSha256")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap();
+                    let snapshot_sequence = begun
+                        .get_item("snapshotSequence")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap();
+                    let request = json!({
+                        "expected": {
+                            "pointerSha256": pointer_sha256,
+                            "snapshotSequence": snapshot_sequence,
+                        },
+                        "object": {
+                            "objectId": object_id.as_str(),
+                            "revision": 1,
+                            "objectKeyEpoch": 1,
+                            "kind": "diary",
+                            "parentId": parent_id.as_str(),
+                            "name": "entry.diary.json",
+                            "contentType": "application/vnd.anima.diary+json;version=1",
+                            "bodyEncoding": "utf-8",
+                            "bodyLength": 5,
+                            "contentSha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                            "createdAt": "2026-08-12T00:00:00Z",
+                            "updatedAt": "2026-08-12T00:00:00Z",
+                            "sourceCharacterCount": 5,
+                            "references": [],
+                            "policy": "inherit",
+                            "stableRole": null,
+                            "graphMetadata": {"order": 1},
+                            "sourceFingerprintSha256": "c".repeat(64),
+                            "converterFormatVersion": 1,
+                        },
+                    })
+                    .to_string();
+                    let prepared = session
+                        .preparation_prepare_object_v1(
+                            py,
+                            &keys,
+                            &request,
+                            PyBuffer::get_bound(&PyBytes::new_bound(py, b"hello")).unwrap(),
+                        )
+                        .unwrap();
+                    let prepared = prepared.bind(py).downcast::<PyDict>().unwrap();
+                    let summary_value = prepared.get_item("prepared").unwrap().unwrap();
+                    let summary = summary_value.downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        prepared
+                            .get_item("disposition")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "prepared"
+                    );
+                    assert!(
+                        summary
+                            .get_item("ciphertextBytes")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap()
+                            > 0
+                    );
+                    for secret in ["physicalName", "wrappedObjectDek", "objectKeyBinding"] {
+                        assert!(summary.get_item(secret).unwrap().is_none());
+                    }
+                    let ordinal = summary
+                        .get_item("preparationOrdinal")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap();
+                    let page = session
+                        .preparation_status_v1(
+                            py,
+                            &keys,
+                            Some(
+                                &json!({
+                                    "cursorPosition": null,
+                                    "maxItems": 10,
+                                    "maxBytes": 65536,
+                                    "expected": [{
+                                        "objectId": object_id.as_str(),
+                                        "revision": 1,
+                                        "contentSha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                                        "preparationOrdinal": ordinal,
+                                    }],
+                                })
+                                .to_string(),
+                            ),
+                        )
+                        .unwrap();
+                    let page = page.bind(py).downcast::<PyDict>().unwrap();
+                    let reconciliation_value = page.get_item("reconciliation").unwrap().unwrap();
+                    let reconciliation = reconciliation_value.downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        reconciliation
+                            .get_item("preparedCount")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u32>()
+                            .unwrap(),
+                        1
+                    );
+                    assert_eq!(
+                        reconciliation
+                            .get_item("missing")
+                            .unwrap()
+                            .unwrap()
+                            .downcast::<PyList>()
+                            .unwrap()
+                            .len(),
+                        0
+                    );
+                });
+            }
+
+            #[test]
+            fn native_error_categories_remain_typed_in_python() {
+                with_python(|py| {
+                    let conflict = corefs_preparation_error(
+                        anima_corefs::transaction::PreparationSessionError::Conflict(
+                            "conflict".to_owned(),
+                        ),
+                    );
+                    assert!(conflict.is_instance_of::<CorefsPreparationConflictError>(py));
+                    let corrupt = corefs_preparation_error(
+                        anima_corefs::transaction::PreparationSessionError::Corruption(
+                            "corrupt".to_owned(),
+                        ),
+                    );
+                    assert!(corrupt.is_instance_of::<CorefsPreparationCorruptionError>(py));
+                    let source = corefs_preparation_error(
+                        anima_corefs::transaction::PreparationSessionError::SourceFence(
+                            "source".to_owned(),
+                        ),
+                    );
+                    assert!(source.is_instance_of::<CorefsPreparationSourceFenceError>(py));
+                });
+            }
+
+            #[test]
+            fn python_wrapper_accepts_one_bytes_like_buffer() {
+                let root = tempfile::tempdir().unwrap();
+                let core_root = root.path().join("bytes-like");
+                fs::create_dir_all(&core_root).unwrap();
+                let session =
+                    super::corefs_session::isolated_session_for_test(&core_root, OBJECT_ID);
+                session.begin_close_native();
+
+                with_python(|py| {
+                    let session = Py::new(py, session).unwrap();
+                    let keys = Py::new(
+                        py,
+                        PyCorefsSubkeys {
+                            inner: derive_corefs_subkeys(
+                                &SecretBytes::new(vec![0x74; 32]).unwrap(),
+                                1,
+                            )
+                            .unwrap(),
+                        },
+                    )
+                    .unwrap();
+                    let body = PyByteArray::new_bound(py, b"one bytes-like body");
+                    let error = session
+                        .bind(py)
+                        .call_method1("preparation_prepare_object_v1", (keys.bind(py), "{}", body))
+                        .unwrap_err();
+                    assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                });
+            }
+        }
+
         mod corefs_session {
             use super::*;
 
@@ -4204,7 +5061,7 @@ mod python {
                 }
             }
 
-            fn isolated_session_for_test(
+            pub(super) fn isolated_session_for_test(
                 core_root: &std::path::Path,
                 core_id: &str,
             ) -> PyCorefsSession {
@@ -4236,7 +5093,7 @@ mod python {
                 })
             }
 
-            fn native_session(
+            pub(super) fn native_session(
                 name: &str,
                 core_id: &str,
             ) -> (tempfile::TempDir, Arc<PyCorefsSession>) {
@@ -7316,6 +8173,59 @@ mod python {
                     .add_rule("r1", ".*", "bogus", "user", "slot", "value")
                     .is_err());
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod corefs_preparation_contract {
+    const FFI_SOURCE: &str = include_str!("ffi.rs");
+
+    fn session_methods() -> &'static str {
+        FFI_SOURCE
+            .split("impl PyCorefsSession {")
+            .nth(2)
+            .expect("PyCorefsSession pymethods impl must exist")
+            .split("#[pyclass(name = \"CorefsSubkeys\")]")
+            .next()
+            .expect("CorefsSubkeys must follow session methods")
+    }
+
+    #[test]
+    fn exposes_only_the_versioned_bounded_preparation_surface() {
+        for method in [
+            "fn preparation_begin_or_resume_v1(",
+            "fn preparation_status_v1(",
+            "fn preparation_prepare_object_v1(",
+            "fn preparation_seal_v1(",
+            "fn preparation_finalize_v1(",
+            "fn preparation_abandon_v1(",
+            "fn preparation_quarantine_corrupt_pointer_v1(",
+        ] {
+            assert!(session_methods().contains(method), "missing {method}");
+        }
+    }
+
+    #[test]
+    fn one_object_method_has_no_aggregate_body_transport() {
+        let method = session_methods()
+            .split("fn preparation_prepare_object_v1(")
+            .nth(1)
+            .expect("preparation_prepare_object_v1 must exist")
+            .split("\n        fn preparation_seal_v1(")
+            .next()
+            .expect("preparation_seal_v1 must follow prepare_object");
+        assert!(method.contains("body: PyBuffer<u8>"));
+        for forbidden in [
+            "Vec<Vec<u8>>",
+            "Vec<PyBytes",
+            "content_parts",
+            "contentBodies",
+        ] {
+            assert!(
+                !method.contains(forbidden),
+                "one-object preparation accepted forbidden aggregate transport {forbidden}"
+            );
         }
     }
 }

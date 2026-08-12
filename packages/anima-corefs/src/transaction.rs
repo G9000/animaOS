@@ -15,8 +15,236 @@ pub use converter::{
     MAX_WRITING_ATTACHMENT_BYTES, MAX_WRITING_BODY_CHARS, MAX_WRITING_DOCUMENT_BYTES,
 };
 
+/// Secret-free inputs and outcomes for the resumable preparation FFI boundary.
+///
+/// These types intentionally omit prepared physical names, wrapped keys, and encrypted
+/// preparation-record contents.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationBeginV1 {
+    pub scope: String,
+    pub expected_validation_generation: Option<u64>,
+    pub expected_validation_catalog_sha256: Option<String>,
+    pub source_owner_id: String,
+    pub source_schema_version: u16,
+    pub source_mutation_generation: u64,
+    pub source_inventory_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationCasV1 {
+    pub pointer_sha256: String,
+    pub snapshot_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationObjectV1 {
+    pub object_id: String,
+    pub revision: u64,
+    pub object_key_epoch: u32,
+    pub kind: ObjectKind,
+    pub parent_id: String,
+    pub name: String,
+    pub content_type: String,
+    pub body_encoding: crate::envelope::BodyEncoding,
+    pub body_length: u64,
+    pub content_sha256: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub source_character_count: Option<usize>,
+    pub references: Vec<String>,
+    pub policy: ValidationBatchPolicy,
+    pub stable_role: Option<String>,
+    pub graph_metadata: BTreeMap<String, serde_json::Value>,
+    pub source_fingerprint_sha256: String,
+    pub converter_format_version: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparationIdentityV1 {
+    pub object_id: String,
+    pub revision: u64,
+    pub content_sha256: String,
+    pub preparation_ordinal: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationSealV1 {
+    pub source_mutation_generation: u64,
+    pub source_inventory_sha256: String,
+    pub folders: Vec<ValidationBatchFolder>,
+    pub objects: Vec<PreparationIdentityV1>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationFinalizeV1 {
+    pub preparation_id: String,
+    pub expected: PreparationCasV1,
+    pub source_mutation_generation: u64,
+    pub source_inventory_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationAbandonV1 {
+    pub preparation_id: String,
+    pub expected: PreparationCasV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationQuarantineV1 {
+    pub expected_pointer_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparationReconciliationV1 {
+    pub cursor_position: Option<u64>,
+    pub max_items: u32,
+    pub max_bytes: u32,
+    pub expected: Vec<PreparationIdentityV1>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparationStateV1 {
+    Collecting,
+    Ready,
+    Completed,
+    Abandoned,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparationOpenDispositionV1 {
+    Begun,
+    Resumed,
+    Reconciled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparationStatusV1 {
+    pub preparation_id: String,
+    pub snapshot_sequence: u64,
+    pub pointer_sha256: String,
+    pub state: PreparationStateV1,
+    pub source_schema_version: u16,
+    pub source_mutation_generation: u64,
+    pub source_inventory_sha256: String,
+    pub total_objects: u32,
+    pub total_plaintext_bytes: u64,
+    pub total_ciphertext_bytes: u64,
+    pub descriptor_manifest_root_sha256: String,
+    pub next_descriptor_segment: u32,
+    pub next_intent_segment: u32,
+    pub disposition: PreparationOpenDispositionV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparationObjectDispositionV1 {
+    Prepared,
+    Matched,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedObjectSummaryV1 {
+    pub object_id: String,
+    pub revision: u64,
+    pub content_sha256: String,
+    pub preparation_ordinal: u64,
+    pub ciphertext_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrepareObjectOutcomeV1 {
+    pub status: PreparationStatusV1,
+    pub disposition: PreparationObjectDispositionV1,
+    pub prepared: PreparedObjectSummaryV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedObjectMetadataV1 {
+    pub object_id: String,
+    pub revision: u64,
+    pub object_key_epoch: u32,
+    pub kind: String,
+    pub parent_id: String,
+    pub name: String,
+    pub content_type: String,
+    pub body_encoding: String,
+    pub body_length: u64,
+    pub content_sha256: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub source_character_count: Option<usize>,
+    pub references: Vec<String>,
+    pub policy: String,
+    pub stable_role: Option<String>,
+    pub graph_metadata: BTreeMap<String, serde_json::Value>,
+    pub source_fingerprint_sha256: String,
+    pub converter_format_version: u16,
+    pub preparation_ordinal: u64,
+    pub ciphertext_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparationReconciliationPageV1 {
+    pub prepared_count: u32,
+    pub total_plaintext_bytes: u64,
+    pub total_ciphertext_bytes: u64,
+    pub descriptor_manifest_root_sha256: String,
+    pub descriptor_segment_roots: Vec<String>,
+    pub items: Vec<PreparedObjectMetadataV1>,
+    pub missing: Vec<PreparationIdentityV1>,
+    pub conflicting: Vec<PreparationIdentityV1>,
+    pub next_cursor_position: Option<u64>,
+    pub encoded_bytes: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparationReceiptOutcomeV1 {
+    Completed,
+    Abandoned,
+    Quarantined,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparationReceiptV1 {
+    pub preparation_id: String,
+    pub receipt_id: String,
+    pub outcome: PreparationReceiptOutcomeV1,
+    pub required_frk_version: u32,
+    pub final_snapshot_sequence: u64,
+    pub pointer_sha256: String,
+    pub validation_generation: Option<u64>,
+    pub validation_catalog_sha256: Option<String>,
+    pub retained_frk_versions: Vec<u32>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PreparationSessionError {
+    #[error("invalid CoreFS preparation request: {0}")]
+    Invalid(String),
+    #[error("CoreFS preparation is missing: {0}")]
+    Missing(String),
+    #[error("CoreFS preparation state is corrupt: {0}")]
+    Corruption(String),
+    #[error("CoreFS preparation conflict: {0}")]
+    Conflict(String),
+    #[error("CoreFS preparation source fence failed: {0}")]
+    SourceFence(String),
+    #[error("CoreFS preparation I/O failed: {0}")]
+    Io(#[source] io::Error),
+}
+
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
@@ -1329,6 +1557,407 @@ pub struct CoreCommitCoordinator {
     lease_factory_override: Mutex<Option<Arc<dyn object_lease::LeaseResourceFactory>>>,
     lease_budget_override: Option<LeaseBudget>,
     object_lease_diagnostics: Option<Arc<ObjectLeaseDiagnosticObserver>>,
+}
+
+impl CoreCommitCoordinator {
+    pub fn preparation_begin_or_resume_v1(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationBeginV1,
+    ) -> Result<PreparationStatusV1, PreparationSessionError> {
+        let native = preparation::PreparationBeginRequest {
+            scope: request.scope.clone(),
+            expected_validation_generation: request.expected_validation_generation,
+            expected_validation_catalog_sha256: request.expected_validation_catalog_sha256.clone(),
+            source_owner_id: request.source_owner_id.clone(),
+            source_schema_version: request.source_schema_version,
+            source_mutation_generation: request.source_mutation_generation,
+            source_inventory_sha256: request.source_inventory_sha256.clone(),
+        };
+        match self.begin_or_resume_preparation(keys, &native) {
+            Ok(status) => Ok(preparation_status_v1(status)),
+            Err(preparation::PreparationError::ActiveConflict("source generation")) => {
+                let status = self
+                    .load_preparation_status(keys)
+                    .map_err(preparation_session_error)?;
+                let expected = preparation::PreparationCas {
+                    pointer_sha256: status.pointer_sha256,
+                    snapshot_sequence: status.snapshot_sequence,
+                };
+                self.reconcile_preparation_source(keys, &expected, &native)
+                    .map(preparation_status_v1)
+                    .map_err(preparation_session_error)
+            }
+            Err(error) => Err(preparation_session_error(error)),
+        }
+    }
+
+    pub fn preparation_status_v1(
+        &self,
+        keys: &FrkSubkeys,
+    ) -> Result<PreparationStatusV1, PreparationSessionError> {
+        self.load_preparation_status(keys)
+            .map(preparation_status_v1)
+            .map_err(preparation_session_error)
+    }
+
+    pub fn preparation_reconciliation_v1(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationReconciliationV1,
+    ) -> Result<PreparationReconciliationPageV1, PreparationSessionError> {
+        let native = preparation::PreparationReconciliationRequest {
+            cursor: request
+                .cursor_position
+                .map(|position| preparation::PreparationReconciliationCursor { position }),
+            limits: preparation::PreparationPageLimits {
+                max_items: request.max_items,
+                max_bytes: request.max_bytes,
+            },
+            expected: request
+                .expected
+                .iter()
+                .map(preparation_identity_native)
+                .collect(),
+        };
+        self.reconcile_prepared_objects(keys, &native)
+            .map(preparation_reconciliation_page_v1)
+            .map_err(preparation_session_error)
+    }
+
+    pub fn preparation_prepare_object_v1<R: Read>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCasV1,
+        request: &PreparationObjectV1,
+        body: &mut R,
+    ) -> Result<PrepareObjectOutcomeV1, PreparationSessionError> {
+        let native_expected = preparation_cas_native(expected);
+        let native_request = preparation::PrepareObjectRequest {
+            object_id: request.object_id.clone(),
+            revision: request.revision,
+            object_key_epoch: request.object_key_epoch,
+            kind: request.kind,
+            parent_id: request.parent_id.clone(),
+            name: request.name.clone(),
+            content_type: request.content_type.clone(),
+            body_encoding: request.body_encoding,
+            body_length: request.body_length,
+            content_sha256: request.content_sha256.clone(),
+            created_at: request.created_at.clone(),
+            updated_at: request.updated_at.clone(),
+            source_character_count: request.source_character_count,
+            references: request.references.clone(),
+            policy: request.policy,
+            stable_role: request.stable_role.clone(),
+            graph_metadata: request.graph_metadata.clone(),
+            source_fingerprint_sha256: request.source_fingerprint_sha256.clone(),
+            converter_format_version: request.converter_format_version,
+        };
+        self.prepare_object(keys, &native_expected, &native_request, body)
+            .map(|outcome| PrepareObjectOutcomeV1 {
+                status: preparation_status_v1(outcome.status),
+                disposition: match outcome.disposition {
+                    preparation::PrepareObjectDisposition::Prepared => {
+                        PreparationObjectDispositionV1::Prepared
+                    }
+                    preparation::PrepareObjectDisposition::Matched => {
+                        PreparationObjectDispositionV1::Matched
+                    }
+                },
+                prepared: PreparedObjectSummaryV1 {
+                    object_id: outcome.prepared.object_id,
+                    revision: outcome.prepared.revision,
+                    content_sha256: outcome.prepared.content_sha256,
+                    preparation_ordinal: outcome.prepared.preparation_ordinal,
+                    ciphertext_bytes: outcome.prepared.ciphertext_bytes,
+                },
+            })
+            .map_err(preparation_session_error)
+    }
+
+    pub fn preparation_seal_v1(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCasV1,
+        request: &PreparationSealV1,
+    ) -> Result<PreparationStatusV1, PreparationSessionError> {
+        let native = preparation::PreparationSealRequest {
+            source_mutation_generation: request.source_mutation_generation,
+            source_inventory_sha256: request.source_inventory_sha256.clone(),
+            folders: request.folders.clone(),
+            objects: request
+                .objects
+                .iter()
+                .map(preparation_identity_native)
+                .collect(),
+        };
+        self.seal_preparation(keys, &preparation_cas_native(expected), &native)
+            .map(preparation_status_v1)
+            .map_err(preparation_session_error)
+    }
+
+    pub fn preparation_finalize_v1(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationFinalizeV1,
+    ) -> Result<PreparationReceiptV1, PreparationSessionError> {
+        let native = preparation::PreparationFinalizeRequest {
+            preparation_id: request.preparation_id.clone(),
+            expected: preparation_cas_native(&request.expected),
+            source_mutation_generation: request.source_mutation_generation,
+            source_inventory_sha256: request.source_inventory_sha256.clone(),
+        };
+        self.finalize_preparation(keys, &native)
+            .map(preparation_receipt_v1)
+            .map_err(preparation_session_error)
+    }
+
+    pub fn preparation_abandon_v1(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonV1,
+    ) -> Result<PreparationReceiptV1, PreparationSessionError> {
+        let native = preparation::PreparationAbandonRequest {
+            preparation_id: request.preparation_id.clone(),
+            expected: preparation_cas_native(&request.expected),
+        };
+        self.abandon_preparation(keys, &native)
+            .map(preparation_receipt_v1)
+            .map_err(preparation_session_error)
+    }
+
+    pub fn preparation_quarantine_corrupt_pointer_v1(
+        &self,
+        keyring: &FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineV1,
+    ) -> Result<PreparationReceiptV1, PreparationSessionError> {
+        let native = preparation::PreparationQuarantineRequest {
+            expected_pointer_sha256: request.expected_pointer_sha256.clone(),
+        };
+        self.quarantine_preparation(keyring, active_keys, &native)
+            .map(preparation_receipt_v1)
+            .map_err(preparation_session_error)
+    }
+}
+
+fn preparation_cas_native(value: &PreparationCasV1) -> preparation::PreparationCas {
+    preparation::PreparationCas {
+        pointer_sha256: value.pointer_sha256.clone(),
+        snapshot_sequence: value.snapshot_sequence,
+    }
+}
+
+fn preparation_identity_native(value: &PreparationIdentityV1) -> preparation::PreparationIdentity {
+    preparation::PreparationIdentity {
+        object_id: value.object_id.clone(),
+        revision: value.revision,
+        content_sha256: value.content_sha256.clone(),
+        preparation_ordinal: value.preparation_ordinal,
+    }
+}
+
+fn preparation_identity_v1(value: preparation::PreparationIdentity) -> PreparationIdentityV1 {
+    PreparationIdentityV1 {
+        object_id: value.object_id,
+        revision: value.revision,
+        content_sha256: value.content_sha256,
+        preparation_ordinal: value.preparation_ordinal,
+    }
+}
+
+fn preparation_status_v1(status: preparation::PreparationStatus) -> PreparationStatusV1 {
+    PreparationStatusV1 {
+        preparation_id: status.preparation_id,
+        snapshot_sequence: status.snapshot_sequence,
+        pointer_sha256: status.pointer_sha256,
+        state: match status.state {
+            preparation::PreparationState::Collecting => PreparationStateV1::Collecting,
+            preparation::PreparationState::Ready => PreparationStateV1::Ready,
+            preparation::PreparationState::Completed => PreparationStateV1::Completed,
+            preparation::PreparationState::Abandoned => PreparationStateV1::Abandoned,
+        },
+        source_schema_version: status.source_schema_version,
+        source_mutation_generation: status.source_mutation_generation,
+        source_inventory_sha256: status.source_inventory_sha256,
+        total_objects: status.total_objects,
+        total_plaintext_bytes: status.total_plaintext_bytes,
+        total_ciphertext_bytes: status.total_ciphertext_bytes,
+        descriptor_manifest_root_sha256: status.descriptor_manifest_root_sha256,
+        next_descriptor_segment: status.next_descriptor_segment,
+        next_intent_segment: status.next_intent_segment,
+        disposition: match status.disposition {
+            preparation::PreparationOpenDisposition::Begun => PreparationOpenDispositionV1::Begun,
+            preparation::PreparationOpenDisposition::Resumed => {
+                PreparationOpenDispositionV1::Resumed
+            }
+            preparation::PreparationOpenDisposition::Reconciled => {
+                PreparationOpenDispositionV1::Reconciled
+            }
+        },
+    }
+}
+
+fn preparation_reconciliation_page_v1(
+    page: preparation::PreparationReconciliationPage,
+) -> PreparationReconciliationPageV1 {
+    PreparationReconciliationPageV1 {
+        prepared_count: page.prepared_count,
+        total_plaintext_bytes: page.total_plaintext_bytes,
+        total_ciphertext_bytes: page.total_ciphertext_bytes,
+        descriptor_manifest_root_sha256: page.descriptor_manifest_root_sha256,
+        descriptor_segment_roots: page.descriptor_segment_roots,
+        items: page
+            .items
+            .into_iter()
+            .map(|item| PreparedObjectMetadataV1 {
+                object_id: item.object_id,
+                revision: item.revision,
+                object_key_epoch: item.object_key_epoch,
+                kind: item.kind.as_str().to_owned(),
+                parent_id: item.parent_id,
+                name: item.name,
+                content_type: item.content_type,
+                body_encoding: match item.body_encoding {
+                    crate::envelope::BodyEncoding::Utf8 => "utf-8".to_owned(),
+                    crate::envelope::BodyEncoding::Binary => "binary".to_owned(),
+                },
+                body_length: item.body_length,
+                content_sha256: item.content_sha256,
+                created_at: item.created_at,
+                updated_at: item.updated_at,
+                source_character_count: item.source_character_count,
+                references: item.references,
+                policy: validation_policy_name(item.policy).to_owned(),
+                stable_role: item.stable_role,
+                graph_metadata: item.graph_metadata,
+                source_fingerprint_sha256: item.source_fingerprint_sha256,
+                converter_format_version: item.converter_format_version,
+                preparation_ordinal: item.preparation_ordinal,
+                ciphertext_bytes: item.ciphertext_bytes,
+            })
+            .collect(),
+        missing: page
+            .missing
+            .into_iter()
+            .map(preparation_identity_v1)
+            .collect(),
+        conflicting: page
+            .conflicting
+            .into_iter()
+            .map(preparation_identity_v1)
+            .collect(),
+        next_cursor_position: page.next_cursor.map(|cursor| cursor.position),
+        encoded_bytes: page.encoded_bytes,
+    }
+}
+
+fn validation_policy_name(value: ValidationBatchPolicy) -> &'static str {
+    match value {
+        ValidationBatchPolicy::UserWrite => "user-write",
+        ValidationBatchPolicy::Inherit => "inherit",
+        ValidationBatchPolicy::Deny => "deny",
+    }
+}
+
+fn preparation_receipt_v1(receipt: preparation::PreparationReceipt) -> PreparationReceiptV1 {
+    PreparationReceiptV1 {
+        preparation_id: receipt.preparation_id,
+        receipt_id: receipt.receipt_id,
+        outcome: match receipt.outcome {
+            preparation::PreparationReceiptOutcome::Completed => {
+                PreparationReceiptOutcomeV1::Completed
+            }
+            preparation::PreparationReceiptOutcome::Abandoned => {
+                PreparationReceiptOutcomeV1::Abandoned
+            }
+            preparation::PreparationReceiptOutcome::Quarantined => {
+                PreparationReceiptOutcomeV1::Quarantined
+            }
+        },
+        required_frk_version: receipt.required_frk_version,
+        final_snapshot_sequence: receipt.final_snapshot_sequence,
+        pointer_sha256: receipt.pointer_sha256,
+        validation_generation: receipt.validation_generation,
+        validation_catalog_sha256: receipt.validation_catalog_sha256,
+        retained_frk_versions: receipt.retained_frk_versions,
+    }
+}
+
+fn preparation_session_error(error: preparation::PreparationError) -> PreparationSessionError {
+    use preparation::PreparationError as Native;
+
+    let message = error.to_string();
+    match error {
+        Native::Io(error) => PreparationSessionError::Io(error),
+        Native::Commit(error) => preparation_commit_error(error),
+        Native::Missing => PreparationSessionError::Missing(message),
+        Native::CorruptPointer
+        | Native::MissingSnapshot
+        | Native::CorruptSnapshot
+        | Native::StaleSnapshotReplay
+        | Native::FinalIntentMismatch
+        | Native::ReceiptConflict
+        | Native::QuarantineConflict
+        | Native::MissingReferencedRecord { .. }
+        | Native::CorruptReferencedRecord { .. } => PreparationSessionError::Corruption(message),
+        Native::StaleSourceState | Native::SourceChanged => {
+            PreparationSessionError::SourceFence(message)
+        }
+        Native::ActiveConflict(_)
+        | Native::CasConflict
+        | Native::ValidationHeadConflict
+        | Native::LogicalRevisionConflict { .. }
+        | Native::Converter(ValidationBatchError::HeadMismatch) => {
+            PreparationSessionError::Conflict(message)
+        }
+        Native::Converter(ValidationBatchError::Commit(error)) => preparation_commit_error(error),
+        Native::Json(_) | Native::Crypto(_) => PreparationSessionError::Corruption(
+            "authenticated preparation state could not be decoded".to_owned(),
+        ),
+        Native::InvalidFormat(_)
+        | Native::UnsupportedSchemaVersion(_)
+        | Native::UnsupportedEnvelopeVersion(_)
+        | Native::LimitExceeded(_)
+        | Native::WrongFrkVersion { .. }
+        | Native::RetainedFrkMissing(_)
+        | Native::InvalidLayout
+        | Native::Converter(_) => PreparationSessionError::Invalid(message),
+    }
+}
+
+fn preparation_commit_error(error: CommitError) -> PreparationSessionError {
+    match error {
+        CommitError::Io(error) => PreparationSessionError::Io(error),
+        CommitError::LockBusy
+        | CommitError::ObjectLeaseReleaseInProgress
+        | CommitError::RecordedOwnerAlive { .. }
+        | CommitError::CoreAlreadyInitialized
+        | CommitError::CoreNotInitialized
+        | CommitError::CutoverRecoveryRequired
+        | CommitError::CutoverAuthorizationRequired
+        | CommitError::CutoverAlreadyCommitted
+        | CommitError::InvalidCutoverTransition
+        | CommitError::WrongNextGeneration { .. }
+        | CommitError::Conflict(_) => PreparationSessionError::Conflict(
+            "native CoreFS commit precondition changed".to_owned(),
+        ),
+        CommitError::PreparedRevisionCorrupt { .. }
+        | CommitError::ReferencedObjectMissing { .. }
+        | CommitError::ReferencedObjectKeyMismatch { .. }
+        | CommitError::AuthoritativeHeadMissingAfterCutover
+        | CommitError::AuthoritativeHeadViolatesCutoverReceipt
+        | CommitError::Envelope(_)
+        | CommitError::Catalog(_)
+        | CommitError::Head(_)
+        | CommitError::Crypto(_) => PreparationSessionError::Corruption(
+            "native CoreFS prepared state failed authentication".to_owned(),
+        ),
+        _ => PreparationSessionError::Invalid(
+            "native CoreFS preparation commit validation failed".to_owned(),
+        ),
+    }
 }
 
 #[derive(Debug)]
