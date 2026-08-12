@@ -1292,14 +1292,23 @@ name = "desktop"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "fs4",
+ "getrandom 0.2.17",
+ "hex",
+ "libc",
+ "ring",
+ "security-framework",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "tauri",
  "tauri-build",
  "tauri-plugin-fs",
  "tauri-plugin-global-shortcut",
  "tauri-plugin-opener",
+ "unicode-normalization",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

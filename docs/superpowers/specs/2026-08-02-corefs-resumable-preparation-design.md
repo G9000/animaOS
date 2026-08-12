@@ -268,6 +268,13 @@ failing any item disables deletion without affecting import:
   command. These checks run on their native OS against actual MSI, signed PKG,
   DEB, and RPM artifacts, not just source/config strings. Release publication is
   blocked unless the same verifier passes the final signed/notarized artifacts.
+  The initial cleanup-capable release may use an unpublished predecessor built
+  from the same protected source only after the protected workflow proves the
+  repository has exactly one `desktop-v*` tag (the candidate) and no previously
+  published MSI/PKG/DEB/RPM assets. After that bootstrap, every accepted prior
+  host identity must be carried in the signed cross-version identity keyring and
+  tested from an immutable real predecessor artifact; a synthetic predecessor
+  is forbidden once any installer-managed desktop release exists.
 - “Installed executable identity” is the tuple of bundle identifier, installer
   family, package version, canonical registered target, native file identity,
   and platform signing/package identity. Native file identity is Windows volume

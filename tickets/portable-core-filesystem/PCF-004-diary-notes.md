@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 01:56 MYT
+- Updated: 2026-08-13 03:45 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -67,6 +67,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-13 01:04 MYT - Blocked PCF-004 at the approved plaintext-draft acceptance boundary. localStorage provides no atomic compare-and-delete, and a legacy open tab does not honor the new Web Lock; deleting after import can therefore erase an uncooperative concurrent edit. The safe code leaves the plaintext legacy body key untouched and advances imports with a non-sensitive source-digest/monotonic-revision sidecar. This prevents data loss but does not satisfy “Journal drafts are migrated out of plaintext localStorage.” Clearance requires either an approved cleanup protocol that can prove legacy writers are excluded, or an explicit PRD/spec/acceptance revision assigning plaintext cleanup to later work. Parent ownership and legacy SQLCipher/authoritative `HEAD` remain unchanged.
 - 2026-08-13 01:25 MYT - Completed the required independent review of the proposed plaintext-draft cleanup addendum and Task 10 after three focused correction passes. The approved proposal limits cleanup authority to verified replacement-only MSI, signed PKG, DEB, and RPM installations; requires an OS reboot, a pre-WebView process-lifetime launch gate, installed-target verification and process census at one-shot capability consumption; retains orphan sidecars unless removed after authorized source-first cleanup; and gives Linux a signed installed-manifest trust anchor. Review found no remaining consequential no-loss, plaintext-removal, lifecycle, replay, privacy, feasibility, or testability gap. PCF-004 remains `blocked` pending explicit user approval of this reviewed design; no Task 10 implementation, release change, or external publication has begun.
 - 2026-08-13 01:56 MYT - The user explicitly approved the independently reviewed Task 10 design, clearing the only recorded PCF-004 blocker. Resumed the child and parent row as `in_progress` on branch `codex/pcf-004-resumable-preparation` at `aed28abd4fed566595d9b4abbfc83eaae23d9bc7`, preserving the original `Started:` timestamp. Implementation will follow the reviewed replacement-only package, reboot epoch, launch gate/census, one-shot authority, and source-first cleanup plan test-first; no post-Task-5 publication is authorized.
+- 2026-08-13 03:45 MYT - Completed Task 10 implementation locally and passed independent final review with no remaining substantive correctness, no-loss, security/privacy, bounded-memory, loaded-image identity, legacy compatibility, or acceptance-testability finding. Replacement-only MSI/signed-PKG/DEB/RPM packaging, protected predecessor/current identity evidence, the reboot-bound pre-WebView launch gate, native process census, one-shot post-WebView cleanup authority, and exact source-first renderer cleanup are implemented. Native unit `11/11`, process `5/5`, strict desktop Clippy, desktop release-contract `6/6`, cleanup-authority `9/9`, affected Bun `24/24`, desktop build, workflow YAML parsing, repository organization, and diff hygiene passed. PCF-004 remains `in_progress`: closure still requires the protected workflow's actual Windows, macOS, DEB, and RPM signed-package results plus recorded artifact digests, and no post-Task-5 publication or workflow execution is authorized.
 
 ## Validation
 
@@ -123,6 +124,12 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `bun run test` (repository-wide Task 9 pass before final focused review repairs: `3457 passed`, `2 skipped`; all subsequently changed surfaces passed their complete affected gates)
   - `bun run build`, `bun run lint:server`, `cargo fmt --check -p anima-corefs -p anima-core`, `bun run check:repo`, and `git diff --check` (passed)
   - `ANIMA_DATA_DIR=... uv run pytest apps/server/tests/test_health.py -q` (isolated health smoke: `2 passed`)
+  - `cargo test -p desktop --lib draft_cleanup` (Task 10 native authority: `11 passed`)
+  - `cargo test -p desktop --test draft_cleanup_process` (Task 10 native process/lock authority: `5 passed`)
+  - `cargo clippy -p desktop --all-targets -- -D warnings` (Task 10 strict desktop Clippy passed)
+  - `bun test apps/desktop/tests/desktop-release-contract.test.ts apps/desktop/tests/journal-draft-cleanup-authority.test.ts apps/desktop/tests/journal-draft-migration.test.ts` (Task 10 affected desktop band: `24 passed`)
+  - `bun run --cwd apps/desktop build`, protected-workflow YAML parsing, `bun run check:repo`, and `git diff --check` (Task 10 local gates passed)
+  - Independent Task 10 final review reproduced native unit `11/11`, process `5/5`, strict Clippy, desktop release-contract `6/6`, cleanup-authority `9/9`, and diff hygiene with no remaining substantive finding
 - Changed paths:
   - `Cargo.lock`
   - `apps/desktop/src/pages/Journal.tsx`
@@ -153,10 +160,17 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `packages/anima-corefs/src/transaction/converter.rs`
   - `packages/anima-corefs/tests/{logical_path.rs,logical_snapshot.rs,opaque_id.rs,rotation.rs,validation_batch.rs}`
   - `packages/api-client/src/{client.ts,types.ts}`
+  - `.github/workflows/desktop-draft-cleanup-authority.yml`
+  - `apps/desktop/src-tauri/{Cargo.toml,build.rs,tauri.conf.json,tauri.linux.conf.json}` and `apps/desktop/src-tauri/install/`
+  - `apps/desktop/src-tauri/src/{lib.rs,draft_cleanup.rs}` and `apps/desktop/src-tauri/tests/draft_cleanup_process.rs`
+  - `apps/desktop/src/{lib/draftCleanupAuthority.ts,components/database/hooks/useLocalStorage.ts,features/diary/DiaryWorkspace.tsx,features/diary/lib/draftMigration.ts}`
+  - `apps/desktop/tests/{desktop-release-contract.test.ts,journal-draft-cleanup-authority.test.ts}`
+  - `scripts/{build-macos-pkg.ts,desktop-package-environment.ts,package-desktop.ts,prepare-desktop-release.ts,prepare-linux-install-identity.ts,verify-desktop-release-contract.ts}`
+  - `docs/superpowers/{plans/2026-08-02-corefs-resumable-preparation.md,specs/2026-08-02-corefs-resumable-preparation-design.md}`
   - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-004-diary-notes.md}`
 - Notes:
   - Legacy SQLCipher remains authoritative and `VALIDATION_HEAD` remains inactive; no partial or authoritative cutover occurred.
-  - Tasks 5 through 9 are implemented and reviewed locally, and both the large-corpus resumable-preparation blocker and Task 10 design-approval blocker are cleared. Task 10 implementation is in progress. Authoritative `HEAD` remains untouched.
+  - Tasks 5 through 10 are implemented and independently reviewed locally. Authoritative `HEAD` remains untouched.
   - Repository-wide validation passed `3457` tests with `2` intentional skips before the final focused review repairs; the final changed Rust, Python, desktop, build, formatting, and diff surfaces all passed their complete affected gates.
   - Strict Clippy remains blocked only by documented untouched baseline warnings outside the PCF-004 diff.
-  - Residual risk/follow-up: Task 10 must still implement and prove the reviewed four-platform packaged writer-exclusion protocol before plaintext cleanup or PCF-004 completion; no destructive cleanup exists yet.
+  - Required closeout evidence: run the protected replacement-install workflow against signed Windows, macOS, DEB, and RPM packages, record all four results and artifact digests, and only then mark plaintext cleanup accepted or PCF-004 complete. That external publication/workflow action is not currently authorized.

@@ -8,6 +8,7 @@ import type {
 import type { Editor } from "@tiptap/react";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../lib/api";
+import { packagedDraftCleanupAuthority } from "../../lib/draftCleanupAuthority";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
 import {
   draftMigrationRetryDelay,
@@ -353,6 +354,7 @@ export default function DiaryWorkspace() {
         userId: user.id,
         sanitizeHtml: sanitizeDiaryHtml,
         importDraft: (draft) => api.diary.importLegacyDraft(user.id, draft),
+        cleanupAuthority: packagedDraftCleanupAuthority(),
       });
       if (!retry || cancelled) return;
       const delay = draftMigrationRetryDelay(retryAttempt);

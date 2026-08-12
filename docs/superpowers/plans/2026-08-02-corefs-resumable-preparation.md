@@ -552,6 +552,13 @@ remove/make-unlaunchable every managed prior/staging executable must abort befor
 registering the new target. No cleanup-capable release artifact exists until
 this step is green on Windows, macOS, Debian, and RPM runners.
 
+For the first cleanup-capable release only, the protected workflow may build an
+unpublished predecessor from the exact protected candidate source after it
+proves there is exactly one repository `desktop-v*` tag (that candidate) and no
+prior MSI/PKG/DEB/RPM release asset. Future releases must consume an immutable
+real predecessor and carry/test its signed host-identity key; the bootstrap path
+must fail once any installer-managed desktop artifact has been published.
+
 - [ ] **Step 3: Write failing native authority and lifecycle tests**
 
 Extract platform adapters plus pure classification/transition helpers. Unit

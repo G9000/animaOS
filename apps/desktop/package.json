@@ -10,8 +10,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "prepare:release": "bun run ../../scripts/prepare-desktop-release.ts",
-    "package": "tauri build",
-    "package:app": "tauri build --bundles app"
+    "package:windows": "bun run ../../scripts/package-desktop.ts windows --bundles msi",
+    "package:macos": "bun run ../../scripts/package-desktop.ts macos --build-macos-pkg",
+    "package:debian": "bun run ../../scripts/package-desktop.ts debian --bundles deb",
+    "package:rpm": "bun run ../../scripts/package-desktop.ts rpm --bundles rpm"
   },
   "dependencies": {
     "@anima/api-client": "workspace:*",

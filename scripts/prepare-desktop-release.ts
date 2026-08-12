@@ -41,6 +41,7 @@ const animaCoreDir = join(projectRoot, "packages", "anima-core");
 const daemonDir = join(projectRoot, "apps/local-runtime-daemon");
 const cargoWorkspaceManifestPath = join(projectRoot, "Cargo.toml");
 const releaseStagingDir = join(projectRoot, "target", "anima-release-staging");
+const installIdentityStagingDir = join(releaseStagingDir, "install-identity");
 const manifestPath = join(releaseStagingDir, "runtime-daemon-release.json");
 const stagedDaemonDir = releaseStagingDir;
 const bundledResourcesDir = join(desktopTauriDir, "resources", "runtime");
@@ -451,6 +452,17 @@ function writeDesktopReleaseEnv(configDefault: ReleaseManifest["daemon"]["config
 }
 
 function main(): void {
+  const cleanupRelease = process.env.ANIMA_DRAFT_CLEANUP_RELEASE === "1";
+  const installerFamily = process.env.ANIMA_INSTALLER_FAMILY;
+  if (cleanupRelease && !["windows", "macos", "debian", "rpm"].includes(installerFamily ?? "")) {
+    throw new Error("Cleanup-capable desktop preparation requires a replacement-only MSI, PKG, DEB, or RPM family");
+  }
+  // Linux identity is generated only after the final executable exists. Clear
+  // any older staging identity before this release preparation so a failed
+  // signing step cannot accidentally reuse it in a later bundle command.
+  if (cleanupRelease && (installerFamily === "debian" || installerFamily === "rpm")) {
+    rmSync(installIdentityStagingDir, { recursive: true, force: true });
+  }
   if (!existsSync(daemonDir)) {
     throw new Error(`Local daemon crate is missing at ${daemonDir}`);
   }

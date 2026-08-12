@@ -1,3 +1,5 @@
+pub mod draft_cleanup;
+
 use serde::Deserialize;
 use std::{
     env, fs,
@@ -761,6 +763,20 @@ fn find_in_ancestors(start: &Path, relative: &Path) -> Option<PathBuf> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Cleanup-capable packages must establish the process-lifetime launch gate
+    // before Tauri can construct the configured WebView. Development and
+    // unsupported package formats receive a fail-closed disabled authority.
+    let draft_cleanup_authority = draft_cleanup::DraftCleanupAuthority::bootstrap()
+        .expect("cleanup-capable ANIMA host failed its pre-WebView launch gate");
+    // Release-package verification executes this process-local probe after an
+    // actual old-to-current installation. It exercises the same installed
+    // identity, launch gate, epoch, and process census as a real launch, but
+    // exits before constructing a WebView on a headless CI host.
+    if env::var_os("ANIMA_DRAFT_CLEANUP_IDENTITY_PROBE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        return;
+    }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -815,14 +831,26 @@ pub fn run() {
                 net_prev: Mutex::new(None),
             }
         })
+        .manage(draft_cleanup_authority)
         .invoke_handler(tauri::generate_handler![
             read_daemon_control_token,
             start_local_runtime_daemon,
             get_system_stats,
             get_network_stats,
+            draft_cleanup::draft_cleanup_issue_v1,
+            draft_cleanup::draft_cleanup_consume_v1,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
+
+    if env::var_os("ANIMA_DRAFT_CLEANUP_RUNTIME_PROBE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+    {
+        app.state::<draft_cleanup::DraftCleanupAuthority>()
+            .verify_packaged_runtime_cycle()
+            .expect("packaged post-WebView cleanup-authority cycle failed");
+        return;
+    }
 
     app.run(|app, event| {
         if let RunEvent::WindowEvent {
