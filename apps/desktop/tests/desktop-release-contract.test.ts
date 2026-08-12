@@ -78,6 +78,9 @@ describe("desktop plaintext-draft cleanup release contract", () => {
     const workflow = source(".github/workflows/desktop-draft-cleanup-authority.yml");
     const verifier = source("scripts/verify-desktop-release-contract.ts");
 
+    expect(workflow).toContain("COST_DISABLED");
+    expect(workflow).toMatch(/^on: \[\]$/m);
+    expect(workflow).not.toMatch(/^  workflow_dispatch:/m);
     for (const platform of ["windows", "macos", "debian", "rpm"]) {
       expect(workflow).toContain(platform);
       expect(verifier).toContain(platform);

@@ -1,12 +1,18 @@
 name: desktop-draft-cleanup-authority
 
-on:
-  workflow_dispatch:
-    inputs:
-      fixture_version:
-        description: Unpublished predecessor version built from this same protected source tag
-        required: true
-        default: 0.0.1
+# COST_DISABLED: the user deferred this four-platform evidence run. Keep the
+# reviewed workflow definition below, but expose no GitHub Actions trigger until
+# funding and separate execution authority are available.
+on: []
+
+# Re-enable only with explicit user authority:
+# on:
+#   workflow_dispatch:
+#     inputs:
+#       fixture_version:
+#         description: Unpublished predecessor version built from this same protected source tag
+#         required: true
+#         default: 0.0.1
 
 permissions:
   contents: read
