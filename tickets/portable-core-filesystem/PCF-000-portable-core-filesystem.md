@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 03:48 MYT
+- Updated: 2026-08-13 03:58 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -357,6 +357,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 01:56 MYT - The user explicitly approved PCF-004's independently reviewed Task 10 packaged writer-exclusion design. Cleared the recorded blocker and synchronized the child plus parent row to `in_progress`, preserving child ownership and its original `Started:` timestamp. Task 10 resumes locally on `codex/pcf-004-resumable-preparation` from `aed28abd4fed566595d9b4abbfc83eaae23d9bc7`; this parent remains `in_progress`, PCF-005 remains eligible/unclaimed, and no post-Task-5 publication is authorized.
 - 2026-08-13 03:45 MYT - PCF-004 Task 10 implementation completed locally and passed independent final review without a substantive correctness, no-loss, security/privacy, bounded-memory, loaded-image identity, legacy compatibility, or acceptance-testability finding. The replacement installer contract, protected predecessor/current identities, reboot-bound launch gate, native census, one-shot cleanup authority, and source-first renderer deletion are implemented; native `11 + 5`, strict desktop Clippy, affected Bun `24`, desktop build, workflow parsing, repository organization, and diff hygiene passed. PCF-004 and this parent remain `in_progress` because child closure still requires actual protected Windows, macOS, DEB, and RPM signed-package workflow results plus artifact digests. PCF-005 remains eligible/unclaimed, and no post-Task-5 publication or workflow execution is authorized.
 - 2026-08-13 03:48 MYT - At the user's explicit cost constraint, removed every trigger from PCF-004's reviewed four-platform package-evidence workflow and retained the implementation locally for later re-enablement. A source-contract regression keeps the workflow cost-disabled. PCF-004 and this parent remain `in_progress`; no push or workflow execution occurred, the evidence gate is intentionally deferred, and PCF-005 remains eligible/unclaimed.
+- 2026-08-13 03:58 MYT - Published PCF-004's reviewed Task 6 through Task 10 implementation and cost-disable follow-up to existing PR #142. GitHub reported exact branch head `0243e0e04f6939b3d67602b31c42c8b2e9af415a`; no checks or paid package-evidence workflow were launched. PCF-004 and this parent remain `in_progress`, PCF-005 remains eligible/unclaimed, and no review request, monitoring, or merge action was taken.
 
 ## Validation
 

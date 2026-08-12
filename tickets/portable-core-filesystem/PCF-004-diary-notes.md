@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 03:48 MYT
+- Updated: 2026-08-13 03:58 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -69,6 +69,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-13 01:56 MYT - The user explicitly approved the independently reviewed Task 10 design, clearing the only recorded PCF-004 blocker. Resumed the child and parent row as `in_progress` on branch `codex/pcf-004-resumable-preparation` at `aed28abd4fed566595d9b4abbfc83eaae23d9bc7`, preserving the original `Started:` timestamp. Implementation will follow the reviewed replacement-only package, reboot epoch, launch gate/census, one-shot authority, and source-first cleanup plan test-first; no post-Task-5 publication is authorized.
 - 2026-08-13 03:45 MYT - Completed Task 10 implementation locally and passed independent final review with no remaining substantive correctness, no-loss, security/privacy, bounded-memory, loaded-image identity, legacy compatibility, or acceptance-testability finding. Replacement-only MSI/signed-PKG/DEB/RPM packaging, protected predecessor/current identity evidence, the reboot-bound pre-WebView launch gate, native process census, one-shot post-WebView cleanup authority, and exact source-first renderer cleanup are implemented. Native unit `11/11`, process `5/5`, strict desktop Clippy, desktop release-contract `6/6`, cleanup-authority `9/9`, affected Bun `24/24`, desktop build, workflow YAML parsing, repository organization, and diff hygiene passed. PCF-004 remains `in_progress`: closure still requires the protected workflow's actual Windows, macOS, DEB, and RPM signed-package results plus recorded artifact digests, and no post-Task-5 publication or workflow execution is authorized.
 - 2026-08-13 03:48 MYT - At the user's explicit cost constraint, disabled every GitHub Actions trigger for the reviewed four-platform package-evidence workflow while retaining its complete definition for later re-enablement. Added a source-contract assertion that the workflow stays cost-disabled. No push or workflow execution occurred. PCF-004 remains `in_progress`; its signed-package evidence gate is intentionally deferred until the user separately authorizes funding, re-enablement, publication, and execution.
+- 2026-08-13 03:58 MYT - Published the reviewed Task 6 through Task 10 implementation and cost-disable follow-up to existing PR #142 on `codex/pcf-004-resumable-preparation`. GitHub reported exact head `0243e0e04f6939b3d67602b31c42c8b2e9af415a`; no checks or paid package-evidence workflow were launched. PCF-004 remains `in_progress` on the intentionally deferred four-platform signed-package evidence gate. No review request, monitoring, or merge action was taken.
 
 ## Validation
 
