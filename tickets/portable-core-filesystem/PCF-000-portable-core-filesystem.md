@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-12 22:24 MYT
+- Updated: 2026-08-13 01:04 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -26,7 +26,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
-| PCF-004 | Diary, folders, drafts, and notes | in_progress | PCF-003 |
+| PCF-004 | Diary, folders, drafts, and notes | blocked | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
 | PCF-007 | Account profile, tasks, preferences, and credentials | backlog | PCF-004, PCF-006 |
@@ -352,6 +352,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-12 21:11 MYT - Completed PCF-004 resumable-preparation Task 6 locally. Seven versioned, bounded PyO3 operations now expose the native preparation lifecycle under session-operation admission, with one bytes-like body per object, secret-free wire outputs, typed conflict/corruption/source-fence errors, close rejection, and active-operation drain coverage. Final gates passed: default boundary `2`, Python-feature boundary/integration `9`, targeted close-drain `1`, CoreFS library `238 passed`/`1 ignored`, Python feature check, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. The broader Python session band passed `18/19`; its sole pre-existing pinned-root symlink layout case fails before session construction under current fail-closed layout validation. PCF-004 and this parent remain `in_progress`; Task 7 transactional SQLCipher source fencing is next, legacy authority is unchanged, and no Task 6 publication is authorized.
 - 2026-08-12 21:30 MYT - Completed PCF-004 resumable-preparation Task 7 locally. Linear Core revision `20260812_0001` and the legacy unstamped-database repair now install authoritative per-user SQLCipher triggers for every folder, entry, and attachment mutation, including ownership changes and cascades; the monotonic source generation advances in the writer transaction, rolls back atomically, and is fenced by `BEGIN IMMEDIATE`. The revision advances the already-occupied `20260802_0001` head without branching. Final gates passed: affected migration/API band `32`, deterministic two-connection encrypted exclusion, exactly one Alembic head, full server Ruff, diff hygiene, and repository organization. PCF-004 and this parent remain `in_progress`; Task 8 streaming orchestration is next, legacy SQLCipher remains authoritative, and no Task 7 publication is authorized.
 - 2026-08-12 22:24 MYT - Completed PCF-004 resumable-preparation Task 8 locally. The server now streams deterministic writing inventory through the bounded native preparation lifecycle, reconciles crash-durable objects, finalizes under the live SQLCipher source fence, and verifies only bounded metadata or one body at a time; the aggregate Python/PyO3 production path is removed. Browser draft handoff uses durable revision/hash completion CAS and retains concurrent edits. Restart/finalization fault injection and synthetic >1 GiB logical-inventory coverage are green, as are affected Python `53`, client/desktop `30`, Python-feature bindings `9`, the manifest UUID Core identity regression, formatting, lint, and diff hygiene. PCF-004 and this parent remain `in_progress`; Task 9 full validation and independent implementation review are next, legacy SQLCipher remains authoritative, and no Task 8 publication is authorized.
+- 2026-08-13 01:04 MYT - PCF-004 Task 9 validation and independent review completed through local implementation `8664cbcca83e7607a9af327169b7fecce36fca43`. The bounded resumable-preparation protocol and all review-driven recovery/security fixes are green: CoreFS `243 passed`/`1 ignored`, affected Python `103`, desktop `17`, build/format/diff/health, plus an earlier repository-wide `3457 passed`/`2 skipped`; final focused re-review found no remaining code correctness or data-loss issue. PCF-004 and its parent row are now `blocked`, not done, because safely retaining edits from uncooperative legacy localStorage writers is incompatible with deleting the plaintext key without an approved writer-exclusion/cleanup protocol. Clearance requires that protocol or an explicit PRD/spec/acceptance revision assigning cleanup later. This parent remains `in_progress` because PCF-005 is independently dependency-eligible and unclaimed; parent ownership is unchanged.
 
 ## Validation
 
@@ -541,6 +542,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 is claimed and `in_progress`; PCF-005 remains dependency-eligible and unclaimed in backlog. PCF-011 separately tracks the known Windows native-lease aggregate flake.
+  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 is `blocked` on the explicit plaintext-draft cleanup design decision; PCF-005 remains dependency-eligible and unclaimed in backlog. PCF-011 separately tracks the known Windows native-lease aggregate flake.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.

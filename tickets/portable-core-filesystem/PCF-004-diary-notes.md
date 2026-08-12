@@ -1,6 +1,6 @@
 # PCF-004 - Diary, folders, drafts, and notes
 
-- Status: in_progress
+- Status: blocked
 - Priority: P1
 - Scope: `apps/server` diary/CoreFS, `apps/desktop` Journal
 - Parent: `PCF-000`
@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-12 22:24 MYT
+- Updated: 2026-08-13 01:04 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -63,6 +63,8 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-12 21:11 MYT - Completed resumable-preparation Task 6 locally. Added seven versioned session-guarded PyO3 operations for begin/resume, bounded status/reconciliation, exactly-one-buffer object preparation, seal, finalize, abandon, and operator quarantine; their public Rust adapter and wire dictionaries omit physical names, wrapped DEKs, key material, and authenticated preparation secrets. Python receives typed conflict/corruption/source-fence errors, every operation is rejected after close admission stops, and active guards still drain before close releases the lease. The initial source-contract RED proved the methods and one-body transport were absent. Final gates passed: default boundary `2`, Python-feature boundary/integration `9`, targeted close-drain `1`, CoreFS library `238 passed`/`1 ignored`, Python feature check, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. The complete Python-feature session band remains `18/19` because the pre-existing pinned-root symlink case now rejects that symlink as an invalid CoreFS layout; all lifecycle/session accounting cases passed. Task 7 SQLCipher writing-source generation is next; legacy SQLCipher remains authoritative and no Task 6 publication is authorized.
 - 2026-08-12 21:30 MYT - Completed resumable-preparation Task 7 locally. Linear Core migration `20260812_0001` adds a per-user monotonic writing-source generation plus INSERT/UPDATE/DELETE and ownership-reassignment triggers for folders, entries, and attachments; trigger effects share the writer transaction, roll back with it, count cascades, and isolate users. The migration revision advanced from the plan's now-occupied `20260802_0001` reservation rather than creating a duplicate or second head. A legacy unversioned create-all repair installs the same authoritative triggers after head stamping. The initial `5`-failure RED proved the revision/table/head and API writer fence were absent, and a later focused RED proved legacy stamped databases had the table but no triggers. Final gates passed: complete Task 7 migration/CoreFS migration/diary API band `32`, fresh/prior-head/downgrade-upgrade coverage, two independent encrypted SQLCipher connections under deterministic `BEGIN IMMEDIATE` exclusion, exactly one Alembic head `20260812_0001`, full server Ruff, diff hygiene, and repository organization. Task 8 streaming orchestration is next; legacy SQLCipher remains authoritative and no Task 7 publication is authorized.
 - 2026-08-12 22:24 MYT - Completed resumable-preparation Task 8 locally. Production writing migration now inventories metadata without retaining corpus bodies, prepares exactly one verified SQLCipher/current-CoreFS/staged object at a time, reconciles durable matches after restart, seals the exact source digest, and holds a dedicated `BEGIN IMMEDIATE` source fence through native exact-CAS finalization and bounded metadata verification. Python/PyO3 aggregate publication and `PreparedWritingObject.content` are retired. Browser drafts use a durable ID/client-revision/body-hash handoff token and an exact localStorage re-read before deletion, so concurrent or hashing-window edits are retained at a higher revision. Native preparation records now accept the manifest's UUID Core identity while rejecting ambiguous colon-delimited identities. Fault injection covers crashes after every generated object, finalize failure before publication, post-publication retry, and a synthetic logical aggregate above 1 GiB with one yielded body. Final focused gates passed: affected Python `53`, API-client/desktop `30`, Python-feature preparation bindings `9`, UUID Core identity `1`, scoped Ruff, Rust formatting, and diff hygiene. Task 9 full validation and independent implementation review are next; legacy SQLCipher remains authoritative and no Task 8 publication is authorized.
+- 2026-08-13 01:04 MYT - Completed Task 9 validation and independent review through implementation commit `8664cbcca83e7607a9af327169b7fecce36fca43`. Review-driven RED/GREEN hardening now validates PyO3 body bounds before copying, authenticates every durable object on no-op, reconciles published Ready state, streams corrupt-pointer quarantine, prevents contradictory completed/abandoned terminal receipts, preserves vault/CoreFS binary boundaries, and removes every known browser compare/delete data-loss seam. Final affected gates passed: CoreFS library `243 passed`/`1 ignored`, affected Python `103 passed`, desktop `17 passed`, build, format, diff hygiene, health `2 passed`, and independent focused re-review found no remaining code correctness or data-loss issue. An earlier repository-wide run passed `3457` with `2` intentional skips before the final review fixes; every subsequently changed surface passed its full affected gate.
+- 2026-08-13 01:04 MYT - Blocked PCF-004 at the approved plaintext-draft acceptance boundary. localStorage provides no atomic compare-and-delete, and a legacy open tab does not honor the new Web Lock; deleting after import can therefore erase an uncooperative concurrent edit. The safe code leaves the plaintext legacy body key untouched and advances imports with a non-sensitive source-digest/monotonic-revision sidecar. This prevents data loss but does not satisfy “Journal drafts are migrated out of plaintext localStorage.” Clearance requires either an approved cleanup protocol that can prove legacy writers are excluded, or an explicit PRD/spec/acceptance revision assigning plaintext cleanup to later work. Parent ownership and legacy SQLCipher/authoritative `HEAD` remain unchanged.
 
 ## Validation
 
@@ -113,11 +115,17 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `bun run build` (passed)
   - `bun run lint:server` (passed)
   - `bun run check:repo` and `git diff --check` (passed)
+  - `cargo test -p anima-corefs --lib --no-fail-fast` (Task 9 final: `243 passed`, `1 ignored`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_vault.py -q` (Task 9 final affected band: `103 passed`)
+  - `bun test apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-html.test.ts apps/desktop/tests/diary-turn-into-atom.test.ts` (Task 9 final: `17 passed`)
+  - `bun run test` (repository-wide Task 9 pass before final focused review repairs: `3457 passed`, `2 skipped`; all subsequently changed surfaces passed their complete affected gates)
+  - `bun run build`, `bun run lint:server`, `cargo fmt --check -p anima-corefs -p anima-core`, `bun run check:repo`, and `git diff --check` (passed)
+  - `ANIMA_DATA_DIR=... uv run pytest apps/server/tests/test_health.py -q` (isolated health smoke: `2 passed`)
 - Changed paths:
   - `Cargo.lock`
   - `apps/desktop/src/pages/Journal.tsx`
   - `apps/desktop/src/pages/journal/{draft-migration.ts,html.ts}`
-  - `apps/desktop/src/features/diary/{DiaryWorkspace.tsx,lib/draftMigration.ts}`
+  - `apps/desktop/src/features/diary/{DiaryWorkspace.tsx,editor/BlockDragHandle.tsx,lib/draftMigration.ts}`
   - `apps/desktop/tests/{journal-corefs.test.ts,journal-draft-migration.test.ts,journal-html.test.ts}`
   - `apps/server/src/anima_server/api/routes/diary.py`
   - `apps/server/alembic_core/versions/20260812_0001_add_corefs_writing_source_generation.py`
@@ -126,10 +134,12 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `apps/server/src/anima_server/schemas/diary.py`
   - `apps/server/src/anima_server/services/corefs/{diary_migration.py,formats.py,writing-sanitizer-v1.json}`
   - `apps/server/src/anima_server/services/corefs/writing_source.py`
+  - `apps/server/src/anima_server/services/vault.py`
   - `apps/server/src/anima_server/services/sessions.py`
   - `apps/server/tests/{conftest.py,test_corefs_diary_migration.py,test_corefs_indexer.py,test_corefs_notes.py,test_diary_api.py}`
   - `apps/server/tests/corefs_writing_test_support.py`
   - `apps/server/tests/{test_corefs_migration.py,test_corefs_writing_generation.py}`
+  - `apps/server/tests/test_vault.py`
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
   - `packages/anima-core/{Cargo.toml,src/ffi.rs}`
   - `packages/anima-core/src/lib.rs`
@@ -144,7 +154,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-004-diary-notes.md}`
 - Notes:
   - Legacy SQLCipher remains authoritative and `VALIDATION_HEAD` remains inactive; no partial or authoritative cutover occurred.
-  - Task 8 is complete locally. Streaming preparation and browser-draft optimistic CAS are green; Task 9 full validation and independent implementation review are next. Authoritative `HEAD` remains untouched.
-  - A full `bun run test` was attempted twice but remained compute-active beyond five-minute tool bounds without a summary; no repository-wide pass is claimed.
+  - Tasks 5 through 9 are implemented and reviewed locally, and the large-corpus resumable-preparation blocker is cleared. PCF-004 remains blocked only on the incompatible plaintext-localStorage cleanup and uncooperative legacy-writer no-loss requirements. Authoritative `HEAD` remains untouched.
+  - Repository-wide validation passed `3457` tests with `2` intentional skips before the final focused review repairs; the final changed Rust, Python, desktop, build, formatting, and diff surfaces all passed their complete affected gates.
   - Strict Clippy remains blocked only by documented untouched baseline warnings outside the PCF-004 diff.
-  - The protocol direction, independently reviewed written spec, user approval, and independent implementation-plan review are complete. The reviewed plan is ready for execution-mode handoff.
+  - Residual risk/follow-up: an explicit product/design decision is required before plaintext legacy draft cleanup; no destructive cleanup is implemented or implied.

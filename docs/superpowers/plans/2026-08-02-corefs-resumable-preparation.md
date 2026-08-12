@@ -415,12 +415,20 @@ git -c commit.gpgsign=false commit -m "server: stream resumable writing preparat
 
 - Modify: `packages/anima-corefs/src/transaction/preparation_tests.rs`
 - Modify: `packages/anima-core/src/ffi.rs`
+- Modify: `apps/server/src/anima_server/services/corefs/writing_source.py`
+- Modify: `apps/server/src/anima_server/services/vault.py`
 - Modify: `apps/server/tests/test_corefs_diary_migration.py`
-- Modify: `apps/desktop/tests/journal-corefs.test.ts`
+- Modify: `apps/server/tests/test_vault.py`
+- Modify: `apps/server/tests/test_diary_api.py`
+- Modify: `apps/desktop/src/features/diary/DiaryWorkspace.tsx`
+- Modify: `apps/desktop/src/features/diary/editor/BlockDragHandle.tsx`
+- Modify: `apps/desktop/src/features/diary/lib/draftMigration.ts`
+- Modify: `apps/desktop/tests/journal-draft-migration.test.ts`
+- Modify: `apps/desktop/tests/diary-turn-into-atom.test.ts`
 - Modify: `tickets/portable-core-filesystem/PCF-004-diary-notes.md`
 - Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 
-- [ ] **Step 1: Run the full affected Rust gates**
+- [x] **Step 1: Run the full affected Rust gates**
 
 ```powershell
 cargo test -p anima-corefs --lib --no-fail-fast
@@ -433,18 +441,18 @@ cargo fmt --check
 
 Expected: all tests/checks pass. If strict Clippy exposes pre-existing untouched warnings, record exact files/lines and run a diff-scoped no-new-warning check; do not weaken lints.
 
-- [ ] **Step 2: Run the full affected Python/Desktop gates**
+- [x] **Step 2: Run the full affected Python/Desktop gates**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py -q
-bun test apps/desktop/tests/journal-corefs.test.ts apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-html.test.ts
+bun test apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-html.test.ts apps/desktop/tests/diary-turn-into-atom.test.ts
 bun run lint:server
 bun run build
 ```
 
 Smoke-check unlock/session resume, diary list/get, attachment retrieval, draft import, stable `core.journal`/`core.notes` role resolution, and `GET /health` against an isolated `ANIMA_DATA_DIR`.
 
-- [ ] **Step 3: Attempt repository-wide validation**
+- [x] **Step 3: Attempt repository-wide validation**
 
 ```powershell
 bun run test
@@ -454,20 +462,29 @@ git diff --check
 
 Record exact outcomes. A timeout without a summary is not a pass; diagnose any failure before editing and distinguish unrelated baseline failures from regressions.
 
-- [ ] **Step 4: Obtain independent implementation review**
+- [x] **Step 4: Obtain independent implementation review**
 
 Dispatch an independent reviewer with the approved spec, this plan, and the final diff. Require findings only for consequential correctness, security, privacy, data-loss, bounded-memory, crash-recovery, source-fence, and compatibility regressions. Resolve substantive findings test-first; disposition style/speculative/non-blocking churn with evidence.
 
-- [ ] **Step 5: Synchronize PCF-004 and PCF-000**
+- [x] **Step 5: Synchronize PCF-004 and PCF-000**
 
 Record changed paths, commands/results, independent review evidence, exact commit, and whether the protocol blocker is cleared. Do not mark PCF-004 done until every original diary/notes acceptance item plus the large-corpus protocol is green. Do not change parent ownership.
 
-- [ ] **Step 6: Commit final evidence**
+- [x] **Step 6: Commit final evidence**
 
 ```powershell
-git add packages/anima-corefs/src/transaction/preparation_tests.rs packages/anima-core/src/ffi.rs apps/server/tests/test_corefs_diary_migration.py apps/desktop/tests/journal-corefs.test.ts tickets/portable-core-filesystem/PCF-004-diary-notes.md tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md
+git add apps/server/src/anima_server/services/corefs/writing_source.py apps/server/tests/test_diary_api.py apps/desktop/src/features/diary/DiaryWorkspace.tsx apps/desktop/src/features/diary/editor/BlockDragHandle.tsx apps/desktop/src/features/diary/lib/draftMigration.ts apps/desktop/tests/journal-draft-migration.test.ts docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md tickets/portable-core-filesystem/PCF-004-diary-notes.md tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md
 git -c commit.gpgsign=false commit -m "tickets: record CoreFS preparation evidence"
 ```
+
+Task 9 validation and review are complete, but PCF-004 is blocked rather than
+done. A legacy browser tab can write the plaintext draft key without honoring a
+new Web Lock, and localStorage has no atomic compare-and-delete. The safe
+implementation retains that key and uses a non-sensitive digest/revision
+sidecar; this prevents data loss but does not satisfy the approved requirement
+to remove private authored content from plaintext localStorage. Clearance
+requires an approved cleanup protocol that can exclude legacy writers, or an
+explicit product/spec revision that assigns plaintext cleanup to later work.
 
 ## Stop conditions
 
