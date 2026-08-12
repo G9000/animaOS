@@ -345,15 +345,15 @@ git -c commit.gpgsign=false commit -m "server: fence legacy writing mutations"
 - Modify: `apps/server/src/anima_server/schemas/diary.py`
 - Modify: `packages/api-client/src/client.ts`
 - Modify: `packages/api-client/src/types.ts`
-- Modify: `apps/desktop/src/pages/Journal.tsx`
-- Modify: `apps/desktop/src/pages/journal/draft-migration.ts`
+- Modify: `apps/desktop/src/features/diary/DiaryWorkspace.tsx`
+- Create: `apps/desktop/src/features/diary/lib/draftMigration.ts`
 - Modify: `apps/server/tests/test_corefs_diary_migration.py`
 - Modify: `apps/server/tests/test_corefs_notes.py`
 - Modify: `apps/server/tests/conftest.py`
 - Modify: `packages/api-client/tests/client.test.ts`
 - Modify: `apps/desktop/tests/journal-draft-migration.test.ts`
 
-- [ ] **Step 1: Write failing bounded-orchestration tests**
+- [x] **Step 1: Write failing bounded-orchestration tests**
 
 Replace fake-session expectations for `validation_batch_parts_v1` with the preparation lifecycle. Test new migration, exact rerun, crash/restart after every object, reconcile-and-skip of durable matches, conflict on changed same-revision content, source mutation before seal, source mutation after seal, mutation blocked during the final fence, native finalization failure, post-head recovery, unlock retry, and draft-import retry.
 
@@ -361,7 +361,7 @@ Use spies/counters and generated small bodies to model an inventory whose logica
 
 Treat browser localStorage drafts as an external handoff source, not as rows protected by the SQLCipher fence. Add a mutation-between-seal-and-finalize test: the server may durably import the exact submitted draft revision/hash, but the client must retain a newer local draft and submit it as a later revision instead of deleting it on receipt for stale content.
 
-- [ ] **Step 2: Separate inventory from body production**
+- [x] **Step 2: Separate inventory from body production**
 
 In `writing_source.py`, add:
 
@@ -375,37 +375,37 @@ begin_writing_source_fence(...)
 
 Inventory computes deterministic folder/object ordering, IDs, revisions, metadata, attachment storage identities, counts, and a source digest without retaining bodies. The iterator re-reads one source row/blob, canonicalizes/sanitizes it, yields one body to native preparation, then releases it before advancing. Browser drafts are excluded from this SQLCipher inventory and enter only through the explicit handoff in Step 6.
 
-- [ ] **Step 3: Remove corpus-wide Python ownership**
+- [x] **Step 3: Remove corpus-wide Python ownership**
 
 Delete or reshape `PreparedWritingObject.content`, `PreparedWritingSnapshot.objects`, and `InactiveWritingCatalog.publish_native` so no path constructs `[item.content for item in self.objects]`. Attachment decryption must be scoped to the current yielded object. Post-publication verification must compare bounded metadata/hash inventories or stream one object at a time; it must not read the complete prepared corpus back into a tuple.
 
-- [ ] **Step 4: Implement resume/reconcile/seal**
+- [x] **Step 4: Implement resume/reconcile/seal**
 
 Begin/resume with the initial source generation and inventory digest. Page native status, skip exact durable descriptors, prepare missing objects one at a time, then re-read source generation/inventory. Any mismatch restarts reconciliation without sealing stale intent. Seal only the exact complete inventory.
 
-- [ ] **Step 5: Hold the SQLCipher source fence through publication**
+- [x] **Step 5: Hold the SQLCipher source fence through publication**
 
 Start `BEGIN IMMEDIATE` on a dedicated SQLCipher connection, recompute generation and inventory digest inside that transaction, and pass the exact fence values to native finalize. Keep the transaction open until native finalization and bounded result verification finish. On mismatch/failure, roll back and leave preparation resumable; on success, commit the read/fence transaction and journal the existing non-secret checkpoint.
 
-- [ ] **Step 6: Preserve unlock and API behavior**
+- [x] **Step 6: Preserve unlock and API behavior**
 
 Keep legacy SQLCipher authoritative and routes read-compatible before PCF-008. Unlock may resume a preparation but must not expose partial CoreFS state.
 
 For each browser localStorage draft import, require a stable draft ID, monotonic client revision, and SHA-256 of the exact submitted canonical body. Bind that immutable handoff token into the preparation source digest/intent and return it in the durable completion result. The client removes localStorage only when the completion token still matches its current draft ID/revision/hash; if the user edited during preparation, keep the newer local draft and retry it as a new revision. This external optimistic CAS complements, but is not claimed to be protected by, `BEGIN IMMEDIATE`.
 
-Extend the diary schema and generated-by-hand API client types with an explicit draft handoff request/result containing `draftId`, `clientRevision`, `contentSha256`, and the matching durable completion token. In `draft-migration.ts`, persist/increment the client revision alongside the local draft, hash the exact canonical payload submitted, and re-read localStorage before deletion. `Journal.tsx` must treat a stale completion token as a successful import of the old revision but keep/schedule the newer local revision. Add a deterministic desktop test that edits the draft while the mocked import is in flight and proves the newer value is neither deleted nor overwritten.
+Extend the diary schema and generated-by-hand API client types with an explicit draft handoff request/result containing `draftId`, `clientRevision`, `contentSha256`, and the matching durable completion token. In `features/diary/lib/draftMigration.ts`, persist/increment the client revision alongside the local draft, hash the exact canonical payload submitted, and re-read localStorage before deletion. `DiaryWorkspace.tsx` must treat a stale completion token as a successful import of the old revision but keep/schedule the newer local revision. Add a deterministic desktop test that edits the draft while the mocked import is in flight and proves the newer value is neither deleted nor overwritten.
 
-- [ ] **Step 7: Retire the aggregate production path after caller migration**
+- [x] **Step 7: Retire the aggregate production path after caller migration**
 
 Once `diary_migration.py` and its fakes use only the new preparation lifecycle, remove `CorefsSession.validation_batch_parts_v1` and `CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT` from `packages/anima-core/src/ffi.rs`. Keep crate-private converter helpers and explicitly test-only compatibility fixtures only if the Rust validation-batch tests still require them. Assert with a repository search test/check that no server code calls the aggregate API.
 
-- [ ] **Step 8: Run focused Python validation and commit**
+- [x] **Step 8: Run focused Python validation and commit**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/test_diary_api.py -q
 uv run ruff check apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py
 bun test packages/api-client/tests/client.test.ts apps/desktop/tests/journal-draft-migration.test.ts
-git add packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py packages/api-client/src/client.ts packages/api-client/src/types.ts packages/api-client/tests/client.test.ts apps/desktop/src/pages/Journal.tsx apps/desktop/src/pages/journal/draft-migration.ts apps/desktop/tests/journal-draft-migration.test.ts apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
+git add packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py packages/api-client/src/client.ts packages/api-client/src/types.ts packages/api-client/tests/client.test.ts apps/desktop/src/features/diary/DiaryWorkspace.tsx apps/desktop/src/features/diary/lib/draftMigration.ts apps/desktop/tests/journal-draft-migration.test.ts apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
 git -c commit.gpgsign=false commit -m "server: stream resumable writing preparation"
 ```
 

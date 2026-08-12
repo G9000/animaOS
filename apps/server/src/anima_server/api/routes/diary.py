@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from urllib.parse import quote
 
 from fastapi import (
@@ -21,6 +22,7 @@ from anima_server.db import get_db
 from anima_server.schemas.diary import (
     DiaryAttachmentResponse,
     DiaryCorefsPreparedResponse,
+    DiaryDraftCompletionToken,
     DiaryDraftImportRequest,
     DiaryDraftImportResponse,
     DiaryEntryCreateRequest,
@@ -91,6 +93,11 @@ async def import_legacy_draft(
     session = await require_unlocked_session_async(request)
     if session.user_id != payload.userId:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
+    if hashlib.sha256(payload.html.encode()).hexdigest() != payload.contentSha256:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Draft content hash does not match the submitted canonical body.",
+        )
     try:
         migrated = prepare_diary_validation_catalog(
             session=session,
@@ -98,6 +105,8 @@ async def import_legacy_draft(
             staged_drafts=(
                 LegacyDiaryDraft(
                     id=payload.draftId,
+                    client_revision=payload.clientRevision,
+                    content_sha256=payload.contentSha256,
                     target_entry_id=payload.targetEntryId,
                     body=payload.html,
                     content_type="text/html",
@@ -123,6 +132,11 @@ async def import_legacy_draft(
         revision=migrated.revision,
         generation=migrated.generation,
         catalogHash=migrated.catalog_hash,
+        completionToken=DiaryDraftCompletionToken(
+            draftId=payload.draftId,
+            clientRevision=payload.clientRevision,
+            contentSha256=payload.contentSha256,
+        ),
     )
 
 

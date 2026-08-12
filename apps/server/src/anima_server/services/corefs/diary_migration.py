@@ -10,8 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from anima_server.services.corefs.formats import (
     DIARY_CONTENT_TYPE,
@@ -174,6 +173,8 @@ class LegacyDiaryDraft:
     body: str
     content_type: str
     updated_at: str
+    client_revision: int | None = None
+    content_sha256: str | None = None
     stable_id: str | None = None
     metadata: dict[str, Any] | None = None
     target_stable_id: str | None = None
@@ -251,57 +252,6 @@ class InactiveWritingCatalog:
     def publish(self, publisher: Callable[[InactiveWritingCatalog], None]) -> None:
         """Hand one immutable snapshot to the native atomic publication boundary."""
         publisher(self)
-
-    def publish_native(
-        self,
-        *,
-        corefs_session: Any,
-        keys: object,
-        expected_head: tuple[int, str] | None = None,
-    ) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "initialize": expected_head is None,
-            "folders": [
-                {
-                    "stableId": item.stable_id,
-                    "parentId": item.parent_id,
-                    "name": item.name,
-                    "role": item.role,
-                    "policy": item.policy,
-                    "metadata": item.metadata,
-                }
-                for item in self.folders
-            ],
-            "objects": [
-                {
-                    "stableId": item.stable_id,
-                    "parentId": item.parent_id,
-                    "name": item.name,
-                    "kind": item.kind,
-                    "contentType": item.content_type,
-                    "bodyEncoding": item.body_encoding,
-                    "contentIndex": index,
-                    "createdAt": item.created_at,
-                    "updatedAt": item.updated_at,
-                    "sourceCharacterCount": item.source_character_count,
-                    "expectedRevision": item.expected_revision,
-                    "references": list(item.references),
-                    "policy": item.policy,
-                    "metadata": item.metadata,
-                }
-                for index, item in enumerate(self.objects)
-            ],
-        }
-        if expected_head is not None:
-            payload["initialize"] = False
-            payload["expectedGeneration"] = expected_head[0]
-            payload["expectedCatalogHash"] = expected_head[1]
-        result = corefs_session.validation_batch_parts_v1(
-            keys,
-            json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            [item.content for item in self.objects],
-        )
-        return dict(result)
 
     def with_expected_revisions(
         self,
@@ -814,7 +764,7 @@ class PreparedWritingObject:
     kind: str
     revision: int
     content_hash: str
-    content: bytes
+    body_length: int
     created_at: str
     updated_at: str
     metadata: dict[str, Any]
@@ -957,13 +907,6 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
                 or not isinstance(metadata, dict)
             ):
                 raise DiaryMigrationError("Invalid prepared CoreFS walk entry.")
-            content = _read_prepared_bytes(
-                session=session,
-                selected=selected,
-                path=path,
-            )
-            if hashlib.sha256(content).hexdigest() != content_hash:
-                raise DiaryMigrationError("Prepared object hash did not verify.")
             stat = _wire_result(
                 logical.stat_v1(
                     corefs_session=session.corefs_session,
@@ -975,7 +918,14 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
             )
             content_type = stat.get("contentType")
             body_encoding = stat.get("bodyEncoding")
-            if not isinstance(content_type, str) or body_encoding not in {"utf-8", "binary"}:
+            body_length = stat.get("size")
+            if (
+                not isinstance(content_type, str)
+                or body_encoding not in {"utf-8", "binary"}
+                or isinstance(body_length, bool)
+                or not isinstance(body_length, int)
+                or body_length < 0
+            ):
                 raise DiaryMigrationError("Invalid prepared CoreFS envelope identity.")
             values.append(
                 PreparedWritingObject(
@@ -986,7 +936,7 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
                     kind=kind,
                     revision=revision,
                     content_hash=content_hash,
-                    content=content,
+                    body_length=body_length,
                     created_at=created_at,
                     updated_at=updated_at,
                     metadata=dict(metadata),
@@ -1003,16 +953,20 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
     return PreparedWritingSnapshot(folders=tuple(folders), objects=tuple(values))
 
 
-def _source_character_count(item: PreparedWritingObject, canonical_body: str) -> int:
-    value = item.metadata.get("sourceCharacterCount")
-    if value is None:
-        # Compatibility for validation heads created before PCF-004 persisted
-        # the explicit source count. Those heads already enforced a 20M
-        # canonical-body ceiling, so the authenticated body count is bounded.
-        return len(canonical_body)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise DiaryMigrationError("Prepared writing source character count is invalid.")
-    return value
+def read_prepared_writing_body(*, session: Any, item: PreparedWritingObject) -> bytes:
+    """Read and verify exactly one inactive writing body."""
+    from anima_server.services.corefs import logical
+
+    if session.corefs_session is None or session.corefs_keys is None:
+        raise DiaryMigrationError("CoreFS prepared access requires an unlocked session.")
+    selected = logical.select_validation_snapshot(
+        corefs_session=session.corefs_session,
+        keys=session.corefs_keys,
+    )
+    content = _read_prepared_bytes(session=session, selected=selected, path=item.path)
+    if len(content) != item.body_length or hashlib.sha256(content).hexdigest() != item.content_hash:
+        raise DiaryMigrationError("Prepared object body did not verify.")
+    return content
 
 
 def prepare_diary_validation_catalog(
@@ -1022,256 +976,21 @@ def prepare_diary_validation_catalog(
     staged_drafts: Iterable[LegacyDiaryDraft] = (),
     staged_notes: Iterable[LegacyNote] = (),
 ) -> DiaryMigrationResult:
-    """Convert SQLCipher diary state into the inactive authenticated catalog.
+    """Stream legacy writing into resumable inactive CoreFS preparation."""
+    from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 
-    Legacy SQLCipher remains authoritative until PCF-008. This routine only
-    advances the native validation head and records a non-secret checkpoint.
-    """
-    from anima_server.models import DiaryAttachment, DiaryEntry, DiaryFolder
-    from anima_server.services.corefs.formats import decode_draft_document, decode_note_document
-    from anima_server.services.data_crypto import df
-    from anima_server.services.diary import read_attachment_blob
-
-    if session.corefs_session is None or session.corefs_keys is None:
-        raise DiaryMigrationError("Diary migration requires an unlocked CoreFS session.")
-
-    staged_drafts = tuple(staged_drafts)
-    staged_notes = tuple(staged_notes)
-    current: tuple[PreparedWritingObject, ...]
-    current_folders: tuple[PreparedWritingFolder, ...]
     try:
-        head_value = session.corefs_session.validation_snapshot(session.corefs_keys)
-        expected_head = (int(head_value["generation"]), str(head_value["catalogHash"]))
-    except ValueError as exc:
-        if str(exc) != "CoreFS validation snapshot is missing":
-            record_diary_migration_failure(user_id=session.user_id, error=exc)
-            raise DiaryMigrationError("CoreFS validation head could not be opened.") from exc
-        current = ()
-        current_folders = ()
-        expected_head = None
+        return prepare_writing_source_catalog(
+            session=session,
+            db=db,
+            staged_drafts=staged_drafts,
+            staged_notes=staged_notes,
+        )
     except Exception as exc:
         record_diary_migration_failure(user_id=session.user_id, error=exc)
-        raise DiaryMigrationError("CoreFS validation head could not be opened.") from exc
-    else:
-        try:
-            prepared_snapshot = read_prepared_writing_snapshot(session=session)
-        except Exception as exc:
-            record_diary_migration_failure(user_id=session.user_id, error=exc)
-            raise DiaryMigrationError("CoreFS validation head could not be read safely.") from exc
-        current = prepared_snapshot.objects
-        current_folders = prepared_snapshot.folders
-    allowed_kinds = {"diary", "attachment", "draft", "note"}
-    unknown = sorted({item.kind for item in current if item.kind not in allowed_kinds})
-    if unknown:
-        raise DiaryMigrationError(
-            "Writing validation batch cannot replace unrelated prepared families: "
-            + ", ".join(unknown)
-        )
-
-    existing_drafts: dict[str, LegacyDiaryDraft] = {}
-    existing_notes: dict[str, LegacyNote] = {}
-    for item in current:
-        if item.kind == "draft":
-            decoded = decode_draft_document(item.content)
-            existing_drafts[decoded.stable_id] = LegacyDiaryDraft(
-                id=decoded.stable_id,
-                target_entry_id=None,
-                body=decoded.body,
-                content_type=decoded.content_type,
-                updated_at=item.updated_at,
-                stable_id=decoded.stable_id,
-                metadata=decoded.metadata,
-                target_stable_id=decoded.target_id,
-                created_at=item.created_at,
-                native_metadata=item.metadata,
-                source_character_count=_source_character_count(item, decoded.body),
-            )
-        elif item.kind == "note":
-            decoded_note = decode_note_document(item.content)
-            existing_notes[decoded_note.stable_id] = LegacyNote(
-                id=decoded_note.stable_id,
-                title=decoded_note.title,
-                body=decoded_note.body,
-                content_type=decoded_note.content_type,
-                updated_at=item.updated_at,
-                stable_id=decoded_note.stable_id,
-                created_at=item.created_at,
-                native_metadata=item.metadata,
-                source_character_count=_source_character_count(item, decoded_note.body),
-            )
-    for draft in staged_drafts:
-        existing_drafts[migration_opaque_id("diary-draft", draft.id)] = draft
-    for note in staged_notes:
-        existing_notes[note.stable_id or migration_opaque_id("note", note.id)] = note
-
-    folder_rows = list(
-        db.scalars(
-            select(DiaryFolder)
-            .where(DiaryFolder.user_id == session.user_id)
-            .order_by(DiaryFolder.created_at, DiaryFolder.id)
-        ).all()
-    )
-    attachment_rows = list(
-        db.scalars(
-            select(DiaryAttachment)
-            .where(DiaryAttachment.user_id == session.user_id)
-            .order_by(DiaryAttachment.created_at, DiaryAttachment.id)
-        ).all()
-    )
-    attachments_by_entry: dict[int, list[DiaryAttachment]] = {}
-    legacy_attachments: dict[int, LegacyDiaryAttachment] = {}
-    for row in attachment_rows:
-        blob = read_attachment_blob(user_id=session.user_id, attachment=row)
-        legacy = LegacyDiaryAttachment(
-            id=row.id,
-            entry_id=row.entry_id,
-            kind=row.kind,
-            mime_type=row.mime_type,
-            data=blob.data,
-            sha256=row.sha256,
-            filename=df(
-                session.user_id,
-                row.original_filename,
-                table="diary_attachments",
-                field="original_filename",
-            )
-            or None,
-            caption=df(
-                session.user_id,
-                row.caption,
-                table="diary_attachments",
-                field="caption",
-            )
-            or None,
-            created_at=_timestamp(row.created_at),
-        )
-        legacy_attachments[row.id] = legacy
-        attachments_by_entry.setdefault(row.entry_id, []).append(row)
-
-    entry_rows = list(
-        db.scalars(
-            select(DiaryEntry)
-            .options(selectinload(DiaryEntry.attachments))
-            .where(DiaryEntry.user_id == session.user_id)
-            .order_by(DiaryEntry.id)
-        ).all()
-    )
-    legacy_entries: list[LegacyDiaryEntry] = []
-    for row in entry_rows:
-        body = df(session.user_id, row.body, table="diary_entries", field="body")
-        legacy_entries.append(
-            LegacyDiaryEntry(
-                id=row.id,
-                entry_date=row.entry_date,
-                title=df(session.user_id, row.title, table="diary_entries", field="title") or None,
-                body=body,
-                body_is_html=bool(re.match(r"\s*<", body)),
-                mood=df(session.user_id, row.mood, table="diary_entries", field="mood") or None,
-                folder_id=row.folder_id,
-                cover_attachment_id=row.cover_attachment_id,
-                attachments=tuple(legacy_attachments[item.id] for item in row.attachments),
-                source=row.source,
-                created_at=_timestamp(row.created_at),
-                updated_at=_timestamp(row.updated_at),
-            )
-        )
-
-    legacy_folders = tuple(
-        LegacyDiaryFolder(
-            id=row.id,
-            name=df(session.user_id, row.name, table="diary_folders", field="name") or row.name,
-            parent_id=None,
-            order=index,
-            created_at=_timestamp(row.created_at),
-        )
-        for index, row in enumerate(folder_rows)
-    )
-    catalog = build_inactive_diary_catalog(
-        user_id=session.user_id,
-        folders=legacy_folders,
-        entries=legacy_entries,
-        drafts=tuple(existing_drafts.values()),
-        notes=tuple(existing_notes.values()),
-        preserved_folders=tuple(
-            InactiveFolder(
-                stable_id=item.stable_id,
-                parent_id=item.parent_id,
-                name=item.name,
-                order=0,
-                role=item.role,
-                owner="user",
-                agent_access="write",
-                policy="user-write" if item.role is not None else "inherit",
-            )
-            for item in current_folders
-        ),
-        preserved_objects=tuple(
-            InactiveObject(
-                stable_id=item.stable_id,
-                parent_id=item.parent_id,
-                name=item.name,
-                kind=item.kind,
-                content_type=item.content_type,
-                content=item.content,
-                content_hash=item.content_hash,
-                source_hash=item.content_hash,
-                body_encoding=item.body_encoding,
-                created_at=item.created_at,
-                updated_at=item.updated_at,
-                expected_revision=item.revision,
-                policy="inherit",
-                metadata=item.metadata,
-            )
-            for item in current
-            if item.kind == "attachment"
-        ),
-    )
-    revisions = {item.stable_id: item.revision for item in current}
-    catalog = catalog.with_expected_revisions(revisions)
-    result = catalog.publish_native(
-        corefs_session=session.corefs_session,
-        keys=session.corefs_keys,
-        expected_head=expected_head,
-    )
-    verified = read_prepared_writing_objects(session=session)
-    expected_hashes = {item.stable_id: item.content_hash for item in catalog.objects}
-    actual_hashes = {item.stable_id: item.content_hash for item in verified}
-    if expected_hashes != actual_hashes:
-        raise DiaryMigrationError("Prepared diary object count/hash verification failed.")
-    _verify_api_parity(legacy_entries, verified)
-    source_counts = {
-        "folders": len(legacy_folders),
-        "entries": len(legacy_entries),
-        "attachments": len(attachment_rows),
-        "drafts": len(existing_drafts),
-        "notes": len(existing_notes),
-    }
-    source_hash = _source_checkpoint_hash(catalog, source_counts)
-    _write_checkpoint(
-        user_id=session.user_id,
-        generation=int(result["generation"]),
-        catalog_hash=str(result["catalogHash"]),
-        source_counts=source_counts,
-        source_hash=source_hash,
-    )
-    staged_id = (
-        staged_drafts[-1].stable_id or migration_opaque_id("diary-draft", staged_drafts[-1].id)
-        if staged_drafts
-        else None
-    )
-    staged_revision = next(
-        (item.revision for item in verified if item.stable_id == staged_id),
-        None,
-    )
-    return DiaryMigrationResult(
-        generation=int(result["generation"]),
-        catalog_hash=str(result["catalogHash"]),
-        published=bool(result["published"]),
-        source_counts=source_counts,
-        source_hash=source_hash,
-        stable_id=staged_id,
-        revision=staged_revision,
-    )
+        if isinstance(exc, (DiaryMigrationError, ValueError)):
+            raise
+        raise DiaryMigrationError("CoreFS writing preparation failed safely.") from exc
 
 
 def _read_prepared_bytes(*, session: Any, selected: Any, path: str) -> bytes:
@@ -1315,43 +1034,6 @@ def _wire_result(raw: bytes, generation: int) -> dict[str, object]:
     return result
 
 
-def _verify_api_parity(
-    legacy_entries: Iterable[LegacyDiaryEntry],
-    prepared: Iterable[PreparedWritingObject],
-) -> None:
-    from anima_server.services.corefs.formats import decode_diary_document
-
-    by_id = {item.stable_id: item for item in prepared if item.kind == "diary"}
-    for legacy in legacy_entries:
-        item = by_id.get(migration_opaque_id("diary-entry", str(legacy.id)))
-        if item is None:
-            raise DiaryMigrationError("Prepared diary API parity entry is missing.")
-        decoded = decode_diary_document(item.content)
-        if (
-            decoded.legacy_id != legacy.id
-            or decoded.legacy_folder_id != legacy.folder_id
-            or decoded.title != legacy.title
-            or decoded.mood != legacy.mood
-            or decoded.source != legacy.source
-            or decoded.created_at != legacy.created_at
-            or decoded.updated_at != legacy.updated_at
-        ):
-            raise DiaryMigrationError("Prepared diary API parity metadata mismatch.")
-
-
-def _source_checkpoint_hash(
-    catalog: InactiveWritingCatalog,
-    counts: dict[str, int],
-) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            {"catalogHash": catalog.catalog_hash, "counts": counts},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
-
-
 def _write_checkpoint(
     *,
     user_id: int,
@@ -1359,6 +1041,8 @@ def _write_checkpoint(
     catalog_hash: str,
     source_counts: dict[str, int],
     source_hash: str,
+    source_mutation_generation: int | None = None,
+    completion_token: dict[str, object] | None = None,
 ) -> None:
     from anima_server.services.core import update_core_manifest
 
@@ -1366,7 +1050,7 @@ def _write_checkpoint(
         checkpoints = manifest.setdefault("migration_checkpoints", {})
         if not isinstance(checkpoints, dict):
             raise DiaryMigrationError("Core migration checkpoint registry is invalid.")
-        checkpoints[f"pcf004:{user_id}"] = {
+        checkpoint: dict[str, object] = {
             "state": "verified-inactive",
             "generation": generation,
             "catalogHash": catalog_hash,
@@ -1375,6 +1059,11 @@ def _write_checkpoint(
             "verifiedAt": _now_iso(),
             "authoritative": False,
         }
+        if source_mutation_generation is not None:
+            checkpoint["sourceMutationGeneration"] = source_mutation_generation
+        if completion_token is not None:
+            checkpoint["completionToken"] = completion_token
+        checkpoints[f"pcf004:{user_id}"] = checkpoint
 
     update_core_manifest(update)
 
@@ -1396,14 +1085,6 @@ def record_diary_migration_failure(*, user_id: int, error: Exception) -> None:
         }
 
     update_core_manifest(update)
-
-
-def _timestamp(value: datetime | None) -> str | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=UTC)
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _now_iso() -> str:

@@ -35,7 +35,6 @@ mod python {
     use crate::temporal::TemporalIndex;
 
     const CORE_FS_FFI_IN_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
-    const CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT: usize = 1024 * 1024 * 1024;
 
     struct PyBinaryReader<'py> {
         inner: Bound<'py, PyAny>,
@@ -1337,45 +1336,6 @@ mod python {
         ) -> PyResult<PyObject> {
             let _operation = self.acquire_operation()?;
             let batch = decode_validation_batch_json(batch_json)?;
-            let outcome = py
-                .allow_threads(|| self.coordinator.apply_validation_batch(&keys.inner, batch))
-                .map_err(corefs_validation_batch_error)?;
-            let head = outcome.snapshot().head();
-            json_value_to_py(
-                py,
-                json!({
-                    "generation": head.generation(),
-                    "catalogHash": head.catalog_hash(),
-                    "published": outcome.published(),
-                }),
-            )
-        }
-
-        /// Apply a bounded metadata graph with object bodies carried separately as bytes.
-        ///
-        /// Keeping bodies outside JSON avoids base64 expansion and the catalog plaintext
-        /// ceiling while preserving the strict 16 MiB bound on graph metadata.
-        fn validation_batch_parts_v1(
-            &self,
-            py: Python<'_>,
-            keys: &PyCorefsSubkeys,
-            batch_json: &str,
-            content_parts: Vec<Vec<u8>>,
-        ) -> PyResult<PyObject> {
-            let _operation = self.acquire_operation()?;
-            let aggregate_bytes = content_parts.iter().try_fold(0_usize, |total, part| {
-                total.checked_add(part.len()).ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "validation content parts aggregate size overflow",
-                    )
-                })
-            })?;
-            if aggregate_bytes > CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "validation content parts exceed the 1 GiB aggregate limit",
-                ));
-            }
-            let batch = decode_validation_batch_parts_json(batch_json, Some(content_parts))?;
             let outcome = py
                 .allow_threads(|| self.coordinator.apply_validation_batch(&keys.inner, batch))
                 .map_err(corefs_validation_batch_error)?;
@@ -5207,9 +5167,7 @@ mod python {
                 .to_string();
 
                 with_python(|py| {
-                    let outcome = session
-                        .validation_batch_parts_v1(py, &keys, &batch, Vec::new())
-                        .unwrap();
+                    let outcome = session.validation_batch_v1(py, &keys, &batch).unwrap();
                     let outcome = outcome.bind(py).downcast::<PyDict>().unwrap();
                     assert_eq!(
                         outcome

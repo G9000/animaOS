@@ -7,7 +7,9 @@ import type {
 } from "@anima/api-client";
 import type { Editor } from "@tiptap/react";
 import { useAuth } from "../../context/AuthContext";
+import { api } from "../../lib/api";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
+import { migrateLegacyDiaryDrafts } from "./lib/draftMigration";
 import { stripUnresolvedAttachmentImages } from "./lib/attachmentImages";
 import {
   graduateSessionEntry,
@@ -331,19 +333,29 @@ export default function DiaryWorkspace() {
     initialEntryDateRef.current = selectedEntry.entryDate;
   }, [selectedEntry?.id, initialHtml]);
 
-  // Remove drafts written by older builds. Diary content must stay in the
-  // encrypted diary service, not in browser storage.
+  // Move drafts written by older builds into the inactive encrypted CoreFS
+  // catalog. Deletion uses the durable ID/revision/hash completion token, so
+  // an edit made while the request is in flight remains local and is retried.
   useEffect(() => {
     if (user?.id == null) return;
     const prefix = `anima:diary:draft:${user.id}:`;
-    try {
-      for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
-        const key = window.localStorage.key(index);
-        if (key?.startsWith(prefix)) window.localStorage.removeItem(key);
-      }
-    } catch {
-      // Browser storage can be unavailable in restricted environments.
-    }
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const migrate = async () => {
+      const retry = await migrateLegacyDiaryDrafts({
+        storage: window.localStorage,
+        prefix,
+        userId: user.id,
+        sanitizeHtml: sanitizeDiaryHtml,
+        importDraft: (draft) => api.diary.importLegacyDraft(user.id, draft),
+      });
+      if (retry && !cancelled) retryTimer = setTimeout(() => void migrate(), 1_000);
+    };
+    void migrate();
+    return () => {
+      cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+    };
   }, [user?.id]);
 
   // Voice-note recording + live speech-to-text, extracted (Task 12) into

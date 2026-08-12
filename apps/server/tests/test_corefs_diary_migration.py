@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import anima_core
 import pytest
+from anima_server.db.base import Base
 from anima_server.schemas.diary import DIARY_BODY_MAX_LENGTH, DiaryDraftImportRequest
 from anima_server.services.corefs.diary_migration import (
     DiaryMigrationError,
@@ -21,6 +22,7 @@ from anima_server.services.corefs.diary_migration import (
     build_inactive_diary_catalog,
     migration_opaque_id,
     prepare_diary_validation_catalog,
+    read_prepared_writing_body,
     read_prepared_writing_objects,
 )
 from anima_server.services.corefs.formats import (
@@ -30,8 +32,53 @@ from anima_server.services.corefs.formats import (
     decode_diary_document,
     decode_draft_document,
     encode_diary_document,
+    encode_note_document,
 )
+from anima_server.services.corefs.writing_source import (
+    WritingSourceInventory,
+    WritingSourceObjectDescriptor,
+    iter_writing_source_objects,
+)
+from corefs_writing_test_support import publish_catalog_native
 from pydantic import ValidationError
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+
+
+class _PreparationFaultProxy:
+    def __init__(
+        self,
+        native: object,
+        *,
+        fail_after_object: int | None = None,
+        fail_finalize_before: bool = False,
+        fail_finalize_after: bool = False,
+    ) -> None:
+        self.native = native
+        self.fail_after_object = fail_after_object
+        self.fail_finalize_before = fail_finalize_before
+        self.fail_finalize_after = fail_finalize_after
+        self.prepared_objects = 0
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self.native, name)
+
+    def preparation_prepare_object_v1(
+        self, keys: object, request: str, body: bytes
+    ) -> object:
+        result = self.native.preparation_prepare_object_v1(keys, request, body)  # type: ignore[attr-defined]
+        self.prepared_objects += 1
+        if self.prepared_objects == self.fail_after_object:
+            raise RuntimeError("simulated crash after durable prepared object")
+        return result
+
+    def preparation_finalize_v1(self, keys: object, request: str) -> object:
+        if self.fail_finalize_before:
+            raise RuntimeError("simulated native finalization failure")
+        result = self.native.preparation_finalize_v1(keys, request)  # type: ignore[attr-defined]
+        if self.fail_finalize_after:
+            raise RuntimeError("simulated crash after native finalization")
+        return result
 
 
 def test_legacy_local_storage_draft_extracts_and_deduplicates_inline_images() -> None:
@@ -67,10 +114,14 @@ def test_poison_validation_head_is_checkpointed_and_never_reinitialized(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "core"
-    native = anima_core.CorefsSession(str(root), "poison-writing-head")
+    native = anima_core.CorefsSession(
+        str(root), migration_opaque_id("test-core", "poison-writing-head")
+    )
     keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
-    build_inactive_diary_catalog(user_id=7, folders=(), entries=()).publish_native(
-        corefs_session=native, keys=keys
+    publish_catalog_native(
+        build_inactive_diary_catalog(user_id=7, folders=(), entries=()),
+        corefs_session=native,
+        keys=keys,
     )
     head_path = root / "fs" / "VALIDATION_HEAD"
     poison = b"authenticated-head-was-corrupted"
@@ -105,6 +156,8 @@ def test_public_draft_schema_round_trips_four_byte_unicode_through_native_bounda
     payload = DiaryDraftImportRequest(
         userId=1,
         draftId="public-boundary",
+        clientRevision=1,
+        contentSha256=hashlib.sha256(html.encode()).hexdigest(),
         html=html,
         title="",
         mood="",
@@ -125,15 +178,21 @@ def test_public_draft_schema_round_trips_four_byte_unicode_through_native_bounda
             ),
         ),
     )
-    native = anima_core.CorefsSession(str(tmp_path / "core"), "public-writing-boundary")
+    native = anima_core.CorefsSession(
+        str(tmp_path / "core"), migration_opaque_id("test-core", "public-writing-boundary")
+    )
     keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
-    first = catalog.publish_native(corefs_session=native, keys=keys)
+    first = publish_catalog_native(catalog, corefs_session=native, keys=keys)
     draft_id = migration_opaque_id("diary-draft", payload.draftId)
     prepared = read_prepared_writing_objects(
         session=SimpleNamespace(corefs_session=native, corefs_keys=keys)
     )
+    draft_item = next(item for item in prepared if item.stable_id == draft_id)
     decoded = decode_draft_document(
-        next(item.content for item in prepared if item.stable_id == draft_id)
+        read_prepared_writing_body(
+            session=SimpleNamespace(corefs_session=native, corefs_keys=keys),
+            item=draft_item,
+        )
     )
     assert decoded.body == html
     before = native.validation_snapshot(keys)
@@ -142,6 +201,8 @@ def test_public_draft_schema_round_trips_four_byte_unicode_through_native_bounda
         DiaryDraftImportRequest(
             userId=1,
             draftId="oversized",
+            clientRevision=1,
+            contentSha256=hashlib.sha256(("x" * (DIARY_BODY_MAX_LENGTH + 1)).encode()).hexdigest(),
             html="x" * (DIARY_BODY_MAX_LENGTH + 1),
             title="",
             mood="",
@@ -154,37 +215,34 @@ def test_public_draft_schema_round_trips_four_byte_unicode_through_native_bounda
 def test_restart_rebuild_preserves_extracted_draft_attachment_exactly_and_is_a_noop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    class EmptyDb:
-        def scalars(self, _statement: object) -> EmptyDb:
-            return self
-
-        def all(self) -> list[object]:
-            return []
-
     monkeypatch.setattr("anima_server.services.core.update_core_manifest", lambda _mutator: None)
+    engine = create_engine(f"sqlite:///{(tmp_path / 'source.db').as_posix()}")
+    Base.metadata.create_all(engine)
     root = tmp_path / "core"
     keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
-    first_session = anima_core.CorefsSession(str(root), "draft-attachment-rebuild")
+    core_id = migration_opaque_id("test-core", "draft-attachment-rebuild")
+    first_session = anima_core.CorefsSession(str(root), core_id)
     image = b"restart-safe-image"
     body = '<p><img src="data:image/png;base64,' + base64.b64encode(image).decode() + '"></p>'
-    first = prepare_diary_validation_catalog(
-        session=SimpleNamespace(
-            user_id=41,
-            corefs_session=first_session,
-            corefs_keys=keys,
-        ),
-        db=EmptyDb(),
-        staged_drafts=(
-            LegacyDiaryDraft(
-                id="restart-draft",
-                target_entry_id=None,
-                body=body,
-                content_type="text/html",
-                updated_at="2026-08-02T00:00:00Z",
-                native_metadata={},  # pre-source-count validation envelope
+    with Session(engine) as db:
+        first = prepare_diary_validation_catalog(
+            session=SimpleNamespace(
+                user_id=41,
+                corefs_session=first_session,
+                corefs_keys=keys,
             ),
-        ),
-    )
+            db=db,
+            staged_drafts=(
+                LegacyDiaryDraft(
+                    id="restart-draft",
+                    target_entry_id=None,
+                    body=body,
+                    content_type="text/html",
+                    updated_at="2026-08-02T00:00:00Z",
+                    native_metadata={},  # pre-source-count validation envelope
+                ),
+            ),
+        )
     media_id = migration_opaque_id("diary-inline-media", hashlib.sha256(image).hexdigest())
     before = read_prepared_writing_objects(
         session=SimpleNamespace(corefs_session=first_session, corefs_keys=keys)
@@ -192,15 +250,16 @@ def test_restart_rebuild_preserves_extracted_draft_attachment_exactly_and_is_a_n
     attachment_before = next(item for item in before if item.stable_id == media_id)
 
     del first_session
-    restarted = anima_core.CorefsSession(str(root), "draft-attachment-rebuild")
-    second = prepare_diary_validation_catalog(
-        session=SimpleNamespace(
-            user_id=41,
-            corefs_session=restarted,
-            corefs_keys=keys,
-        ),
-        db=EmptyDb(),
-    )
+    restarted = anima_core.CorefsSession(str(root), core_id)
+    with Session(engine) as db:
+        second = prepare_diary_validation_catalog(
+            session=SimpleNamespace(
+                user_id=41,
+                corefs_session=restarted,
+                corefs_keys=keys,
+            ),
+            db=db,
+        )
     after = read_prepared_writing_objects(
         session=SimpleNamespace(corefs_session=restarted, corefs_keys=keys)
     )
@@ -209,8 +268,208 @@ def test_restart_rebuild_preserves_extracted_draft_attachment_exactly_and_is_a_n
     assert second.published is False
     assert second.generation == first.generation
     assert attachment_after == attachment_before
-    draft = decode_draft_document(next(item.content for item in after if item.kind == "draft"))
+    draft_item = next(item for item in after if item.kind == "draft")
+    draft = decode_draft_document(
+        read_prepared_writing_body(
+            session=SimpleNamespace(corefs_session=restarted, corefs_keys=keys),
+            item=draft_item,
+        )
+    )
     assert f"corefs://object/{media_id}" in draft.body
+
+
+@pytest.mark.parametrize("fail_after_object", [1, 2])
+def test_streaming_preparation_reconciles_every_durable_object_after_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_after_object: int,
+) -> None:
+    monkeypatch.setattr("anima_server.services.core.update_core_manifest", lambda _mutator: None)
+    monkeypatch.setattr(
+        "anima_server.services.core.get_manifest_path",
+        lambda: tmp_path / "missing-manifest.json",
+    )
+    engine = create_engine(f"sqlite:///{(tmp_path / 'source.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    root = tmp_path / "core"
+    core_id = migration_opaque_id("test-core", f"restart-after-{fail_after_object}")
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    native = anima_core.CorefsSession(str(root), core_id)
+    draft = LegacyDiaryDraft(
+        id="restart-draft",
+        target_entry_id=None,
+        body=(
+            '<p><img src="data:image/png;base64,'
+            + base64.b64encode(b"bounded-restart-image").decode()
+            + '"></p>'
+        ),
+        content_type="text/html",
+        updated_at="2026-08-02T00:00:00Z",
+    )
+    crashing = _PreparationFaultProxy(native, fail_after_object=fail_after_object)
+    with Session(engine) as db, pytest.raises(
+        DiaryMigrationError, match="failed safely"
+    ):
+        prepare_diary_validation_catalog(
+            session=SimpleNamespace(
+                user_id=51,
+                corefs_session=crashing,
+                corefs_keys=keys,
+            ),
+            db=db,
+            staged_drafts=(draft,),
+        )
+
+    del crashing
+    del native
+    restarted = anima_core.CorefsSession(str(root), core_id)
+    counting = _PreparationFaultProxy(restarted)
+    with Session(engine) as db:
+        result = prepare_diary_validation_catalog(
+            session=SimpleNamespace(
+                user_id=51,
+                corefs_session=counting,
+                corefs_keys=keys,
+            ),
+            db=db,
+            staged_drafts=(draft,),
+        )
+
+    assert result.published is True
+    assert result.generation == 1
+    assert counting.prepared_objects == 2 - fail_after_object
+    assert restarted.validation_snapshot(keys)["generation"] == 1
+
+
+@pytest.mark.parametrize("after_publication", [False, True])
+def test_streaming_preparation_recovers_native_finalize_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    after_publication: bool,
+) -> None:
+    monkeypatch.setattr("anima_server.services.core.update_core_manifest", lambda _mutator: None)
+    monkeypatch.setattr(
+        "anima_server.services.core.get_manifest_path",
+        lambda: tmp_path / "missing-manifest.json",
+    )
+    engine = create_engine(f"sqlite:///{(tmp_path / 'source.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    root = tmp_path / "core"
+    core_id = migration_opaque_id("test-core", f"finalize-{after_publication}")
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    native = anima_core.CorefsSession(str(root), core_id)
+    draft = LegacyDiaryDraft(
+        id="finalize-draft",
+        target_entry_id=None,
+        body="<p>durable before completion</p>",
+        content_type="text/html",
+        updated_at="2026-08-02T00:00:00Z",
+    )
+    failing = _PreparationFaultProxy(
+        native,
+        fail_finalize_before=not after_publication,
+        fail_finalize_after=after_publication,
+    )
+    with Session(engine) as db, pytest.raises(
+        DiaryMigrationError, match="failed safely"
+    ):
+        prepare_diary_validation_catalog(
+            session=SimpleNamespace(user_id=52, corefs_session=failing, corefs_keys=keys),
+            db=db,
+            staged_drafts=(draft,),
+        )
+
+    del failing
+    del native
+    restarted = anima_core.CorefsSession(str(root), core_id)
+    with Session(engine) as db:
+        recovered = prepare_diary_validation_catalog(
+            session=SimpleNamespace(user_id=52, corefs_session=restarted, corefs_keys=keys),
+            db=db,
+            staged_drafts=(draft,),
+        )
+
+    assert restarted.validation_snapshot(keys) == {
+        "generation": recovered.generation,
+        "catalogHash": recovered.catalog_hash,
+    }
+    assert recovered.generation == 1
+    assert recovered.published is (not after_publication)
+
+
+def test_body_iterator_models_over_one_gibibyte_without_aggregate_ownership(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{(tmp_path / 'source.db').as_posix()}")
+    Base.metadata.create_all(engine)
+    parent_id = migration_opaque_id("core-folder-role", "core.notes")
+    logical_body_size = 256 * 1024 * 1024 + 1
+    notes: list[LegacyNote] = []
+    descriptors: list[WritingSourceObjectDescriptor] = []
+    for index in range(4):
+        note = LegacyNote(
+            id=f"logical-large-{index}",
+            title=f"Part {index}",
+            body="small generated body",
+            content_type="text/markdown",
+            updated_at="2026-08-02T00:00:00Z",
+            source_character_count=logical_body_size,
+        )
+        stable_id = migration_opaque_id("note", note.id)
+        body = encode_note_document(
+            stable_id=stable_id,
+            title=note.title,
+            content_type=note.content_type,
+            body=note.body,
+        )
+        notes.append(note)
+        descriptors.append(
+            WritingSourceObjectDescriptor(
+                stable_id=stable_id,
+                parent_id=parent_id,
+                name=f"{stable_id}.note.json",
+                kind="note",
+                content_type="application/vnd.anima.note+json;v=1",
+                body_encoding="utf-8",
+                body_length=len(body),
+                content_sha256=hashlib.sha256(body).hexdigest(),
+                source_fingerprint_sha256=hashlib.sha256(note.body.encode()).hexdigest(),
+                created_at=note.updated_at,
+                updated_at=note.updated_at,
+                revision=1,
+                source_character_count=logical_body_size,
+                body_source="staged_note",
+                source_key=note.id,
+            )
+        )
+    inventory = WritingSourceInventory(
+        source_generation=1,
+        source_digest="0" * 64,
+        expected_head=None,
+        folders=(),
+        objects=tuple(descriptors),
+        source_counts={"folders": 0, "entries": 0, "attachments": 0, "drafts": 0, "notes": 4},
+    )
+
+    logical_aggregate = sum(item.source_character_count or 0 for item in descriptors)
+    max_owned_body = 0
+    yielded = 0
+    with Session(engine) as db:
+        produced = iter_writing_source_objects(
+            session=SimpleNamespace(user_id=53),
+            db=db,
+            inventory=inventory,
+            staged_notes=notes,
+        )
+        assert iter(produced) is produced
+        for item in produced:
+            yielded += 1
+            max_owned_body = max(max_owned_body, len(item.body))
+            del item
+
+    assert logical_aggregate > 1024**3
+    assert yielded == 4
+    assert max_owned_body < 1024
 
 
 def test_rebuild_rejects_dangling_and_foreign_draft_corefs_references() -> None:
@@ -275,10 +534,12 @@ def test_rebuild_rejects_dangling_and_foreign_draft_corefs_references() -> None:
 def test_invalid_legacy_draft_inline_media_fails_before_native_head_change(
     tmp_path: Path, body: str
 ) -> None:
-    session = anima_core.CorefsSession(str(tmp_path / "core"), "draft-inline-failure")
+    session = anima_core.CorefsSession(
+        str(tmp_path / "core"), migration_opaque_id("test-core", "draft-inline-failure")
+    )
     keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
     baseline = build_inactive_diary_catalog(user_id=1, folders=(), entries=())
-    first = baseline.publish_native(corefs_session=session, keys=keys)
+    first = publish_catalog_native(baseline, corefs_session=session, keys=keys)
     before = session.validation_snapshot(keys)
     with pytest.raises(CoreFormatError):
         build_inactive_diary_catalog(
@@ -722,21 +983,30 @@ def test_mapped_legacy_names_publish_read_back_and_rerun_natively(tmp_path: Path
             ),
         ),
     )
-    session = anima_core.CorefsSession(str(tmp_path / "core"), "portable-writing-names")
+    session = anima_core.CorefsSession(
+        str(tmp_path / "core"), migration_opaque_id("test-core", "portable-writing-names")
+    )
     keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
 
-    first = catalog.publish_native(corefs_session=session, keys=keys)
+    first = publish_catalog_native(catalog, corefs_session=session, keys=keys)
     prepared = read_prepared_writing_objects(
         session=SimpleNamespace(corefs_session=session, corefs_keys=keys)
     )
     attachment_id = migration_opaque_id("diary-attachment", "201")
     native_attachment = next(item for item in prepared if item.stable_id == attachment_id)
-    assert native_attachment.content == data
+    assert (
+        read_prepared_writing_body(
+            session=SimpleNamespace(corefs_session=session, corefs_keys=keys),
+            item=native_attachment,
+        )
+        == data
+    )
     assert "/" not in catalog.object(attachment_id).name
 
     revisions = {item.stable_id: item.revision for item in prepared}
     rerun = catalog.with_expected_revisions(revisions)
-    second = rerun.publish_native(
+    second = publish_catalog_native(
+        rerun,
         corefs_session=session,
         keys=keys,
         expected_head=(int(first["generation"]), str(first["catalogHash"])),
@@ -768,60 +1038,28 @@ def test_legacy_folder_policy_is_carried_into_native_descendant_policy() -> None
     assert catalog.folder(migration_opaque_id("diary-folder", "4")).policy == "deny"
 
 
-def test_native_publication_wrapper_sends_bounded_metadata_and_separate_binary_parts() -> None:
-    catalog = build_inactive_diary_catalog(
-        user_id=8,
-        folders=(),
-        entries=(),
-        drafts=(
-            LegacyDiaryDraft(
-                id="transport-draft",
-                target_entry_id=None,
-                body="<p>separate bytes</p>",
-                content_type="text/html",
-                updated_at="2026-08-02T00:00:00Z",
-            ),
-        ),
+def test_server_production_path_has_no_aggregate_validation_transport() -> None:
+    source = Path("apps/server/src/anima_server/services/corefs/diary_migration.py").read_text(
+        encoding="utf-8"
     )
+    writing_source = Path(
+        "apps/server/src/anima_server/services/corefs/writing_source.py"
+    ).read_text(encoding="utf-8")
+    ffi = Path("packages/anima-core/src/ffi.rs").read_text(encoding="utf-8")
 
-    class Session:
-        def __init__(self) -> None:
-            self.calls: list[tuple[object, str, list[bytes]]] = []
-
-        def validation_batch_parts_v1(
-            self, keys: object, payload: str, parts: list[bytes]
-        ) -> dict[str, object]:
-            self.calls.append((keys, payload, parts))
-            return {"generation": 1, "catalogHash": "a" * 64, "published": True}
-
-    session = Session()
-    keys = object()
-    result = catalog.publish_native(corefs_session=session, keys=keys)
-
-    assert result["published"] is True
-    assert len(session.calls) == 1
-    assert session.calls[0][0] is keys
-    payload = json.loads(session.calls[0][1])
-    assert session.calls[0][2] == [item.content for item in catalog.objects]
-    assert all("contentBase64" not in item for item in payload["objects"])
-    assert [item.get("sourceCharacterCount") for item in payload["objects"]] == [
-        len("<p>separate bytes</p>")
-    ]
-    assert [item["contentIndex"] for item in payload["objects"]] == list(
-        range(len(catalog.objects))
-    )
-    assert payload["initialize"] is True
-    assert {folder["role"] for folder in payload["folders"]} >= {
-        "core.journal",
-        "core.notes",
-    }
-    assert all(len(folder["stableId"]) == 26 for folder in payload["folders"])
+    assert "validation_batch_parts_v1" not in source
+    assert "validation_batch_parts_v1" not in writing_source
+    assert "validation_batch_parts_v1" not in ffi
+    assert "CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT" not in ffi
+    assert "[item.content for item" not in source
 
 
 def test_native_transport_round_trips_100_mib_attachment_and_rejects_oversize(
     tmp_path: Path,
 ) -> None:
-    session = anima_core.CorefsSession(str(tmp_path / "core"), "large-writing-transport")
+    session = anima_core.CorefsSession(
+        str(tmp_path / "core"), migration_opaque_id("test-core", "large-writing-transport")
+    )
     keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
     limit = 100 * 1024 * 1024
     attachment_bytes = b"a" * limit
@@ -856,13 +1094,19 @@ def test_native_transport_round_trips_100_mib_attachment_and_rejects_oversize(
         ),
     )
 
-    first = catalog.publish_native(corefs_session=session, keys=keys)
+    first = publish_catalog_native(catalog, corefs_session=session, keys=keys)
     prepared = read_prepared_writing_objects(
         session=SimpleNamespace(corefs_session=session, corefs_keys=keys)
     )
     attachment_id = migration_opaque_id("diary-attachment", "700")
     native_attachment = next(item for item in prepared if item.stable_id == attachment_id)
-    assert native_attachment.content == attachment_bytes
+    assert (
+        read_prepared_writing_body(
+            session=SimpleNamespace(corefs_session=session, corefs_keys=keys),
+            item=native_attachment,
+        )
+        == attachment_bytes
+    )
 
     head_before = session.validation_snapshot(keys)
     oversized_bytes = b"b" * (limit + 1)
@@ -897,7 +1141,8 @@ def test_native_transport_round_trips_100_mib_attachment_and_rejects_oversize(
         ),
     )
     with pytest.raises(ValueError, match="kind-specific converter limits"):
-        oversized.publish_native(
+        publish_catalog_native(
+            oversized,
             corefs_session=session,
             keys=keys,
             expected_head=(int(first["generation"]), str(first["catalogHash"])),

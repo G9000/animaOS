@@ -35,9 +35,12 @@ os.environ["ANIMA_CORE_PASSPHRASE"] = ""
 # services/sessions.py hard-requires.
 import anima_core as _anima_core
 
-if not hasattr(_anima_core, "CorefsSession"):
+if not hasattr(_anima_core, "CorefsSession") or not hasattr(
+    _anima_core.CorefsSession, "preparation_begin_or_resume_v1"
+):
     raise RuntimeError(
-        "The installed anima_core native module is stale (missing CorefsSession). "
+        "The installed anima_core native module is stale (missing the CoreFS "
+        "preparation lifecycle). "
         "Rebuild it from the checkout: uv sync --reinstall-package anima-core"
     )
 

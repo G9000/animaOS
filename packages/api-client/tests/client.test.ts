@@ -9,6 +9,55 @@ function readClientSource(): string {
 }
 
 describe("createApiClient error handling", () => {
+  test("sends the immutable legacy-draft handoff token", async () => {
+    let requestBody: unknown = null;
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (_input, init) => {
+        requestBody = JSON.parse(String(init?.body));
+        return new Response(
+          JSON.stringify({
+            stableId: "01J00000000000000000000000",
+            revision: 1,
+            generation: 1,
+            catalogHash: "a".repeat(64),
+            verified: true,
+            authoritative: false,
+            completionToken: {
+              draftId: "legacy-key",
+              clientRevision: 4,
+              contentSha256: "b".repeat(64),
+            },
+          }),
+        );
+      },
+    });
+
+    const result = await api.diary.importLegacyDraft(7, {
+      draftId: "legacy-key",
+      clientRevision: 4,
+      contentSha256: "b".repeat(64),
+      html: "<p>private</p>",
+      title: "Private",
+      mood: "calm",
+      entryDate: "2026-08-12",
+      updatedAt: "2026-08-12T12:00:00Z",
+    });
+
+    expect(requestBody).toEqual({
+      userId: 7,
+      draftId: "legacy-key",
+      clientRevision: 4,
+      contentSha256: "b".repeat(64),
+      html: "<p>private</p>",
+      title: "Private",
+      mood: "calm",
+      entryDate: "2026-08-12",
+      updatedAt: "2026-08-12T12:00:00Z",
+    });
+    expect(result.completionToken.clientRevision).toBe(4);
+  });
+
   test("serializes CoreFS operations without caller-selected identity headers", async () => {
     let requestedUrl = "";
     let requestBody: unknown = null;

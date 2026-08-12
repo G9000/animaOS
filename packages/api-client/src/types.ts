@@ -917,6 +917,8 @@ export interface DiaryEntryUpdateData {
 
 export interface DiaryDraftImportData {
   draftId: string;
+  clientRevision: number;
+  contentSha256: string;
   targetEntryId?: number | null;
   html: string;
   title: string;
@@ -925,11 +927,18 @@ export interface DiaryDraftImportData {
   updatedAt: string;
 }
 
+export interface DiaryDraftCompletionToken {
+  draftId: string;
+  clientRevision: number;
+  contentSha256: string;
+}
+
 export interface DiaryDraftImportResult {
   stableId: string;
   revision: number;
   generation: number;
   catalogHash: string;
+  completionToken: DiaryDraftCompletionToken;
   verified: boolean;
   authoritative: boolean;
 }

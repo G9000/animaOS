@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 from anima_server.config import settings
 from anima_server.db.session import get_user_session_factory
 from anima_server.services.corefs.diary_migration import (
@@ -9,6 +11,7 @@ from anima_server.services.corefs.diary_migration import (
     build_inactive_diary_catalog,
     migration_opaque_id,
     prepare_diary_validation_catalog,
+    read_prepared_writing_body,
     read_prepared_writing_objects,
     read_prepared_writing_snapshot,
     resolve_prepared_role,
@@ -16,6 +19,7 @@ from anima_server.services.corefs.diary_migration import (
 from anima_server.services.corefs.formats import decode_draft_document, decode_note_document
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
+from corefs_writing_test_support import publish_catalog_native
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -148,10 +152,14 @@ def test_diary_create_list_and_encrypts_text_fields() -> None:
         assert entries[0]["body"] == "Today I wrote something only I should see."
 
         with get_user_session_factory(user_id)() as db:
-            raw = db.execute(
-                text("select title, body, mood from diary_entries where user_id = :user_id"),
-                {"user_id": user_id},
-            ).mappings().one()
+            raw = (
+                db.execute(
+                    text("select title, body, mood from diary_entries where user_id = :user_id"),
+                    {"user_id": user_id},
+                )
+                .mappings()
+                .one()
+            )
 
         assert raw["title"].startswith("enc2:")
         assert raw["body"].startswith("enc2:")
@@ -197,13 +205,17 @@ def test_diary_attachment_upload_stores_encrypted_blob_and_downloads_for_owner()
         attachment_id = int(attachment["id"])
 
         with get_user_session_factory(user_id)() as db:
-            raw = db.execute(
-                text(
-                    "select original_filename, caption, storage_path "
-                    "from diary_attachments where id = :attachment_id"
-                ),
-                {"attachment_id": attachment_id},
-            ).mappings().one()
+            raw = (
+                db.execute(
+                    text(
+                        "select original_filename, caption, storage_path "
+                        "from diary_attachments where id = :attachment_id"
+                    ),
+                    {"attachment_id": attachment_id},
+                )
+                .mappings()
+                .one()
+            )
 
         assert raw["original_filename"].startswith("enc2:")
         assert raw["caption"].startswith("enc2:")
@@ -338,10 +350,14 @@ def test_diary_update_edits_fields_and_reencrypts() -> None:
         assert updated["mood"] == "reflective"
 
         with get_user_session_factory(user_id)() as db:
-            raw = db.execute(
-                text("select title, body, mood from diary_entries where id = :entry_id"),
-                {"entry_id": entry_id},
-            ).mappings().one()
+            raw = (
+                db.execute(
+                    text("select title, body, mood from diary_entries where id = :entry_id"),
+                    {"entry_id": entry_id},
+                )
+                .mappings()
+                .one()
+            )
         assert raw["title"].startswith("enc2:")
         assert raw["body"].startswith("enc2:")
         assert raw["mood"].startswith("enc2:")
@@ -411,10 +427,14 @@ def test_diary_folders_crud_and_filing() -> None:
         folder_id = int(folder["id"])
 
         with get_user_session_factory(user_id)() as db:
-            raw = db.execute(
-                text("select name from diary_folders where id = :folder_id"),
-                {"folder_id": folder_id},
-            ).mappings().one()
+            raw = (
+                db.execute(
+                    text("select name from diary_folders where id = :folder_id"),
+                    {"folder_id": folder_id},
+                )
+                .mappings()
+                .one()
+            )
         assert raw["name"].startswith("enc2:")
 
         # Entry can be filed into the folder at creation time.
@@ -482,7 +502,9 @@ def test_diary_folders_crud_and_filing() -> None:
         delete_folder_response = client.delete(f"/api/diary/folders/{folder_id}", headers=headers)
         assert delete_folder_response.status_code == 200
 
-        surviving_entry_response = client.get(f"/api/diary?userId={user_id}&limit=10", headers=headers)
+        surviving_entry_response = client.get(
+            f"/api/diary?userId={user_id}&limit=10", headers=headers
+        )
         surviving = {e["id"]: e for e in surviving_entry_response.json()}
         assert surviving[second_entry_id]["folderId"] is None
 
@@ -521,6 +543,7 @@ def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> N
         payload = {
             "userId": user_id,
             "draftId": f"anima:diary:draft:{user_id}:edit-{created.json()['id']}",
+            "clientRevision": 1,
             "targetEntryId": created.json()["id"],
             "html": "<p>unsaved private draft</p>",
             "title": "Unsaved",
@@ -528,14 +551,23 @@ def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> N
             "entryDate": "2026-08-03",
             "updatedAt": "2026-08-02T05:00:00Z",
         }
+        payload["contentSha256"] = hashlib.sha256(payload["html"].encode()).hexdigest()
 
         first = client.post("/api/diary/drafts/import", headers=headers, json=payload)
         second = client.post("/api/diary/drafts/import", headers=headers, json=payload)
-        assert first.status_code == second.status_code == 200
+        assert first.status_code == second.status_code == 200, (
+            first.text,
+            second.text,
+        )
         assert first.json()["verified"] is True
         assert first.json()["authoritative"] is False
         assert second.json()["generation"] == first.json()["generation"]
         assert second.json()["revision"] == first.json()["revision"] == 1
+        assert first.json()["completionToken"] == {
+            "draftId": payload["draftId"],
+            "clientRevision": 1,
+            "contentSha256": payload["contentSha256"],
+        }
 
         prepared = client.get("/api/diary/corefs-prepared", headers=headers)
         assert prepared.status_code == 200
@@ -546,7 +578,9 @@ def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> N
         encrypted_draft = next(
             item for item in objects if item.stable_id == first.json()["stableId"]
         )
-        decoded = decode_draft_document(encrypted_draft.content)
+        decoded = decode_draft_document(
+            read_prepared_writing_body(session=session, item=encrypted_draft)
+        )
         assert decoded.body == "<p>unsaved private draft</p>"
         assert decoded.metadata == {
             "entryDate": "2026-08-03",
@@ -555,7 +589,10 @@ def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> N
             "title": "Unsaved",
         }
         native_attachment = next(item for item in objects if item.kind == "attachment")
-        assert native_attachment.content == b"native encrypted bytes"
+        assert (
+            read_prepared_writing_body(session=session, item=native_attachment)
+            == b"native encrypted bytes"
+        )
 
         legacy = client.get(f"/api/diary?userId={user_id}", headers=headers)
         assert legacy.status_code == 200
@@ -589,7 +626,7 @@ def test_note_is_read_back_through_authorized_stable_role() -> None:
         note = next(
             item for item in read_prepared_writing_objects(session=session) if item.kind == "note"
         )
-        decoded = decode_note_document(note.content)
+        decoded = decode_note_document(read_prepared_writing_body(session=session, item=note))
         assert decoded.title == "Native"
         assert decoded.body == "# encrypted note"
 
@@ -657,8 +694,10 @@ def test_unlock_lifecycle_rerun_preserves_native_layout_and_is_a_noop() -> None:
         )
         draft = next(item for item in prepared.objects if item.stable_id == draft_id)
         note = next(item for item in prepared.objects if item.stable_id == note_id)
-        decoded_draft = decode_draft_document(draft.content)
-        decoded_note = decode_note_document(note.content)
+        decoded_draft = decode_draft_document(
+            read_prepared_writing_body(session=session, item=draft)
+        )
+        decoded_note = decode_note_document(read_prepared_writing_body(session=session, item=note))
         moved = build_inactive_diary_catalog(
             user_id=user_id,
             folders=(),
@@ -692,7 +731,8 @@ def test_unlock_lifecycle_rerun_preserves_native_layout_and_is_a_noop() -> None:
             preserved_folders=preserved,
         ).with_expected_revisions({draft_id: draft.revision, note_id: note.revision})
         head = session.corefs_session.validation_snapshot(session.corefs_keys)
-        moved_result = moved.publish_native(
+        moved_result = publish_catalog_native(
+            moved,
             corefs_session=session.corefs_session,
             keys=session.corefs_keys,
             expected_head=(int(head["generation"]), str(head["catalogHash"])),

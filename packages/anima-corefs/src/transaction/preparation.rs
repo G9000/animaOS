@@ -53,6 +53,7 @@ const ENVELOPE_FIXED_HEADER_SIZE: usize = 43;
 const TAG_LENGTH: usize = 16;
 const MAX_AAD_CONTEXT_BYTES: usize = 128;
 const MAX_SCOPE_BYTES: usize = 64;
+const MAX_CORE_ID_BYTES: usize = 255;
 const MAX_SEGMENT_REFERENCES: usize = 1024;
 const MAX_SEGMENT_ITEMS: usize = 1024;
 const MAX_RECONCILIATION_PAGE_ITEMS: u32 = 128;
@@ -1271,7 +1272,7 @@ fn open_record<T: PreparationRecord>(
     expected_core_id: &str,
     expected_frk_version: u32,
 ) -> Result<T, PreparationError> {
-    validate_opaque(expected_core_id, "Core ID")?;
+    validate_core_id(expected_core_id)?;
     if encoded.len() > T::MAX_ENVELOPE_SIZE
         || encoded.len() < ENVELOPE_FIXED_HEADER_SIZE + TAG_LENGTH
     {
@@ -1360,7 +1361,7 @@ fn record_aad(
     monotonic_number: u64,
     context: &[u8],
 ) -> Result<Vec<u8>, PreparationError> {
-    validate_opaque(core_id, "Core ID")?;
+    validate_core_id(core_id)?;
     let core_length =
         u32::try_from(core_id.len()).map_err(|_| PreparationError::LimitExceeded("Core ID"))?;
     let context_length =
@@ -1387,7 +1388,7 @@ fn validate_common<T: PreparationRecord>(
             record.schema_version(),
         ));
     }
-    validate_opaque(record.core_id(), "Core ID")?;
+    validate_core_id(record.core_id())?;
     validate_opaque(preparation_id, "preparation ID")?;
     if record.required_frk_version() == 0 {
         return Err(PreparationError::InvalidFormat("FRK version"));
@@ -1469,6 +1470,13 @@ fn validate_hash(value: &str) -> Result<(), PreparationError> {
 
 fn validate_opaque(value: &str, field: &'static str) -> Result<(), PreparationError> {
     validate_opaque_id(value).map_err(|_| PreparationError::InvalidFormat(field))
+}
+
+fn validate_core_id(value: &str) -> Result<(), PreparationError> {
+    if value.is_empty() || value.len() > MAX_CORE_ID_BYTES || value.contains(':') {
+        return Err(PreparationError::InvalidFormat("Core ID"));
+    }
+    Ok(())
 }
 
 pub(super) fn publish_preparation_head_with_hook<F>(

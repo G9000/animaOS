@@ -301,6 +301,25 @@ mod formats {
     }
 
     #[test]
+    fn preparation_records_accept_the_manifest_uuid_core_identity() {
+        let core_id = "019c5d48-5e99-7e4d-9e91-9ce9fdccb127";
+        let current_keys = keys(3);
+        let mut value = snapshot();
+        value.core_id = core_id.to_owned();
+
+        let sealed = value.seal(&current_keys).unwrap();
+        assert_eq!(
+            PreparationSnapshot::open(sealed.as_bytes(), &current_keys, core_id, 3)
+                .unwrap()
+                .core_id,
+            core_id
+        );
+
+        value.core_id = "invalid:core".to_owned();
+        assert!(value.encode().is_err());
+    }
+
+    #[test]
     fn every_record_rejects_unknown_fields() {
         assert_all_decoders_reject(|object| {
             object.insert("futureField".to_owned(), Value::Bool(true));
