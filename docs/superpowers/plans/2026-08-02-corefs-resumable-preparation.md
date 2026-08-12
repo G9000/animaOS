@@ -2,13 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace PCF-004's aggregate in-memory validation-batch transport with an authenticated, encrypted, crash-resumable preparation protocol that handles writing corpora larger than 1 GiB while preserving one exact-CAS inactive-catalog publication.
+**Goal:** Replace PCF-004's aggregate in-memory validation-batch transport with an authenticated, encrypted, crash-resumable preparation protocol that handles writing corpora larger than 1 GiB while preserving one exact-CAS inactive-catalog publication, then remove imported plaintext browser drafts only after native packaged-desktop writer exclusion is proven.
 
-**Architecture:** Rust owns all durable preparation state, prepared-object descriptors, validation, recovery, terminal receipts, and the single `VALIDATION_HEAD` transition. PyO3 exposes only session-guarded one-object and lifecycle operations. Python inventories SQLCipher writing sources, streams one canonical object at a time, and holds a `BEGIN IMMEDIATE` source fence from final reconciliation through native finalization. Public CoreFS mutation remains frozen and legacy SQLCipher remains authoritative until PCF-008.
+**Architecture:** Rust owns all durable preparation state, prepared-object descriptors, validation, recovery, terminal receipts, and the single `VALIDATION_HEAD` transition. PyO3 exposes only session-guarded one-object and lifecycle operations. Python inventories SQLCipher writing sources, streams one canonical object at a time, and holds a `BEGIN IMMEDIATE` source fence from final reconciliation through native finalization. The Tauri host owns a separate device-local process lease and two-start cleanup epoch before the desktop may delete an exact completed localStorage draft. Public CoreFS mutation remains frozen and legacy SQLCipher remains authoritative until PCF-008.
 
-**Tech Stack:** Rust 1.75 (`anima-corefs`, PyO3 `anima-core`), Python 3.12/FastAPI/SQLAlchemy/Alembic/SQLCipher, pytest, Bun workspace validation.
+**Tech Stack:** Rust 1.75 (`anima-corefs`, PyO3 `anima-core`, Tauri desktop host), Python 3.12/FastAPI/SQLAlchemy/Alembic/SQLCipher, pytest, Bun workspace validation.
 
 **Plan Review:** Approved on 2026-08-02 after three focused independent passes; all consequential findings were corrected before execution handoff.
+
+**Draft-cleanup revision:** Independently reviewed and approved on 2026-08-13; Task 10 remains gated on explicit user approval.
 
 ---
 
@@ -482,9 +484,186 @@ done. A legacy browser tab can write the plaintext draft key without honoring a
 new Web Lock, and localStorage has no atomic compare-and-delete. The safe
 implementation retains that key and uses a non-sensitive digest/revision
 sidecar; this prevents data loss but does not satisfy the approved requirement
-to remove private authored content from plaintext localStorage. Clearance
-requires an approved cleanup protocol that can exclude legacy writers, or an
-explicit product/spec revision that assigns plaintext cleanup to later work.
+to remove private authored content from plaintext localStorage. The proposed
+Task 10 protocol below preserves that requirement but must pass independent
+review and receive explicit user approval before implementation.
+
+## Task 10: Exclude legacy desktop writers before plaintext draft cleanup
+
+**Approval gate:** Do not implement this task until the proposed Section 11.1
+addendum in `2026-08-02-corefs-resumable-preparation-design.md` has passed
+independent review and the user explicitly approves it.
+
+**Files:**
+
+- Modify: `apps/desktop/src-tauri/Cargo.toml`
+- Modify: `apps/desktop/src-tauri/src/lib.rs`
+- Create: `apps/desktop/src-tauri/src/draft_cleanup.rs`
+- Create: `apps/desktop/src-tauri/tests/draft_cleanup_process.rs`
+- Modify: `apps/desktop/src-tauri/tauri.conf.json`
+- Modify: `apps/desktop/package.json`
+- Modify: `Cargo.lock`
+- Modify: `scripts/prepare-desktop-release.ts`
+- Create: `scripts/verify-desktop-release-contract.ts`
+- Create: `.github/workflows/desktop-draft-cleanup-authority.yml`
+- Create: `apps/desktop/src/lib/draftCleanupAuthority.ts`
+- Modify: `apps/desktop/src/features/diary/DiaryWorkspace.tsx`
+- Modify: `apps/desktop/src/features/diary/lib/draftMigration.ts`
+- Modify: `apps/desktop/tests/journal-draft-migration.test.ts`
+- Create: `apps/desktop/tests/journal-draft-cleanup-authority.test.ts`
+- Create: `apps/desktop/tests/desktop-release-contract.test.ts`
+- Modify: `tickets/portable-core-filesystem/PCF-004-diary-notes.md`
+- Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
+
+- [ ] **Step 1: Lock the supported release-package contract with failing tests**
+
+Add source-contract tests plus native release-package verification fixtures that
+require exactly one cleanup-capable target: MSI major upgrade with stable
+UpgradeCode on Windows, signed/notarized replacement PKG on macOS, and
+package-manager-owned DEB/RPM on Linux. Start from an installed older fixture,
+run the real upgrade, and prove the registered target resolves to the current
+binary while installer-owned prior, rollback, cache, and staging executables are
+absent or unlaunchable. Reject NSIS, AppImage, direct DMG execution, archives,
+copied bundles, portable binaries, side-by-side targets, ambiguous registration,
+wrong package ownership/signature, and symlinks outside the managed target.
+Tests must inspect actual produced packages and native registrations rather than
+only `tauri.conf.json` strings. Add a repository source contract proving the
+migration module is the sole product writer/remover for
+`anima:diary:draft:*`; any new writer must be rejected unless it participates in
+the same per-key Web Lock and reviewed protocol.
+
+For DEB/RPM, test a root-owned, package-owned signed installed-identity manifest
+containing the bundle/package identity plus canonical executable and desktop-
+entry paths/hashes. Verify its detached Ed25519 signature with the release key
+pinned in the binary. Missing, writable, symlinked, stale, extra, wrong-key, or
+tampered manifest/target files fail closed; old-to-current upgrade replaces the
+manifest atomically. Standard dpkg metadata alone is not a signature oracle.
+
+- [ ] **Step 2: Implement and verify replacement-only desktop packaging**
+
+Replace `targets: "all"` and the generic package commands with the supported
+platform matrix only. Extend release preparation and CI so each native runner
+builds/installs an older fixture, upgrades through the current MSI/PKG/DEB/RPM,
+enumerates package-owned files and OS launch registrations, and blocks release
+publication on any alternate launchable residue. The verifier must rerun against
+the exact final signed/notarized artifacts. Installer failure to stop ANIMA or
+remove/make-unlaunchable every managed prior/staging executable must abort before
+registering the new target. No cleanup-capable release artifact exists until
+this step is green on Windows, macOS, Debian, and RPM runners.
+
+- [ ] **Step 3: Write failing native authority and lifecycle tests**
+
+Extract platform adapters plus pure classification/transition helpers. Unit
+tests cover the domain-separated length-delimited installed-identity digest;
+Windows BootIdentifier, macOS boot-session UUID, and Linux boot ID; exact
+process-start identity; owner-only stable lock creation; first-run epoch arming;
+different-boot eligibility; and fail-closed missing/ambiguous identities. Real
+subprocess tests exercise exclusive kernel-lock launch denial before WebView
+creation, old/current process classification, denied process metadata, PID reuse
+or replacement, contender launch during capability consumption, epoch replay,
+and installed-target replacement after issue. Reject debug, relocated,
+unpackaged, arming-process, same-boot, wrong-package, and multi-host contexts.
+
+Test the exact NFC/UTF-8 canonical audience construction:
+storage-key digest, completion-token digest, then final audience digest with
+big-endian length/revision fields. Verify malformed hashes, wrong draft/revision,
+any requested/effective TTL above five seconds, expiry, replay, response loss,
+and concurrent double-consume all fail closed. Assert capabilities/digests never
+enter the epoch, filesystem, logs, tracing, metrics, or crash metadata.
+
+- [ ] **Step 4: Implement the packaged Tauri cleanup authority**
+
+Add `fs4` as a direct desktop-host dependency. During Tauri setup, open and
+retain an owner-only exclusive kernel lock on the stable app-local cleanup lease
+before creating a WebView; a contender exits before frontend code runs. Persist
+only the versioned installed-identity digest, process-start identity, and native
+boot identity in the non-secret epoch. Require a different boot identity after
+arming. Implement native registered-target verification and process census with
+the exact per-OS identities from the spec both at issue and, under the authority
+mutex, immediately before atomic one-shot consumption.
+
+On Linux, verify the root-owned installed-identity manifest and detached
+signature with the embedded release public key, then match its canonical file
+hashes/identities to the live package-owned executable and desktop entry before
+issuing or consuming authority.
+
+Expose narrow commands that accept only the final audience digest. Keep opaque
+random capabilities and audience digests in process memory, enforce a maximum
+five-second monotonic TTL, remove the capability atomically before reporting
+successful consumption, and exclude all sensitive values from display/debug,
+logging, tracing, metrics, persistence, and crash reporting. Native never
+receives the storage key, completion-token fields, content hash, or draft body.
+
+- [ ] **Step 5: Write failing desktop cleanup and crash regressions**
+
+Test that browser/debug/no-authority contexts retain plaintext, the arming run
+and same-boot restart retain plaintext, and a later-boot authorized run deletes
+only the exact completed raw value. Simulate a source write during import,
+authority issue, capability consumption, and the final re-read; every mismatch
+must retain the newer value and advance the monotonic revision. Cover malformed,
+expired, replayed, wrong-audience, response-loss, storage, Web Lock, and native
+invoke failures as bounded fail-closed retries. Assert no deletion occurs outside
+the per-draft Web Lock.
+
+Inject a crash after every storage operation. The required order is: remove the
+plaintext source, re-read and prove it absent, then best-effort remove the
+non-sensitive sidecar. A crash/failure before proven source absence retains the
+sidecar and retries from the exact source; a crash afterward may leave only an
+orphan sidecar, which is retained indefinitely. Assert an absent-source check
+followed by legacy source recreation preserves the sidecar revision across
+restart; absence alone never authorizes cleanup. The sidecar is removed only in
+the same post-reboot authorized critical section after verified source absence,
+never first while a source exists. Rejected/stale server revisions cannot strand
+plaintext indefinitely.
+
+- [ ] **Step 6: Consume authority at the exact handoff boundary**
+
+Keep the current non-destructive digest/revision sidecar. After a matching
+durable completion, acquire native cleanup authority, reread and renormalize the
+source under the Web Lock, and remove source plus sidecar only if raw bytes,
+canonical hash, revision, and token still match. Any mismatch consumes or
+abandons the capability without deletion and schedules the newer revision.
+
+Derive the two canonical input digests and final audience in the frontend
+without logging or persisting them. After successful one-shot native consume,
+reread/re-normalize once more, remove only the source, and verify `getItem` is
+`null`; only then remove the sidecar. If the consume response is lost or any
+post-consume check/storage operation fails, keep all still-present source data
+and require a fresh exact import before another cleanup attempt. An absent source
+on startup leaves the orphan sidecar intact; only the authorized critical
+section that removed and verified the source may best-effort remove its sidecar.
+
+- [ ] **Step 7: Run platform, Tauri, desktop, and repository gates**
+
+```powershell
+cargo test -p desktop --lib
+cargo test -p desktop --test draft_cleanup_process
+cargo clippy -p desktop --all-targets -- -D warnings
+bun test apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-draft-cleanup-authority.test.ts apps/desktop/tests/desktop-release-contract.test.ts
+bun run build
+bun run test
+bun run check:repo
+git diff --check
+```
+
+The dedicated Windows, macOS, Debian, and RPM workflow must also pass real
+package upgrade/registration verification and native subprocess launch/lock/
+census tests. Record artifact digests and exact workflow results; pure helper
+tests or a single host-OS Cargo run cannot satisfy this gate.
+
+Record exact results. If strict desktop Clippy exposes untouched baseline
+warnings, record their exact locations and run a diff-scoped no-new-warning
+gate without weakening repository lints.
+
+- [ ] **Step 8: Obtain independent implementation review and close PCF-004**
+
+Review actual release-package replacement invariants, platform identity/process
+adapters, kernel launch-gate lifetime, reboot epoch, issue/consume census races,
+capability canonicalization/TTL/replay, source-first crash behavior, frontend
+raw-value recheck, browser/debug fail-closed behavior, and absence of private
+native state. Resolve substantive findings test-first. Mark PCF-004 done only
+after the reviewer confirms both no-loss and plaintext-removal acceptance, all
+four platform package gates are evidenced, and child/parent tracking is synced.
 
 ## Stop conditions
 

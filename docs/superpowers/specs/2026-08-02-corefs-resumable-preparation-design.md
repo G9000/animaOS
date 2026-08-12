@@ -2,6 +2,7 @@
 
 **Date:** 2026-08-02
 **Status:** Approved — independent review and user approval complete
+**Draft-cleanup addendum:** Independently reviewed and approved 2026-08-13 — renewed user approval required before implementation
 **Scope:** Add a bounded-memory, crash-resumable preparation protocol for large inactive CoreFS validation catalogs without weakening single-generation atomic publication
 **Parent design:** [Portable Core Filesystem Design](2026-07-12-portable-core-filesystem-design.md)
 **PRD:** [Portable Core Filesystem v1](../../prds/portable-core-filesystem-v1.md)
@@ -230,6 +231,156 @@ Targeted object-key rotation ignores unreachable prepared objects. Once an objec
 - One active preparation per Core avoids ambiguous ownership. Exact pointer CAS rejects concurrent draft import, unlock migration, or retry races; the caller reloads, merges source state, and retries.
 - A callback failure after durable snapshot publication reports committed progress rather than rolling back the pointer in memory.
 
+### 11.1 Packaged-desktop writer exclusion for plaintext draft cleanup (proposed)
+
+The durable completion token proves that one exact draft revision is encrypted
+in CoreFS, but localStorage cannot atomically compare and delete its source key.
+A Web Lock alone is insufficient because a legacy ANIMA process does not honor
+the new lock. V1 therefore permits destructive source cleanup only through a
+packaged-desktop authority that proves the supported installed product has
+crossed a complete protocol-capable process lifecycle with no legacy writer.
+
+The native Tauri host owns this authority. Cleanup is supported only by an
+installer-managed V1 release satisfying all of the following release contract;
+failing any item disables deletion without affecting import:
+
+- The installed product has exactly one OS-registered launch target for bundle
+  identifier `com.leoca.anima`. Installation is replacement-only and serialized
+  against the running application. Before registering the new target, the
+  installer must terminate ANIMA, remove the prior registered target, and make
+  every installer-owned rollback, cache, and staging payload non-executable by
+  an interactive user. If it cannot do so, installation fails before the new
+  target is launchable.
+- Windows support is limited to a WiX/MSI major-upgrade installation with one
+  stable UpgradeCode and a ProductCode/uninstall record resolving to the running
+  executable. macOS support is limited to a signed, notarized replacement `.pkg`
+  whose receipt and designated requirement resolve to the sole `ANIMA.app`
+  selected by Launch Services. Linux support is limited to package-manager-owned
+  `.deb`/`.rpm` replacement upgrades and one canonical desktop entry resolving
+  through a package-owned path. NSIS, AppImage, direct `.dmg` execution, archives,
+  copied app bundles, portable binaries, and side-by-side installs are not V1
+  cleanup-capable release formats. They are removed from supported V1 release
+  outputs before PCF-004 can close.
+- Release-package verification installs an older fixture, performs the real
+  replacement upgrade, and then enumerates every file and launch registration
+  owned by the installer transaction. It proves there is one executable target,
+  no user-launchable rollback/staging residue, and no alternate registered
+  command. These checks run on their native OS against actual MSI, signed PKG,
+  DEB, and RPM artifacts, not just source/config strings. Release publication is
+  blocked unless the same verifier passes the final signed/notarized artifacts.
+- “Installed executable identity” is the tuple of bundle identifier, installer
+  family, package version, canonical registered target, native file identity,
+  and platform signing/package identity. Native file identity is Windows volume
+  serial plus file ID from an open executable handle, macOS volume UUID plus
+  inode/generation from the resolved signed bundle, or Linux device plus inode
+  from the package-owned resolved executable. Platform identity is MSI
+  UpgradeCode/ProductCode plus Authenticode signer, macOS package receipt plus
+  code-signing designated requirement, or a Linux installed-identity manifest.
+  Every DEB/RPM installs
+  `/usr/share/anima/install-identity-v1.json` plus its detached Ed25519 signature
+  as root-owned, non-group/world-writable, package-owned regular files. The
+  canonical manifest includes schema, bundle ID, package family/name/version,
+  canonical executable path and SHA-256, and every desktop-entry/launch-target
+  path and SHA-256. Native code verifies the signature with a release public key
+  pinned in the binary, then checks ownership, modes, package ownership, file
+  identities, and hashes against the live installed files. Missing, symlinked,
+  stale, extra, or tampered manifest/targets fail closed. Upgrade atomically
+  replaces this manifest with the target and release tests cover old/current
+  key rollover before any signing-key rotation is accepted.
+  Epochs persist only
+  `SHA-256("anima-installed-identity-v1\0" || length_delimited_fields)` where
+  every UTF-8 field is NFC-normalized and encoded as `u32be(length) || bytes` and
+  fixed-width integers are big-endian. A raw path is never persisted. Missing
+  signatures/package ownership, symlinks outside the managed target, denied
+  metadata, or ambiguous registrations fail closed.
+- “ANIMA host process” means any live process whose reopened native executable
+  metadata carries the ANIMA bundle ID plus platform signer/package identity,
+  regardless of version or path. Windows binds PID to `GetProcessTimes` creation
+  time and an executable file handle; macOS binds PID to `proc_pidinfo` start
+  time and the resolved signed executable vnode; Linux binds PID to `/proc/PID`
+  start ticks plus a pidfd and the resolved `/proc/PID/exe` device/inode. The
+  census rechecks the process-start identity after metadata classification.
+  Access denial, PID reuse, disappearing/replaced paths, unsupported kernel
+  facilities, or an ambiguous match fails closed. Unmanaged copies remain
+  outside the supported installation contract but are still classified and
+  block cleanup whenever their native identity is observable.
+- In a cleanup-capable release, the migration module is the only product code
+  permitted to write or remove `anima:diary:draft:*` and its sidecars. A build
+  contract scans every renderer/host source and fails on any other storage
+  mutation. Any future writer must first join the same per-key Web Lock and this
+  protocol; adding one is a design change, not an incidental implementation.
+
+The runtime protocol is:
+
+1. Before constructing any WebView, the host opens
+   `legacy-draft-cleanup-v1.lock` below app-local data with owner-only permissions
+   and holds an exclusive kernel lock for the complete process lifetime. A
+   cleanup-capable release that cannot create, strictly validate, or lock this
+   file exits before browser code runs; the lease is a single-host launch gate,
+   not merely a cleanup feature flag.
+2. The first cleanup-capable packaged process only arms a non-secret epoch. The
+   epoch binds protocol version, installed-identity digest, native process-start
+   identity, and current OS boot identity. The boot identity is Windows
+   `SystemBootEnvironmentInformation.BootIdentifier`, macOS
+   `kern.bootsessionuuid`, or Linux `/proc/sys/kernel/random/boot_id`; inability
+   to read it fails closed. The epoch never authorizes deletion.
+3. Cleanup requires an OS reboot after arming: a later process must observe a
+   different OS-native boot identity. This proves every pre-upgrade
+   process ended; the installer contract proves prior managed binaries are no
+   longer launchable. A mere application restart is insufficient.
+4. The later packaged process may issue a capability only while it holds the
+   lease, matches the installed identity, and a fresh native census reports no
+   other ANIMA host. Under one native authority mutex, capability consumption
+   first repeats installed-target verification and the full process census,
+   then atomically removes the matching capability from the in-memory map before
+   returning success. The launch-gate lease prevents a cleanup-capable managed
+   host from starting in the remaining frontend window; the replacement-only
+   installer invariant excludes supported managed legacy hosts that ignore the
+   lease. A failed/ambiguous verification consumes no authority and returns no
+   success.
+5. A capability expires no later than five monotonic seconds after issue and can
+   be consumed once. The frontend derives
+   `key_digest = SHA-256("anima-draft-storage-key-v1\0" || u32be(key_len) || key)`
+   and
+   `token_digest = SHA-256("anima-draft-completion-token-v1\0" ||
+   u32be(draft_id_len) || draft_id || u64be(client_revision) ||
+   content_sha256_raw_32)`, where strings are UTF-8 NFC and the content hash must
+   decode from exactly 64 lowercase hex characters. The capability audience is
+   `SHA-256("anima-draft-cleanup-audience-v1\0" || key_digest_raw_32 ||
+   token_digest_raw_32)`. Native receives only the final audience digest, never
+   the key, completion-token fields, content hash, or content. The opaque random
+   capability and all three digests remain process-memory-only and are never
+   persisted, logged, traced, included in metrics/crash reports, or returned
+   after consumption. Timeout or response loss requires a fresh exact import.
+6. The frontend holds the per-draft Web Lock, imports the exact source digest
+   and monotonic sidecar revision, obtains and consumes the capability, then
+   rereads and renormalizes localStorage. It deletes only when raw bytes,
+   canonical body hash, client revision, and durable completion token still
+   match. A mismatch keeps the source and advances a later import.
+7. Cleanup ordering is source first. After `removeItem(source)`, the frontend
+   rereads and requires the source to be absent; only then does it best-effort
+   remove the non-sensitive sidecar. A crash after source removal may leave a
+   harmless sidecar. An orphan sidecar is retained indefinitely: absence of the
+   source alone never authorizes its removal, because an excluded-or-not-yet-
+   excluded legacy writer may recreate the source and needs the monotonic
+   revision. The sidecar may be removed only in the same post-reboot authorized
+   critical section immediately after verified source removal; it is never
+   removed first while a source remains.
+8. If native authority expires, is consumed, or any native/frontend check
+   changes, the source remains and cleanup retries only after a fresh exact
+   import. Storage failure is never interpreted as successful removal.
+
+The cleanup epoch and lock contain no draft body, title, logical path, content
+hash, user identifier, Core identifier, raw executable path, key material, or
+reusable bearer secret. Native code never receives or reads plaintext draft
+content.
+
+This addendum preserves both required properties: no completed migration loses
+an edit from a still-capable legacy writer, and private authored draft content
+does not remain in plaintext localStorage after the supported writer-exclusion
+boundary succeeds. It does not weaken CoreFS completion, SQLCipher authority,
+or PCF-008 cutover rules.
+
 ## 12. Python and PyO3 Boundary
 
 PyO3 exposes the protocol only on the long-lived `CorefsSession`; top-level public mutations stay frozen.
@@ -295,7 +446,10 @@ Required tests include:
 15. retained preparation snapshots prevent unsafe FRK retirement and PCF-010 GC;
 16. unchanged reruns reuse prepared descriptors and exact source fingerprints without rewriting bodies;
 17. draft import and unlock migration conflict/retry without losing either source; and
-18. existing PCF-004, CoreFS library, rotation, recovery, session lifecycle, desktop, and build suites remain green.
+18. packaged cleanup refuses the arming process and same-boot restart, every non-Tauri/debug/relocated/portable context, a missing or conflicting kernel lease, stale/wrong executable or package identity, alternate registered/staged/rollback launch targets, another ANIMA process, denied/ambiguous process metadata, PID reuse, expired/replayed/wrong-draft capabilities, and any post-import source mutation;
+19. real subprocess tests on Windows, macOS, and Linux exercise kernel-lock exclusion, process-start identity, old/current process classification, a contender launched during consumption, and fail-closed metadata errors; actual NSIS/MSI, `.app`, `.deb`, and `.rpm` artifacts prove one registered target and no executable update/rollback residue, while AppImage is absent from supported V1 release outputs;
+20. a later-boot packaged process with an exact durable completion token removes the matching source first, verifies absence, and then removes the sidecar; crash injection after every storage operation proves restart either preserves the source with monotonic revision or leaves a retained harmless orphan sidecar, including absent-source/legacy-recreation races; and
+21. existing PCF-004, CoreFS library, rotation, recovery, session lifecycle, desktop, Tauri, and build suites remain green.
 
 ## 15. Rollout
 
@@ -320,4 +474,5 @@ The preparation protocol is accepted only when:
 - active preparation safely gates FRK rotation and retained-state cleanup;
 - session shutdown is bounded at per-call boundaries;
 - corrupted or conflicting state fails closed with typed recovery guidance; and
+- packaged plaintext-draft cleanup occurs only after the approved native writer-exclusion epoch and never in browser/debug/unpackaged contexts; and
 - the complete PCF-004 acceptance suite and required broader CoreFS/build gates pass.
