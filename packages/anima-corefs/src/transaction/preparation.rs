@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::io::{self, Read};
 #[cfg(test)]
@@ -57,6 +57,10 @@ const MAX_SEGMENT_REFERENCES: usize = 1024;
 const MAX_SEGMENT_ITEMS: usize = 1024;
 const MAX_RECONCILIATION_PAGE_ITEMS: u32 = 128;
 const MAX_RECONCILIATION_PAGE_BYTES: u32 = 64 * 1024;
+const MAX_QUARANTINE_RECORDS: usize = 1024;
+const MAX_RETAINED_FRK_VERSIONS: usize = 128;
+const QUARANTINE_POINTER_SUFFIX: &str = ".prep-pointer";
+const QUARANTINE_RECEIPT_SUFFIX: &str = ".prep-quarantine.acore";
 
 #[cfg(test)]
 thread_local! {
@@ -172,6 +176,12 @@ pub(super) enum PreparationError {
     FinalIntentMismatch,
     #[error("the deterministic preparation receipt conflicts with durable state")]
     ReceiptConflict,
+    #[error(
+        "the corrupt preparation pointer or its quarantine record conflicts with durable state"
+    )]
+    QuarantineConflict,
+    #[error("retained preparation state requires unavailable FRK version {0}")]
+    RetainedFrkMissing(u32),
     #[error("the preparation layout is missing or invalid")]
     InvalidLayout,
     #[error("the preparation references a missing {kind:?} segment {segment_index}")]
@@ -221,6 +231,17 @@ pub(super) struct PreparationFinalizeRequest {
     pub(super) expected: PreparationCas,
     pub(super) source_mutation_generation: u64,
     pub(super) source_inventory_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationAbandonRequest {
+    pub(super) preparation_id: String,
+    pub(super) expected: PreparationCas,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationQuarantineRequest {
+    pub(super) expected_pointer_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -382,6 +403,8 @@ pub(super) enum PreparationPublicationTarget {
     ValidationCatalog,
     ValidationHead,
     Receipt,
+    QuarantinePointer,
+    QuarantineReceipt,
     Clear,
 }
 
@@ -671,7 +694,7 @@ impl PreparationReceiptOutcome {
     }
 }
 
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PreparationReceipt {
     pub(super) schema_version: u16,
@@ -685,6 +708,8 @@ pub(super) struct PreparationReceipt {
     pub(super) pointer_sha256: String,
     pub(super) validation_generation: Option<u64>,
     pub(super) validation_catalog_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) retained_frk_versions: Vec<u32>,
 }
 
 trait PreparationRecord: Clone + DeserializeOwned + Serialize {
@@ -1010,6 +1035,37 @@ impl PreparationRecord for PreparationReceipt {
             return Err(PreparationError::InvalidFormat(
                 "completed receipt lacks validation generation",
             ));
+        }
+        if self.outcome != PreparationReceiptOutcome::Completed
+            && self.validation_generation.is_some()
+        {
+            return Err(PreparationError::InvalidFormat(
+                "non-completed receipt contains validation generation",
+            ));
+        }
+        match self.outcome {
+            PreparationReceiptOutcome::Quarantined => {
+                if self.retained_frk_versions.is_empty()
+                    || self.retained_frk_versions.len() > MAX_RETAINED_FRK_VERSIONS
+                    || self.retained_frk_versions.contains(&0)
+                    || !self
+                        .retained_frk_versions
+                        .windows(2)
+                        .all(|pair| pair[0] < pair[1])
+                    || !self
+                        .retained_frk_versions
+                        .contains(&self.required_frk_version)
+                {
+                    return Err(PreparationError::InvalidFormat("quarantine key retention"));
+                }
+            }
+            PreparationReceiptOutcome::Completed | PreparationReceiptOutcome::Abandoned => {
+                if !self.retained_frk_versions.is_empty() {
+                    return Err(PreparationError::InvalidFormat(
+                        "terminal receipt key retention",
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -2423,6 +2479,262 @@ impl super::CoreCommitCoordinator {
         Ok(receipt)
     }
 
+    pub(super) fn abandon_preparation(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+    ) -> Result<PreparationReceipt, PreparationError> {
+        self.abandon_preparation_with_hook(keys, request, &mut |_, _| Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn abandon_preparation_with_hook<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.abandon_preparation_with_hook_inner(keys, request, hook)
+    }
+
+    #[cfg(not(test))]
+    fn abandon_preparation_with_hook<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.abandon_preparation_with_hook_inner(keys, request, hook)
+    }
+
+    fn abandon_preparation_with_hook_inner<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_abandon_request(request)?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+        let layout = open_preparation_layout(&preparations, &request.preparation_id)?;
+        let Some(pointer) = read_pointer_bytes(&self.fs_dir)? else {
+            let receipt = find_terminal_receipt(
+                &layout,
+                keys,
+                &self.core_id,
+                &request.preparation_id,
+                &request.expected,
+                PreparationReceiptOutcome::Abandoned,
+            )?
+            .ok_or(PreparationError::Missing)?;
+            drop(commit_lock);
+            return Ok(receipt);
+        };
+        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+        if loaded.snapshot.preparation_id != request.preparation_id {
+            return Err(PreparationError::CasConflict);
+        }
+        validate_loaded_cas(&loaded, &request.expected)?;
+        if !matches!(
+            loaded.snapshot.state,
+            PreparationState::Collecting | PreparationState::Ready
+        ) {
+            return Err(PreparationError::ActiveConflict("preparation state"));
+        }
+        let receipt = abandoned_receipt(&loaded, keys)?;
+        if let Some(durable) = find_terminal_receipt(
+            &layout,
+            keys,
+            &self.core_id,
+            &request.preparation_id,
+            &request.expected,
+            PreparationReceiptOutcome::Abandoned,
+        )? {
+            if durable != receipt {
+                return Err(PreparationError::ReceiptConflict);
+            }
+        }
+        publish_or_verify_receipt(&layout, keys, &receipt, hook)?;
+        clear_preparation_head_exact(&self.fs_dir, &loaded.pointer_sha256, hook)?;
+        drop(commit_lock);
+        Ok(receipt)
+    }
+
+    pub(super) fn quarantine_preparation(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+    ) -> Result<PreparationReceipt, PreparationError> {
+        self.quarantine_preparation_with_hook(keyring, active_keys, request, &mut |_, _| Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn quarantine_preparation_with_hook<F>(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.quarantine_preparation_with_hook_inner(keyring, active_keys, request, hook)
+    }
+
+    #[cfg(not(test))]
+    fn quarantine_preparation_with_hook<F>(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.quarantine_preparation_with_hook_inner(keyring, active_keys, request, hook)
+    }
+
+    fn quarantine_preparation_with_hook_inner<F>(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_hash(&request.expected_pointer_sha256)?;
+        keyring
+            .require_matching(active_keys)
+            .map_err(|error| PreparationError::Commit(error.into()))?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let quarantine =
+            super::ensure_child_directory(&self.fs_dir, PREPARATION_QUARANTINE_DIRECTORY)?;
+        let Some(pointer) = read_raw_preparation_pointer(&self.fs_dir)? else {
+            let receipt = load_quarantine_receipt(
+                &quarantine,
+                keyring,
+                &self.core_id,
+                &request.expected_pointer_sha256,
+            )?;
+            drop(commit_lock);
+            return Ok(receipt);
+        };
+        let pointer_sha256 = sha256_hex(&pointer);
+        if pointer_sha256 != request.expected_pointer_sha256 {
+            return Err(PreparationError::CasConflict);
+        }
+        if pointer_authenticates_with_keyring(&pointer, keyring, &self.core_id) {
+            return Err(PreparationError::ActiveConflict(
+                "authenticated preparation must be abandoned",
+            ));
+        }
+        let retained_frk_versions = keyring.versions();
+        if retained_frk_versions.is_empty()
+            || retained_frk_versions.len() > MAX_RETAINED_FRK_VERSIONS
+        {
+            return Err(PreparationError::LimitExceeded(
+                "quarantine retained FRK versions",
+            ));
+        }
+        publish_or_verify_quarantine_pointer(&quarantine, &pointer_sha256, &pointer, hook)?;
+        let preparation_id = quarantine_preparation_id(&pointer_sha256)?;
+        let receipt = PreparationReceipt {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: self.core_id.clone(),
+            preparation_id: preparation_id.clone(),
+            receipt_id: deterministic_receipt_id(
+                active_keys,
+                &preparation_id,
+                PreparationReceiptOutcome::Quarantined,
+                &pointer_sha256,
+            )?,
+            outcome: PreparationReceiptOutcome::Quarantined,
+            required_frk_version: active_keys.frk_version(),
+            final_snapshot_sequence: 1,
+            final_snapshot_ciphertext_sha256: pointer_sha256.clone(),
+            pointer_sha256: pointer_sha256.clone(),
+            validation_generation: None,
+            validation_catalog_sha256: None,
+            retained_frk_versions,
+        };
+        publish_or_verify_quarantine_receipt(&quarantine, active_keys, &receipt, hook)?;
+        clear_preparation_head_exact(&self.fs_dir, &pointer_sha256, hook)?;
+        drop(commit_lock);
+        Ok(receipt)
+    }
+
+    pub(super) fn quarantined_preparation_frk_versions(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+    ) -> Result<Vec<u32>, PreparationError> {
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let versions = self.quarantined_preparation_frk_versions_locked(keyring)?;
+        drop(commit_lock);
+        Ok(versions)
+    }
+
+    pub(super) fn ensure_preparation_rotation_allowed_locked(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+    ) -> Result<(), super::CommitError> {
+        match super::read_bounded_in(
+            &self.fs_dir,
+            OsStr::new(PREPARATION_HEAD_FILE),
+            MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
+        ) {
+            Ok(_) => return Err(crate::rotation::RotationError::PreparationActive.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(crate::rotation::RotationError::PreparationActive.into()),
+        }
+        self.quarantined_preparation_frk_versions_locked(keyring)
+            .map(|_| ())
+            .map_err(|error| match error {
+                PreparationError::RetainedFrkMissing(version) => {
+                    crate::rotation::RotationError::QuarantinedPreparationRequiresVersion(version)
+                        .into()
+                }
+                _ => crate::rotation::RotationError::QuarantinedPreparationCorrupt.into(),
+            })
+    }
+
+    fn quarantined_preparation_frk_versions_locked(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+    ) -> Result<Vec<u32>, PreparationError> {
+        let quarantine = match self.fs_dir.open_dir(PREPARATION_QUARANTINE_DIRECTORY) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err(PreparationError::QuarantineConflict),
+        };
+        super::validate_linked_directory(
+            &self.fs_dir,
+            PREPARATION_QUARANTINE_DIRECTORY,
+            &quarantine,
+        )
+        .map_err(|_| PreparationError::QuarantineConflict)?;
+        scan_quarantine_retention(&quarantine, keyring, &self.core_id)
+    }
+
     fn publish_preparation_snapshot_and_head_locked<F>(
         &self,
         keys: &FrkSubkeys,
@@ -2812,6 +3124,11 @@ fn validate_finalize_request(request: &PreparationFinalizeRequest) -> Result<(),
         ));
     }
     validate_hash(&request.source_inventory_sha256)
+}
+
+fn validate_abandon_request(request: &PreparationAbandonRequest) -> Result<(), PreparationError> {
+    validate_opaque(&request.preparation_id, "preparation ID")?;
+    validate_preparation_cas(&request.expected)
 }
 
 fn validate_source_fence(
@@ -3931,6 +4248,32 @@ fn completed_receipt(
         pointer_sha256: loaded.pointer_sha256.clone(),
         validation_generation: Some(validation_head.generation()),
         validation_catalog_sha256: Some(validation_head.catalog_hash().to_owned()),
+        retained_frk_versions: Vec::new(),
+    })
+}
+
+fn abandoned_receipt(
+    loaded: &LoadedPreparation,
+    keys: &FrkSubkeys,
+) -> Result<PreparationReceipt, PreparationError> {
+    Ok(PreparationReceipt {
+        schema_version: PREPARATION_SCHEMA_VERSION,
+        core_id: loaded.snapshot.core_id.clone(),
+        preparation_id: loaded.snapshot.preparation_id.clone(),
+        receipt_id: deterministic_receipt_id(
+            keys,
+            &loaded.snapshot.preparation_id,
+            PreparationReceiptOutcome::Abandoned,
+            &loaded.head.snapshot_ciphertext_sha256,
+        )?,
+        outcome: PreparationReceiptOutcome::Abandoned,
+        required_frk_version: loaded.snapshot.required_frk_version,
+        final_snapshot_sequence: loaded.snapshot.sequence,
+        final_snapshot_ciphertext_sha256: loaded.head.snapshot_ciphertext_sha256.clone(),
+        pointer_sha256: loaded.pointer_sha256.clone(),
+        validation_generation: None,
+        validation_catalog_sha256: None,
+        retained_frk_versions: Vec::new(),
     })
 }
 
@@ -4011,6 +4354,34 @@ fn load_completed_receipt(
     preparation_id: &str,
     expected: &PreparationCas,
 ) -> Result<PreparationReceipt, PreparationError> {
+    let receipt = find_terminal_receipt(
+        layout,
+        keys,
+        &coordinator.core_id,
+        preparation_id,
+        expected,
+        PreparationReceiptOutcome::Completed,
+    )?
+    .ok_or(PreparationError::Missing)?;
+    let validation = coordinator
+        .load_validation_snapshot(keys)?
+        .ok_or(PreparationError::ValidationHeadConflict)?;
+    if receipt.validation_generation != Some(validation.head().generation())
+        || receipt.validation_catalog_sha256.as_deref() != Some(validation.head().catalog_hash())
+    {
+        return Err(PreparationError::ValidationHeadConflict);
+    }
+    Ok(receipt)
+}
+
+fn find_terminal_receipt(
+    layout: &PreparationLayout,
+    keys: &FrkSubkeys,
+    core_id: &str,
+    preparation_id: &str,
+    expected: &PreparationCas,
+    expected_outcome: PreparationReceiptOutcome,
+) -> Result<Option<PreparationReceipt>, PreparationError> {
     let mut matched = None;
     let mut inspected = 0_usize;
     for entry in layout.receipts.entries()? {
@@ -4031,9 +4402,8 @@ fn load_completed_receipt(
             MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
         )
         .map_err(|_| PreparationError::ReceiptConflict)?;
-        let receipt =
-            PreparationReceipt::open(&encoded, keys, &coordinator.core_id, keys.frk_version())
-                .map_err(|_| PreparationError::ReceiptConflict)?;
+        let receipt = PreparationReceipt::open(&encoded, keys, core_id, keys.frk_version())
+            .map_err(|_| PreparationError::ReceiptConflict)?;
         if name != OsStr::new(&receipt_file_name(&receipt.receipt_id))
             || receipt.receipt_id
                 != deterministic_receipt_id(
@@ -4046,24 +4416,262 @@ fn load_completed_receipt(
             return Err(PreparationError::ReceiptConflict);
         }
         if receipt.preparation_id == preparation_id
-            && receipt.outcome == PreparationReceiptOutcome::Completed
             && receipt.final_snapshot_sequence == expected.snapshot_sequence
             && receipt.pointer_sha256 == expected.pointer_sha256
-            && matched.replace(receipt).is_some()
+            && (receipt.outcome != expected_outcome || matched.replace(receipt).is_some())
         {
             return Err(PreparationError::ReceiptConflict);
         }
     }
-    let receipt = matched.ok_or(PreparationError::Missing)?;
-    let validation = coordinator
-        .load_validation_snapshot(keys)?
-        .ok_or(PreparationError::ValidationHeadConflict)?;
-    if receipt.validation_generation != Some(validation.head().generation())
-        || receipt.validation_catalog_sha256.as_deref() != Some(validation.head().catalog_hash())
+    Ok(matched)
+}
+
+fn read_raw_preparation_pointer(fs_dir: &Dir) -> Result<Option<Vec<u8>>, PreparationError> {
+    match super::read_bounded_in(
+        fs_dir,
+        OsStr::new(PREPARATION_HEAD_FILE),
+        MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
+    ) {
+        Ok(pointer) => Ok(Some(pointer)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(PreparationError::QuarantineConflict),
+    }
+}
+
+fn sealed_required_frk_version(encoded: &[u8]) -> Result<u32, PreparationError> {
+    if encoded.len() < 17 || encoded.get(..8) != Some(ENVELOPE_MAGIC.as_slice()) {
+        return Err(PreparationError::QuarantineConflict);
+    }
+    let version = u32::from_le_bytes(
+        encoded[13..17]
+            .try_into()
+            .map_err(|_| PreparationError::QuarantineConflict)?,
+    );
+    if version == 0 {
+        return Err(PreparationError::QuarantineConflict);
+    }
+    Ok(version)
+}
+
+fn pointer_authenticates_with_keyring(
+    pointer: &[u8],
+    keyring: &crate::rotation::FrkKeyring<'_>,
+    core_id: &str,
+) -> bool {
+    sealed_required_frk_version(pointer)
+        .ok()
+        .and_then(|version| keyring.require(version).ok())
+        .is_some_and(|keys| authenticate_pointer(pointer, keys, core_id).is_ok())
+}
+
+fn quarantine_preparation_id(pointer_sha256: &str) -> Result<String, PreparationError> {
+    validate_hash(pointer_sha256)?;
+    Ok(
+        OpaqueId::derive_migration("preparation-quarantine-v1", pointer_sha256.as_bytes())
+            .map_err(|_| PreparationError::InvalidFormat("quarantine preparation ID"))?
+            .as_str()
+            .to_owned(),
+    )
+}
+
+fn quarantine_pointer_file_name(pointer_sha256: &str) -> String {
+    format!("{pointer_sha256}{QUARANTINE_POINTER_SUFFIX}")
+}
+
+fn quarantine_receipt_file_name(pointer_sha256: &str) -> String {
+    format!("{pointer_sha256}{QUARANTINE_RECEIPT_SUFFIX}")
+}
+
+fn publish_or_verify_quarantine_pointer<F>(
+    quarantine: &Dir,
+    pointer_sha256: &str,
+    pointer: &[u8],
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let name = quarantine_pointer_file_name(pointer_sha256);
+    match super::read_bounded_in(
+        quarantine,
+        OsStr::new(&name),
+        MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
+    ) {
+        Ok(durable) => {
+            if durable != pointer || sha256_hex(&durable) != pointer_sha256 {
+                return Err(PreparationError::QuarantineConflict);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            publish_immutable_in_with_hook(quarantine, OsStr::new(&name), pointer, &mut |phase| {
+                hook(PreparationPublicationTarget::QuarantinePointer, phase)
+            })?;
+            Ok(())
+        }
+        Err(_) => Err(PreparationError::QuarantineConflict),
+    }
+}
+
+fn publish_or_verify_quarantine_receipt<F>(
+    quarantine: &Dir,
+    keys: &FrkSubkeys,
+    receipt: &PreparationReceipt,
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let name = quarantine_receipt_file_name(&receipt.pointer_sha256);
+    match super::read_bounded_in(
+        quarantine,
+        OsStr::new(&name),
+        MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
+    ) {
+        Ok(encoded) => {
+            let durable = PreparationReceipt::open(
+                &encoded,
+                keys,
+                &receipt.core_id,
+                receipt.required_frk_version,
+            )
+            .map_err(|_| PreparationError::QuarantineConflict)?;
+            if &durable != receipt {
+                return Err(PreparationError::QuarantineConflict);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let sealed = receipt.seal(keys)?;
+            publish_immutable_in_with_hook(
+                quarantine,
+                OsStr::new(&name),
+                sealed.as_bytes(),
+                &mut |phase| hook(PreparationPublicationTarget::QuarantineReceipt, phase),
+            )?;
+            Ok(())
+        }
+        Err(_) => Err(PreparationError::QuarantineConflict),
+    }
+}
+
+fn load_quarantine_receipt(
+    quarantine: &Dir,
+    keyring: &crate::rotation::FrkKeyring<'_>,
+    core_id: &str,
+    pointer_sha256: &str,
+) -> Result<PreparationReceipt, PreparationError> {
+    validate_hash(pointer_sha256)?;
+    let pointer_name = quarantine_pointer_file_name(pointer_sha256);
+    let pointer = super::read_bounded_in(
+        quarantine,
+        OsStr::new(&pointer_name),
+        MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
+    )
+    .map_err(|_| PreparationError::QuarantineConflict)?;
+    if sha256_hex(&pointer) != pointer_sha256 {
+        return Err(PreparationError::QuarantineConflict);
+    }
+    let receipt_name = quarantine_receipt_file_name(pointer_sha256);
+    let encoded = super::read_bounded_in(
+        quarantine,
+        OsStr::new(&receipt_name),
+        MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
+    )
+    .map_err(|_| PreparationError::QuarantineConflict)?;
+    let required_frk_version = sealed_required_frk_version(&encoded)?;
+    let keys = keyring
+        .require(required_frk_version)
+        .map_err(|_| PreparationError::RetainedFrkMissing(required_frk_version))?;
+    let receipt = PreparationReceipt::open(&encoded, keys, core_id, required_frk_version)
+        .map_err(|_| PreparationError::QuarantineConflict)?;
+    let preparation_id = quarantine_preparation_id(pointer_sha256)?;
+    if receipt.outcome != PreparationReceiptOutcome::Quarantined
+        || receipt.preparation_id != preparation_id
+        || receipt.pointer_sha256 != pointer_sha256
+        || receipt.final_snapshot_sequence != 1
+        || receipt.final_snapshot_ciphertext_sha256 != pointer_sha256
+        || receipt.receipt_id
+            != deterministic_receipt_id(
+                keys,
+                &preparation_id,
+                PreparationReceiptOutcome::Quarantined,
+                pointer_sha256,
+            )?
     {
-        return Err(PreparationError::ValidationHeadConflict);
+        return Err(PreparationError::QuarantineConflict);
+    }
+    if let Some(missing) = receipt
+        .retained_frk_versions
+        .iter()
+        .copied()
+        .find(|version| !keyring.contains(*version))
+    {
+        return Err(PreparationError::RetainedFrkMissing(missing));
     }
     Ok(receipt)
+}
+
+fn scan_quarantine_retention(
+    quarantine: &Dir,
+    keyring: &crate::rotation::FrkKeyring<'_>,
+    core_id: &str,
+) -> Result<Vec<u32>, PreparationError> {
+    let mut pointer_hashes = BTreeSet::new();
+    let mut receipt_hashes = BTreeSet::new();
+    let mut entries = 0_usize;
+    for entry in quarantine.entries()? {
+        let entry = entry.map_err(|_| PreparationError::QuarantineConflict)?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| PreparationError::QuarantineConflict)?;
+        entries = entries
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("quarantine records"))?;
+        if entries > MAX_QUARANTINE_RECORDS.saturating_mul(4) {
+            return Err(PreparationError::LimitExceeded("quarantine records"));
+        }
+        if let Some(target) = quarantine_temporary_target(&name) {
+            let hash = target
+                .strip_suffix(QUARANTINE_POINTER_SUFFIX)
+                .or_else(|| target.strip_suffix(QUARANTINE_RECEIPT_SUFFIX))
+                .ok_or(PreparationError::QuarantineConflict)?;
+            validate_hash(hash).map_err(|_| PreparationError::QuarantineConflict)?;
+            continue;
+        }
+        let (pointer_sha256, hashes) =
+            if let Some(hash) = name.strip_suffix(QUARANTINE_POINTER_SUFFIX) {
+                (hash, &mut pointer_hashes)
+            } else if let Some(hash) = name.strip_suffix(QUARANTINE_RECEIPT_SUFFIX) {
+                (hash, &mut receipt_hashes)
+            } else {
+                return Err(PreparationError::QuarantineConflict);
+            };
+        validate_hash(pointer_sha256).map_err(|_| PreparationError::QuarantineConflict)?;
+        if !hashes.insert(pointer_sha256.to_owned()) {
+            return Err(PreparationError::QuarantineConflict);
+        }
+    }
+    if pointer_hashes != receipt_hashes || pointer_hashes.len() > MAX_QUARANTINE_RECORDS {
+        return Err(PreparationError::QuarantineConflict);
+    }
+
+    let mut versions = Vec::new();
+    for pointer_sha256 in pointer_hashes {
+        let receipt = load_quarantine_receipt(quarantine, keyring, core_id, &pointer_sha256)?;
+        versions.extend(receipt.retained_frk_versions);
+    }
+    versions.sort_unstable();
+    versions.dedup();
+    Ok(versions)
+}
+
+fn quarantine_temporary_target(name: &str) -> Option<&str> {
+    let staged = name.strip_prefix('.')?.strip_suffix(".tmp")?;
+    let (target, random_suffix) = staged.rsplit_once('.')?;
+    random_suffix.parse::<u64>().ok()?;
+    Some(target)
 }
 
 fn clear_preparation_head_exact<F>(

@@ -3372,6 +3372,7 @@ impl CoreCommitCoordinator {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
+            self.ensure_preparation_rotation_allowed_locked(keyring)?;
             #[cfg(test)]
             let committed = {
                 let mut observe_load_stage = |stage| {

@@ -229,23 +229,23 @@ git -c commit.gpgsign=false commit -m "corefs: finalize prepared catalogs atomic
 - Modify: `packages/anima-corefs/src/transaction.rs`
 - Modify: `packages/anima-corefs/tests/rotation.rs`
 
-- [ ] **Step 1: Write failing terminal-state and rotation tests**
+- [x] **Step 1: Write failing terminal-state and rotation tests**
 
 Cover idempotent abandon, crash before/after abandonment receipt/head removal, completed receipt replay from Task 4, active-preparation rotation rejection, corrupt-pointer rotation rejection, Core-global hash-addressed quarantine, quarantine name independence from pointer content, conservative keyring retention enforcement, and later safe GC eligibility without physical deletion.
 
-- [ ] **Step 2: Implement deterministic abandonment receipts**
+- [x] **Step 2: Implement deterministic abandonment receipts**
 
 Completion receipts and post-head completion recovery are implemented in Task 4. Here, derive abandonment receipt identity from authenticated preparation identity plus the abandoned terminal outcome. Publish the receipt before clearing `PREPARATION_HEAD` when needed for retry proof; on restart, reconcile receipt and pointer into exactly one abandoned outcome without disturbing an existing completed receipt.
 
-- [ ] **Step 3: Implement operator-only corrupt-pointer quarantine**
+- [x] **Step 3: Implement operator-only corrupt-pointer quarantine**
 
 Hash the raw pointer bytes first and move/copy them only to the fixed Core-global quarantine directory under that hash. Do not parse a preparation ID to choose the destination. At quarantine time, durably record the complete set of keyring generations then available through trusted session state. Require explicit operator action, durable quarantine publication, and retention of that entire conservative key set before allowing new preparation activation.
 
-- [ ] **Step 4: Gate FRK rotation and cleanup**
+- [x] **Step 4: Gate FRK rotation and cleanup**
 
 Reject rotation while a preparation is active or its pointer cannot be authenticated. After approved quarantine, allow rotation only while every key generation captured from trusted session state at quarantine remains retained; never infer a narrower set from corrupt pointer fields. PCF-010 may narrow/retire that conservative set only after authenticated recovery or independent proof of safety. Record unreachable prepared objects for PCF-010 retention-aware GC; do not delete them in this task.
 
-- [ ] **Step 5: Run and commit lifecycle coverage**
+- [x] **Step 5: Run and commit lifecycle coverage**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::terminal -- --nocapture

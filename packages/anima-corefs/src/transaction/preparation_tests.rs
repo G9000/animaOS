@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::crypto::{derive_corefs_subkeys, ObjectKind, SecretBytes};
 use crate::envelope::BodyEncoding;
 use crate::publication::PublicationPhase;
+use crate::rotation::FrkKeyring;
 
 use super::converter::{
     ValidationBatch, ValidationBatchFolder, ValidationBatchMode, ValidationBatchObject,
@@ -24,9 +25,10 @@ use super::converter::{
 use super::preparation::{
     manifest_root, publish_immutable_preparation_record_with_hook,
     publish_preparation_head_with_hook, FinalIntentEntry, FinalIntentSegment,
-    PreparationBeginRequest, PreparationCas, PreparationError, PreparationFinalizeRequest,
-    PreparationHeadRecord, PreparationIdentity, PreparationOpenDisposition, PreparationPageLimits,
-    PreparationPublicationTarget, PreparationReceipt, PreparationReceiptOutcome,
+    PreparationAbandonRequest, PreparationBeginRequest, PreparationCas, PreparationError,
+    PreparationFinalizeRequest, PreparationHeadRecord, PreparationIdentity,
+    PreparationOpenDisposition, PreparationPageLimits, PreparationPublicationTarget,
+    PreparationQuarantineRequest, PreparationReceipt, PreparationReceiptOutcome,
     PreparationReconciliationCursor, PreparationReconciliationRequest,
     PreparationReconciliationTestInstrumentation, PreparationReferenceKind, PreparationSealRequest,
     PreparationSegmentReference, PreparationSnapshot, PreparationState, PreparationStatus,
@@ -231,6 +233,7 @@ fn receipt() -> PreparationReceipt {
         pointer_sha256: HASH_B.to_owned(),
         validation_generation: Some(5),
         validation_catalog_sha256: Some(HASH_C.to_owned()),
+        retained_frk_versions: Vec::new(),
     }
 }
 
@@ -2724,5 +2727,460 @@ mod post_head_recovery {
                 1
             );
         }
+    }
+}
+
+mod terminal {
+    use super::*;
+
+    fn begin_collecting(
+        label: &str,
+    ) -> (TestCore, CoreCommitCoordinator, PreparationStatus, PathBuf) {
+        let test_core = TestCore::new(label);
+        let coordinator = test_core.coordinator(CORE_ID);
+        let mut request = begin_request();
+        request.expected_validation_generation = None;
+        request.expected_validation_catalog_sha256 = None;
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &request)
+            .unwrap();
+        let body = br#"{"html":"abandon me"}"#;
+        let prepared = coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &super::prepare_object::object_request(body),
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+        let object_path = std::fs::read_dir(test_core.root.join("objects"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_file())
+            .unwrap();
+        (test_core, coordinator, prepared.status, object_path)
+    }
+
+    fn abandon_request(status: &PreparationStatus) -> PreparationAbandonRequest {
+        PreparationAbandonRequest {
+            preparation_id: status.preparation_id.clone(),
+            expected: PreparationCas {
+                pointer_sha256: status.pointer_sha256.clone(),
+                snapshot_sequence: status.snapshot_sequence,
+            },
+        }
+    }
+
+    #[test]
+    fn abandonment_is_idempotent_across_receipt_and_clear_crash_seams_without_deletion() {
+        for (label, target, phase) in [
+            (
+                "abandon-receipt-durable",
+                PreparationPublicationTarget::Receipt,
+                PublicationPhase::DestinationSynced,
+            ),
+            (
+                "abandon-pointer-cleared",
+                PreparationPublicationTarget::Clear,
+                PublicationPhase::DestinationPublished,
+            ),
+        ] {
+            let (test_core, coordinator, status, object_path) = begin_collecting(label);
+            let request = abandon_request(&status);
+            let mut failed = false;
+            let result = coordinator.abandon_preparation_with_hook(
+                &keys(3),
+                &request,
+                &mut |observed_target, observed_phase| {
+                    if !failed && observed_target == target && observed_phase == phase {
+                        failed = true;
+                        return Err(io::Error::other("abandonment crash seam"));
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(failed);
+            assert!(
+                object_path.exists(),
+                "abandonment physically deleted an object"
+            );
+            assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+
+            let restarted = test_core.coordinator(CORE_ID);
+            let receipt = restarted.abandon_preparation(&keys(3), &request).unwrap();
+            assert_eq!(receipt.outcome, PreparationReceiptOutcome::Abandoned);
+            assert_eq!(receipt.validation_generation, None);
+            assert_eq!(receipt.validation_catalog_sha256, None);
+            assert!(receipt.retained_frk_versions.is_empty());
+            assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+            assert!(object_path.exists());
+            restarted
+                .ensure_preparation_rotation_allowed_locked(&FrkKeyring::new([&keys(3)]).unwrap())
+                .unwrap();
+
+            let replayed = restarted.abandon_preparation(&keys(3), &request).unwrap();
+            assert_eq!(replayed, receipt);
+        }
+    }
+
+    #[test]
+    fn abandonment_never_overrides_a_durable_completed_receipt() {
+        let (test_core, coordinator, ready) =
+            super::seal_finalize::seal_one("abandon-completed-conflict");
+        let finalize = super::seal_finalize::finalize_request(&ready);
+        let mut failed = false;
+        let result = coordinator.finalize_preparation_with_hook(
+            &keys(3),
+            &finalize,
+            &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::Receipt
+                    && phase == PublicationPhase::DestinationSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("completed receipt durable"));
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        assert!(matches!(
+            coordinator.abandon_preparation(
+                &keys(3),
+                &PreparationAbandonRequest {
+                    preparation_id: ready.preparation_id.clone(),
+                    expected: PreparationCas {
+                        pointer_sha256: ready.pointer_sha256.clone(),
+                        snapshot_sequence: ready.snapshot_sequence,
+                    },
+                },
+            ),
+            Err(PreparationError::ReceiptConflict)
+        ));
+        let completed = coordinator
+            .finalize_preparation(&keys(3), &finalize)
+            .unwrap();
+        assert_eq!(completed.outcome, PreparationReceiptOutcome::Completed);
+        coordinator
+            .ensure_preparation_rotation_allowed_locked(&FrkKeyring::new([&keys(3)]).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn corrupt_pointer_quarantine_is_hash_addressed_and_retains_the_trusted_keyring() {
+        let test_core = TestCore::new("quarantine-hash-addressed");
+        let coordinator = test_core.coordinator(CORE_ID);
+        coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let corrupt_pointer = b"../../caller-controlled-preparation-id";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        let pointer_sha256 = sha256_hex(corrupt_pointer);
+        let retained = keys(2);
+        let active = keys(3);
+        let keyring = FrkKeyring::new([&retained, &active]).unwrap();
+        let request = PreparationQuarantineRequest {
+            expected_pointer_sha256: pointer_sha256.clone(),
+        };
+
+        let receipt = coordinator
+            .quarantine_preparation(&keyring, &active, &request)
+            .unwrap();
+        assert_eq!(receipt.outcome, PreparationReceiptOutcome::Quarantined);
+        assert_eq!(receipt.pointer_sha256, pointer_sha256);
+        assert_eq!(receipt.retained_frk_versions, vec![2, 3]);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert_eq!(
+            std::fs::read(
+                test_core
+                    .fs_path()
+                    .join("preparation-quarantine")
+                    .join(format!("{}.prep-pointer", receipt.pointer_sha256)),
+            )
+            .unwrap(),
+            corrupt_pointer
+        );
+        assert!(!test_core
+            .fs_path()
+            .join("caller-controlled-preparation-id")
+            .exists());
+
+        let replayed = coordinator
+            .quarantine_preparation(&keyring, &active, &request)
+            .unwrap();
+        assert_eq!(replayed, receipt);
+        assert_eq!(
+            coordinator
+                .quarantined_preparation_frk_versions(&keyring)
+                .unwrap(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn quarantine_requires_corrupt_bytes_and_an_exact_raw_pointer_hash() {
+        let test_core = TestCore::new("quarantine-exact-corrupt-pointer");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let active = keys(3);
+        let keyring = FrkKeyring::new([&active]).unwrap();
+        let status = coordinator
+            .begin_or_resume_preparation(&active, &begin_request())
+            .unwrap();
+        assert!(matches!(
+            coordinator.quarantine_preparation(
+                &keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: status.pointer_sha256,
+                },
+            ),
+            Err(PreparationError::ActiveConflict(
+                "authenticated preparation must be abandoned"
+            ))
+        ));
+
+        let corrupt_pointer = b"corrupt-but-bounded";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.quarantine_preparation(
+                &keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: HASH_A.to_owned(),
+                },
+            ),
+            Err(PreparationError::CasConflict)
+        ));
+        assert_eq!(
+            std::fs::read(test_core.fs_path().join("PREPARATION_HEAD")).unwrap(),
+            corrupt_pointer
+        );
+    }
+
+    #[test]
+    fn quarantine_retries_exactly_across_pointer_receipt_and_clear_crash_seams() {
+        for (label, target, phase) in [
+            (
+                "quarantine-pointer-durable",
+                PreparationPublicationTarget::QuarantinePointer,
+                PublicationPhase::DestinationSynced,
+            ),
+            (
+                "quarantine-receipt-durable",
+                PreparationPublicationTarget::QuarantineReceipt,
+                PublicationPhase::DestinationSynced,
+            ),
+            (
+                "quarantine-head-cleared",
+                PreparationPublicationTarget::Clear,
+                PublicationPhase::DestinationPublished,
+            ),
+        ] {
+            let test_core = TestCore::new(label);
+            let coordinator = test_core.coordinator(CORE_ID);
+            coordinator
+                .begin_or_resume_preparation(&keys(3), &begin_request())
+                .unwrap();
+            let corrupt_pointer = format!("corrupt-{label}").into_bytes();
+            std::fs::write(
+                test_core.fs_path().join("PREPARATION_HEAD"),
+                &corrupt_pointer,
+            )
+            .unwrap();
+            let request = PreparationQuarantineRequest {
+                expected_pointer_sha256: sha256_hex(&corrupt_pointer),
+            };
+            let retained = keys(2);
+            let active = keys(3);
+            let keyring = FrkKeyring::new([&retained, &active]).unwrap();
+            let mut failed = false;
+            let result = coordinator.quarantine_preparation_with_hook(
+                &keyring,
+                &active,
+                &request,
+                &mut |observed_target, observed_phase| {
+                    if !failed && observed_target == target && observed_phase == phase {
+                        failed = true;
+                        return Err(io::Error::other("quarantine crash seam"));
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(failed);
+
+            let restarted = test_core.coordinator(CORE_ID);
+            let receipt = restarted
+                .quarantine_preparation(&keyring, &active, &request)
+                .unwrap();
+            assert_eq!(receipt.outcome, PreparationReceiptOutcome::Quarantined);
+            assert_eq!(receipt.retained_frk_versions, vec![2, 3]);
+            assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+            assert!(test_core
+                .fs_path()
+                .join("preparation-quarantine")
+                .join(format!(
+                    "{}.prep-quarantine.acore",
+                    request.expected_pointer_sha256
+                ))
+                .is_file());
+        }
+    }
+
+    #[test]
+    fn active_preparation_blocks_rotation_and_quarantine_retains_every_captured_key() {
+        let test_core = TestCore::new("rotation-preparation-gate");
+        let coordinator = test_core.coordinator(CORE_ID);
+        coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let active = keys(3);
+        let pending = keys(4);
+        let active_keyring = FrkKeyring::new([&active, &pending]).unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&active_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::PreparationActive
+            ))
+        ));
+
+        let corrupt_pointer = b"corrupt-active-preparation";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&active_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::PreparationActive
+            ))
+        ));
+
+        let retained = keys(2);
+        let quarantine_keyring = FrkKeyring::new([&retained, &active]).unwrap();
+        coordinator
+            .quarantine_preparation(
+                &quarantine_keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: sha256_hex(corrupt_pointer),
+                },
+            )
+            .unwrap();
+        std::fs::write(
+            test_core
+                .fs_path()
+                .join("preparation-quarantine")
+                .join(format!(".{HASH_A}.prep-pointer.123.tmp")),
+            b"interrupted immutable-publication staging file",
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&active_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::QuarantinedPreparationRequiresVersion(2)
+            ))
+        ));
+        let complete_keyring = FrkKeyring::new([&retained, &active, &pending]).unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&complete_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::CoreNotInitialized)
+        ));
+    }
+
+    #[test]
+    fn terminal_calls_are_rejected_after_session_close_admission_stops() {
+        let (_test_core, coordinator, status, _object_path) =
+            begin_collecting("terminal-session-close");
+        coordinator.begin_object_lease_release().unwrap();
+        assert!(matches!(
+            coordinator.abandon_preparation(&keys(3), &abandon_request(&status)),
+            Err(PreparationError::Commit(
+                super::super::CommitError::ObjectLeaseReleaseInProgress
+            ))
+        ));
+    }
+
+    #[test]
+    fn orphaned_quarantine_record_blocks_rotation_fail_closed() {
+        let test_core = TestCore::new("orphaned-quarantine-record");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let quarantine = test_core.fs_path().join("preparation-quarantine");
+        std::fs::create_dir_all(&quarantine).unwrap();
+        std::fs::write(
+            quarantine.join(format!("{HASH_A}.prep-pointer")),
+            b"orphaned corrupt pointer",
+        )
+        .unwrap();
+        let active = keys(3);
+        let pending = keys(4);
+        let keyring = FrkKeyring::new([&active, &pending]).unwrap();
+
+        assert!(matches!(
+            coordinator.rotate_frk(&keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::QuarantinedPreparationCorrupt
+            ))
+        ));
+    }
+}
+
+mod quarantine {
+    use super::*;
+
+    #[test]
+    fn explicit_operator_transition_is_exact_replayable_and_retention_bound() {
+        let test_core = TestCore::new("quarantine-module-contract");
+        let coordinator = test_core.coordinator(CORE_ID);
+        coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let corrupt_pointer = b"bounded corrupt pointer for operator quarantine";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        let request = PreparationQuarantineRequest {
+            expected_pointer_sha256: sha256_hex(corrupt_pointer),
+        };
+        let retained = keys(2);
+        let active = keys(3);
+        let pending = keys(4);
+        let keyring = FrkKeyring::new([&retained, &active]).unwrap();
+        let receipt = coordinator
+            .quarantine_preparation(&keyring, &active, &request)
+            .unwrap();
+        assert_eq!(
+            coordinator
+                .quarantine_preparation(&keyring, &active, &request)
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(receipt.retained_frk_versions, vec![2, 3]);
+
+        let missing_retained = FrkKeyring::new([&active, &pending]).unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&missing_retained, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::QuarantinedPreparationRequiresVersion(2)
+            ))
+        ));
     }
 }

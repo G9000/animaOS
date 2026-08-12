@@ -15,7 +15,8 @@ use anima_corefs::folders::{FolderOwner, PortableName};
 use anima_corefs::id::OpaqueId;
 use anima_corefs::policy::AnimaAccess;
 use anima_corefs::rotation::{
-    authorize_frk_retirement, FrkKeyring, FrkRetirementError, RotationError,
+    authorize_frk_retirement, authorize_frk_retirement_with_preparation_retention, FrkKeyring,
+    FrkRetirementError, RotationError,
 };
 use anima_corefs::transaction::{
     CatalogPrecondition, CommitError, CoreCommitCoordinator, PreparedObjectRevision,
@@ -629,6 +630,30 @@ fn rotation_rejects_stale_generation_and_non_newer_keys_before_publication() {
 }
 
 #[test]
+fn corrupt_preparation_pointer_blocks_frk_activation_before_catalog_publication() {
+    let root = reset_root("corrupt-preparation-gate");
+    let coordinator = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let old_keys = keys(0x42, 1);
+    let pending_keys = keys(0x43, 2);
+    seed_committed(&coordinator, &old_keys);
+    fs::write(
+        root.join("fs").join("PREPARATION_HEAD"),
+        b"unauthenticatable preparation pointer",
+    )
+    .unwrap();
+    let keyring = FrkKeyring::new([&old_keys, &pending_keys]).unwrap();
+
+    assert!(matches!(
+        coordinator.rotate_frk(&keyring, &pending_keys, 2, |_| Ok(())),
+        Err(CommitError::Rotation(RotationError::PreparationActive))
+    ));
+    assert_eq!(coordinator.required_frk_version().unwrap(), Some(1));
+
+    drop(coordinator);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn keyrings_reject_empty_duplicate_and_rollback_only_inputs() {
     let old_keys = keys(0x42, 1);
     assert!(matches!(
@@ -844,6 +869,10 @@ fn retirement_requires_pruned_catalogs_and_a_verified_active_backup() {
         Err(FrkRetirementError::VerifiedActiveBackupRequired(2))
     );
     assert!(authorize_frk_retirement(1, 2, &[], &[], &[2]).is_ok());
+    assert!(matches!(
+        authorize_frk_retirement_with_preparation_retention(1, 2, &[], &[], &[1, 2], &[2],),
+        Err(FrkRetirementError::RetainedPreparationRequiresVersion(1))
+    ));
     assert_eq!(
         authorize_frk_retirement(2, 2, &[], &[], &[2]),
         Err(FrkRetirementError::ActiveVersionCannotRetire(2))

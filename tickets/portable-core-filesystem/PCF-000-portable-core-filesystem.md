@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-12 20:00 MYT
+- Updated: 2026-08-12 20:34 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -346,6 +346,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-12 19:18 MYT - Reconciled PCF-004 preparation Task 3 from landed `main` code in `840dfc1c`, `a6d37c29`, and `1c93e9bb`. One-object bounded preparation, durable descriptor segments, exact resume/conflict semantics, bounded paged reconciliation, graph metadata retention, and the synthetic >1 GiB memory-bound contract are implemented; current focused verification passed `10 + 1 + 3` tests. PCF-004 and this parent remain `in_progress`; Task 4 exact seal/finalize is next, and legacy SQLCipher plus inactive validation authority remain unchanged.
 - 2026-08-12 19:25 MYT - Resumed PCF-004 Task 4 test-first and completed its first bounded staging slice. Canonical final-intent metadata now publishes as independently bounded encrypted segments under exact preparation CAS, restart validates intent roots and global ordinals, and later source/object reconciliation invalidates stale staged intent. Focused tests passed `2`, all preparation tests passed `30`, and the CoreFS library passed `217` with `1` ignored. PCF-004 and this parent remain `in_progress`: the preparation is still `collecting`, `VALIDATION_HEAD` cannot yet publish through this path, and graph seal/finalize/post-head recovery remain open.
 - 2026-08-12 20:00 MYT - Completed PCF-004 resumable-preparation Task 4. Exact-CAS sealing now validates and authenticates a bounded durable final intent; one-lock finalization reconstructs the catalog without materializing decrypted bodies and publishes exactly one inactive validation generation. Deterministic encrypted completion receipts recover idempotently across validation-head, receipt, and pointer-clear crash seams, while competing heads and source drift fail closed without losing the preparation. Final gates passed: seal/finalize `11`, post-head recovery `3`, validation-batch integration `7`, CoreFS library `229 passed`/`1 ignored`, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. PCF-004 and the parent remain `in_progress`; Task 5 is next, legacy SQLCipher remains authoritative, and authoritative `HEAD` is untouched.
+- 2026-08-12 20:34 MYT - Published PCF-004 Task 4's exact commit `9f1d78cbb1f268176ca216395b3c0d9d3db2580b` to draft PR #142 on `codex/pcf-004-resumable-preparation`; GitHub reported the same remote head. No review request, monitoring, or merge action was taken.
+- 2026-08-12 20:34 MYT - Completed PCF-004 resumable-preparation Task 5 locally. Deterministic abandonment and explicit raw-pointer quarantine are crash-replayable and deletion-free; quarantine inventory captures the complete trusted keyring, and FRK activation/retirement fail closed for live, corrupt, incomplete, or missing-retained-key preparation state. Terminal calls participate in session-close admission. Final gates passed: terminal `8`, quarantine `1`, rotation `14`, CoreFS library `238 passed`/`1 ignored`, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. PCF-004 and this parent remain `in_progress`; Task 6 bounded PyO3 exposure is next, legacy SQLCipher remains authoritative, and the Task 5 commit is local/unpushed.
 
 ## Validation
 

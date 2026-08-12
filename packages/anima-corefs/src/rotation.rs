@@ -58,6 +58,7 @@ impl<'a> FrkKeyring<'a> {
         if selected.object_wrap().as_slice() != keys.object_wrap().as_slice()
             || selected.catalog().as_slice() != keys.catalog().as_slice()
             || selected.search().as_slice() != keys.search().as_slice()
+            || selected.preparation().as_slice() != keys.preparation().as_slice()
         {
             return Err(RotationError::KeyringMaterialMismatch(keys.frk_version()));
         }
@@ -69,8 +70,13 @@ impl<'a> FrkKeyring<'a> {
             *version != keys.frk_version()
                 && (existing.object_wrap().as_slice() == keys.object_wrap().as_slice()
                     || existing.catalog().as_slice() == keys.catalog().as_slice()
-                    || existing.search().as_slice() == keys.search().as_slice())
+                    || existing.search().as_slice() == keys.search().as_slice()
+                    || existing.preparation().as_slice() == keys.preparation().as_slice())
         })
+    }
+
+    pub(crate) fn versions(&self) -> Vec<u32> {
+        self.by_version.keys().copied().collect()
     }
 }
 
@@ -101,6 +107,12 @@ pub enum RotationError {
     GenerationMismatch { expected: u64, actual: u64 },
     #[error("CoreFS generation is exhausted during FRK rotation")]
     GenerationExhausted,
+    #[error("an active or unauthenticatable CoreFS preparation blocks FRK rotation")]
+    PreparationActive,
+    #[error("quarantined preparation state still requires FRK version {0}")]
+    QuarantinedPreparationRequiresVersion(u32),
+    #[error("quarantined preparation retention state is corrupt")]
+    QuarantinedPreparationCorrupt,
 }
 
 /// Reasons an explicit old-FRK retirement request is not yet safe.
@@ -110,6 +122,8 @@ pub enum FrkRetirementError {
     ActiveVersionCannotRetire(u32),
     #[error("retained catalog still requires FRK version {0}")]
     RetainedCatalogRequiresVersion(u32),
+    #[error("retained preparation state still requires FRK version {0}")]
+    RetainedPreparationRequiresVersion(u32),
     #[error("a verified backup using active FRK version {0} is required")]
     VerifiedActiveBackupRequired(u32),
 }
@@ -124,6 +138,27 @@ pub fn authorize_frk_retirement(
     active_version: u32,
     retained_catalog_heads: &[HeadRecord],
     retained_catalogs: &[CatalogGeneration],
+    verified_backup_versions: &[u32],
+) -> Result<(), FrkRetirementError> {
+    authorize_frk_retirement_with_preparation_retention(
+        retiring_version,
+        active_version,
+        retained_catalog_heads,
+        retained_catalogs,
+        &[],
+        verified_backup_versions,
+    )
+}
+
+/// Extends the catalog/backup retirement gate with authenticated preparation
+/// retention inventory. Quarantined state remains conservative until a later
+/// recovery or GC workflow proves that its captured key versions are safe.
+pub fn authorize_frk_retirement_with_preparation_retention(
+    retiring_version: u32,
+    active_version: u32,
+    retained_catalog_heads: &[HeadRecord],
+    retained_catalogs: &[CatalogGeneration],
+    retained_preparation_frk_versions: &[u32],
     verified_backup_versions: &[u32],
 ) -> Result<(), FrkRetirementError> {
     if retiring_version == active_version {
@@ -147,6 +182,11 @@ pub fn authorize_frk_retirement(
         })
     }) {
         return Err(FrkRetirementError::RetainedCatalogRequiresVersion(
+            retiring_version,
+        ));
+    }
+    if retained_preparation_frk_versions.contains(&retiring_version) {
+        return Err(FrkRetirementError::RetainedPreparationRequiresVersion(
             retiring_version,
         ));
     }

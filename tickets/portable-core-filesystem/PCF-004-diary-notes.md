@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-12 20:00 MYT
+- Updated: 2026-08-12 20:34 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -57,6 +57,8 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-12 19:18 MYT - Reconciled the previously unrecorded preparation Task 3 implementation already landed on `main` in `840dfc1c`, `a6d37c29`, and `1c93e9bb`. The code provides one-reader bounded object preparation, durable authenticated descriptor segments, deterministic exact-revision resume/conflict handling, byte/count-bounded paged reconciliation, complete graph metadata retention, and a synthetic logical corpus above 1 GiB without corpus-wide body ownership. Current focused verification passed `10` prepare-object tests, `1` bounded-large-corpus test, and `3` converter tests. Task 3 is complete; PCF-004 remains `in_progress`, Task 4 exact seal/finalize is next, and legacy SQLCipher plus inactive `VALIDATION_HEAD` authority remain unchanged.
 - 2026-08-12 19:25 MYT - Resumed Task 4 test-first. The initial RED proved no durable final-intent staging boundary existed. Added a private exact-CAS staging slice that validates canonical entry hashes/ordering/uniqueness, splits intent across independently bounded encrypted segments, publishes the immutable segments before the next authenticated snapshot/head, rejects stale CAS, invalidates staged intent on later object/source reconciliation, and verifies intent roots plus cross-segment ordinals on restart. The preparation remains `collecting`; this slice cannot publish `VALIDATION_HEAD`, and graph sealing, exact finalization, and post-head completion recovery remain open. Focused seal/finalize tests passed `2`, the complete preparation module passed `30`, the CoreFS library passed `217` with `1` intentionally ignored, rustfmt and diff hygiene passed, and Clippy passed after allowing only the documented pre-existing `prepare_object_inner` too-many-arguments warning.
 - 2026-08-12 20:00 MYT - Completed resumable-preparation Task 4. Added exact-CAS graph sealing with separately bounded encrypted final-intent segments, complete descriptor/role/policy/name/reference/revision/source/head validation, a body-free durable converter path, and one-lock reconstruction that authenticates ciphertext plus envelope metadata without materializing or decrypting object bodies before publishing exactly one `VALIDATION_HEAD` generation. Added HKDF-keyed deterministic encrypted completion receipts and idempotent recovery across pre/post-head, receipt, and pointer-clear seams; a different head fails closed and preserves Ready state, while a changed source explicitly returns Ready to Collecting. Required gates passed: seal/finalize `11`, post-head recovery `3`, validation-batch integration `7`, CoreFS library `229 passed`/`1 ignored`, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. Task 4 is complete; PCF-004 remains `in_progress`, and Task 5 terminal/rotation/session semantics is next.
+- 2026-08-12 20:34 MYT - Published the exact Task 4 commit `9f1d78cbb1f268176ca216395b3c0d9d3db2580b` to draft PR #142 on `codex/pcf-004-resumable-preparation`; the queried GitHub head matched the pushed OID. No review request, monitoring, or merge action was taken.
+- 2026-08-12 20:34 MYT - Completed resumable-preparation Task 5 locally. Exact-CAS abandonment now publishes a deterministic authenticated receipt before clearing the live pointer and never deletes prepared objects; corrupt raw pointers require an explicit hash-addressed operator quarantine whose authenticated receipt conservatively captures every trusted keyring generation. FRK activation fails closed for live, corrupt, incomplete-quarantine, or missing-retained-key state, and retirement accepts authenticated preparation-retention inventory. Session close rejects new terminal calls while in-flight calls retain the existing operation guard. The initial missing-API compile RED preceded implementation; final terminal `8`, quarantine `1`, rotation `14`, and CoreFS library `238 passed`/`1 ignored`, with adjusted strict Clippy, rustfmt, diff hygiene, and repository organization green. Task 6 bounded PyO3 exposure is next; this Task 5 commit remains local and unpushed.
 
 ## Validation
 
@@ -79,6 +81,10 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `cargo test -p anima-corefs preparation_tests::post_head_recovery -- --nocapture` (Task 4 final: `3 passed`)
   - `cargo test -p anima-corefs --test validation_batch --no-fail-fast` (Task 4 final: `7 passed`)
   - `cargo test -p anima-corefs --lib --no-fail-fast` (Task 4 final: `229 passed`, `1 ignored`)
+  - `cargo test -p anima-corefs preparation_tests::terminal -- --nocapture` (Task 5 final: `8 passed`)
+  - `cargo test -p anima-corefs preparation_tests::quarantine -- --nocapture` (Task 5 final: `1 passed`)
+  - `cargo test -p anima-corefs --test rotation --no-fail-fast` (Task 5 final: `14 passed`)
+  - `cargo test -p anima-corefs --lib --no-fail-fast` (Task 5 final: `238 passed`, `1 ignored`)
   - `cargo fmt --check -p anima-corefs` and `git diff --check` (passed)
   - `cargo clippy -p anima-corefs --lib -- -A clippy::too_many_arguments -D warnings` (passed; the unmodified strict invocation stops on the pre-existing `prepare_object_inner` argument-count warning at `preparation.rs:1649`)
   - `bun run check:repo` (passed)
@@ -100,16 +106,17 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
   - `packages/anima-core/{Cargo.toml,src/ffi.rs}`
   - `packages/anima-corefs/src/{catalog/v2.rs,id.rs,transaction.rs}`
+  - `packages/anima-corefs/src/rotation.rs`
   - `packages/anima-corefs/src/crypto.rs`
   - `packages/anima-corefs/src/transaction/{preparation.rs,preparation_tests.rs}`
   - `packages/anima-corefs/src/logical/{backend.rs,mod.rs,path.rs,service.rs,wire.rs}`
   - `packages/anima-corefs/src/transaction/converter.rs`
-  - `packages/anima-corefs/tests/{logical_path.rs,logical_snapshot.rs,opaque_id.rs,validation_batch.rs}`
+  - `packages/anima-corefs/tests/{logical_path.rs,logical_snapshot.rs,opaque_id.rs,rotation.rs,validation_batch.rs}`
   - `packages/api-client/src/{client.ts,types.ts}`
   - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-004-diary-notes.md}`
 - Notes:
   - Legacy SQLCipher remains authoritative and `VALIDATION_HEAD` remains inactive; no partial or authoritative cutover occurred.
-  - Task 4 is complete. It publishes only the inactive validation catalog; authoritative `HEAD` remains untouched. Task 5 abandonment, quarantine, FRK rotation, and bounded session semantics is next.
+  - Task 5 is complete locally. It closes abandonment, quarantine, FRK rotation/retirement, and terminal session-admission semantics without deleting prepared objects. Task 6 bounded PyO3 exposure is next; authoritative `HEAD` remains untouched.
   - A full `bun run test` was attempted twice but remained compute-active beyond five-minute tool bounds without a summary; no repository-wide pass is claimed.
   - Strict Clippy remains blocked only by documented untouched baseline warnings outside the PCF-004 diff.
   - The protocol direction, independently reviewed written spec, user approval, and independent implementation-plan review are complete. The reviewed plan is ready for execution-mode handoff.
