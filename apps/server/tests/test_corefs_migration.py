@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from anima_server.models.corefs_runtime import (
     CoreFSBlindToken,
     CoreFSIndexCheckpoint,
@@ -30,6 +31,7 @@ from sqlalchemy.engine import Engine
 
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 PRE_KEYSLOT_REVISION = "20260704_0001"
+WRITING_GENERATION_REVISION = "20260812_0001"
 
 
 def _migrate(engine: Engine, revision: str, *, downgrade: bool = False) -> None:
@@ -40,6 +42,11 @@ def _migrate(engine: Engine, revision: str, *, downgrade: bool = False) -> None:
             command.downgrade(config, revision)
         else:
             command.upgrade(config, revision)
+
+
+def test_core_migration_chain_has_one_writing_generation_head() -> None:
+    config = Config(str(SERVER_ROOT / "alembic_core.ini"))
+    assert ScriptDirectory.from_config(config).get_heads() == [WRITING_GENERATION_REVISION]
 
 
 def test_soul_keyslot_migration_roundtrips_without_touching_legacy_keys(

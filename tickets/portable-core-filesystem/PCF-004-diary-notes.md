@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-12 21:11 MYT
+- Updated: 2026-08-12 21:30 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -61,6 +61,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-12 20:34 MYT - Completed resumable-preparation Task 5 locally. Exact-CAS abandonment now publishes a deterministic authenticated receipt before clearing the live pointer and never deletes prepared objects; corrupt raw pointers require an explicit hash-addressed operator quarantine whose authenticated receipt conservatively captures every trusted keyring generation. FRK activation fails closed for live, corrupt, incomplete-quarantine, or missing-retained-key state, and retirement accepts authenticated preparation-retention inventory. Session close rejects new terminal calls while in-flight calls retain the existing operation guard. The initial missing-API compile RED preceded implementation; final terminal `8`, quarantine `1`, rotation `14`, and CoreFS library `238 passed`/`1 ignored`, with adjusted strict Clippy, rustfmt, diff hygiene, and repository organization green. Task 6 bounded PyO3 exposure is next; this Task 5 commit remains local and unpushed.
 - 2026-08-12 20:46 MYT - Published Task 5 commit `3c388643bfa7af1abb1be5e099d3a7ef88135e63` to the existing `codex/pcf-004-resumable-preparation` branch and PR #142; GitHub reported that exact head. No PR metadata update, review request, monitoring, or merge action was taken. Task 6 continues locally.
 - 2026-08-12 21:11 MYT - Completed resumable-preparation Task 6 locally. Added seven versioned session-guarded PyO3 operations for begin/resume, bounded status/reconciliation, exactly-one-buffer object preparation, seal, finalize, abandon, and operator quarantine; their public Rust adapter and wire dictionaries omit physical names, wrapped DEKs, key material, and authenticated preparation secrets. Python receives typed conflict/corruption/source-fence errors, every operation is rejected after close admission stops, and active guards still drain before close releases the lease. The initial source-contract RED proved the methods and one-body transport were absent. Final gates passed: default boundary `2`, Python-feature boundary/integration `9`, targeted close-drain `1`, CoreFS library `238 passed`/`1 ignored`, Python feature check, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. The complete Python-feature session band remains `18/19` because the pre-existing pinned-root symlink case now rejects that symlink as an invalid CoreFS layout; all lifecycle/session accounting cases passed. Task 7 SQLCipher writing-source generation is next; legacy SQLCipher remains authoritative and no Task 6 publication is authorized.
+- 2026-08-12 21:30 MYT - Completed resumable-preparation Task 7 locally. Linear Core migration `20260812_0001` adds a per-user monotonic writing-source generation plus INSERT/UPDATE/DELETE and ownership-reassignment triggers for folders, entries, and attachments; trigger effects share the writer transaction, roll back with it, count cascades, and isolate users. The migration revision advanced from the plan's now-occupied `20260802_0001` reservation rather than creating a duplicate or second head. A legacy unversioned create-all repair installs the same authoritative triggers after head stamping. The initial `5`-failure RED proved the revision/table/head and API writer fence were absent, and a later focused RED proved legacy stamped databases had the table but no triggers. Final gates passed: complete Task 7 migration/CoreFS migration/diary API band `32`, fresh/prior-head/downgrade-upgrade coverage, two independent encrypted SQLCipher connections under deterministic `BEGIN IMMEDIATE` exclusion, exactly one Alembic head `20260812_0001`, full server Ruff, diff hygiene, and repository organization. Task 8 streaming orchestration is next; legacy SQLCipher remains authoritative and no Task 7 publication is authorized.
 
 ## Validation
 
@@ -95,6 +96,9 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `cargo clippy -p anima-corefs --lib -- -A clippy::too_many_arguments -D warnings` (Task 6 passed)
   - `PYO3_PYTHON=.venv/bin/python cargo clippy -p anima-core --features python --lib -- -A clippy::too_many_arguments -A clippy::derivable_impls -A clippy::suspicious_open_options -A clippy::incompatible_msrv -D warnings` (Task 6 passed; the added allowances cover untouched baseline warnings outside the Task 6 diff)
   - `cargo fmt -p anima-corefs -p anima-core --check`, `git diff --check`, and `bun run check:repo` (Task 6 passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_diary_api.py -q` (Task 7 final: `32 passed`, one Starlette deprecation warning)
+  - `uv run alembic -c apps/server/alembic_core.ini heads` (Task 7: exactly `20260812_0001 (head)`)
+  - `bun run lint:server`, `git diff --check`, and `bun run check:repo` (Task 7 passed)
   - `cargo fmt --check -p anima-corefs` and `git diff --check` (passed)
   - `cargo clippy -p anima-corefs --lib -- -A clippy::too_many_arguments -D warnings` (passed; the unmodified strict invocation stops on the pre-existing `prepare_object_inner` argument-count warning at `preparation.rs:1649`)
   - `bun run check:repo` (passed)
@@ -109,10 +113,14 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `apps/desktop/src/pages/journal/{draft-migration.ts,html.ts}`
   - `apps/desktop/tests/{journal-corefs.test.ts,journal-draft-migration.test.ts,journal-html.test.ts}`
   - `apps/server/src/anima_server/api/routes/diary.py`
+  - `apps/server/alembic_core/versions/20260812_0001_add_corefs_writing_source_generation.py`
+  - `apps/server/src/anima_server/db/session.py`
+  - `apps/server/src/anima_server/models/{__init__.py,agent_runtime.py}`
   - `apps/server/src/anima_server/schemas/diary.py`
   - `apps/server/src/anima_server/services/corefs/{diary_migration.py,formats.py,writing-sanitizer-v1.json}`
   - `apps/server/src/anima_server/services/sessions.py`
   - `apps/server/tests/{conftest.py,test_corefs_diary_migration.py,test_corefs_indexer.py,test_corefs_notes.py,test_diary_api.py}`
+  - `apps/server/tests/{test_corefs_migration.py,test_corefs_writing_generation.py}`
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
   - `packages/anima-core/{Cargo.toml,src/ffi.rs}`
   - `packages/anima-core/src/lib.rs`
@@ -127,7 +135,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-004-diary-notes.md}`
 - Notes:
   - Legacy SQLCipher remains authoritative and `VALIDATION_HEAD` remains inactive; no partial or authoritative cutover occurred.
-  - Task 6 is complete locally. Its bounded, versioned native boundary exposes one object body per call and secret-free metadata/status dictionaries under the existing session guard. Task 7 transactional SQLCipher source fencing is next; authoritative `HEAD` remains untouched.
+  - Task 7 is complete locally. SQLite/SQLCipher triggers now provide a transactional, per-user monotonic source fence across every legacy diary writer, including legacy unversioned databases. Task 8 streaming orchestration is next; authoritative `HEAD` remains untouched.
   - A full `bun run test` was attempted twice but remained compute-active beyond five-minute tool bounds without a summary; no repository-wide pass is claimed.
   - Strict Clippy remains blocked only by documented untouched baseline warnings outside the PCF-004 diff.
   - The protocol direction, independently reviewed written spec, user approval, and independent implementation-plan review are complete. The reviewed plan is ready for execution-mode handoff.

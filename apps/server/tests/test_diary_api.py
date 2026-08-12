@@ -34,6 +34,83 @@ def _register_user(
     return response.json()
 
 
+def _writing_generation(user_id: int) -> int | None:
+    with get_user_session_factory(user_id)() as db:
+        return db.scalar(
+            text("select generation from corefs_writing_source_state where user_id = :user_id"),
+            {"user_id": user_id},
+        )
+
+
+def test_every_diary_api_writer_advances_the_source_generation() -> None:
+    with managed_test_client("anima-diary-generation-") as client:
+        reg = _register_user(client, username="diary-generation")
+        user_id = int(reg["id"])
+        headers = {"x-anima-unlock": str(reg["unlockToken"])}
+        assert _writing_generation(user_id) is None
+
+        folder_response = client.post(
+            "/api/diary/folders",
+            headers=headers,
+            json={"userId": user_id, "name": "Generation"},
+        )
+        assert folder_response.status_code == 201
+        folder_id = int(folder_response.json()["id"])
+        generation = _writing_generation(user_id)
+        assert generation == 1
+
+        rename_response = client.patch(
+            f"/api/diary/folders/{folder_id}",
+            headers=headers,
+            json={"name": "Generation renamed"},
+        )
+        assert rename_response.status_code == 200
+        assert _writing_generation(user_id) == generation + 1
+        generation += 1
+
+        entry_response = client.post(
+            "/api/diary",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "entryDate": "2026-08-12",
+                "body": "generation body",
+                "folderId": folder_id,
+            },
+        )
+        assert entry_response.status_code == 201
+        entry_id = int(entry_response.json()["id"])
+        assert _writing_generation(user_id) == generation + 1
+        generation += 1
+
+        update_response = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"body": "generation body changed"},
+        )
+        assert update_response.status_code == 200
+        assert _writing_generation(user_id) == generation + 1
+        generation += 1
+
+        upload_response = client.post(
+            f"/api/diary/{entry_id}/attachments",
+            headers=headers,
+            files={"file": ("generation.bin", b"generation", "application/octet-stream")},
+        )
+        assert upload_response.status_code == 201
+        assert _writing_generation(user_id) == generation + 1
+        generation += 1
+
+        delete_entry_response = client.delete(f"/api/diary/{entry_id}", headers=headers)
+        assert delete_entry_response.status_code == 200
+        after_entry_delete = _writing_generation(user_id)
+        assert after_entry_delete is not None and after_entry_delete >= generation + 2
+
+        delete_folder_response = client.delete(f"/api/diary/folders/{folder_id}", headers=headers)
+        assert delete_folder_response.status_code == 200
+        assert _writing_generation(user_id) == after_entry_delete + 1
+
+
 def test_diary_create_list_and_encrypts_text_fields() -> None:
     with managed_test_client("anima-diary-test-") as client:
         reg = _register_user(client)

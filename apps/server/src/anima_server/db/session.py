@@ -212,6 +212,65 @@ def _repair_legacy_diary_schema(connection: Connection) -> None:
             diary_columns.add(column_name)
 
 
+def _corefs_writing_source_bump_sql(user_expression: str) -> str:
+    return (
+        "INSERT INTO corefs_writing_source_state (user_id, generation) "
+        f"VALUES ({user_expression}, 1) "
+        "ON CONFLICT(user_id) DO UPDATE SET generation = "
+        "corefs_writing_source_state.generation + 1;"
+    )
+
+
+def _repair_legacy_corefs_writing_source_schema(connection: Connection) -> None:
+    """Install Task 7's trigger fence on legacy create-all databases.
+
+    Databases without an Alembic version are stamped at head after additive
+    repair. Because stamping does not execute the head migration, create-all
+    supplies the typed state table and this helper supplies the authoritative
+    SQLite triggers that model metadata cannot represent.
+    """
+    if connection.dialect.name != "sqlite":
+        return
+
+    writing_tables = ("diary_folders", "diary_entries", "diary_attachments")
+    if any(not _sqlite_column_names(connection, table_name) for table_name in writing_tables):
+        return
+
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE IF NOT EXISTS corefs_writing_source_state (
+            user_id INTEGER NOT NULL PRIMARY KEY,
+            generation INTEGER NOT NULL,
+            CONSTRAINT ck_corefs_writing_source_state_generation_positive
+                CHECK (generation >= 1)
+        )
+        """
+    )
+    for table_name in writing_tables:
+        for operation, row in (("insert", "NEW"), ("update", "NEW"), ("delete", "OLD")):
+            connection.exec_driver_sql(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS
+                    trg_corefs_writing_source_{table_name}_{operation}
+                AFTER {operation.upper()} ON {table_name}
+                BEGIN
+                    {_corefs_writing_source_bump_sql(f"{row}.user_id")}
+                END
+                """
+            )
+        connection.exec_driver_sql(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS
+                trg_corefs_writing_source_{table_name}_update_old_user
+            AFTER UPDATE OF user_id ON {table_name}
+            WHEN OLD.user_id <> NEW.user_id
+            BEGIN
+                {_corefs_writing_source_bump_sql("OLD.user_id")}
+            END
+            """
+        )
+
+
 def _repair_legacy_presence_schema(connection: Connection) -> None:
     """Add current presence_configs columns to legacy SQLite tables stamped
     past migrations (IL3: initiative_enabled/quiet_hours_*; IL7: dream_sharing)."""
@@ -539,6 +598,7 @@ def _run_alembic_upgrade_on(connection, cfg, has_alembic: bool, has_app_tables: 
             _repair_legacy_kg_schema(connection)
             _repair_legacy_diary_schema(connection)
             _repair_legacy_presence_schema(connection)
+            _repair_legacy_corefs_writing_source_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
 

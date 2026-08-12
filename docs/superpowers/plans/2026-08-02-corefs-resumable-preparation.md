@@ -297,36 +297,40 @@ git -c commit.gpgsign=false commit -m "core: expose bounded preparation sessions
 
 **Files:**
 
-- Create: `apps/server/alembic_core/versions/20260802_0001_add_corefs_writing_source_generation.py`
+- Create: `apps/server/alembic_core/versions/20260812_0001_add_corefs_writing_source_generation.py`
+- Modify: `apps/server/src/anima_server/db/session.py`
 - Modify: `apps/server/src/anima_server/models/agent_runtime.py`
 - Modify: `apps/server/src/anima_server/models/__init__.py`
 - Create: `apps/server/tests/test_corefs_writing_generation.py`
 - Modify: `apps/server/tests/test_corefs_migration.py`
 - Modify: `apps/server/tests/test_diary_api.py`
 
-- [ ] **Step 1: Write failing migration and mutation-generation tests**
+- [x] **Step 1: Write failing migration and mutation-generation tests**
 
 Test a fresh upgrade, upgrade from `20260721_0001`, downgrade/upgrade, and one head only. Exercise INSERT/UPDATE/DELETE for `diary_folders`, `diary_entries`, and `diary_attachments`; assert the per-user generation increments in the same transaction, rollback does not increment, cascades do not lose monotonicity, users remain isolated, and every existing diary service writer advances the value.
 
-- [ ] **Step 2: Add the source-state table and SQLite triggers**
+- [x] **Step 2: Add the source-state table and SQLite triggers**
 
 Create a small per-user table such as `corefs_writing_source_state(user_id PRIMARY KEY, generation NOT NULL)` and SQLite triggers on all three legacy writing tables. Each trigger must atomically insert generation `1` or increment the existing row using `NEW.user_id` or `OLD.user_id` as appropriate. The SQLAlchemy model is for typed reads; triggers are the authority so alternate writers cannot bypass the fence accidentally.
 
-- [ ] **Step 3: Prove `BEGIN IMMEDIATE` writer exclusion**
+- [x] **Step 3: Prove `BEGIN IMMEDIATE` writer exclusion**
 
 Using two independent SQLCipher connections, begin the finalization fence on one connection and assert a legacy write on the second cannot commit until the first commits/rolls back. Keep the test bounded with SQLite busy timeouts and deterministic synchronization, not sleeps.
 
-- [ ] **Step 4: Validate and commit the migration**
+- [x] **Step 4: Validate and commit the migration**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_diary_api.py -q
 uv run alembic -c apps/server/alembic_core.ini heads
 ```
 
-Expected Alembic output: exactly `20260802_0001 (head)`.
+Expected Alembic output: exactly `20260812_0001 (head)`. The reviewed plan originally reserved
+`20260802_0001`, but that revision was subsequently occupied by the dream claim-receipt migration;
+the source-generation migration therefore advances the existing linear chain instead of creating a
+duplicate revision or second head.
 
 ```powershell
-git add apps/server/alembic_core/versions/20260802_0001_add_corefs_writing_source_generation.py apps/server/src/anima_server/models/agent_runtime.py apps/server/src/anima_server/models/__init__.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_diary_api.py
+git add apps/server/alembic_core/versions/20260812_0001_add_corefs_writing_source_generation.py apps/server/src/anima_server/db/session.py apps/server/src/anima_server/models/agent_runtime.py apps/server/src/anima_server/models/__init__.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_diary_api.py
 git -c commit.gpgsign=false commit -m "server: fence legacy writing mutations"
 ```
 

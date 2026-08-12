@@ -5,6 +5,7 @@ from datetime import date, datetime
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     Date,
     DateTime,
     Float,
@@ -555,6 +556,16 @@ class DiaryFolder(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+
+class CoreFSWritingSourceState(Base):
+    """Monotonic legacy-writing inventory generation maintained by SQLite triggers."""
+
+    __tablename__ = "corefs_writing_source_state"
+    __table_args__ = (CheckConstraint("generation >= 1", name="generation_positive"),)
+
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class DiaryEntry(Base):
