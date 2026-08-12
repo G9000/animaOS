@@ -189,7 +189,10 @@ export function performTurnInto(
     // (see task-7-report.md) rather than assumed.
     const liftedNode = editor.state.doc.nodeAt(pos);
     if (!liftedNode) return;
-    node = liftedNode;
+    // Bun can resolve the drag-handle and Editor packages through distinct
+    // patch releases of prosemirror-model. They are the same runtime node
+    // returned by this Editor; erase only that duplicate-package type brand.
+    node = liftedNode as unknown as ProseMirrorNode;
   }
 
   // SlashCommand.run always starts with `deleteRange(range)` — that's

@@ -1881,17 +1881,19 @@ def read_data_snapshot(*, user_id: int | None = None) -> dict[str, str]:
         relative_path = path.relative_to(root)
         if relative_path.name in {"anima.db", "anima.db-shm", "anima.db-wal"}:
             continue
-        if relative_path.parts and relative_path.parts[0] == "chroma":
-            continue  # skip legacy chroma directory if present
-        if relative_path.parts and relative_path.parts[0] == "runtime":
-            continue  # skip ephemeral runtime data (embedded PG, etc.)
-        # Scope to user directory if user_id is set (files are stored under users/{id}/)
-        if user_id is not None and relative_path.parts:
-            if relative_path.parts[0] == "users" and len(relative_path.parts) > 1:
-                if relative_path.parts[1] != str(user_id):
-                    continue
-            elif relative_path.parts[0] == "users":
-                continue
+        if relative_path.parts and relative_path.parts[0] in {"chroma", "fs", "runtime"}:
+            # Chroma/runtime are rebuildable. CoreFS records are binary,
+            # authenticated, and bound to their source Core/key hierarchy; a
+            # legacy text-file vault must never copy them into another Core.
+            continue
+        if relative_path == Path("manifest.json"):
+            # The manifest has a dedicated authenticated vault field and
+            # cross-Core import policy; do not duplicate it as a text file.
+            continue
+        # A scoped vault owns only legacy files below users/<id>. Shared
+        # top-level state must not leak into a per-user export.
+        if user_id is not None and relative_path.parts[:2] != ("users", str(user_id)):
+            continue
         snapshot[relative_path.as_posix()] = path.read_text(encoding="utf-8")
     return snapshot
 

@@ -598,6 +598,45 @@ def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> N
         assert legacy.status_code == 200
         assert legacy.json()[0]["body"] == "<p>legacy authority</p>"
 
+        metadata_conflicting = dict(payload)
+        metadata_conflicting["title"] = "Changed without advancing revision"
+        metadata_conflict = client.post(
+            "/api/diary/drafts/import", headers=headers, json=metadata_conflicting
+        )
+        assert metadata_conflict.status_code == 409
+        assert "metadata" in metadata_conflict.text.lower()
+
+        conflicting = dict(payload)
+        conflicting["html"] = "<p>different body at the same client revision</p>"
+        conflicting["contentSha256"] = hashlib.sha256(
+            conflicting["html"].encode()
+        ).hexdigest()
+        conflict = client.post(
+            "/api/diary/drafts/import", headers=headers, json=conflicting
+        )
+        assert conflict.status_code == 409
+        assert "revision" in conflict.text.lower()
+
+        newer = dict(conflicting)
+        newer["clientRevision"] = 2
+        advanced = client.post("/api/diary/drafts/import", headers=headers, json=newer)
+        assert advanced.status_code == 200, advanced.text
+        assert advanced.json()["revision"] == 2
+        assert advanced.json()["generation"] == first.json()["generation"] + 1
+        assert advanced.json()["completionToken"] == {
+            "draftId": payload["draftId"],
+            "clientRevision": 2,
+            "contentSha256": newer["contentSha256"],
+        }
+
+        refreshed_objects = read_prepared_writing_objects(session=session)
+        refreshed_draft = next(
+            item for item in refreshed_objects if item.stable_id == first.json()["stableId"]
+        )
+        assert decode_draft_document(
+            read_prepared_writing_body(session=session, item=refreshed_draft)
+        ).body == newer["html"]
+
 
 def test_note_is_read_back_through_authorized_stable_role() -> None:
     with managed_test_client("anima-corefs-note-readback-") as client:
@@ -629,6 +668,35 @@ def test_note_is_read_back_through_authorized_stable_role() -> None:
         decoded = decode_note_document(read_prepared_writing_body(session=session, item=note))
         assert decoded.title == "Native"
         assert decoded.body == "# encrypted note"
+
+        updated_note = LegacyNote(
+            id="note-1",
+            title="Native",
+            body="# encrypted note",
+            content_type="text/markdown",
+            updated_at="2026-08-02T01:00:00Z",
+        )
+        with get_user_session_factory(user_id)() as db:
+            updated = prepare_diary_validation_catalog(
+                session=session,
+                db=db,
+                staged_notes=(updated_note,),
+            )
+        assert updated.published is True
+        assert updated.generation == result.generation + 1
+        refreshed = next(
+            item for item in read_prepared_writing_objects(session=session) if item.kind == "note"
+        )
+        assert refreshed.updated_at == "2026-08-02T01:00:00Z"
+
+        with get_user_session_factory(user_id)() as db:
+            exact_rerun = prepare_diary_validation_catalog(
+                session=session,
+                db=db,
+                staged_notes=(updated_note,),
+            )
+        assert exact_rerun.published is False
+        assert exact_rerun.generation == updated.generation
 
 
 def test_unlock_lifecycle_rerun_preserves_native_layout_and_is_a_noop() -> None:

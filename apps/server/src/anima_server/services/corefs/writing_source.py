@@ -5,7 +5,7 @@ import json
 import re
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC
 from typing import Any, Literal
 
@@ -26,9 +26,10 @@ from anima_server.services.corefs.formats import (
 _SOURCE_SCHEMA_VERSION = 1
 _SOURCE_SCOPE = "pcf004-writing-v1"
 _RECONCILIATION_ITEMS = 100
-_RECONCILIATION_BYTES = 64 * 1024
+_RECONCILIATION_BYTES = 2 * 1024 * 1024
 _MAX_SOURCE_RETRIES = 3
 _OPAQUE_REFERENCE = re.compile(r"corefs://object/([0-7][0-9A-HJKMNP-TV-Z]{25})")
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 BodySource = Literal[
     "sql_attachment",
@@ -89,6 +90,47 @@ class WritingSourceObjectDescriptor:
             "sourceFingerprintSha256": self.source_fingerprint_sha256,
             "converterFormatVersion": self.converter_format_version,
         }
+
+
+def _validate_staged_draft_handoff(
+    *,
+    existing: Any | None,
+    draft: Any,
+    encoded_content_sha256: str,
+) -> None:
+    """Reject replay or mutation of an already-published browser revision."""
+    if existing is None or existing.kind != "draft":
+        return
+    token = existing.metadata.get("handoffToken")
+    if token is None:
+        return
+    if not isinstance(token, dict):
+        raise ValueError("Prepared draft handoff token is invalid.")
+
+    draft_id = token.get("draftId")
+    revision = token.get("clientRevision")
+    content_sha256 = token.get("contentSha256")
+    if (
+        not isinstance(draft_id, str)
+        or not draft_id
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 1
+        or not isinstance(content_sha256, str)
+        or _SHA256_HEX.fullmatch(content_sha256) is None
+    ):
+        raise ValueError("Prepared draft handoff token is invalid.")
+    if draft.id != draft_id:
+        raise ValueError("Draft handoff ID conflicts with the prepared revision.")
+    if draft.client_revision is None or draft.content_sha256 is None:
+        raise ValueError("Versioned draft handoff fields are required.")
+    if draft.client_revision < revision:
+        raise ValueError("Draft handoff revision is stale.")
+    if draft.client_revision == revision:
+        if draft.content_sha256 != content_sha256:
+            raise ValueError("Draft handoff revision conflicts with different content.")
+        if encoded_content_sha256 != existing.content_hash:
+            raise ValueError("Draft handoff revision conflicts with different metadata.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,6 +246,7 @@ def build_writing_source_inventory(
         )
 
     current_revisions = {item.stable_id: item.revision for item in current_objects}
+    current_objects_by_id = {item.stable_id: item for item in current_objects}
     current_attachments = {
         item.stable_id: item for item in current_objects if item.kind == "attachment"
     }
@@ -594,6 +637,12 @@ def build_writing_source_inventory(
             metadata=draft.metadata,
             media_reference_factory=add_draft_inline,
         )
+        draft_body_sha256 = hashlib.sha256(draft_body).hexdigest()
+        _validate_staged_draft_handoff(
+            existing=current_objects_by_id.get(stable_id),
+            draft=draft,
+            encoded_content_sha256=draft_body_sha256,
+        )
         graph_metadata = dict(draft.native_metadata or {})
         if draft.client_revision is not None and draft.content_sha256 is not None:
             graph_metadata["handoffToken"] = {
@@ -617,7 +666,7 @@ def build_writing_source_inventory(
                 content_type=DRAFT_CONTENT_TYPE,
                 body_encoding="utf-8",
                 body_length=len(draft_body),
-                content_sha256=hashlib.sha256(draft_body).hexdigest(),
+                content_sha256=draft_body_sha256,
                 source_fingerprint_sha256=hashlib.sha256(draft.body.encode()).hexdigest(),
                 created_at=draft.created_at or draft.updated_at,
                 updated_at=draft.updated_at,
@@ -891,11 +940,7 @@ def prepare_writing_source_catalog(
             staged_notes=staged_notes,
         )
         active = _preparation_status_or_none(native, keys)
-        checkpoint = _read_checkpoint(session.user_id)
-        if active is None and (
-            _checkpoint_matches(checkpoint, inventory)
-            or _inventory_matches_current(session=session, inventory=inventory)
-        ):
+        if active is None and _inventory_matches_current(session=session, inventory=inventory):
             generation, catalog_hash = _required_head(inventory)
             staged_id, staged_revision = _staged_result(
                 staged_drafts,
@@ -925,7 +970,8 @@ def prepare_writing_source_catalog(
                 int(active.get("sourceMutationGeneration", -1)) != inventory.source_generation
                 or active.get("sourceInventorySha256") != inventory.source_digest
             ):
-                _abandon(native, keys, active)
+                if _reconcile_ready_source_drift(native, keys, active) == "unpublished":
+                    _abandon(native, keys, active)
                 continue
             receipt = _finalize_under_fence(
                 session=session,
@@ -981,10 +1027,21 @@ def prepare_writing_source_catalog(
         identities: dict[str, dict[str, object]] = {
             object_id: _identity(metadata) for object_id, metadata in prepared.items()
         }
+        # Reconciliation has already authenticated the durable descriptors.
+        # Filter them out before entering the body iterator so restart does not
+        # decrypt and re-encode a potentially multi-gigabyte completed prefix.
+        pending_inventory = replace(
+            inventory,
+            objects=tuple(
+                descriptor
+                for descriptor in inventory.objects
+                if descriptor.stable_id not in identities
+            ),
+        )
         source_objects = iter_writing_source_objects(
             session=session,
             db=db,
-            inventory=inventory,
+            inventory=pending_inventory,
             staged_drafts=staged_drafts,
             staged_notes=staged_notes,
         )
@@ -993,9 +1050,6 @@ def prepare_writing_source_catalog(
                 produced = next(source_objects)
             except StopIteration:
                 break
-            if produced.descriptor.stable_id in identities:
-                del produced
-                continue
             outcome = dict(
                 native.preparation_prepare_object_v1(
                     keys,
@@ -1164,7 +1218,9 @@ def _attachment_metadata_by_entry(
             DiaryAttachment.original_filename,
             DiaryAttachment.caption,
             DiaryAttachment.created_at,
-        ).where(DiaryAttachment.user_id == user_id)
+        )
+        .where(DiaryAttachment.user_id == user_id)
+        .order_by(DiaryAttachment.created_at, DiaryAttachment.id)
     ).all()
     result: dict[int, list[_AttachmentMetadata]] = {}
     for row in rows:
@@ -1193,6 +1249,10 @@ def _attachment_metadata_by_entry(
             created_at=_timestamp(row.created_at),
         )
         result.setdefault(item.entry_id, []).append(item)
+    for attachments in result.values():
+        # Preserve the inventory pass's canonical ordering even if a database
+        # driver or test double does not honor the statement ordering.
+        attachments.sort(key=lambda item: (item.created_at or "", item.id))
     return result
 
 
@@ -1335,7 +1395,7 @@ def _preparation_status_or_none(native: Any, keys: Any) -> dict[str, object] | N
         return dict(native.preparation_status_v1(keys))
     except Exception as exc:
         message = str(exc).lower()
-        if "missing" in message or "no active preparation" in message:
+        if message.strip() == "no active preparation exists":
             return None
         raise
 
@@ -1425,6 +1485,77 @@ def _abandon(native: Any, keys: Any, status: dict[str, object]) -> None:
     )
 
 
+def _ready_validation_head(
+    status: dict[str, object], *, intended: bool
+) -> tuple[int, str] | None:
+    from anima_server.services.corefs.diary_migration import DiaryMigrationError
+
+    prefix = "intended" if intended else "expected"
+    generation = status.get(f"{prefix}ValidationGeneration")
+    catalog_hash = status.get(f"{prefix}ValidationCatalogSha256")
+    if generation is None and catalog_hash is None:
+        return None
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 1
+        or not isinstance(catalog_hash, str)
+        or _SHA256_HEX.fullmatch(catalog_hash) is None
+    ):
+        raise DiaryMigrationError("Ready preparation validation-head metadata is invalid.")
+    return generation, catalog_hash
+
+
+def _reconcile_ready_source_drift(
+    native: Any, keys: Any, status: dict[str, object]
+) -> Literal["recovered", "unpublished"]:
+    """Resolve source drift without abandoning a catalog that already published."""
+    from anima_server.services.corefs.diary_migration import DiaryMigrationError
+
+    intended = _ready_validation_head(status, intended=True)
+    if intended is None:
+        raise DiaryMigrationError("Ready preparation has no intended validation head.")
+    expected = _ready_validation_head(status, intended=False)
+    try:
+        head = native.validation_snapshot(keys)
+    except ValueError as exc:
+        if str(exc) != "CoreFS validation snapshot is missing":
+            raise DiaryMigrationError("CoreFS validation head could not be opened.") from exc
+        current: tuple[int, str] | None = None
+    else:
+        try:
+            current = (int(head["generation"]), str(head["catalogHash"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DiaryMigrationError("CoreFS validation head is incomplete.") from exc
+
+    if current == expected:
+        return "unpublished"
+    if current != intended:
+        raise DiaryMigrationError(
+            "Current validation head conflicts with the ready preparation."
+        )
+
+    receipt = dict(
+        native.preparation_finalize_v1(
+            keys,
+            _canonical_json(
+                {
+                    "preparationId": status["preparationId"],
+                    "expected": _cas(status),
+                    "sourceMutationGeneration": status["sourceMutationGeneration"],
+                    "sourceInventorySha256": status["sourceInventorySha256"],
+                }
+            ),
+        )
+    )
+    if (
+        receipt.get("validationGeneration") != intended[0]
+        or receipt.get("validationCatalogSha256") != intended[1]
+    ):
+        raise DiaryMigrationError("Recovered preparation receipt does not match publication.")
+    return "recovered"
+
+
 def _verify_published_inventory(*, session: Any, inventory: WritingSourceInventory) -> None:
     from anima_server.services.corefs.diary_migration import (
         DiaryMigrationError,
@@ -1463,7 +1594,18 @@ def _verify_published_inventory(*, session: Any, inventory: WritingSourceInvento
 
 
 def _inventory_matches_current(*, session: Any, inventory: WritingSourceInventory) -> bool:
-    from anima_server.services.corefs.diary_migration import read_prepared_writing_snapshot
+    """Compare every durable PCF-004 field available after publication.
+
+    Preparation-only values such as source fingerprints and source character
+    counts are validation inputs, not fields retained by the final catalog.
+    PCF-004 references and object policies are deterministic from the body and
+    fixed migration policy respectively. The authenticated envelope and
+    catalog fields below therefore form the complete durable no-op identity.
+    """
+    from anima_server.services.corefs.diary_migration import (
+        read_prepared_writing_body,
+        read_prepared_writing_snapshot,
+    )
 
     if inventory.expected_head is None:
         return False
@@ -1477,6 +1619,8 @@ def _inventory_matches_current(*, session: Any, inventory: WritingSourceInventor
             item.content_type,
             item.body_encoding,
             item.body_length,
+            item.created_at,
+            item.updated_at,
             item.metadata,
         )
         for item in inventory.objects
@@ -1490,6 +1634,8 @@ def _inventory_matches_current(*, session: Any, inventory: WritingSourceInventor
             item.content_type,
             item.body_encoding,
             item.body_length,
+            item.created_at,
+            item.updated_at,
             item.metadata,
         )
         for item in snapshot.objects
@@ -1500,36 +1646,18 @@ def _inventory_matches_current(*, session: Any, inventory: WritingSourceInventor
     current_folders = {
         item.stable_id: (item.parent_id, item.name, item.role) for item in snapshot.folders
     }
-    return desired_objects == current_objects and desired_folders == current_folders
-
-
-def _read_checkpoint(user_id: int) -> dict[str, object] | None:
-    from anima_server.services.core import get_manifest_path
-
-    path = get_manifest_path()
-    if not path.is_file():
-        return None
-    try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        checkpoints = manifest.get("migration_checkpoints")
-        value = checkpoints.get(f"pcf004:{user_id}") if isinstance(checkpoints, dict) else None
-    except (OSError, json.JSONDecodeError):
-        return None
-    return dict(value) if isinstance(value, dict) else None
-
-
-def _checkpoint_matches(
-    checkpoint: dict[str, object] | None, inventory: WritingSourceInventory
-) -> bool:
-    if checkpoint is None or inventory.expected_head is None:
+    if desired_objects != current_objects or desired_folders != current_folders:
         return False
-    return (
-        checkpoint.get("state") == "verified-inactive"
-        and checkpoint.get("sourceHash") == inventory.source_digest
-        and checkpoint.get("sourceMutationGeneration") == inventory.source_generation
-        and checkpoint.get("generation") == inventory.expected_head[0]
-        and checkpoint.get("catalogHash") == inventory.expected_head[1]
-    )
+
+    current_by_id = {item.stable_id: item for item in snapshot.objects}
+    for descriptor in inventory.objects:
+        # Exact no-op acceptance includes authenticated, bounded envelope/body
+        # verification; catalog metadata alone cannot prove object-file integrity.
+        body = read_prepared_writing_body(
+            session=session, item=current_by_id[descriptor.stable_id]
+        )
+        del body
+    return True
 
 
 def _required_head(inventory: WritingSourceInventory) -> tuple[int, str]:

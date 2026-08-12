@@ -9,7 +9,10 @@ import type { Editor } from "@tiptap/react";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../lib/api";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
-import { migrateLegacyDiaryDrafts } from "./lib/draftMigration";
+import {
+  draftMigrationRetryDelay,
+  migrateLegacyDiaryDraftsFromStorageProvider,
+} from "./lib/draftMigration";
 import { stripUnresolvedAttachmentImages } from "./lib/attachmentImages";
 import {
   graduateSessionEntry,
@@ -340,16 +343,21 @@ export default function DiaryWorkspace() {
     if (user?.id == null) return;
     const prefix = `anima:diary:draft:${user.id}:`;
     let cancelled = false;
+    let retryAttempt = 0;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const migrate = async () => {
-      const retry = await migrateLegacyDiaryDrafts({
-        storage: window.localStorage,
+      const retry = await migrateLegacyDiaryDraftsFromStorageProvider({
+        storageProvider: () => window.localStorage,
+        lockManagerProvider: () => window.navigator.locks,
         prefix,
         userId: user.id,
         sanitizeHtml: sanitizeDiaryHtml,
         importDraft: (draft) => api.diary.importLegacyDraft(user.id, draft),
       });
-      if (retry && !cancelled) retryTimer = setTimeout(() => void migrate(), 1_000);
+      if (!retry || cancelled) return;
+      const delay = draftMigrationRetryDelay(retryAttempt);
+      retryAttempt += 1;
+      if (delay !== null) retryTimer = setTimeout(() => void migrate(), delay);
     };
     void migrate();
     return () => {

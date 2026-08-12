@@ -525,6 +525,39 @@ mod python {
         })
     }
 
+    fn validate_preparation_body_buffer(
+        request: &anima_corefs::transaction::PreparationObjectV1,
+        buffer_length: usize,
+    ) -> PyResult<()> {
+        let declared_length = usize::try_from(request.body_length).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "preparation object bodyLength does not fit this platform",
+            )
+        })?;
+        if buffer_length != declared_length {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "preparation object body length does not match bodyLength",
+            ));
+        }
+        let kind_limit = match request.kind {
+            anima_corefs::crypto::ObjectKind::Diary
+            | anima_corefs::crypto::ObjectKind::Draft
+            | anima_corefs::crypto::ObjectKind::Note => {
+                anima_corefs::transaction::MAX_WRITING_DOCUMENT_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Attachment => {
+                anima_corefs::transaction::MAX_WRITING_ATTACHMENT_BYTES
+            }
+            _ => 0,
+        };
+        if buffer_length > kind_limit {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "preparation object metadata or body exceeds kind-specific converter limits",
+            ));
+        }
+        Ok(())
+    }
+
     fn preparation_to_py(py: Python<'_>, value: impl serde::Serialize) -> PyResult<PyObject> {
         let value = serde_json::to_value(value)
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
@@ -1186,6 +1219,7 @@ mod python {
             let wire: PreparationPrepareObjectWire = decode_preparation_json(request_json)?;
             let expected = preparation_cas_wire(wire.expected);
             let request = preparation_object_wire(wire.object)?;
+            validate_preparation_body_buffer(&request, body.len_bytes())?;
             let body = body.to_vec(py)?;
             let outcome = py
                 .allow_threads(|| {
@@ -8174,6 +8208,16 @@ mod corefs_preparation_contract {
             .next()
             .expect("preparation_seal_v1 must follow prepare_object");
         assert!(method.contains("body: PyBuffer<u8>"));
+        let length_check = method
+            .find("body.len_bytes()")
+            .expect("the borrowed buffer length must be checked");
+        let body_copy = method
+            .find("body.to_vec(py)?")
+            .expect("the bounded body may be copied after validation");
+        assert!(
+            length_check < body_copy,
+            "the FFI must reject oversized bodies before copying them"
+        );
         for forbidden in [
             "Vec<Vec<u8>>",
             "Vec<PyBytes",

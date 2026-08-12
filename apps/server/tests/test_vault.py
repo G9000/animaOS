@@ -55,6 +55,23 @@ def test_export_vault_requires_unlock_session() -> None:
         assert response.json() == {"error": "Session locked. Please sign in again."}
 
 
+def test_scoped_vault_excludes_core_bound_binary_files() -> None:
+    with managed_test_client("anima-vault-corefs-boundary-") as client:
+        alice = _register_user(client)
+        user_id = int(alice["id"])
+        user_dir = get_user_data_dir(user_id)
+        legacy_file = user_dir / "memory" / "entry.md"
+        legacy_file.parent.mkdir(parents=True, exist_ok=True)
+        legacy_file.write_text("portable legacy text", encoding="utf-8")
+
+        snapshot = vault_module.read_data_snapshot(user_id=user_id)
+
+        assert snapshot == {
+            f"users/{user_id}/memory/entry.md": "portable legacy text"
+        }
+        assert all(not path.startswith("fs/") for path in snapshot)
+
+
 def test_export_and_import_vault_restores_auth_and_files() -> None:
     with managed_test_client("anima-vault-test-") as client:
         alice = _register_user(client)

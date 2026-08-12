@@ -34,7 +34,7 @@ use super::preparation::{
     PreparationSegmentReference, PreparationSnapshot, PreparationState, PreparationStatus,
     PreparationTestLimits, PrepareObjectDisposition, PrepareObjectRequest,
     PreparedObjectDescriptor, PreparedObjectDescriptorSegment, WrappedObjectDekWire,
-    MAX_FINAL_INTENT_ENTRY_BYTES,
+    MAX_FINAL_INTENT_ENTRY_BYTES, MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
 };
 use super::{CoreCommitCoordinator, PreparationTestInstrumentation};
 
@@ -1700,6 +1700,48 @@ mod prepare_object {
     }
 
     #[test]
+    fn reconciliation_pages_can_return_a_valid_large_metadata_descriptor() {
+        let test_core = TestCore::new("prepare-page-large-metadata");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let body = br#"{"html":"hello"}"#;
+        let mut request = object_request(body);
+        request.graph_metadata =
+            BTreeMap::from([("large".to_owned(), Value::String("x".repeat(96 * 1024)))]);
+        coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &request,
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+
+        let page = coordinator
+            .reconcile_prepared_objects(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: None,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 2 * 1024 * 1024,
+                    },
+                    expected: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert!(page.encoded_bytes > 64 * 1024);
+        assert!(page.encoded_bytes <= 2 * 1024 * 1024);
+    }
+
+    #[test]
     fn reconciliation_count_limit_applies_across_items_missing_and_conflicting_identities() {
         let test_core = TestCore::new("prepare-page-count");
         let coordinator = test_core.coordinator(CORE_ID);
@@ -2893,6 +2935,79 @@ mod terminal {
     }
 
     #[test]
+    fn abandonment_cannot_clear_ready_state_after_validation_head_publication() {
+        let (test_core, coordinator, ready) =
+            super::seal_finalize::seal_one("abandon-after-validation-head");
+        let finalize = super::seal_finalize::finalize_request(&ready);
+        let mut failed = false;
+        let result = coordinator.finalize_preparation_with_hook(
+            &keys(3),
+            &finalize,
+            &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::ValidationHead
+                    && phase == PublicationPhase::DestinationSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("crash after validation head"));
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(test_core.fs_path().join("VALIDATION_HEAD").exists());
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        assert!(matches!(
+            coordinator.abandon_preparation(&keys(3), &abandon_request(&ready)),
+            Err(PreparationError::ValidationHeadConflict)
+        ));
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        let completed = coordinator
+            .finalize_preparation(&keys(3), &finalize)
+            .unwrap();
+        assert_eq!(completed.outcome, PreparationReceiptOutcome::Completed);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+    }
+
+    #[test]
+    fn finalization_cannot_override_a_durable_abandoned_receipt() {
+        let (test_core, coordinator, ready) =
+            super::seal_finalize::seal_one("finalize-after-abandoned-receipt");
+        let abandon = abandon_request(&ready);
+        let mut failed = false;
+        let result =
+            coordinator.abandon_preparation_with_hook(&keys(3), &abandon, &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::Receipt
+                    && phase == PublicationPhase::DestinationSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("crash after abandoned receipt"));
+                }
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+
+        assert!(matches!(
+            coordinator
+                .finalize_preparation(&keys(3), &super::seal_finalize::finalize_request(&ready),),
+            Err(PreparationError::ReceiptConflict)
+        ));
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        let abandoned = coordinator.abandon_preparation(&keys(3), &abandon).unwrap();
+        assert_eq!(abandoned.outcome, PreparationReceiptOutcome::Abandoned);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+    }
+
+    #[test]
     fn corrupt_pointer_quarantine_is_hash_addressed_and_retains_the_trusted_keyring() {
         let test_core = TestCore::new("quarantine-hash-addressed");
         let coordinator = test_core.coordinator(CORE_ID);
@@ -3121,6 +3236,44 @@ mod terminal {
             coordinator.rotate_frk(&complete_keyring, &pending, 1, |_| Ok(())),
             Err(super::super::CommitError::CoreNotInitialized)
         ));
+    }
+
+    #[test]
+    fn oversized_corrupt_preparation_pointer_can_be_quarantined() {
+        let test_core = TestCore::new("oversized-corrupt-preparation-pointer");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let active = keys(3);
+        let keyring = FrkKeyring::new([&active]).unwrap();
+        let corrupt_pointer = vec![0xa5; MAX_PREPARATION_HEAD_ENVELOPE_SIZE + 1];
+        let pointer_sha256 = sha256_hex(&corrupt_pointer);
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            &corrupt_pointer,
+        )
+        .unwrap();
+
+        let receipt = coordinator
+            .quarantine_preparation(
+                &keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: pointer_sha256.clone(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(receipt.pointer_sha256, pointer_sha256);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert_eq!(
+            std::fs::read(
+                test_core
+                    .fs_path()
+                    .join("preparation-quarantine")
+                    .join(format!("{pointer_sha256}.prep-pointer"))
+            )
+            .unwrap(),
+            corrupt_pointer
+        );
     }
 
     #[test]

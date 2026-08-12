@@ -4,12 +4,26 @@ import type {
   DiaryDraftImportResult,
 } from "@anima/api-client";
 
+const DRAFT_MIGRATION_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
+
+export function draftMigrationRetryDelay(attempt: number): number | null {
+  return DRAFT_MIGRATION_RETRY_DELAYS_MS[attempt] ?? null;
+}
+
 export interface DraftStorage {
   readonly length: number;
   key(index: number): string | null;
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
   removeItem(key: string): void;
+}
+
+export interface DraftLockManager {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+}
+
+export function draftMigrationLockName(storageKey: string): string {
+  return `anima:diary:draft-lock:v1:${storageKey}`;
 }
 
 interface StoredLegacyDraft {
@@ -37,6 +51,7 @@ interface NormalizedStoredDraft {
 
 export interface MigrateLegacyDiaryDraftOptions {
   storage: DraftStorage;
+  lockManager: DraftLockManager;
   storageKey: string;
   userId: number;
   sanitizeHtml: (html: string) => string;
@@ -105,42 +120,35 @@ async function normalizeStoredDraft(
   };
 }
 
-function matchesToken(draft: NormalizedStoredDraft, token: DiaryDraftCompletionToken): boolean {
-  return (
-    draft.clientRevision === token.clientRevision &&
-    draft.contentSha256 === token.contentSha256
-  );
+interface DraftMigrationState {
+  sourceSha256: string;
+  clientRevision: number;
 }
 
-async function retainLatestDraft(
-  storage: DraftStorage,
-  storageKey: string,
-  sanitizeHtml: (html: string) => string,
-  minimumRevision: number,
-  completionToken: DiaryDraftCompletionToken,
-): Promise<LegacyDraftMigrationOutcome> {
-  let raw: string | null;
+function draftMigrationStateKey(storageKey: string): string {
+  return `anima:diary:draft-migration-state:v1:${storageKey}`;
+}
+
+function parseMigrationState(raw: string | null): DraftMigrationState | null {
+  if (raw === null) return null;
   try {
-    raw = storage.getItem(storageKey);
-  } catch {
-    return { status: "retry", retry: true, completionToken };
-  }
-  if (raw === null) return { status: "removed", retry: false, completionToken };
-  const retained = await normalizeStoredDraft(raw, sanitizeHtml, minimumRevision);
-  try {
-    // Hashing yields to the browser. Never overwrite a still-newer edit that
-    // arrived while the exact value above was being normalized.
-    if (storage.getItem(storageKey) !== raw) {
-      return { status: "retained", retry: true, completionToken };
+    const value = JSON.parse(raw) as Partial<DraftMigrationState>;
+    if (
+      typeof value.sourceSha256 === "string" &&
+      /^[0-9a-f]{64}$/.test(value.sourceSha256) &&
+      typeof value.clientRevision === "number" &&
+      Number.isSafeInteger(value.clientRevision) &&
+      value.clientRevision >= 1
+    ) {
+      return value as DraftMigrationState;
     }
-    storage.setItem(storageKey, JSON.stringify(retained));
   } catch {
-    return { status: "retry", retry: true, completionToken };
+    // A malformed non-sensitive sidecar is replaced from the source value.
   }
-  return { status: "retained", retry: true, completionToken };
+  return null;
 }
 
-export async function migrateLegacyDiaryDraft(
+async function migrateLegacyDiaryDraftUnlocked(
   options: MigrateLegacyDiaryDraftOptions,
 ): Promise<LegacyDraftMigrationOutcome> {
   const { storage, storageKey, sanitizeHtml, importDraft } = options;
@@ -152,9 +160,28 @@ export async function migrateLegacyDiaryDraft(
   }
   if (initialRaw === null) return { status: "missing", retry: false };
 
-  const submitted = await normalizeStoredDraft(initialRaw, sanitizeHtml);
+  let submitted = await normalizeStoredDraft(initialRaw, sanitizeHtml);
+  const sourceSha256 = await sha256Hex(initialRaw);
   try {
-    storage.setItem(storageKey, JSON.stringify(submitted));
+    // Hashing yields to the browser. Never mutate or import a superseded
+    // source value.
+    if (storage.getItem(storageKey) !== initialRaw) {
+      return { status: "retained", retry: true };
+    }
+    const stateKey = draftMigrationStateKey(storageKey);
+    const prior = parseMigrationState(storage.getItem(stateKey));
+    const clientRevision =
+      prior?.sourceSha256 === sourceSha256
+        ? Math.max(submitted.clientRevision, prior.clientRevision)
+        : Math.max(submitted.clientRevision, (prior?.clientRevision ?? 0) + 1);
+    submitted = { ...submitted, clientRevision };
+    // The sidecar contains only a source digest and monotonic counter. It can
+    // safely advance without overwriting the legacy draft body, even when an
+    // uncooperative older tab still writes that body key.
+    storage.setItem(stateKey, JSON.stringify({ sourceSha256, clientRevision }));
+    if (storage.getItem(storageKey) !== initialRaw) {
+      return { status: "retained", retry: true };
+    }
   } catch {
     return { status: "retry", retry: true };
   }
@@ -177,6 +204,13 @@ export async function migrateLegacyDiaryDraft(
   }
 
   const token = result.completionToken;
+  if (
+    token.draftId !== storageKey ||
+    token.clientRevision !== submitted.clientRevision ||
+    token.contentSha256 !== submitted.contentSha256
+  ) {
+    return { status: "retry", retry: true };
+  }
   let currentRaw: string | null;
   try {
     currentRaw = storage.getItem(storageKey);
@@ -184,58 +218,35 @@ export async function migrateLegacyDiaryDraft(
     return { status: "retry", retry: true, completionToken: token };
   }
   if (currentRaw === null) return { status: "removed", retry: false, completionToken: token };
-
-  const current = await normalizeStoredDraft(
-    currentRaw,
-    sanitizeHtml,
-    token.clientRevision,
-  );
-  if (token.draftId === storageKey && matchesToken(current, token)) {
-    try {
-      // normalizeStoredDraft hashes asynchronously. Re-read immediately
-      // before deletion so a value changed during hashing cannot be removed.
-      if (storage.getItem(storageKey) !== currentRaw) {
-        return retainLatestDraft(
-          storage,
-          storageKey,
-          sanitizeHtml,
-          token.clientRevision + 1,
-          token,
-        );
-      }
-      storage.removeItem(storageKey);
-      return { status: "removed", retry: false, completionToken: token };
-    } catch {
-      return { status: "retry", retry: true, completionToken: token };
-    }
+  if (currentRaw !== initialRaw) {
+    return { status: "retained", retry: true, completionToken: token };
   }
 
-  // A legacy writer can replace the record while the request is in flight
-  // without knowing about revisions. Stamp that newer value above the
-  // completed revision before scheduling its retry; never overwrite its body.
-  const retained = {
-    ...current,
-    clientRevision: Math.max(current.clientRevision, token.clientRevision + 1),
-  };
+  // localStorage has no atomic compare-and-delete, and an older open animaOS
+  // tab does not participate in Web Locks. Destructive cleanup could erase a
+  // write between the final read and removeItem. Keep the now-canonical legacy
+  // source untouched; a separately approved user-confirmed cleanup protocol
+  // can remove it only after excluding legacy writers.
+  return { status: "retained", retry: false, completionToken: token };
+}
+
+export async function migrateLegacyDiaryDraft(
+  options: MigrateLegacyDiaryDraftOptions,
+): Promise<LegacyDraftMigrationOutcome> {
   try {
-    if (storage.getItem(storageKey) !== currentRaw) {
-      return retainLatestDraft(
-        storage,
-        storageKey,
-        sanitizeHtml,
-        token.clientRevision + 1,
-        token,
-      );
-    }
-    storage.setItem(storageKey, JSON.stringify(retained));
+    // Serialize current clients. Older clients do not honor this lock, so the
+    // migration itself remains non-destructive to the legacy body key.
+    return await options.lockManager.request(draftMigrationLockName(options.storageKey), () =>
+      migrateLegacyDiaryDraftUnlocked(options),
+    );
   } catch {
-    return { status: "retry", retry: true, completionToken: token };
+    return { status: "retry", retry: true };
   }
-  return { status: "retained", retry: true, completionToken: token };
 }
 
 export async function migrateLegacyDiaryDrafts(options: {
   storage: DraftStorage;
+  lockManager: DraftLockManager;
   prefix: string;
   userId: number;
   sanitizeHtml: (html: string) => string;
@@ -257,4 +268,24 @@ export async function migrateLegacyDiaryDrafts(options: {
     retry ||= outcome.retry;
   }
   return retry;
+}
+
+export async function migrateLegacyDiaryDraftsFromStorageProvider(options: {
+  storageProvider: () => DraftStorage;
+  lockManagerProvider: () => DraftLockManager | undefined;
+  prefix: string;
+  userId: number;
+  sanitizeHtml: (html: string) => string;
+  importDraft: (request: DiaryDraftImportData) => Promise<DiaryDraftImportResult>;
+}): Promise<boolean> {
+  let storage: DraftStorage;
+  let lockManager: DraftLockManager | undefined;
+  try {
+    storage = options.storageProvider();
+    lockManager = options.lockManagerProvider();
+  } catch {
+    return true;
+  }
+  if (lockManager === undefined || typeof lockManager.request !== "function") return true;
+  return migrateLegacyDiaryDrafts({ ...options, storage, lockManager });
 }

@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
@@ -36,7 +36,8 @@ use crate::envelope::{
 };
 use crate::id::{validate_opaque_id, OpaqueId};
 use crate::publication::{
-    atomic_publish_in_with_hook, publish_immutable_in_with_hook, PublicationPhase,
+    atomic_publish_in_with_hook, create_temporary_in, publish_immutable_in_with_hook,
+    publish_staged_immutable_in_with_hook, PublicationPhase,
 };
 
 const PREPARATION_SCHEMA_VERSION: u16 = 1;
@@ -57,7 +58,11 @@ const MAX_CORE_ID_BYTES: usize = 255;
 const MAX_SEGMENT_REFERENCES: usize = 1024;
 const MAX_SEGMENT_ITEMS: usize = 1024;
 const MAX_RECONCILIATION_PAGE_ITEMS: u32 = 128;
-const MAX_RECONCILIATION_PAGE_BYTES: u32 = 64 * 1024;
+// A descriptor segment is independently capped at 1 MiB, so a 2 MiB page can
+// always return at least one accepted descriptor plus reconciliation framing.
+// Keeping the page bounded separately prevents an otherwise-valid large
+// metadata object from making crash recovery non-resumable.
+const MAX_RECONCILIATION_PAGE_BYTES: u32 = 2 * 1024 * 1024;
 const MAX_QUARANTINE_RECORDS: usize = 1024;
 const MAX_RETAINED_FRK_VERSIONS: usize = 128;
 const QUARANTINE_POINTER_SUFFIX: &str = ".prep-pointer";
@@ -425,6 +430,10 @@ pub(super) struct PreparationStatus {
     pub(super) source_schema_version: u16,
     pub(super) source_mutation_generation: u64,
     pub(super) source_inventory_sha256: String,
+    pub(super) expected_validation_generation: Option<u64>,
+    pub(super) expected_validation_catalog_sha256: Option<String>,
+    pub(super) intended_validation_generation: Option<u64>,
+    pub(super) intended_validation_catalog_sha256: Option<String>,
     pub(super) total_objects: u32,
     pub(super) total_plaintext_bytes: u64,
     pub(super) total_ciphertext_bytes: u64,
@@ -2367,6 +2376,19 @@ impl super::CoreCommitCoordinator {
         if loaded.snapshot.state != PreparationState::Ready {
             return Err(PreparationError::ActiveConflict("preparation state"));
         }
+        // A terminal abandonment receipt can be durable while the live
+        // pointer remains if its subsequent clear crashes. Inspect the whole
+        // bounded receipt directory before any validation publication:
+        // find_terminal_receipt accepts a matching completion replay, but
+        // rejects an opposite or duplicate terminal outcome fail-closed.
+        let _durable_completion = find_terminal_receipt(
+            &layout,
+            keys,
+            &self.core_id,
+            &request.preparation_id,
+            &request.expected,
+            PreparationReceiptOutcome::Completed,
+        )?;
         validate_source_fence(
             &loaded.snapshot,
             request.source_mutation_generation,
@@ -2573,6 +2595,14 @@ impl super::CoreCommitCoordinator {
                 return Err(PreparationError::ReceiptConflict);
             }
         }
+        // Abandonment is terminal only while the durable validation head is
+        // still the snapshot's exact precondition. In particular, a finalizer
+        // may have published the intended catalog and crashed before writing
+        // its completion receipt or clearing PREPARATION_HEAD. Re-check under
+        // the same Core commit lock so abandonment cannot relabel and clear
+        // that committed preparation (or an unrelated validation-head winner).
+        let current = self.load_validation_snapshot(keys)?;
+        validate_expected_validation_head(&loaded.snapshot, current.as_ref())?;
         publish_or_verify_receipt(&layout, keys, &receipt, hook)?;
         clear_preparation_head_exact(&self.fs_dir, &loaded.pointer_sha256, hook)?;
         drop(commit_lock);
@@ -2645,11 +2675,13 @@ impl super::CoreCommitCoordinator {
             drop(commit_lock);
             return Ok(receipt);
         };
-        let pointer_sha256 = sha256_hex(&pointer);
+        let pointer_sha256 = pointer.sha256.clone();
         if pointer_sha256 != request.expected_pointer_sha256 {
             return Err(PreparationError::CasConflict);
         }
-        if pointer_authenticates_with_keyring(&pointer, keyring, &self.core_id) {
+        if pointer.bounded_bytes.as_deref().is_some_and(|encoded| {
+            pointer_authenticates_with_keyring(encoded, keyring, &self.core_id)
+        }) {
             return Err(PreparationError::ActiveConflict(
                 "authenticated preparation must be abandoned",
             ));
@@ -2662,7 +2694,13 @@ impl super::CoreCommitCoordinator {
                 "quarantine retained FRK versions",
             ));
         }
-        publish_or_verify_quarantine_pointer(&quarantine, &pointer_sha256, &pointer, hook)?;
+        publish_or_verify_quarantine_pointer(
+            &self.fs_dir,
+            &quarantine,
+            &pointer_sha256,
+            pointer.byte_length,
+            hook,
+        )?;
         let preparation_id = quarantine_preparation_id(&pointer_sha256)?;
         let receipt = PreparationReceipt {
             schema_version: PREPARATION_SCHEMA_VERSION,
@@ -4204,6 +4242,16 @@ fn status_from_loaded(
         source_schema_version: loaded.snapshot.source_inventory_version,
         source_mutation_generation: loaded.snapshot.source_mutation_generation,
         source_inventory_sha256: loaded.snapshot.source_inventory_sha256.clone(),
+        expected_validation_generation: loaded.snapshot.expected_validation_generation,
+        expected_validation_catalog_sha256: loaded
+            .snapshot
+            .expected_validation_catalog_sha256
+            .clone(),
+        intended_validation_generation: loaded.snapshot.intended_validation_generation,
+        intended_validation_catalog_sha256: loaded
+            .snapshot
+            .intended_validation_catalog_sha256
+            .clone(),
         total_objects: loaded.snapshot.total_objects,
         total_plaintext_bytes: loaded.snapshot.total_plaintext_bytes,
         total_ciphertext_bytes: loaded.snapshot.total_ciphertext_bytes,
@@ -4434,16 +4482,68 @@ fn find_terminal_receipt(
     Ok(matched)
 }
 
-fn read_raw_preparation_pointer(fs_dir: &Dir) -> Result<Option<Vec<u8>>, PreparationError> {
-    match super::read_bounded_in(
+struct InspectedQuarantineFile {
+    sha256: String,
+    byte_length: u64,
+    bounded_bytes: Option<Vec<u8>>,
+}
+
+fn inspect_quarantine_file(
+    directory: &Dir,
+    name: &OsStr,
+    capture_limit: usize,
+) -> Result<Option<InspectedQuarantineFile>, PreparationError> {
+    let mut file = match super::open_regular_file_in(directory, name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(PreparationError::QuarantineConflict),
+    };
+    let mut hasher = Sha256::new();
+    let mut byte_length = 0_u64;
+    let mut bounded_bytes = Some(Vec::new());
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| PreparationError::QuarantineConflict)?;
+        if read == 0 {
+            break;
+        }
+        byte_length = byte_length
+            .checked_add(
+                u64::try_from(read)
+                    .map_err(|_| PreparationError::LimitExceeded("quarantine pointer"))?,
+            )
+            .ok_or(PreparationError::LimitExceeded("quarantine pointer"))?;
+        hasher.update(&buffer[..read]);
+        if let Some(bytes) = bounded_bytes.as_mut() {
+            if bytes
+                .len()
+                .checked_add(read)
+                .is_some_and(|length| length <= capture_limit)
+            {
+                bytes.extend_from_slice(&buffer[..read]);
+            } else {
+                bounded_bytes = None;
+            }
+        }
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    Ok(Some(InspectedQuarantineFile {
+        sha256: hex_bytes(&digest),
+        byte_length,
+        bounded_bytes,
+    }))
+}
+
+fn read_raw_preparation_pointer(
+    fs_dir: &Dir,
+) -> Result<Option<InspectedQuarantineFile>, PreparationError> {
+    inspect_quarantine_file(
         fs_dir,
         OsStr::new(PREPARATION_HEAD_FILE),
         MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
-    ) {
-        Ok(pointer) => Ok(Some(pointer)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(_) => Err(PreparationError::QuarantineConflict),
-    }
+    )
 }
 
 fn sealed_required_frk_version(encoded: &[u8]) -> Result<u32, PreparationError> {
@@ -4491,34 +4591,97 @@ fn quarantine_receipt_file_name(pointer_sha256: &str) -> String {
 }
 
 fn publish_or_verify_quarantine_pointer<F>(
+    fs_dir: &Dir,
     quarantine: &Dir,
     pointer_sha256: &str,
-    pointer: &[u8],
+    pointer_byte_length: u64,
     hook: &mut F,
 ) -> Result<(), PreparationError>
 where
     F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
 {
     let name = quarantine_pointer_file_name(pointer_sha256);
-    match super::read_bounded_in(
-        quarantine,
-        OsStr::new(&name),
-        MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
-    ) {
-        Ok(durable) => {
-            if durable != pointer || sha256_hex(&durable) != pointer_sha256 {
+    match inspect_quarantine_file(quarantine, OsStr::new(&name), 0)? {
+        Some(durable) => {
+            if durable.byte_length != pointer_byte_length || durable.sha256 != pointer_sha256 {
                 return Err(PreparationError::QuarantineConflict);
             }
             Ok(())
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            publish_immutable_in_with_hook(quarantine, OsStr::new(&name), pointer, &mut |phase| {
-                hook(PreparationPublicationTarget::QuarantinePointer, phase)
-            })?;
-            Ok(())
-        }
-        Err(_) => Err(PreparationError::QuarantineConflict),
+        None => publish_quarantine_pointer_from_source(
+            fs_dir,
+            quarantine,
+            OsStr::new(&name),
+            pointer_sha256,
+            pointer_byte_length,
+            hook,
+        ),
     }
+}
+
+fn publish_quarantine_pointer_from_source<F>(
+    fs_dir: &Dir,
+    quarantine: &Dir,
+    target: &OsStr,
+    pointer_sha256: &str,
+    pointer_byte_length: u64,
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let mut source = super::open_regular_file_in(fs_dir, OsStr::new(PREPARATION_HEAD_FILE))
+        .map_err(|_| PreparationError::QuarantineConflict)?;
+    let (mut temporary, temporary_name) = create_temporary_in(quarantine, target)?;
+    hook(
+        PreparationPublicationTarget::QuarantinePointer,
+        PublicationPhase::TemporaryCreated,
+    )?;
+    let result = (|| {
+        let mut hasher = Sha256::new();
+        let mut copied = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            temporary.write_all(&buffer[..read])?;
+            hasher.update(&buffer[..read]);
+            copied = copied
+                .checked_add(
+                    u64::try_from(read)
+                        .map_err(|_| PreparationError::LimitExceeded("quarantine pointer"))?,
+                )
+                .ok_or(PreparationError::LimitExceeded("quarantine pointer"))?;
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
+        if copied != pointer_byte_length || hex_bytes(&digest) != pointer_sha256 {
+            return Err(PreparationError::QuarantineConflict);
+        }
+        hook(
+            PreparationPublicationTarget::QuarantinePointer,
+            PublicationPhase::PayloadWritten,
+        )?;
+        temporary.sync_all()?;
+        hook(
+            PreparationPublicationTarget::QuarantinePointer,
+            PublicationPhase::PayloadSynced,
+        )?;
+        publish_staged_immutable_in_with_hook(
+            quarantine,
+            &temporary,
+            &temporary_name,
+            target,
+            &mut |phase| hook(PreparationPublicationTarget::QuarantinePointer, phase),
+        )?;
+        Ok(())
+    })();
+    drop(temporary);
+    if result.is_err() {
+        let _ = quarantine.remove_file(&temporary_name);
+    }
+    result
 }
 
 fn publish_or_verify_quarantine_receipt<F>(
@@ -4571,13 +4734,9 @@ fn load_quarantine_receipt(
 ) -> Result<PreparationReceipt, PreparationError> {
     validate_hash(pointer_sha256)?;
     let pointer_name = quarantine_pointer_file_name(pointer_sha256);
-    let pointer = super::read_bounded_in(
-        quarantine,
-        OsStr::new(&pointer_name),
-        MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
-    )
-    .map_err(|_| PreparationError::QuarantineConflict)?;
-    if sha256_hex(&pointer) != pointer_sha256 {
+    let pointer = inspect_quarantine_file(quarantine, OsStr::new(&pointer_name), 0)?
+        .ok_or(PreparationError::QuarantineConflict)?;
+    if pointer.sha256 != pointer_sha256 {
         return Err(PreparationError::QuarantineConflict);
     }
     let receipt_name = quarantine_receipt_file_name(pointer_sha256);
@@ -4690,8 +4849,9 @@ fn clear_preparation_head_exact<F>(
 where
     F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
 {
-    let pointer = read_pointer_bytes(fs_dir)?.ok_or(PreparationError::CasConflict)?;
-    if sha256_hex(&pointer) != expected_pointer_sha256 {
+    let pointer = inspect_quarantine_file(fs_dir, OsStr::new(PREPARATION_HEAD_FILE), 0)?
+        .ok_or(PreparationError::CasConflict)?;
+    if pointer.sha256 != expected_pointer_sha256 {
         return Err(PreparationError::CasConflict);
     }
     hook(

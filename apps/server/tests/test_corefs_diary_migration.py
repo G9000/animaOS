@@ -4,10 +4,12 @@ import base64
 import hashlib
 import json
 import unicodedata
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import anima_core
+import anima_server.services.corefs.writing_source as writing_source
 import pytest
 from anima_server.db.base import Base
 from anima_server.schemas.diary import DIARY_BODY_MAX_LENGTH, DiaryDraftImportRequest
@@ -79,6 +81,249 @@ class _PreparationFaultProxy:
         if self.fail_finalize_after:
             raise RuntimeError("simulated crash after native finalization")
         return result
+
+
+class _PreparationStatusFailure:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def preparation_status_v1(self, _keys: object) -> object:
+        raise self.error
+
+
+class _ReadySourceDriftNative:
+    def __init__(self, head: dict[str, object] | ValueError) -> None:
+        self.head = head
+        self.finalize_requests: list[dict[str, object]] = []
+
+    def validation_snapshot(self, _keys: object) -> dict[str, object]:
+        if isinstance(self.head, ValueError):
+            raise self.head
+        return self.head
+
+    def preparation_finalize_v1(self, _keys: object, request: str) -> dict[str, object]:
+        self.finalize_requests.append(json.loads(request))
+        return {
+            "validationGeneration": 8,
+            "validationCatalogSha256": "8" * 64,
+        }
+
+
+def test_attachment_metadata_reencoding_uses_inventory_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = [
+        SimpleNamespace(
+            id=3,
+            entry_id=7,
+            kind="file",
+            mime_type="text/plain",
+            size_bytes=3,
+            storage_path="three",
+            sha256="3" * 64,
+            original_filename="three.txt",
+            caption=None,
+            created_at=datetime(2026, 8, 2, 0, 0, 1, tzinfo=UTC),
+        ),
+        SimpleNamespace(
+            id=2,
+            entry_id=7,
+            kind="file",
+            mime_type="text/plain",
+            size_bytes=2,
+            storage_path="two",
+            sha256="2" * 64,
+            original_filename="two.txt",
+            caption=None,
+            created_at=datetime(2026, 8, 2, tzinfo=UTC),
+        ),
+        SimpleNamespace(
+            id=1,
+            entry_id=7,
+            kind="file",
+            mime_type="text/plain",
+            size_bytes=1,
+            storage_path="one",
+            sha256="1" * 64,
+            original_filename="one.txt",
+            caption=None,
+            created_at=datetime(2026, 8, 2, tzinfo=UTC),
+        ),
+    ]
+    db = SimpleNamespace(execute=lambda _statement: SimpleNamespace(all=lambda: rows))
+    monkeypatch.setattr(
+        "anima_server.services.data_crypto.df",
+        lambda _user_id, value, **_kwargs: value,
+    )
+
+    grouped = writing_source._attachment_metadata_by_entry(db, user_id=9)
+
+    assert [item.id for item in grouped[7]] == [1, 2, 3]
+
+
+def test_preparation_status_only_treats_the_exact_absent_condition_as_missing() -> None:
+    assert (
+        writing_source._preparation_status_or_none(
+            _PreparationStatusFailure(ValueError("no active preparation exists")),
+            object(),
+        )
+        is None
+    )
+
+    with pytest.raises(RuntimeError, match="snapshot is missing"):
+        writing_source._preparation_status_or_none(
+            _PreparationStatusFailure(
+                RuntimeError("the active preparation snapshot is missing")
+            ),
+            object(),
+        )
+
+
+def _ready_source_drift_status() -> dict[str, object]:
+    return {
+        "preparationId": "01J20000000000000000000000",
+        "snapshotSequence": 7,
+        "pointerSha256": "7" * 64,
+        "sourceMutationGeneration": 3,
+        "sourceInventorySha256": "3" * 64,
+        "expectedValidationGeneration": 7,
+        "expectedValidationCatalogSha256": "6" * 64,
+        "intendedValidationGeneration": 8,
+        "intendedValidationCatalogSha256": "8" * 64,
+    }
+
+
+def test_ready_source_drift_recovers_an_already_published_head() -> None:
+    native = _ReadySourceDriftNative(
+        {"generation": 8, "catalogHash": "8" * 64}
+    )
+
+    outcome = writing_source._reconcile_ready_source_drift(
+        native, object(), _ready_source_drift_status()
+    )
+
+    assert outcome == "recovered"
+    assert native.finalize_requests == [
+        {
+            "expected": {
+                "pointerSha256": "7" * 64,
+                "snapshotSequence": 7,
+            },
+            "preparationId": "01J20000000000000000000000",
+            "sourceInventorySha256": "3" * 64,
+            "sourceMutationGeneration": 3,
+        }
+    ]
+
+
+def test_ready_source_drift_only_abandons_an_unpublished_head() -> None:
+    native = _ReadySourceDriftNative(
+        {"generation": 7, "catalogHash": "6" * 64}
+    )
+
+    assert (
+        writing_source._reconcile_ready_source_drift(
+            native, object(), _ready_source_drift_status()
+        )
+        == "unpublished"
+    )
+    assert native.finalize_requests == []
+
+
+def test_ready_source_drift_preserves_a_conflicting_head() -> None:
+    native = _ReadySourceDriftNative(
+        {"generation": 9, "catalogHash": "9" * 64}
+    )
+
+    with pytest.raises(DiaryMigrationError, match="conflicts with the ready preparation"):
+        writing_source._reconcile_ready_source_drift(
+            native, object(), _ready_source_drift_status()
+        )
+    assert native.finalize_requests == []
+
+
+def test_exact_inventory_match_authenticates_each_durable_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptor = WritingSourceObjectDescriptor(
+        stable_id="01J20000000000000000000002",
+        parent_id="01J20000000000000000000001",
+        name="entry.diary.json",
+        kind="diary",
+        content_type="application/vnd.anima.diary+json",
+        body_encoding="utf8",
+        body_length=4,
+        content_sha256="a" * 64,
+        source_fingerprint_sha256="b" * 64,
+        created_at="2026-08-02T00:00:00Z",
+        updated_at="2026-08-02T00:00:00Z",
+        revision=1,
+        metadata={"legacyId": 1},
+    )
+    folder = SimpleNamespace(
+        stable_id="01J20000000000000000000001",
+        parent_id=None,
+        name="Journal",
+        role="core.journal",
+    )
+    current = SimpleNamespace(
+        stable_id=descriptor.stable_id,
+        content_hash=descriptor.content_sha256,
+        parent_id=descriptor.parent_id,
+        name=descriptor.name,
+        kind=descriptor.kind,
+        content_type=descriptor.content_type,
+        body_encoding=descriptor.body_encoding,
+        body_length=descriptor.body_length,
+        created_at=descriptor.created_at,
+        updated_at=descriptor.updated_at,
+        metadata=descriptor.metadata,
+    )
+    inventory = WritingSourceInventory(
+        source_generation=1,
+        source_digest="c" * 64,
+        expected_head=(1, "d" * 64),
+        folders=(folder,),
+        objects=(descriptor,),
+        source_counts={"diary": 1},
+    )
+    monkeypatch.setattr(
+        "anima_server.services.corefs.diary_migration.read_prepared_writing_snapshot",
+        lambda **_kwargs: SimpleNamespace(folders=(folder,), objects=(current,)),
+    )
+    monkeypatch.setattr(
+        "anima_server.services.corefs.diary_migration.read_prepared_writing_body",
+        lambda **_kwargs: (_ for _ in ()).throw(DiaryMigrationError("corrupt body")),
+    )
+
+    with pytest.raises(DiaryMigrationError, match="corrupt body"):
+        writing_source._inventory_matches_current(session=object(), inventory=inventory)
+
+
+def test_matching_checkpoint_cannot_bypass_exact_body_authentication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inventory = WritingSourceInventory(
+        source_generation=9,
+        source_digest="c" * 64,
+        expected_head=(4, "d" * 64),
+        folders=(),
+        objects=(),
+        source_counts={},
+    )
+    session = SimpleNamespace(user_id=7, corefs_session=object(), corefs_keys=object())
+    monkeypatch.setattr(
+        writing_source, "build_writing_source_inventory", lambda **_kwargs: inventory
+    )
+    monkeypatch.setattr(writing_source, "_preparation_status_or_none", lambda *_args: None)
+    monkeypatch.setattr(
+        writing_source,
+        "_inventory_matches_current",
+        lambda **_kwargs: (_ for _ in ()).throw(DiaryMigrationError("corrupt body")),
+    )
+
+    with pytest.raises(DiaryMigrationError, match="corrupt body"):
+        writing_source.prepare_writing_source_catalog(session=session, db=object())
 
 
 def test_legacy_local_storage_draft_extracts_and_deduplicates_inline_images() -> None:
@@ -324,6 +569,20 @@ def test_streaming_preparation_reconciles_every_durable_object_after_restart(
     del native
     restarted = anima_core.CorefsSession(str(root), core_id)
     counting = _PreparationFaultProxy(restarted)
+    resumed_source_ids: list[str] = []
+    original_iter = writing_source.iter_writing_source_objects
+
+    def capture_pending_inventory(**kwargs: object):  # type: ignore[no-untyped-def]
+        inventory = kwargs["inventory"]
+        assert isinstance(inventory, WritingSourceInventory)
+        resumed_source_ids.extend(item.stable_id for item in inventory.objects)
+        return original_iter(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        writing_source,
+        "iter_writing_source_objects",
+        capture_pending_inventory,
+    )
     with Session(engine) as db:
         result = prepare_diary_validation_catalog(
             session=SimpleNamespace(
@@ -338,6 +597,7 @@ def test_streaming_preparation_reconciles_every_durable_object_after_restart(
     assert result.published is True
     assert result.generation == 1
     assert counting.prepared_objects == 2 - fail_after_object
+    assert len(resumed_source_ids) == 2 - fail_after_object
     assert restarted.validation_snapshot(keys)["generation"] == 1
 
 
