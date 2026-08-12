@@ -1,6 +1,6 @@
 # PCF-004 - Diary, folders, drafts, and notes
 
-- Status: blocked
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server` diary/CoreFS, `apps/desktop` Journal
 - Parent: `PCF-000`
@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 01:25 MYT
+- Updated: 2026-08-13 01:56 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -66,6 +66,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-13 01:04 MYT - Completed Task 9 validation and independent review through implementation commit `8664cbcca83e7607a9af327169b7fecce36fca43`. Review-driven RED/GREEN hardening now validates PyO3 body bounds before copying, authenticates every durable object on no-op, reconciles published Ready state, streams corrupt-pointer quarantine, prevents contradictory completed/abandoned terminal receipts, preserves vault/CoreFS binary boundaries, and removes every known browser compare/delete data-loss seam. Final affected gates passed: CoreFS library `243 passed`/`1 ignored`, affected Python `103 passed`, desktop `17 passed`, build, format, diff hygiene, health `2 passed`, and independent focused re-review found no remaining code correctness or data-loss issue. An earlier repository-wide run passed `3457` with `2` intentional skips before the final review fixes; every subsequently changed surface passed its full affected gate.
 - 2026-08-13 01:04 MYT - Blocked PCF-004 at the approved plaintext-draft acceptance boundary. localStorage provides no atomic compare-and-delete, and a legacy open tab does not honor the new Web Lock; deleting after import can therefore erase an uncooperative concurrent edit. The safe code leaves the plaintext legacy body key untouched and advances imports with a non-sensitive source-digest/monotonic-revision sidecar. This prevents data loss but does not satisfy “Journal drafts are migrated out of plaintext localStorage.” Clearance requires either an approved cleanup protocol that can prove legacy writers are excluded, or an explicit PRD/spec/acceptance revision assigning plaintext cleanup to later work. Parent ownership and legacy SQLCipher/authoritative `HEAD` remain unchanged.
 - 2026-08-13 01:25 MYT - Completed the required independent review of the proposed plaintext-draft cleanup addendum and Task 10 after three focused correction passes. The approved proposal limits cleanup authority to verified replacement-only MSI, signed PKG, DEB, and RPM installations; requires an OS reboot, a pre-WebView process-lifetime launch gate, installed-target verification and process census at one-shot capability consumption; retains orphan sidecars unless removed after authorized source-first cleanup; and gives Linux a signed installed-manifest trust anchor. Review found no remaining consequential no-loss, plaintext-removal, lifecycle, replay, privacy, feasibility, or testability gap. PCF-004 remains `blocked` pending explicit user approval of this reviewed design; no Task 10 implementation, release change, or external publication has begun.
+- 2026-08-13 01:56 MYT - The user explicitly approved the independently reviewed Task 10 design, clearing the only recorded PCF-004 blocker. Resumed the child and parent row as `in_progress` on branch `codex/pcf-004-resumable-preparation` at `aed28abd4fed566595d9b4abbfc83eaae23d9bc7`, preserving the original `Started:` timestamp. Implementation will follow the reviewed replacement-only package, reboot epoch, launch gate/census, one-shot authority, and source-first cleanup plan test-first; no post-Task-5 publication is authorized.
 
 ## Validation
 
@@ -155,7 +156,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-004-diary-notes.md}`
 - Notes:
   - Legacy SQLCipher remains authoritative and `VALIDATION_HEAD` remains inactive; no partial or authoritative cutover occurred.
-  - Tasks 5 through 9 are implemented and reviewed locally, and the large-corpus resumable-preparation blocker is cleared. PCF-004 remains blocked only at the explicit user-approval gate for the independently reviewed Task 10 packaged writer-exclusion cleanup design. Authoritative `HEAD` remains untouched.
+  - Tasks 5 through 9 are implemented and reviewed locally, and both the large-corpus resumable-preparation blocker and Task 10 design-approval blocker are cleared. Task 10 implementation is in progress. Authoritative `HEAD` remains untouched.
   - Repository-wide validation passed `3457` tests with `2` intentional skips before the final focused review repairs; the final changed Rust, Python, desktop, build, formatting, and diff surfaces all passed their complete affected gates.
   - Strict Clippy remains blocked only by documented untouched baseline warnings outside the PCF-004 diff.
-  - Residual risk/follow-up: explicit user approval of the independently reviewed packaged writer-exclusion design is required before Task 10 implementation; no destructive cleanup is implemented or implied.
+  - Residual risk/follow-up: Task 10 must still implement and prove the reviewed four-platform packaged writer-exclusion protocol before plaintext cleanup or PCF-004 completion; no destructive cleanup exists yet.

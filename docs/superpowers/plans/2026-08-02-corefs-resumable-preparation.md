@@ -10,7 +10,7 @@
 
 **Plan Review:** Approved on 2026-08-02 after three focused independent passes; all consequential findings were corrected before execution handoff.
 
-**Draft-cleanup revision:** Independently reviewed and approved on 2026-08-13; Task 10 remains gated on explicit user approval.
+**Draft-cleanup revision:** Independently reviewed and explicitly approved by the user on 2026-08-13; Task 10 is cleared for implementation.
 
 ---
 
@@ -485,14 +485,15 @@ new Web Lock, and localStorage has no atomic compare-and-delete. The safe
 implementation retains that key and uses a non-sensitive digest/revision
 sidecar; this prevents data loss but does not satisfy the approved requirement
 to remove private authored content from plaintext localStorage. The proposed
-Task 10 protocol below preserves that requirement but must pass independent
-review and receive explicit user approval before implementation.
+Task 10 protocol below preserves that requirement. Independent review and the
+explicit user-approval gate completed on 2026-08-13.
 
 ## Task 10: Exclude legacy desktop writers before plaintext draft cleanup
 
 **Approval gate:** Do not implement this task until the proposed Section 11.1
 addendum in `2026-08-02-corefs-resumable-preparation-design.md` has passed
-independent review and the user explicitly approves it.
+independent review and the user explicitly approves it. Both gates completed on
+2026-08-13.
 
 **Files:**
 

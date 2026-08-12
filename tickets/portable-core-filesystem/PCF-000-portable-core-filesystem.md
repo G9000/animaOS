@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 01:25 MYT
+- Updated: 2026-08-13 01:56 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -26,7 +26,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
-| PCF-004 | Diary, folders, drafts, and notes | blocked | PCF-003 |
+| PCF-004 | Diary, folders, drafts, and notes | in_progress | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
 | PCF-007 | Account profile, tasks, preferences, and credentials | backlog | PCF-004, PCF-006 |
@@ -354,6 +354,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-12 22:24 MYT - Completed PCF-004 resumable-preparation Task 8 locally. The server now streams deterministic writing inventory through the bounded native preparation lifecycle, reconciles crash-durable objects, finalizes under the live SQLCipher source fence, and verifies only bounded metadata or one body at a time; the aggregate Python/PyO3 production path is removed. Browser draft handoff uses durable revision/hash completion CAS and retains concurrent edits. Restart/finalization fault injection and synthetic >1 GiB logical-inventory coverage are green, as are affected Python `53`, client/desktop `30`, Python-feature bindings `9`, the manifest UUID Core identity regression, formatting, lint, and diff hygiene. PCF-004 and this parent remain `in_progress`; Task 9 full validation and independent implementation review are next, legacy SQLCipher remains authoritative, and no Task 8 publication is authorized.
 - 2026-08-13 01:04 MYT - PCF-004 Task 9 validation and independent review completed through local implementation `8664cbcca83e7607a9af327169b7fecce36fca43`. The bounded resumable-preparation protocol and all review-driven recovery/security fixes are green: CoreFS `243 passed`/`1 ignored`, affected Python `103`, desktop `17`, build/format/diff/health, plus an earlier repository-wide `3457 passed`/`2 skipped`; final focused re-review found no remaining code correctness or data-loss issue. PCF-004 and its parent row are now `blocked`, not done, because safely retaining edits from uncooperative legacy localStorage writers is incompatible with deleting the plaintext key without an approved writer-exclusion/cleanup protocol. Clearance requires that protocol or an explicit PRD/spec/acceptance revision assigning cleanup later. This parent remains `in_progress` because PCF-005 is independently dependency-eligible and unclaimed; parent ownership is unchanged.
 - 2026-08-13 01:25 MYT - PCF-004's proposed packaged writer-exclusion cleanup addendum and Task 10 passed independent review after closing release-target TOCTOU, source/sidecar crash ordering, platform identity/process testability, orphan-sidecar recreation, and Debian trust-anchor gaps. The reviewed protocol requires replacement-only MSI/signed-PKG/DEB/RPM release verification, reboot plus pre-WebView lifetime launch gating, consume-time native target/census checks, a one-shot bounded capability, source-first cleanup, and signed Linux installed identity. The child and its parent row remain `blocked` solely pending explicit user design approval; this initiative remains `in_progress` because PCF-005 is independently eligible. No Task 10 implementation, release change, or external publication has begun.
+- 2026-08-13 01:56 MYT - The user explicitly approved PCF-004's independently reviewed Task 10 packaged writer-exclusion design. Cleared the recorded blocker and synchronized the child plus parent row to `in_progress`, preserving child ownership and its original `Started:` timestamp. Task 10 resumes locally on `codex/pcf-004-resumable-preparation` from `aed28abd4fed566595d9b4abbfc83eaae23d9bc7`; this parent remains `in_progress`, PCF-005 remains eligible/unclaimed, and no post-Task-5 publication is authorized.
 
 ## Validation
 
@@ -543,6 +544,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 is `blocked` at the explicit user-approval gate for its independently reviewed plaintext-draft cleanup design; PCF-005 remains dependency-eligible and unclaimed in backlog. PCF-011 separately tracks the known Windows native-lease aggregate flake.
+  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 is `in_progress` on its user-approved Task 10 plaintext-draft cleanup design; PCF-005 remains dependency-eligible and unclaimed in backlog. PCF-011 separately tracks the known Windows native-lease aggregate flake.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.

@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-02
 **Status:** Approved — independent review and user approval complete
-**Draft-cleanup addendum:** Independently reviewed and approved 2026-08-13 — renewed user approval required before implementation
+**Draft-cleanup addendum:** Approved — independent review and renewed user approval complete 2026-08-13
 **Scope:** Add a bounded-memory, crash-resumable preparation protocol for large inactive CoreFS validation catalogs without weakening single-generation atomic publication
 **Parent design:** [Portable Core Filesystem Design](2026-07-12-portable-core-filesystem-design.md)
 **PRD:** [Portable Core Filesystem v1](../../prds/portable-core-filesystem-v1.md)
@@ -447,7 +447,7 @@ Required tests include:
 16. unchanged reruns reuse prepared descriptors and exact source fingerprints without rewriting bodies;
 17. draft import and unlock migration conflict/retry without losing either source; and
 18. packaged cleanup refuses the arming process and same-boot restart, every non-Tauri/debug/relocated/portable context, a missing or conflicting kernel lease, stale/wrong executable or package identity, alternate registered/staged/rollback launch targets, another ANIMA process, denied/ambiguous process metadata, PID reuse, expired/replayed/wrong-draft capabilities, and any post-import source mutation;
-19. real subprocess tests on Windows, macOS, and Linux exercise kernel-lock exclusion, process-start identity, old/current process classification, a contender launched during consumption, and fail-closed metadata errors; actual NSIS/MSI, `.app`, `.deb`, and `.rpm` artifacts prove one registered target and no executable update/rollback residue, while AppImage is absent from supported V1 release outputs;
+19. real subprocess tests on Windows, macOS, and Linux exercise kernel-lock exclusion, process-start identity, old/current process classification, a contender launched during consumption, and fail-closed metadata errors; actual MSI, signed PKG, `.deb`, and `.rpm` artifacts prove one registered target and no executable update/rollback residue, while NSIS and AppImage are absent from supported V1 release outputs;
 20. a later-boot packaged process with an exact durable completion token removes the matching source first, verifies absence, and then removes the sidecar; crash injection after every storage operation proves restart either preserves the source with monotonic revision or leaves a retained harmless orphan sidecar, including absent-source/legacy-recreation races; and
 21. existing PCF-004, CoreFS library, rotation, recovery, session lifecycle, desktop, Tauri, and build suites remain green.
 
