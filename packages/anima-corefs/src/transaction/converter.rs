@@ -109,6 +109,15 @@ pub(super) struct ConverterGraphObject<'a> {
     pub(super) references: &'a [String],
 }
 
+pub(super) struct PreparedValidationCatalogObject {
+    pub(super) prepared: PreparedObjectRevision,
+    pub(super) parent_id: String,
+    pub(super) name: String,
+    pub(super) policy: ValidationBatchPolicy,
+    pub(super) references: Vec<String>,
+    pub(super) metadata: BTreeMap<String, Value>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidationBatch {
     pub mode: ValidationBatchMode,
@@ -664,6 +673,137 @@ fn validate_batch(
     Ok((folders, objects))
 }
 
+pub(super) fn build_prepared_validation_catalog(
+    generation: u64,
+    folder_inputs: &[ValidationBatchFolder],
+    object_inputs: Vec<PreparedValidationCatalogObject>,
+) -> Result<CatalogGeneration, ValidationBatchError> {
+    if folder_inputs.is_empty() {
+        return Err(ValidationBatchError::Invalid("folder graph is empty"));
+    }
+    if folder_inputs.len().saturating_add(object_inputs.len()) > MAX_CATALOG_ENTRIES {
+        return Err(ValidationBatchError::Invalid(
+            "batch exceeds the catalog entry limit",
+        ));
+    }
+
+    let mut ids = BTreeSet::new();
+    let mut folders_by_id = BTreeMap::new();
+    let mut role_counts = BTreeMap::<&str, usize>::new();
+    for folder in folder_inputs {
+        let id = OpaqueId::parse(&folder.stable_id)
+            .map_err(|_| ValidationBatchError::Invalid("invalid folder ID"))?;
+        if !ids.insert(id.as_str().to_owned()) {
+            return Err(ValidationBatchError::Invalid("duplicate stable ID"));
+        }
+        if let Some(role) = folder.role.as_deref() {
+            if !ALLOWED_ROLES.contains(&role) {
+                return Err(ValidationBatchError::Invalid("unsupported stable role"));
+            }
+            *role_counts.entry(role).or_default() += 1;
+        }
+        folders_by_id.insert(id.as_str().to_owned(), folder);
+    }
+    if ALLOWED_ROLES
+        .iter()
+        .any(|role| role_counts.get(role).copied() != Some(1))
+    {
+        return Err(ValidationBatchError::Invalid(
+            "core.journal and core.notes must each be bound exactly once",
+        ));
+    }
+    for object in &object_inputs {
+        if !ids.insert(object.prepared.object_id.as_str().to_owned()) {
+            return Err(ValidationBatchError::Invalid("duplicate stable ID"));
+        }
+    }
+
+    validate_converter_graph_relationships(
+        folders_by_id.keys().map(String::as_str),
+        object_inputs.iter().map(|object| ConverterGraphObject {
+            object_id: object.prepared.object_id.as_str(),
+            parent_id: &object.parent_id,
+            references: &object.references,
+        }),
+    )?;
+
+    let mut effective = BTreeMap::new();
+    let mut visiting = BTreeSet::new();
+    for id in folders_by_id.keys() {
+        resolve_folder_policy(id, &folders_by_id, &mut effective, &mut visiting)?;
+    }
+
+    let mut entries = Vec::with_capacity(folder_inputs.len() + object_inputs.len());
+    for folder in folder_inputs {
+        if folder.role.is_some() && folder.policy != ValidationBatchPolicy::UserWrite {
+            return Err(ValidationBatchError::Invalid(
+                "stable writing roots require explicit user/write policy",
+            ));
+        }
+        let (owner, access) = effective[folder.stable_id.as_str()];
+        let mut common = CatalogEntryCommon::new(
+            OpaqueId::parse(&folder.stable_id).expect("validated folder ID"),
+            folder
+                .parent_id
+                .as_deref()
+                .map(OpaqueId::parse)
+                .transpose()
+                .map_err(|_| ValidationBatchError::Invalid("invalid parent ID"))?,
+            PortableName::parse(&folder.name)
+                .map_err(|_| ValidationBatchError::Invalid("invalid folder name"))?,
+            owner,
+            access,
+        )
+        .with_policy_override_for_internal_mutation(local_policy(folder.policy))
+        .with_client_metadata(validation_metadata(&folder.metadata)?);
+        if let Some(role) = folder.role.as_deref() {
+            common = common.with_role_for_internal_mutation(
+                FolderRole::parse_existing(role)
+                    .map_err(|_| ValidationBatchError::Invalid("invalid stable role"))?,
+            );
+        }
+        entries.push(CatalogGenerationEntry::folder(common));
+    }
+
+    for object in object_inputs {
+        if object.policy == ValidationBatchPolicy::UserWrite {
+            return Err(ValidationBatchError::Invalid(
+                "descendant objects must inherit or deny policy",
+            ));
+        }
+        let (owner, parent_access) = effective[object.parent_id.as_str()];
+        let access = if object.policy == ValidationBatchPolicy::Deny {
+            AnimaAccess::None
+        } else {
+            parent_access
+        };
+        let common = CatalogEntryCommon::new(
+            object.prepared.object_id.clone(),
+            Some(
+                OpaqueId::parse(&object.parent_id)
+                    .map_err(|_| ValidationBatchError::Invalid("invalid parent ID"))?,
+            ),
+            PortableName::parse(&object.name)
+                .map_err(|_| ValidationBatchError::Invalid("invalid object name"))?,
+            owner,
+            access,
+        )
+        .with_policy_override_for_internal_mutation(local_policy(object.policy))
+        .with_client_metadata(validation_metadata(&object.metadata)?);
+        let catalog_object = CatalogObject::new(
+            object.prepared.revision,
+            object.prepared.physical_name.clone(),
+            object.prepared.content_hash.clone(),
+            object.prepared.kind,
+            object.prepared.wrapped_dek.clone(),
+            ObjectLifecycle::Live,
+        )?;
+        entries.push(CatalogGenerationEntry::object(common, catalog_object));
+    }
+
+    CatalogGeneration::new(generation, entries).map_err(ValidationBatchError::from)
+}
+
 fn resolve_folder_policy<'a>(
     id: &'a str,
     folders: &BTreeMap<String, &'a ValidationBatchFolder>,
@@ -960,7 +1100,7 @@ fn validation_metadata(
     .map_err(ValidationBatchError::from)
 }
 
-fn full_graph_preconditions(
+pub(super) fn full_graph_preconditions(
     current: &CatalogGeneration,
     next: &[CatalogGenerationEntry],
 ) -> Result<Vec<CatalogPrecondition>, ValidationBatchError> {

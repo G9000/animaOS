@@ -146,27 +146,27 @@ git -c commit.gpgsign=false commit -m "corefs: persist resumable preparation sta
 - Modify: `packages/anima-corefs/src/transaction.rs`
 - Modify: `packages/anima-corefs/src/transaction/converter.rs`
 
-- [ ] **Step 1: Write failing bounded-object tests**
+- [x] **Step 1: Write failing bounded-object tests**
 
 Exercise a new `PrepareObjectRequest` with one `Read` body. Prove deterministic resume for an already prepared `(object_id, revision, content_hash)`, rejection of different content at the same logical revision, descriptor-segment rollover, exact prepared-count/byte accounting, stable-role and graph metadata retention, and no mutation of `VALIDATION_HEAD`.
 
 Add a test-only small metadata limit that prepares enough objects to represent a logical corpus above 1 GiB without allocating 1 GiB. Track the maximum body simultaneously owned by the harness and assert it never exceeds one object plus fixed buffers.
 
-- [ ] **Step 2: Extract reusable converter validation from whole-body ownership**
+- [x] **Step 2: Extract reusable converter validation from whole-body ownership**
 
 Refactor `converter.rs` so ID, name, kind/format, policy, reference, role, revision, and graph validation can operate on metadata plus prepared descriptors. Keep `ValidationBatch` only until Task 6 removes the production caller; do not make the new preparation API wrap or rebuild a `ValidationBatch`.
 
-- [ ] **Step 3: Implement immutable prepared-object descriptors**
+- [x] **Step 3: Implement immutable prepared-object descriptors**
 
 Stream the one input through the existing envelope/object preparation path, validate the durable ciphertext with bounded reads, then persist the wrapped DEK, physical name, hashes, sizes, kind, revision, policy, and reference metadata in an encrypted descriptor segment. Publish a new snapshot and pointer only after both the immutable object and descriptor segment are durable.
 
 On resume, re-open and authenticate the descriptor chain rather than accepting an in-memory `PreparedObjectRevision` from Python.
 
-- [ ] **Step 4: Add reconciliation and bounded status APIs**
+- [x] **Step 4: Add reconciliation and bounded status APIs**
 
 Return counts, total plaintext/ciphertext bytes, next cursor, descriptor roots, and missing/conflicting logical identities. Page results under explicit response limits; never return the complete descriptor set for a maximum-size preparation.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::prepare_object -- --nocapture
@@ -186,25 +186,25 @@ git -c commit.gpgsign=false commit -m "corefs: prepare converter objects increme
 - Modify: `packages/anima-corefs/src/transaction/converter.rs`
 - Test: `packages/anima-corefs/tests/validation_batch.rs`
 
-- [ ] **Step 1: Write failing seal/finalize tests**
+- [x] **Step 1: Write failing seal/finalize tests**
 
 Cover incomplete descriptors, duplicate IDs/roles, missing references, folder cycles, descriptor/intent root mismatch, changed source generation/digest, changed expected validation head, object tampering, and retry after a crash immediately before and after `VALIDATION_HEAD` publication. Assert unsuccessful seal/finalize leaves the head unchanged; successful finalization increments it once; a post-head retry returns the same committed outcome instead of publishing again.
 
-- [ ] **Step 2: Persist a separately segmented final intent**
+- [x] **Step 2: Persist a separately segmented final intent**
 
 Seal folder/object ordering and final catalog metadata into bounded encrypted intent segments. The ready snapshot authenticates only the ordered segment roots/indexes, expected source generation/digest, exact expected validation head, and aggregate counts. It must not embed the entire intent.
 
-- [ ] **Step 3: Reconstruct finalization entirely from durable state**
+- [x] **Step 3: Reconstruct finalization entirely from durable state**
 
 Under the kernel lock, re-read the exact preparation pointer, source fence token supplied by the server, validation head, descriptor chain, intent chain, and every referenced encrypted object. Revalidate ciphertext in bounded chunks, reconstruct internal `PreparedObjectRevision` values, reuse converter graph checks, build the bounded catalog, and call the existing single validation-generation publication primitive.
 
 Finalization may read ciphertext multiple times within bounds; it must never materialize decrypted corpus bodies or a corpus-wide body vector.
 
-- [ ] **Step 4: Add committed-outcome recovery**
+- [x] **Step 4: Add committed-outcome recovery**
 
 Record the intended validation generation/catalog hash before publication. Implement and durably publish the deterministic completion receipt in this task. If restart finds that exact generation authoritative, publish/return that receipt. If a different head won, report a typed conflict and preserve the preparation for disposition.
 
-- [ ] **Step 5: Run transaction and integration tests**
+- [x] **Step 5: Run transaction and integration tests**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::seal_finalize -- --nocapture
@@ -213,7 +213,7 @@ cargo test -p anima-corefs --test validation_batch --no-fail-fast
 cargo test -p anima-corefs --lib --no-fail-fast
 ```
 
-- [ ] **Step 6: Commit exact finalization**
+- [x] **Step 6: Commit exact finalization**
 
 ```powershell
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/converter.rs packages/anima-corefs/src/transaction/preparation.rs packages/anima-corefs/src/transaction/preparation_tests.rs packages/anima-corefs/tests/validation_batch.rs
