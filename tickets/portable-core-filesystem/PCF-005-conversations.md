@@ -1,16 +1,16 @@
 # PCF-005 - Canonical threads, messages, and transcript merge
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: `apps/server` chat/thread/transcript services
 - Parent: `PCF-000`
 - Depends on: `PCF-003`
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-5-canonical-threads-messages-and-transcript-merge`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 18:58 MYT
-- Started:
+- Updated: 2026-08-13 04:00 MYT
+- Started: 2026-08-13 04:00 MYT
 - Completed:
 
 ## Goal
@@ -38,6 +38,7 @@ Make versioned encrypted message segments canonical and merge active PostgreSQL,
 
 - 2026-07-12 06:07 MYT - Ticket created.
 - 2026-07-12 18:58 MYT - Added the `core.conversations` root, shared/manage defaults, and rename/move/restart acceptance coverage.
+- 2026-08-13 04:00 MYT - Codex claimed PCF-005 after rechecking that PCF-003 is done and no existing branch, worktree, owner, or activity entry claims the ticket. Started on local stacked branch `codex/pcf-005-conversations` from published PCF-004 head `83f2490058f9e8c6565716cc5eee0b44bed530d3` in `/Users/julio/animaOS`; PCF-004 remains independently open on its cost-deferred package-evidence gate.
 
 ## Validation
 
@@ -46,4 +47,4 @@ Make versioned encrypted message segments canonical and merge active PostgreSQL,
 - Changed paths:
   - none
 - Notes:
-  - Claim after PCF-003 is done.
+  - PCF-003 is done. PCF-005 is active on a local stacked branch; no PCF-005 publication, PR creation, review request, monitoring, or merge is currently authorized.
