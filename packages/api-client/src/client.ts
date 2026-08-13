@@ -68,6 +68,7 @@ import type {
   PersonaTemplateInfo,
   PresenceConfig,
   PresenceConfigUpdate,
+  PortablePreferences,
   ProactiveNotice,
   ProviderInfo,
   SelfModelData,
@@ -969,6 +970,15 @@ export function createApiClient(options: ApiClientOptions) {
           `/presence/${userId}/initiatives/${initiativeId}/ack`,
           { method: "POST" },
         ),
+    },
+    preferences: {
+      get: (userId: number) =>
+        request<PortablePreferences>(`/preferences/${userId}`),
+      update: (userId: number, values: Record<string, unknown>) =>
+        request<PortablePreferences>(`/preferences/${userId}`, {
+          method: "PATCH",
+          body: { values },
+        }),
     },
     graph: {
       overview: (userId: number) =>

@@ -802,7 +802,7 @@ Authenticate by unwrapping manifest keyslots, open SQLCipher, load Soul domain k
 
 Preserve task API schemas. Before PCF-008, routes continue legacy-authoritative writes while the converter validates shadow JSON objects; the shared authority switch activates CoreFS writes only with the global cutover marker.
 
-- [ ] **Step 6: Migrate portable preferences and drafts**
+- [x] **Step 6: Migrate portable preferences and drafts**
 
 Use the spec's key-by-key classification. Background media must be explicitly imported as a Core attachment; host paths stay device-local.
 

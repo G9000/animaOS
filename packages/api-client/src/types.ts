@@ -678,6 +678,11 @@ export type PresenceConfigUpdate = Partial<
   Omit<PresenceConfig, "userId">
 >;
 
+export interface PortablePreferences {
+  userId: number;
+  values: Record<string, unknown>;
+}
+
 export interface PendingInitiative {
   id: number;
   drive: string;

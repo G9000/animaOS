@@ -35,6 +35,7 @@ from .api.routes.images import router as images_router
 from .api.routes.knowledge import router as knowledge_router
 from .api.routes.memory import router as memory_router
 from .api.routes.presence import router as presence_router
+from .api.routes.preferences import router as preferences_router
 from .api.routes.soul import router as soul_router
 from .api.routes.tasks import router as tasks_router
 from .api.routes.telegram import router as telegram_router
@@ -514,6 +515,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge_router)
     app.include_router(memory_router)
     app.include_router(presence_router)
+    app.include_router(preferences_router)
     app.include_router(soul_router)
     app.include_router(tasks_router)
     app.include_router(telegram_router)

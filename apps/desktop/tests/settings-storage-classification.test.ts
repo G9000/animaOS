@@ -86,6 +86,12 @@ function resolveStorageArgument(
     const constant = constants.get(expression.text);
     if (constant) return [constant];
     if (expression.text === "DAEMON_CONTROL_TOKEN_ENV") return ["ANIMA_DAEMON_CONTROL_TOKEN"];
+    if (expression.text === "DEVICE_BACKGROUND_MEDIA_KEY") {
+      return ["anima-background-media-device"];
+    }
+    if (expression.text === "DEVICE_BGM_TRACKS_KEY") {
+      return ["anima_bgm_device_tracks"];
+    }
     if (path.endsWith("useLocalStorage.ts") && expression.text === "key") {
       return databaseStorageKeys(file);
     }
@@ -96,6 +102,38 @@ function resolveStorageArgument(
       if (expression.text === "storageKey") return ["legacy-journal-draft:*"];
       if (expression.text === "stateKey") return ["anima:diary:draft-migration-state:v1:*"];
     }
+    if (path.endsWith("portablePreferences.ts") && expression.text === "key") {
+      return [
+        "anima-theme",
+        "anima-background-config",
+        "anima-translate-lang",
+        "anima_ascii_settings",
+        "anima_clock_format",
+        "anima_dashboard_node_positions",
+        "anima_dashboard_closed_nodes",
+        "anima_bgm_muted",
+        "anima_bgm_state",
+        "anima-background-media-device",
+        "anima_bgm_device_tracks",
+      ];
+    }
+  }
+  if (
+    path.endsWith("portablePreferences.ts") &&
+    ts.isPropertyAccessExpression(expression) &&
+    expression.getText(file) === "item.key"
+  ) {
+    return [
+      "anima-theme",
+      "anima-background-config",
+      "anima-translate-lang",
+      "anima_ascii_settings",
+      "anima_clock_format",
+      "anima_dashboard_node_positions",
+      "anima_dashboard_closed_nodes",
+      "anima_bgm_muted",
+      "anima_bgm_state",
+    ];
   }
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
     if (expression.expression.text === "keyHintKey") return ["anima:key-hint:*"];
@@ -136,6 +174,9 @@ describe("portable settings storage classification", () => {
         if (owner === "localStorage") store = "browser-local";
         else if (owner === "sessionStorage") store = "browser-session";
         else if (owner === "storage" && path.endsWith("draftMigration.ts")) store = "browser-local";
+        else if (owner === "storage" && path.endsWith("portablePreferences.ts")) {
+          store = "browser-local";
+        }
         else if (owner === "storage" && path.endsWith("today-context.ts")) store = "browser-session";
         if (!store) {
           ts.forEachChild(node, visit);

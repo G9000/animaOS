@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
@@ -16,6 +18,8 @@ from anima_server.services.agent.inner_life.delivery import (
     acknowledge_pending_initiative,
     list_and_mark_delivered,
 )
+from anima_server.services.corefs.preferences import portable_preference_lock
+from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 from anima_server.services.presence_config import (
     PresenceConfigValues,
     get_presence_config_values,
@@ -24,6 +28,7 @@ from anima_server.services.presence_config import (
 )
 
 router = APIRouter(prefix="/api/presence", tags=["presence"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/{user_id}", response_model=PresenceConfigResponse)
@@ -43,18 +48,29 @@ def put_config(
     request: Request,
     db: Session = Depends(get_db),
 ) -> PresenceConfigResponse:
-    require_unlocked_user(request, user_id)
+    session = require_unlocked_user(request, user_id)
     # Hold the per-user consent lock through the COMMIT: initiative delivery
     # holds the same lock from its consent check through its delivered side
     # effect, so an opt-out can never commit inside a poll's decision window
     # (PR #123 review, P1 — see presence_consent_lock).
-    with presence_consent_lock(user_id):
+    with portable_preference_lock(user_id), presence_consent_lock(user_id):
         values = update_presence_config(
             db,
             user_id,
             payload.model_dump(exclude_unset=True),
         )
         db.commit()
+        try:
+            prepare_writing_source_catalog(session=session, db=db)
+        except Exception as exc:
+            logger.exception("Encrypted presence preference shadow validation failed")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "corefs_preference_shadow_validation_failed",
+                    "message": "Presence was saved, but its encrypted preference shadow needs retry.",
+                },
+            ) from exc
     return _serialize(values)
 
 

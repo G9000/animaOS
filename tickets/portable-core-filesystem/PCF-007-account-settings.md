@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 17:14 MYT
+- Updated: 2026-08-13 17:33 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -76,6 +76,16 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   remains reserved for the PCF-008 first-write activation adapter. Task priority
   validation now matches the public `1..5` API across Python and Rust. No
   external action was taken.
+- 2026-08-13 17:33 MYT - Completed Step 6 locally. Unlock now hydrates one
+  bounded encrypted preference document and copy-verifies legacy theme,
+  language, ASCII, clock, dashboard layout, bundled-BGM, and portable
+  background values before exact source removal. Concurrently changed legacy
+  values remain for retry. Host background and custom-BGM media references are
+  copied and verified into explicitly device-local keys; browser data-URL media
+  persistence is refused, and only explicit `corefs://object/...` attachment
+  references may enter portable background config. Presence commits rebuild and
+  authenticate the same preference shadow. PCF-004 already owns the encrypted
+  draft handoff and source-first cleanup protocol. No external action was taken.
 
 ## Validation
 
@@ -95,6 +105,9 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
     health/LLM tests retain the known native background-index teardown segfault
   - task CRUD/shadow/cutover plus account migration (`7 passed`), native bounded
     account/preferences/task validation (`1 passed`), Ruff, and diff hygiene passed
+  - portable preference API/presence shadow plus account/task regressions (`12 passed`),
+    desktop migration/storage classification (`6 passed`), API client (`27 passed`),
+    focused Ruff, TypeScript, and production desktop build passed
 - Changed paths:
   - `docs/architecture/system/portable-state-inventory.md`
   - `apps/server/src/anima_server/services/corefs/{formats.py,writing_source.py}`
@@ -114,7 +127,13 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - `apps/server/src/anima_server/services/vault.py`
   - `apps/server/src/anima_server/services/corefs/task_authority.py`
   - `apps/server/src/anima_server/api/routes/tasks.py`
+  - `apps/server/src/anima_server/{schemas/preferences.py,api/routes/preferences.py}`
+  - `apps/server/src/anima_server/services/corefs/preferences.py`
+  - `apps/server/src/anima_server/api/routes/presence.py`
+  - `apps/desktop/src/lib/{portablePreferences,theme,background,preferences}.ts`
+  - desktop ASCII/clock/BGM/background/dashboard consumers and focused tests
+  - `packages/api-client/src/{client,types}.ts`
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.
-  - Steps 3-9 remain open; this checkpoint does not activate CoreFS authority.
+  - Steps 7-9 remain open; this checkpoint does not activate CoreFS authority.

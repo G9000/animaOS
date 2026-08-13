@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC
@@ -233,6 +233,7 @@ def build_writing_source_inventory(
     staged_notes: Iterable[Any] = (),
     supplemental_folders: Iterable[Any] = (),
     supplemental_objects: Iterable[WritingSourceBody] = (),
+    portable_preference_updates: Mapping[str, Any] | None = None,
 ) -> WritingSourceInventory:
     from anima_server.models import DiaryAttachment, DiaryEntry, DiaryFolder
     from anima_server.services.corefs.diary_migration import (
@@ -577,6 +578,7 @@ def build_writing_source_inventory(
         session=session,
         db=db,
         current_objects=current_objects,
+        preference_updates=portable_preference_updates,
     )
     for source in portable_state_sources:
         body_digest = hashlib.sha256(source.body).hexdigest()
@@ -984,6 +986,7 @@ def iter_writing_source_objects(
     staged_drafts: Iterable[Any] = (),
     staged_notes: Iterable[Any] = (),
     supplemental_objects: Iterable[WritingSourceBody] = (),
+    portable_preference_updates: Mapping[str, Any] | None = None,
 ) -> Iterator[WritingSourceBody]:
     from anima_server.models import DiaryAttachment, DiaryEntry
     from anima_server.services.corefs.diary_migration import (
@@ -1028,6 +1031,7 @@ def iter_writing_source_objects(
                         session=session,
                         db=db,
                         current_objects=current_objects,
+                        preference_updates=portable_preference_updates,
                     )
                 }
             body = portable_state_bodies.get(descriptor.stable_id, b"")
@@ -1167,6 +1171,7 @@ def _account_settings_sources(
     session: Any,
     db: Session,
     current_objects: Iterable[Any],
+    preference_updates: Mapping[str, Any] | None = None,
 ) -> tuple[_PortableStateSource, ...]:
     """Project legacy-authoritative account/settings rows into canonical bodies.
 
@@ -1227,6 +1232,9 @@ def _account_settings_sources(
             raise DiaryMigrationError("Prepared preferences owner does not match this Core.")
         existing_values.update(decoded.values)
         del body
+
+    if preference_updates:
+        existing_values.update(preference_updates)
 
     presence = get_presence_config_values(db, session.user_id)
     existing_values["presence"] = {
@@ -1317,6 +1325,7 @@ def prepare_writing_source_catalog(
     staged_notes: Iterable[Any] = (),
     supplemental_folders: Iterable[Any] = (),
     supplemental_objects: Iterable[WritingSourceBody] = (),
+    portable_preference_updates: Mapping[str, Any] | None = None,
 ) -> Any:
     from anima_server.services.corefs.diary_migration import (
         DiaryMigrationError,
@@ -1343,6 +1352,7 @@ def prepare_writing_source_catalog(
             staged_notes=staged_notes,
             supplemental_folders=supplemental_folders,
             supplemental_objects=supplemental_objects,
+            portable_preference_updates=portable_preference_updates,
         )
         active = _preparation_status_or_none(native, keys)
         if active is None and _inventory_matches_current(session=session, inventory=inventory):
@@ -1387,6 +1397,7 @@ def prepare_writing_source_catalog(
                 staged_notes=staged_notes,
                 supplemental_folders=supplemental_folders,
                 supplemental_objects=supplemental_objects,
+                portable_preference_updates=portable_preference_updates,
                 recovery=True,
             )
             return _result_from_receipt(
@@ -1452,6 +1463,7 @@ def prepare_writing_source_catalog(
             staged_drafts=staged_drafts,
             staged_notes=staged_notes,
             supplemental_objects=supplemental_objects,
+            portable_preference_updates=portable_preference_updates,
         )
         while True:
             try:
@@ -1482,6 +1494,7 @@ def prepare_writing_source_catalog(
             staged_notes=staged_notes,
             supplemental_folders=supplemental_folders,
             supplemental_objects=supplemental_objects,
+            portable_preference_updates=portable_preference_updates,
         )
         if not _same_source(inventory, refreshed):
             _abandon(native, keys, status)
@@ -1512,6 +1525,7 @@ def prepare_writing_source_catalog(
             staged_notes=staged_notes,
             supplemental_folders=supplemental_folders,
             supplemental_objects=supplemental_objects,
+            portable_preference_updates=portable_preference_updates,
             recovery=False,
         )
         return _result_from_receipt(
@@ -1535,6 +1549,7 @@ def _finalize_under_fence(
     staged_notes: tuple[Any, ...],
     supplemental_folders: tuple[Any, ...],
     supplemental_objects: tuple[WritingSourceBody, ...],
+    portable_preference_updates: Mapping[str, Any] | None,
     recovery: bool,
 ) -> dict[str, object]:
     from anima_server.services.corefs.diary_migration import DiaryMigrationError
@@ -1547,6 +1562,7 @@ def _finalize_under_fence(
             staged_notes=staged_notes,
             supplemental_folders=supplemental_folders,
             supplemental_objects=supplemental_objects,
+            portable_preference_updates=portable_preference_updates,
         )
         if not _same_source(inventory, fenced_inventory):
             raise DiaryMigrationError("Writing source changed before final publication.")
