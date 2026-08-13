@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 19:22 MYT
+- Updated: 2026-08-13 19:34 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -384,6 +384,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 18:41 MYT - Claimed now-eligible PCF-008 for Codex on local branch `codex/pcf-008-cutover-transfer` from completed PCF-007 head `1067becf` and synchronized its parent row to `in_progress`. Scope begins with reversible cutover-state and transfer failure tests; the triggerless paid four-platform package workflow, irreversible first-write marker, release publication, and merge remain unauthorized.
 - 2026-08-13 18:58 MYT - PCF-008 Step 1 completed locally. Exact reversible manifest states now remain subordinate to the authenticated committed `fs/HEAD` marker; unlock recovers the post-HEAD/pre-manifest crash seam into forward-only authority, rejects markerless forward claims, and prevents post-marker rollback. Native logical reads and stable-role resolution switch from validation to committed authority only after the marker. Server cutover/session coverage passed `82`, the full CoreFS native suite and strict CoreFS Clippy passed, and the Python-enabled binding compile-check plus scoped lint/format/diff hygiene passed. The protected paid workflow remains disabled, and no irreversible first mutation or external action occurred.
 - 2026-08-13 19:22 MYT - PCF-008's first transfer milestone added the exact registered `anima_core_v2` header/KDF, bounded authenticated Rust streaming with closed payload allowlists and a >16-MiB round trip, plus local capacity/file-limit probing and crash-injected single/controller-last multipart publication. Rust archive coverage passed `6`, Python transfer publication coverage passed `31`, and scoped Clippy/Ruff/format/diff gates passed. Step 2 and Step 7 remain open for live pinned snapshots, native multipart-set authentication, import activation, and API/UI work; no paid workflow or irreversible cutover action occurred.
+- 2026-08-13 19:34 MYT - PCF-008 import activation now uses a same-volume verified sibling, authenticated generation-monotonic active-Core pointer, authenticated restart journal/completion, and retained-old-Core rollback without deletion. All directory/pointer/completion failure seams, pointer tampering, symbolic-link rejection, capacity preflight, and rollback replay pass in the `42`-test focused transfer suite. The paid package workflow remains disabled and no irreversible cutover action occurred.
 
 ## Validation
 

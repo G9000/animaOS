@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import math
 import os
 import platform
 import shutil
 import subprocess
-import uuid
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
+from uuid import UUID, uuid4
 
 ARCHIVE_FRAME_RESERVE_BYTES = 1024 * 1024
 CAPACITY_MARGIN_BYTES = 64 * 1024 * 1024
@@ -18,6 +23,10 @@ DEFAULT_PART_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
 HASH_BUFFER_BYTES = 1024 * 1024
 FAT32_MAX_FILE_BYTES = (4 * 1024 * 1024 * 1024) - 1
 FAT16_MAX_FILE_BYTES = (2 * 1024 * 1024 * 1024) - 1
+REGISTRY_AUTH_DOMAIN = b"anima-active-core-registry-v1\x00"
+ACTIVATION_AUTH_DOMAIN = b"anima-active-core-activation-v1\x00"
+COMPLETION_AUTH_DOMAIN = b"anima-active-core-completion-v1\x00"
+_ACTIVATION_LOCK = threading.RLock()
 
 
 class TransferError(RuntimeError):
@@ -67,11 +76,36 @@ class PublicationResult:
     volumes: tuple[PublishedVolume, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ImportCapacityProbe:
+    staging_parent: Path
+    restored_core_bytes: int
+    available_bytes: int
+    required_capacity_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveCorePointer:
+    generation: int
+    core_id: str
+    active_core_path: Path
+    retained_core_path: Path | None
+    retained_core_id: str | None
+    activation_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ActivationResult:
+    pointer: ActiveCorePointer
+    completion_path: Path
+
+
 BoundaryHook = Callable[[str], None]
 CancelCheck = Callable[[], bool]
 FileProducer = Callable[[Path], None]
 FileVerifier = Callable[[Path], None]
 ControllerProducer = Callable[[Path, tuple[PublishedVolume, ...]], None]
+CoreVerifier = Callable[[Path], None]
 
 
 def estimate_transfer(*, selected_bytes: int, record_count: int) -> TransferEstimate:
@@ -149,6 +183,637 @@ def detect_maximum_single_file_bytes(destination: Path) -> int | None:
     if normalized in {"fat", "fat16"}:
         return FAT16_MAX_FILE_BYTES
     return None
+
+
+def probe_import_staging(
+    staging_parent: Path,
+    *,
+    restored_core_bytes: int,
+    active_core_path: Path | None = None,
+    available_bytes: int | None = None,
+) -> ImportCapacityProbe:
+    if restored_core_bytes <= 0:
+        raise TransferError("restored Core size must be positive")
+    parent = staging_parent.expanduser().resolve(strict=True)
+    if not parent.is_dir():
+        raise TransferError("import staging parent must be an existing directory")
+    if active_core_path is not None:
+        active = active_core_path.expanduser().resolve(strict=True)
+        if parent == active or parent.is_relative_to(active):
+            raise TransferError("import staging cannot be inside the active Core")
+    _probe_writable_atomic_directory(parent)
+    available = shutil.disk_usage(parent).free if available_bytes is None else available_bytes
+    required = restored_core_bytes + max(CAPACITY_MARGIN_BYTES, restored_core_bytes // 20)
+    if available < required:
+        raise TransferError("import destination has insufficient same-volume staging capacity")
+    return ImportCapacityProbe(
+        staging_parent=parent,
+        restored_core_bytes=restored_core_bytes,
+        available_bytes=available,
+        required_capacity_bytes=required,
+    )
+
+
+def initialize_active_core_pointer(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    core_id: str,
+    active_core_path: Path,
+) -> ActiveCorePointer:
+    registry = registry_path.expanduser().resolve(strict=False)
+    active = active_core_path.expanduser().resolve(strict=True)
+    _validate_authentication_key(authentication_key)
+    _validate_core_identity(core_id)
+    if not active.is_dir():
+        raise TransferError("active Core pointer target must be a directory")
+    registry.parent.mkdir(parents=True, exist_ok=True)
+    with _ACTIVATION_LOCK, _exclusive_activation_lock(registry):
+        if registry.exists():
+            raise TransferError("active Core pointer is already initialized")
+        activation_id = str(uuid4())
+        body = _pointer_body(
+            generation=1,
+            core_id=core_id,
+            active_core_path=active,
+            retained_core_path=None,
+            retained_core_id=None,
+            activation_id=activation_id,
+        )
+        _write_authenticated_record(
+            registry,
+            body,
+            authentication_key,
+            REGISTRY_AUTH_DOMAIN,
+        )
+        return _pointer_from_body(body)
+
+
+def read_active_core_pointer(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+) -> ActiveCorePointer:
+    _validate_authentication_key(authentication_key)
+    body = _read_authenticated_record(
+        registry_path.expanduser().resolve(strict=True),
+        authentication_key,
+        REGISTRY_AUTH_DOMAIN,
+        expected_keys={
+            "version",
+            "generation",
+            "coreId",
+            "activeCorePath",
+            "retainedCorePath",
+            "retainedCoreId",
+            "activationId",
+        },
+    )
+    return _pointer_from_body(body)
+
+
+def activate_staged_core(
+    staging_core_path: Path,
+    final_core_path: Path,
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    core_id: str,
+    activation_id: str,
+    verifier: CoreVerifier,
+    boundary_hook: BoundaryHook | None = None,
+) -> ActivationResult:
+    _validate_authentication_key(authentication_key)
+    _validate_core_identity(core_id)
+    try:
+        normalized_activation_id = str(UUID(activation_id))
+    except (ValueError, AttributeError) as exc:
+        raise TransferError("activation ID is invalid") from exc
+
+    staging = staging_core_path.expanduser().resolve(strict=False)
+    final = final_core_path.expanduser().resolve(strict=False)
+    registry = registry_path.expanduser().resolve(strict=True)
+    if staging.parent != final.parent or staging == final:
+        raise TransferError("import staging and final Core must be same-parent siblings")
+    if final.name in {"", ".", ".."}:
+        raise TransferError("final Core path is invalid")
+
+    journal = registry.with_name(f"{registry.name}.activation")
+    completion = registry.with_name(f"{registry.name}.completion")
+    with _ACTIVATION_LOCK, _exclusive_activation_lock(registry):
+        current = _pointer_from_body(
+            _read_authenticated_record(
+                registry,
+                authentication_key,
+                REGISTRY_AUTH_DOMAIN,
+                expected_keys={
+                    "version",
+                    "generation",
+                    "coreId",
+                    "activeCorePath",
+                    "retainedCorePath",
+                    "retainedCoreId",
+                    "activationId",
+                },
+            )
+        )
+        if current.active_core_path == final and current.activation_id == normalized_activation_id:
+            verifier(current.active_core_path)
+            return _finalize_activation_recovery(
+                journal=journal,
+                completion=completion,
+                pointer=current,
+                authentication_key=authentication_key,
+                boundary_hook=boundary_hook,
+            )
+        if current.active_core_path == final:
+            raise TransferError("final Core is already active under another activation")
+        if current.retained_core_path is not None:
+            raise TransferError("a retained rollback Core must be resolved before reactivation")
+
+        existing_journal = _load_activation_journal(
+            journal,
+            authentication_key=authentication_key,
+        )
+        target_generation = current.generation + 1
+        journal_body = {
+            "version": 1,
+            "activationId": normalized_activation_id,
+            "targetGeneration": target_generation,
+            "coreId": core_id,
+            "stagingCorePath": os.fspath(staging),
+            "finalCorePath": os.fspath(final),
+            "retainedCorePath": os.fspath(current.active_core_path),
+            "retainedCoreId": current.core_id,
+        }
+        if existing_journal is not None and existing_journal != journal_body:
+            raise TransferError("another authenticated Core activation is incomplete")
+
+        if not staging.exists() and not final.exists():
+            raise TransferError("import staging Core is missing")
+        if staging.exists() and final.exists():
+            raise TransferError("both staging and final Core directories exist")
+        candidate = staging if staging.exists() else final
+        if not candidate.is_dir():
+            raise TransferError("import activation candidate is not a directory")
+        if candidate.stat().st_dev != final.parent.stat().st_dev:
+            raise TransferError("import staging Core is not on the activation volume")
+        verifier(candidate)
+        _sync_tree(candidate)
+
+        if existing_journal is None:
+            _write_authenticated_record(
+                journal,
+                journal_body,
+                authentication_key,
+                ACTIVATION_AUTH_DOMAIN,
+            )
+        _boundary(boundary_hook, "activation:after_journal")
+
+        if staging.exists():
+            _replace_path(staging, final)
+        _boundary(boundary_hook, "activation:after_directory_rename")
+        verifier(final)
+
+        pointer_body = _pointer_body(
+            generation=target_generation,
+            core_id=core_id,
+            active_core_path=final,
+            retained_core_path=current.active_core_path,
+            retained_core_id=current.core_id,
+            activation_id=normalized_activation_id,
+        )
+        _write_authenticated_record(
+            registry,
+            pointer_body,
+            authentication_key,
+            REGISTRY_AUTH_DOMAIN,
+        )
+        pointer = _pointer_from_body(pointer_body)
+        _boundary(boundary_hook, "activation:after_pointer")
+        return _finalize_activation_recovery(
+            journal=journal,
+            completion=completion,
+            pointer=pointer,
+            authentication_key=authentication_key,
+            boundary_hook=boundary_hook,
+        )
+
+
+def recover_active_core_activation(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    verifier: CoreVerifier,
+    boundary_hook: BoundaryHook | None = None,
+) -> ActivationResult | None:
+    _validate_authentication_key(authentication_key)
+    registry = registry_path.expanduser().resolve(strict=True)
+    journal = registry.with_name(f"{registry.name}.activation")
+    journal_body = _load_activation_journal(
+        journal,
+        authentication_key=authentication_key,
+    )
+    if journal_body is None:
+        return None
+    return activate_staged_core(
+        Path(cast(str, journal_body["stagingCorePath"])),
+        Path(cast(str, journal_body["finalCorePath"])),
+        registry,
+        authentication_key=authentication_key,
+        core_id=cast(str, journal_body["coreId"]),
+        activation_id=cast(str, journal_body["activationId"]),
+        verifier=verifier,
+        boundary_hook=boundary_hook,
+    )
+
+
+def rollback_to_retained_core(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    rollback_id: str,
+    verifier: CoreVerifier,
+    boundary_hook: BoundaryHook | None = None,
+) -> ActivationResult:
+    _validate_authentication_key(authentication_key)
+    try:
+        normalized_rollback_id = str(UUID(rollback_id))
+    except (ValueError, AttributeError) as exc:
+        raise TransferError("rollback ID is invalid") from exc
+    registry = registry_path.expanduser().resolve(strict=True)
+    completion = registry.with_name(f"{registry.name}.completion")
+    with _ACTIVATION_LOCK, _exclusive_activation_lock(registry):
+        current = _pointer_from_body(
+            _read_authenticated_record(
+                registry,
+                authentication_key,
+                REGISTRY_AUTH_DOMAIN,
+                expected_keys={
+                    "version",
+                    "generation",
+                    "coreId",
+                    "activeCorePath",
+                    "retainedCorePath",
+                    "retainedCoreId",
+                    "activationId",
+                },
+            )
+        )
+        if current.activation_id == normalized_rollback_id:
+            verifier(current.active_core_path)
+            return _write_pointer_completion(
+                completion=completion,
+                pointer=current,
+                authentication_key=authentication_key,
+                boundary_hook=boundary_hook,
+                boundary_name="rollback:after_completion",
+            )
+        if current.retained_core_path is None or current.retained_core_id is None:
+            raise TransferError("active Core pointer has no retained rollback Core")
+        verifier(current.active_core_path)
+        verifier(current.retained_core_path)
+        pointer_body = _pointer_body(
+            generation=current.generation + 1,
+            core_id=current.retained_core_id,
+            active_core_path=current.retained_core_path,
+            retained_core_path=current.active_core_path,
+            retained_core_id=current.core_id,
+            activation_id=normalized_rollback_id,
+        )
+        _write_authenticated_record(
+            registry,
+            pointer_body,
+            authentication_key,
+            REGISTRY_AUTH_DOMAIN,
+        )
+        pointer = _pointer_from_body(pointer_body)
+        _boundary(boundary_hook, "rollback:after_pointer")
+        return _write_pointer_completion(
+            completion=completion,
+            pointer=pointer,
+            authentication_key=authentication_key,
+            boundary_hook=boundary_hook,
+            boundary_name="rollback:after_completion",
+        )
+
+
+def _pointer_body(
+    *,
+    generation: int,
+    core_id: str,
+    active_core_path: Path,
+    retained_core_path: Path | None,
+    retained_core_id: str | None,
+    activation_id: str,
+) -> dict[str, object]:
+    return {
+        "version": 1,
+        "generation": generation,
+        "coreId": core_id,
+        "activeCorePath": os.fspath(active_core_path),
+        "retainedCorePath": (
+            os.fspath(retained_core_path) if retained_core_path is not None else None
+        ),
+        "retainedCoreId": retained_core_id,
+        "activationId": activation_id,
+    }
+
+
+def _pointer_from_body(body: dict[str, object]) -> ActiveCorePointer:
+    if body.get("version") != 1:
+        raise TransferError("active Core pointer version is invalid")
+    generation = body.get("generation")
+    core_id = body.get("coreId")
+    active_path = body.get("activeCorePath")
+    retained_path = body.get("retainedCorePath")
+    retained_core_id = body.get("retainedCoreId")
+    activation_id = body.get("activationId")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation <= 0
+        or not isinstance(core_id, str)
+        or not isinstance(active_path, str)
+        or not active_path
+        or (retained_path is not None and (not isinstance(retained_path, str) or not retained_path))
+        or (retained_core_id is not None and not isinstance(retained_core_id, str))
+        or (retained_path is None) != (retained_core_id is None)
+        or not isinstance(activation_id, str)
+    ):
+        raise TransferError("active Core pointer shape is invalid")
+    _validate_core_identity(core_id)
+    if retained_core_id is not None:
+        _validate_core_identity(retained_core_id)
+    try:
+        normalized_activation_id = str(UUID(activation_id))
+    except ValueError as exc:
+        raise TransferError("active Core pointer activation ID is invalid") from exc
+    active = Path(active_path).expanduser().resolve(strict=True)
+    if not active.is_dir():
+        raise TransferError("active Core pointer target is unavailable")
+    retained = (
+        Path(cast(str, retained_path)).expanduser().resolve(strict=True)
+        if retained_path is not None
+        else None
+    )
+    if retained is not None and not retained.is_dir():
+        raise TransferError("retained Core pointer target is unavailable")
+    return ActiveCorePointer(
+        generation=generation,
+        core_id=core_id,
+        active_core_path=active,
+        retained_core_path=retained,
+        retained_core_id=retained_core_id,
+        activation_id=normalized_activation_id,
+    )
+
+
+def _load_activation_journal(
+    journal: Path,
+    *,
+    authentication_key: bytes,
+) -> dict[str, object] | None:
+    if not journal.exists():
+        return None
+    body = _read_authenticated_record(
+        journal,
+        authentication_key,
+        ACTIVATION_AUTH_DOMAIN,
+        expected_keys={
+            "version",
+            "activationId",
+            "targetGeneration",
+            "coreId",
+            "stagingCorePath",
+            "finalCorePath",
+            "retainedCorePath",
+            "retainedCoreId",
+        },
+    )
+    if body.get("version") != 1:
+        raise TransferError("Core activation journal version is invalid")
+    try:
+        UUID(cast(str, body["activationId"]))
+    except (ValueError, TypeError, KeyError) as exc:
+        raise TransferError("Core activation journal is invalid") from exc
+    generation = body.get("targetGeneration")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation <= 1
+        or any(
+            not isinstance(body.get(field), str) or not body[field]
+            for field in (
+                "coreId",
+                "stagingCorePath",
+                "finalCorePath",
+                "retainedCorePath",
+                "retainedCoreId",
+            )
+        )
+    ):
+        raise TransferError("Core activation journal is invalid")
+    _validate_core_identity(cast(str, body["coreId"]))
+    _validate_core_identity(cast(str, body["retainedCoreId"]))
+    return body
+
+
+def _finalize_activation_recovery(
+    *,
+    journal: Path,
+    completion: Path,
+    pointer: ActiveCorePointer,
+    authentication_key: bytes,
+    boundary_hook: BoundaryHook | None,
+) -> ActivationResult:
+    result = _write_pointer_completion(
+        completion=completion,
+        pointer=pointer,
+        authentication_key=authentication_key,
+        boundary_hook=boundary_hook,
+        boundary_name="activation:after_completion",
+    )
+    journal.unlink(missing_ok=True)
+    _fsync_directory(journal.parent)
+    _boundary(boundary_hook, "activation:after_journal_cleanup")
+    return result
+
+
+def _write_pointer_completion(
+    *,
+    completion: Path,
+    pointer: ActiveCorePointer,
+    authentication_key: bytes,
+    boundary_hook: BoundaryHook | None,
+    boundary_name: str,
+) -> ActivationResult:
+    body = {
+        "version": 1,
+        "activationId": pointer.activation_id,
+        "generation": pointer.generation,
+        "coreId": pointer.core_id,
+        "activeCorePath": os.fspath(pointer.active_core_path),
+        "retainedCorePath": (
+            os.fspath(pointer.retained_core_path)
+            if pointer.retained_core_path is not None
+            else None
+        ),
+        "retainedCoreId": pointer.retained_core_id,
+    }
+    if completion.exists():
+        existing = _read_authenticated_record(
+            completion,
+            authentication_key,
+            COMPLETION_AUTH_DOMAIN,
+            expected_keys=set(body),
+        )
+        if existing != body:
+            _write_authenticated_record(
+                completion,
+                body,
+                authentication_key,
+                COMPLETION_AUTH_DOMAIN,
+            )
+    else:
+        _write_authenticated_record(
+            completion,
+            body,
+            authentication_key,
+            COMPLETION_AUTH_DOMAIN,
+        )
+    _boundary(boundary_hook, boundary_name)
+    return ActivationResult(pointer=pointer, completion_path=completion)
+
+
+def _validate_authentication_key(authentication_key: bytes) -> None:
+    if len(authentication_key) < 32:
+        raise TransferError("active Core registry authentication key is invalid")
+
+
+def _validate_core_identity(core_id: str) -> None:
+    try:
+        UUID(core_id)
+    except (ValueError, AttributeError) as exc:
+        raise TransferError("Core ID is invalid") from exc
+
+
+def _authenticated_payload(
+    body: dict[str, object],
+    authentication_key: bytes,
+    domain: bytes,
+) -> dict[str, object]:
+    encoded = json.dumps(
+        body,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    authentication = hmac.new(authentication_key, domain + encoded, hashlib.sha256).hexdigest()
+    return {**body, "authentication": authentication}
+
+
+def _write_authenticated_record(
+    path: Path,
+    body: dict[str, object],
+    authentication_key: bytes,
+    domain: bytes,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f"{path.name}.partial")
+    partial.unlink(missing_ok=True)
+    payload = _authenticated_payload(body, authentication_key, domain)
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    descriptor = os.open(partial, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        verified = _read_authenticated_record(
+            partial,
+            authentication_key,
+            domain,
+            expected_keys=set(body),
+        )
+        if verified != body:
+            raise TransferError("authenticated registry record failed verification")
+        _replace_path(partial, path)
+        _fsync_directory(path.parent)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def _read_authenticated_record(
+    path: Path,
+    authentication_key: bytes,
+    domain: bytes,
+    *,
+    expected_keys: set[str],
+) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TransferError("authenticated registry record is unreadable") from exc
+    if not isinstance(payload, dict) or set(payload) != expected_keys | {"authentication"}:
+        raise TransferError("authenticated registry record shape is invalid")
+    authentication = payload.pop("authentication", None)
+    if not isinstance(authentication, str) or len(authentication) != 64:
+        raise TransferError("authenticated registry record tag is invalid")
+    body = cast(dict[str, object], payload)
+    expected = cast(str, _authenticated_payload(body, authentication_key, domain)["authentication"])
+    if not hmac.compare_digest(authentication, expected):
+        raise TransferError("authenticated registry record tag is invalid")
+    return body
+
+
+@contextmanager
+def _exclusive_activation_lock(registry_path: Path) -> Iterator[None]:
+    lock_path = registry_path.with_name(f".{registry_path.name}.lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"\0")
+                    os.fsync(descriptor)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise TransferError("active Core registry is being updated") from exc
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _sync_tree(root: Path) -> None:
+    directories: list[Path] = []
+    for current, directory_names, filenames in os.walk(root, topdown=True, followlinks=False):
+        current_path = Path(current)
+        directories.append(current_path)
+        for name in tuple(directory_names):
+            child = current_path / name
+            if child.is_symlink():
+                raise TransferError("staged Core contains a symbolic-link directory")
+        for name in filenames:
+            child = current_path / name
+            if child.is_symlink() or not child.is_file():
+                raise TransferError("staged Core contains a non-regular file")
+            _sync_file(child)
+    for directory in reversed(directories):
+        _fsync_directory(directory)
 
 
 def publish_single_file(
@@ -295,7 +960,7 @@ def publish_multipart(
 
 
 def _probe_writable_atomic_directory(destination: Path) -> None:
-    token = uuid.uuid4().hex
+    token = uuid4().hex
     source = destination / f".anima-transfer-probe-{token}.partial"
     target = destination / f".anima-transfer-probe-{token}"
     directory_source = destination / f".anima-transfer-dir-probe-{token}.partial"

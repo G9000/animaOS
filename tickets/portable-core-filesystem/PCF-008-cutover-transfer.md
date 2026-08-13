@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 19:22 MYT
+- Updated: 2026-08-13 19:34 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -92,6 +92,15 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   remain open for live snapshot pinning, native multipart-set cryptography,
   import activation, and API/UI integration. No paid workflow or irreversible
   cutover action was performed.
+- 2026-08-13 19:34 MYT - Added authenticated same-volume import activation.
+  Capacity preflight retains the existing Core and margin; a verified sibling
+  staging Core is fsynced, renamed, and selected through a generation-monotonic
+  HMAC-authenticated machine-local pointer while the prior Core remains a
+  named rollback target. An authenticated activation journal recovers startup
+  after the staging rename or pointer swap, terminal completion is replayable,
+  pointer tampering and symbolic-link staging fail closed, and rollback swaps
+  the two retained directories atomically without deleting either. All five
+  activation crash seams plus rollback-after-pointer passed focused tests.
 
 ## Validation
 
@@ -109,6 +118,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py -q`
     (`31 passed`)
   - scoped Ruff check/format and `git diff --check` (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py -q`
+    after import activation (`42 passed`)
 - Changed paths:
   - `apps/server/src/anima_server/services/corefs/cutover.py`
   - `apps/server/src/anima_server/services/sessions.py`
