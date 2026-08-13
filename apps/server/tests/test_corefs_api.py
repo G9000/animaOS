@@ -817,6 +817,92 @@ def test_write_operations_are_frozen_before_native_mutators(
     }
 
 
+def test_ready_mutation_adapter_decodes_exact_body_and_dispatches_selected_snapshot(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = logical.CoreFsValidationSnapshot(generation=9, catalog_hash="a" * 64)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(corefs_route, "CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY", True)
+    monkeypatch.setattr(corefs_route.logical, "select_validation_snapshot", lambda **_: selected)
+
+    def fake_mutation(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "generation": 10,
+            "catalogHash": "b" * 64,
+            "atomic": True,
+            "cutoverCommitted": True,
+            "recoveryPending": False,
+            "invalidationDelivered": True,
+            "changes": [{"stableId": "01J10000000000000000000009", "revision": 1}],
+        }
+
+    monkeypatch.setattr(corefs_route.logical, "execute_mutation_v1", fake_mutation)
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={
+            "operation": "create_file",
+            "path": "Notes/one.md",
+            "kind": "note",
+            "contentType": "text/markdown",
+            "bodyEncoding": "utf-8",
+            "contentBase64": "b25lCg==",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected"] == {
+        "generation": 9,
+        "catalogHash": "a" * 64,
+    }
+    assert calls[0]["selected"] == selected
+    assert calls[0]["principal"] == "user"
+    assert calls[0]["body"] == b"one\n"
+    assert calls[0]["mutation"] == {
+        "operation": "create_file",
+        "path": "Notes/one.md",
+        "kind": "note",
+        "contentType": "text/markdown",
+        "bodyEncoding": "utf-8",
+    }
+
+
+def test_ready_mutation_adapter_rejects_noncanonical_base64_before_native_dispatch(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(corefs_route, "CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY", True)
+    monkeypatch.setattr(
+        corefs_route.logical,
+        "select_validation_snapshot",
+        lambda **_: logical.CoreFsValidationSnapshot(9, "a" * 64),
+    )
+    monkeypatch.setattr(
+        corefs_route.logical,
+        "execute_mutation_v1",
+        lambda **_: pytest.fail("invalid body must not reach native mutation"),
+    )
+
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={
+            "operation": "create_file",
+            "path": "Notes/one.md",
+            "kind": "note",
+            "contentType": "text/markdown",
+            "bodyEncoding": "utf-8",
+            "contentBase64": "b25lCg",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "corefs_mutation_body_invalid"
+
+
 def test_rejects_host_filesystem_paths(corefs_client: TestClient) -> None:
     response = corefs_client.post(
         "/api/corefs/operation",

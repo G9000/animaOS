@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 20:07 MYT
+- Updated: 2026-08-13 20:26 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -149,6 +149,23 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   activation/rollback in the UI; multipart remains visibly gated until Step 7
   provides one globally authenticated volume set. No paid workflow or
   irreversible cutover action occurred.
+- 2026-08-13 20:26 MYT - Added the non-activating first-mutation milestone for
+  Step 4. The existing logical planner now commits the approved first mutation
+  through the same Core-wide transaction as the authenticated cutover marker,
+  then advances later mutations only from committed `fs/HEAD`. The PyO3
+  session accepts exact selected-snapshot identity, body encoding, principal,
+  and manifest-derived cutover mode; Python reconciles a post-HEAD crash before
+  choosing the mode and retains the original cutover receipt identity across
+  later heads. A closed-schema HTTP dispatcher, canonical bounded base64 body
+  decoding, optimistic errors, index invalidation, and client multi-target
+  fail-closed behavior are implemented and tested, but the compile-time
+  `CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY` gate remains false until every
+  content-family adapter and the funded signed-package evidence are complete.
+  CoreFS mutation tests pass `7`, the focused server band passes `66`, strict
+  CoreFS Clippy and the Python-enabled binding compile-check pass, and scoped
+  anima-core Clippy passes with only the previously recorded unrelated crate
+  lints allowed. No public mutation, paid workflow, or irreversible cutover
+  action occurred.
 
 ## Validation
 
@@ -188,6 +205,20 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
     (`31 passed`)
   - `bun run --cwd apps/desktop build` (passed)
+  - `cargo test -p anima-corefs logical::mutation --lib` (`7 passed`)
+  - `cargo clippy -p anima-corefs --all-targets -- -D warnings` (passed)
+  - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python`
+    after adding logical mutation binding (passed)
+  - scoped strict anima-core Clippy with only the recorded unrelated
+    `cards.rs`, `frame.rs`, and `path_engine.rs` lints allowed (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_api.py -q`
+    (`66 passed`)
+  - `bun test packages/api-client/tests/client.test.ts` (`28 passed`)
+  - direct Python-enabled anima-core unit-test linking remains unavailable on
+    this macOS extension-module host because Python symbols are not linked;
+    the same binding compiles, while its transaction behavior is covered in
+    anima-corefs and its Python authority/request behavior is covered by the
+    server band above
 - Changed paths:
   - `apps/server/src/anima_server/services/corefs/cutover.py`
   - `apps/server/src/anima_server/services/sessions.py`
@@ -217,6 +248,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `packages/api-client/tests/client.test.ts`
   - `apps/desktop/src/{App.tsx,pages/settings/Settings.tsx,pages/settings/CoreTransferSettings.tsx}`
   - `apps/desktop/tests/corefs-transfer.test.ts`
+  - `packages/anima-corefs/src/logical/{mod.rs,mutation.rs,mutation/executor.rs,mutation/tests.rs}`
+  - `packages/anima-core/src/ffi.rs`
+  - `apps/server/src/anima_server/{schemas/corefs.py,api/routes/corefs.py}`
+  - `apps/server/src/anima_server/services/corefs/{logical.py,cutover.py}`
+  - `apps/server/tests/{test_corefs_api.py,test_corefs_logical.py,test_corefs_cutover.py}`
+  - `packages/api-client/src/types.ts`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

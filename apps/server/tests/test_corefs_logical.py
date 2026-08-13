@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
+from anima_server.config import settings
+from anima_server.services.core import ensure_core_manifest
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.cutover import (
+    CutoverState,
+    approve_validation_cutover,
+    begin_migration,
+    publish_validation_readonly,
+    read_cutover_record,
+)
 
 
 def test_validation_snapshot_and_read_wrappers_bind_selected_head() -> None:
@@ -26,12 +36,15 @@ def test_validation_snapshot_and_read_wrappers_bind_selected_head() -> None:
         keys=keys,
     )
     assert selected == logical.CoreFsValidationSnapshot(generation=7, catalog_hash="abc123")
-    assert logical.stat_v1(
-        corefs_session=native_session,
-        keys=keys,
-        selected=selected,
-        path="Diary/today.md",
-    ) == b'{"version":"corefs-logical-v1","result":{}}'
+    assert (
+        logical.stat_v1(
+            corefs_session=native_session,
+            keys=keys,
+            selected=selected,
+            path="Diary/today.md",
+        )
+        == b'{"version":"corefs-logical-v1","result":{}}'
+    )
     assert calls == [
         ("snapshot", keys),
         ("stat", keys, 7, "abc123", "Diary/today.md"),
@@ -64,12 +77,15 @@ def test_validation_snapshot_and_read_use_one_resolved_native_session() -> None:
         corefs_session=native_session,
         keys=keys,
     )
-    assert logical.stat_v1(
-        corefs_session=native_session,
-        keys=keys,
-        selected=selected,
-        path="Diary/today.md",
-    ) == b'{"version":"corefs-logical-v1","result":{}}'
+    assert (
+        logical.stat_v1(
+            corefs_session=native_session,
+            keys=keys,
+            selected=selected,
+            path="Diary/today.md",
+        )
+        == b'{"version":"corefs-logical-v1","result":{}}'
+    )
     assert calls == [
         ("snapshot", keys),
         ("stat", keys, 7, "abc123", "Diary/today.md"),
@@ -174,3 +190,73 @@ def test_mutation_wrappers_return_migration_frozen_code(monkeypatch) -> None:
         "code": logical.CORE_FS_MIGRATION_WRITE_FROZEN,
     }
     assert calls == [(("Notes",), {"recursive": True})]
+
+
+def test_approved_first_mutation_uses_manifest_epoch_and_reconciles_head(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    validation_hash = "a" * 64
+    committed_hash = "b" * 64
+    monkeypatch.setattr(settings, "data_dir", tmp_path / ".anima")
+    ensure_core_manifest()
+    begin_migration()
+    publish_validation_readonly(generation=7, catalog_hash=validation_hash)
+    pending = approve_validation_cutover()
+    calls: list[tuple[dict[str, object], bytes | None]] = []
+
+    class NativeSession:
+        marker: dict[str, object] | None = None
+
+        def authoritative_cutover_v1(self, _keys: object) -> dict[str, object] | None:
+            return self.marker
+
+        def logical_mutate_v1(
+            self,
+            _keys: object,
+            request_json: str,
+            body: bytes | None,
+        ) -> dict[str, object]:
+            request = json.loads(request_json)
+            calls.append((request, body))
+            self.marker = {
+                "version": 1,
+                "legacyRollbackDisabled": True,
+                "cutoverEpoch": pending.cutover_epoch,
+                "generation": 8,
+                "catalogHash": committed_hash,
+            }
+            return {
+                "ok": True,
+                "generation": 8,
+                "catalogHash": committed_hash,
+                "atomic": True,
+                "cutoverCommitted": True,
+                "recoveryPending": False,
+                "invalidationDelivered": False,
+                "changes": [{"stableId": "folder-a", "revision": None}],
+            }
+
+    invalidations: list[tuple[int, str]] = []
+    result = logical.execute_mutation_v1(
+        corefs_session=NativeSession(),
+        keys="keys",
+        selected=logical.CoreFsValidationSnapshot(7, validation_hash),
+        principal="user",
+        mutation={"operation": "mkdir", "path": "Notes/Projects"},
+        invalidate=lambda generation, catalog_hash: invalidations.append(
+            (generation, catalog_hash)
+        ),
+    )
+
+    assert result["generation"] == 8
+    assert result["invalidationDelivered"] is True
+    assert calls[0][0]["commitMode"] == "first"
+    assert calls[0][0]["cutoverEpoch"] == pending.cutover_epoch
+    assert calls[0][0]["selectedCatalogHash"] == validation_hash
+    assert calls[0][1] is None
+    assert invalidations == [(8, committed_hash)]
+    cutover = read_cutover_record()
+    assert cutover.state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY
+    assert cutover.authoritative_generation == 8
+    assert cutover.authoritative_catalog_hash == committed_hash

@@ -180,23 +180,38 @@ def reconcile_cutover_authority(
                 )
             return None
 
-        record = CutoverRecord(
-            CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY,
-            validation_generation=current.validation_generation,
-            validation_catalog_hash=current.validation_catalog_hash,
-            cutover_epoch=int(marker["cutoverEpoch"]),
-            authoritative_generation=int(marker["generation"]),
-            authoritative_catalog_hash=str(marker["catalogHash"]),
-        )
-        if current != record:
+        if current.state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+            if (
+                current.cutover_epoch != int(marker["cutoverEpoch"])
+                or current.authoritative_generation is None
+                or current.authoritative_catalog_hash is None
+                or int(marker["generation"]) < current.authoritative_generation
+                or (
+                    int(marker["generation"]) == current.authoritative_generation
+                    and str(marker["catalogHash"]) != current.authoritative_catalog_hash
+                )
+            ):
+                raise CutoverStateError(
+                    "authenticated CoreFS cutover marker violates recorded lineage"
+                )
+            record = current
+        else:
+            record = CutoverRecord(
+                CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY,
+                validation_generation=current.validation_generation,
+                validation_catalog_hash=current.validation_catalog_hash,
+                cutover_epoch=int(marker["cutoverEpoch"]),
+                authoritative_generation=int(marker["generation"]),
+                authoritative_catalog_hash=str(marker["catalogHash"]),
+            )
             _write_record(record, expected=current)
         return {
             "version": 1,
             "state": "cutover_complete",
             "legacyRollbackDisabled": True,
-            "cutoverEpoch": record.cutover_epoch,
-            "generation": record.authoritative_generation,
-            "catalogHash": record.authoritative_catalog_hash,
+            "cutoverEpoch": int(marker["cutoverEpoch"]),
+            "generation": int(marker["generation"]),
+            "catalogHash": str(marker["catalogHash"]),
             "families": list(CONTENT_AUTHORITY_FAMILIES),
         }
 

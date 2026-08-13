@@ -125,6 +125,25 @@ def test_authenticated_head_recovers_crash_before_manifest_finalization() -> Non
     assert recovered.authoritative_catalog_hash == _COMMITTED_HASH
 
 
+def test_later_committed_heads_preserve_the_original_cutover_receipt_identity() -> None:
+    _prepare_pending()
+    native = _NativeSession(_marker(epoch=41, generation=8))
+    reconcile_cutover_authority(corefs_session=native, keys=object())
+    native.marker = {
+        **_marker(epoch=41, generation=9),
+        "catalogHash": "c" * 64,
+    }
+
+    authority = reconcile_cutover_authority(corefs_session=native, keys=object())
+
+    assert authority is not None
+    assert authority["generation"] == 9
+    assert authority["catalogHash"] == "c" * 64
+    retained = read_cutover_record()
+    assert retained.authoritative_generation == 8
+    assert retained.authoritative_catalog_hash == _COMMITTED_HASH
+
+
 def test_unlock_session_publishes_only_authenticated_forward_authority() -> None:
     _prepare_pending()
     native = _NativeSession(_marker(epoch=51, generation=9))

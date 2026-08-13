@@ -63,6 +63,23 @@ export interface CreateAiChatRequest extends ContractCreateAiChatRequest {}
 export interface CreateAiChatResponse extends ContractCreateAiChatResponse {}
 
 export type CoreFsPrincipalKind = "user" | "anima" | "client";
+export type CoreFsObjectKind =
+  | "account-profile"
+  | "attachment"
+  | "diary"
+  | "draft"
+  | "gallery-asset"
+  | "knowledge-source"
+  | "message-segment"
+  | "note"
+  | "preferences"
+  | "task"
+  | "thread";
+
+export interface CoreFsPatchAddFormat {
+  kind: CoreFsObjectKind;
+  contentType: string;
+}
 
 export type CoreFsOperation =
   | "stat"
@@ -105,6 +122,19 @@ export interface CoreFsOperationRequest {
   responseBytes?: number | null;
   regex?: boolean;
   includeDirectories?: boolean;
+  stableId?: string | null;
+  destination?: string | null;
+  trashFolderPath?: string | null;
+  trashFolderStableId?: string | null;
+  reservedRole?: string | null;
+  kind?: CoreFsObjectKind | null;
+  contentType?: string | null;
+  bodyEncoding?: "utf-8" | "binary" | null;
+  contentBase64?: string | null;
+  expectedRevision?: number | null;
+  patch?: string | null;
+  expectedRevisions?: Record<string, number> | null;
+  addFormats?: Record<string, CoreFsPatchAddFormat> | null;
 }
 
 export interface CoreFsPrincipal {

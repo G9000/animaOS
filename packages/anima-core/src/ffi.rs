@@ -439,6 +439,98 @@ mod python {
 
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalMutationRequestWire {
+        version: u16,
+        principal: String,
+        commit_mode: String,
+        cutover_epoch: Option<u64>,
+        selected_generation: u64,
+        selected_catalog_hash: String,
+        timestamp_ms: u64,
+        timestamp: String,
+        mutation: LogicalMutationWire,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(
+        tag = "operation",
+        rename_all = "snake_case",
+        rename_all_fields = "camelCase",
+        deny_unknown_fields
+    )]
+    enum LogicalMutationWire {
+        Mkdir {
+            path: String,
+            #[serde(default)]
+            reserved_role: Option<String>,
+        },
+        CreateFile {
+            path: String,
+            kind: String,
+            content_type: String,
+            body_encoding: String,
+        },
+        WriteFile {
+            target: LogicalMutationTargetWire,
+            expected_revision: u64,
+            content_type: String,
+            body_encoding: String,
+        },
+        ApplyPatch {
+            patch: String,
+            expected_revisions: BTreeMap<String, u64>,
+            add_formats: BTreeMap<String, LogicalPatchAddFormatWire>,
+            trash_folder: LogicalMutationTargetWire,
+        },
+        Move {
+            source: LogicalMutationTargetWire,
+            destination: String,
+            #[serde(default)]
+            expected_revision: Option<u64>,
+        },
+        Trash {
+            target: LogicalMutationTargetWire,
+            trash_folder: LogicalMutationTargetWire,
+            #[serde(default)]
+            expected_revision: Option<u64>,
+        },
+        Restore {
+            target: LogicalMutationTargetWire,
+            #[serde(default)]
+            destination: Option<String>,
+            #[serde(default)]
+            expected_revision: Option<u64>,
+        },
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum LogicalMutationTargetWire {
+        Path(LogicalMutationPathTargetWire),
+        StableId(LogicalMutationStableIdTargetWire),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalMutationPathTargetWire {
+        path: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalMutationStableIdTargetWire {
+        stable_id: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalPatchAddFormatWire {
+        kind: String,
+        content_type: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct CoreArchiveSourceWire {
         record_type: String,
         record_path: String,
@@ -955,6 +1047,271 @@ mod python {
 
     fn corefs_logical_error(error: anima_corefs::logical::LogicalError) -> PyErr {
         pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    fn corefs_mutation_error(error: anima_corefs::logical::MutationError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.code())
+    }
+
+    struct StrictMutationValidator {
+        body_encoding: anima_corefs::envelope::BodyEncoding,
+    }
+
+    impl anima_corefs::logical::ContentFormatValidator for StrictMutationValidator {
+        fn validate(
+            &self,
+            _kind: anima_corefs::crypto::ObjectKind,
+            content_type: &str,
+            bytes: &[u8],
+        ) -> Result<
+            anima_corefs::logical::ValidatedContent,
+            anima_corefs::logical::ContentValidationError,
+        > {
+            if self.body_encoding == anima_corefs::envelope::BodyEncoding::Utf8
+                && std::str::from_utf8(bytes).is_err()
+            {
+                return Err(anima_corefs::logical::ContentValidationError::Rejected(
+                    "invalid_utf8",
+                ));
+            }
+            anima_corefs::logical::ValidatedContent::new(
+                bytes.to_vec(),
+                content_type,
+                self.body_encoding,
+            )
+        }
+    }
+
+    fn mutation_body_encoding(value: &str) -> PyResult<anima_corefs::envelope::BodyEncoding> {
+        match value {
+            "utf-8" => Ok(anima_corefs::envelope::BodyEncoding::Utf8),
+            "binary" => Ok(anima_corefs::envelope::BodyEncoding::Binary),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS mutation bodyEncoding must be utf-8 or binary",
+            )),
+        }
+    }
+
+    fn logical_mutation_target(
+        target: LogicalMutationTargetWire,
+    ) -> anima_corefs::logical::MutationTarget {
+        match target {
+            LogicalMutationTargetWire::Path(target) => {
+                anima_corefs::logical::MutationTarget::Path(target.path)
+            }
+            LogicalMutationTargetWire::StableId(target) => {
+                anima_corefs::logical::MutationTarget::StableId(target.stable_id)
+            }
+        }
+    }
+
+    fn logical_mutation_request(
+        wire: LogicalMutationRequestWire,
+        body: Option<Vec<u8>>,
+    ) -> PyResult<(
+        anima_corefs::logical::MutationPrincipal,
+        anima_corefs::logical::MutationCommitMode,
+        u64,
+        String,
+        anima_corefs::logical::MutationStamp,
+        anima_corefs::logical::LogicalMutation,
+        StrictMutationValidator,
+    )> {
+        if wire.version != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS logical mutation version must be 1",
+            ));
+        }
+        let principal = match wire.principal.as_str() {
+            "user" => anima_corefs::logical::MutationPrincipal::User,
+            "anima" | "client" => anima_corefs::logical::MutationPrincipal::Anima,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "CoreFS logical mutation principal is invalid",
+                ))
+            }
+        };
+        let commit_mode = match (wire.commit_mode.as_str(), wire.cutover_epoch) {
+            ("first", Some(epoch)) if epoch > 0 => {
+                anima_corefs::logical::MutationCommitMode::FirstMutation {
+                    cutover_epoch: epoch,
+                }
+            }
+            ("normal", None) => anima_corefs::logical::MutationCommitMode::Normal,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "CoreFS logical mutation commit mode is invalid",
+                ))
+            }
+        };
+        if wire.selected_generation == 0
+            || wire.selected_catalog_hash.len() != 64
+            || !wire
+                .selected_catalog_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS logical mutation selected snapshot is invalid",
+            ));
+        }
+        let stamp = anima_corefs::logical::MutationStamp::new(wire.timestamp_ms, wire.timestamp)
+            .map_err(corefs_mutation_error)?;
+        let mut body = body;
+        let (mutation, body_encoding) = match wire.mutation {
+            LogicalMutationWire::Mkdir {
+                path,
+                reserved_role,
+            } => (
+                anima_corefs::logical::LogicalMutation::Mkdir {
+                    path,
+                    reserved_role,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::CreateFile {
+                path,
+                kind,
+                content_type,
+                body_encoding,
+            } => (
+                anima_corefs::logical::LogicalMutation::Create {
+                    path,
+                    kind: anima_corefs::crypto::ObjectKind::parse(&kind)
+                        .map_err(corefs_value_error)?,
+                    content_type,
+                    bytes: body.take().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS create_file mutation requires a body",
+                        )
+                    })?,
+                },
+                mutation_body_encoding(&body_encoding)?,
+            ),
+            LogicalMutationWire::WriteFile {
+                target,
+                expected_revision,
+                content_type,
+                body_encoding,
+            } => (
+                anima_corefs::logical::LogicalMutation::Write {
+                    target: logical_mutation_target(target),
+                    expected_revision,
+                    content_type,
+                    bytes: body.take().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS write_file mutation requires a body",
+                        )
+                    })?,
+                },
+                mutation_body_encoding(&body_encoding)?,
+            ),
+            LogicalMutationWire::ApplyPatch {
+                patch,
+                expected_revisions,
+                add_formats,
+                trash_folder,
+            } => (
+                anima_corefs::logical::LogicalMutation::ApplyPatch {
+                    patch,
+                    expected_revisions,
+                    add_formats: add_formats
+                        .into_iter()
+                        .map(|(path, format)| {
+                            Ok((
+                                path,
+                                anima_corefs::logical::PatchAddFormat {
+                                    kind: anima_corefs::crypto::ObjectKind::parse(&format.kind)
+                                        .map_err(corefs_value_error)?,
+                                    content_type: format.content_type,
+                                },
+                            ))
+                        })
+                        .collect::<PyResult<BTreeMap<_, _>>>()?,
+                    trash_folder: logical_mutation_target(trash_folder),
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::Move {
+                source,
+                destination,
+                expected_revision,
+            } => (
+                anima_corefs::logical::LogicalMutation::Move {
+                    source: logical_mutation_target(source),
+                    destination,
+                    expected_revision,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::Trash {
+                target,
+                trash_folder,
+                expected_revision,
+            } => (
+                anima_corefs::logical::LogicalMutation::Trash {
+                    target: logical_mutation_target(target),
+                    trash_folder: logical_mutation_target(trash_folder),
+                    expected_revision,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::Restore {
+                target,
+                destination,
+                expected_revision,
+            } => (
+                anima_corefs::logical::LogicalMutation::Restore {
+                    target: logical_mutation_target(target),
+                    destination,
+                    expected_revision,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+        };
+        Ok((
+            principal,
+            commit_mode,
+            wire.selected_generation,
+            wire.selected_catalog_hash,
+            stamp,
+            mutation,
+            StrictMutationValidator { body_encoding },
+        ))
+    }
+
+    fn require_no_mutation_body(
+        body: &Option<Vec<u8>>,
+    ) -> PyResult<anima_corefs::envelope::BodyEncoding> {
+        if body.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS mutation body is not allowed for this operation",
+            ));
+        }
+        Ok(anima_corefs::envelope::BodyEncoding::Utf8)
+    }
+
+    fn logical_mutation_result_to_py(
+        py: Python<'_>,
+        result: anima_corefs::logical::MutationResult,
+    ) -> PyResult<PyObject> {
+        json_value_to_py(
+            py,
+            json!({
+                "ok": true,
+                "generation": result.generation,
+                "catalogHash": result.catalog_hash,
+                "atomic": result.atomic,
+                "cutoverCommitted": result.cutover_committed,
+                "recoveryPending": result.recovery_pending,
+                "invalidationDelivered": result.invalidation_delivered,
+                "changes": result.changes.into_iter().map(|change| json!({
+                    "stableId": change.stable_id,
+                    "revision": change.revision,
+                    "contentHash": change.content_hash,
+                })).collect::<Vec<_>>(),
+            }),
+        )
     }
 
     fn corefs_validated_limits(
@@ -1681,6 +2038,56 @@ mod python {
                     "catalogHash": catalog_hash,
                 }),
             )
+        }
+
+        /// Executes one optimistic logical mutation against the selected
+        /// authenticated snapshot. The caller must supply the manifest-owned
+        /// first-cutover epoch only while consuming the one-way cutover grant;
+        /// normal mutations require an already authenticated marked HEAD.
+        #[pyo3(signature = (keys, request_json, body = None))]
+        fn logical_mutate_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+            body: Option<PyBuffer<u8>>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: LogicalMutationRequestWire = decode_preparation_json(request_json)?;
+            let body = match body {
+                Some(body) => {
+                    enforce_corefs_in_memory_limit(body.len_bytes())?;
+                    Some(body.to_vec(py)?)
+                }
+                None => None,
+            };
+            let (
+                principal,
+                commit_mode,
+                selected_generation,
+                selected_catalog_hash,
+                stamp,
+                mutation,
+                validator,
+            ) = logical_mutation_request(wire, body)?;
+            let result = py
+                .allow_threads(|| {
+                    anima_corefs::logical::CoreFsMutationExecutor::new(
+                        self.coordinator.as_ref(),
+                        &keys.inner,
+                    )
+                    .execute(
+                        principal,
+                        selected_generation,
+                        &selected_catalog_hash,
+                        commit_mode,
+                        mutation,
+                        stamp,
+                        &validator,
+                    )
+                })
+                .map_err(corefs_mutation_error)?;
+            logical_mutation_result_to_py(py, result)
         }
 
         /// Returns the authenticated irreversible marker from committed
@@ -6548,6 +6955,99 @@ mod python {
                         anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN
                     );
                 }
+            });
+        }
+
+        #[test]
+        fn corefs_session_first_mutation_consumes_cutover_then_advances_head() {
+            with_python(|py| {
+                let fixture = logical_fixture("mutation-binding");
+                let session = PyCorefsSession::new(fixture.root_path(), LOGICAL_CORE_ID).unwrap();
+                let first_request = json!({
+                    "version": 1,
+                    "principal": "user",
+                    "commitMode": "first",
+                    "cutoverEpoch": 91,
+                    "selectedGeneration": fixture.selected.head().generation(),
+                    "selectedCatalogHash": fixture.selected.head().catalog_hash(),
+                    "timestampMs": 1_700_000_000_000_u64,
+                    "timestamp": "2026-08-13T20:15:00Z",
+                    "mutation": {
+                        "operation": "mkdir",
+                        "path": "Notes/Projects"
+                    }
+                })
+                .to_string();
+                let first = session
+                    .logical_mutate_v1(py, &fixture.keys, &first_request, None)
+                    .unwrap();
+                let first = first.bind(py).downcast::<PyDict>().unwrap();
+                assert!(first
+                    .get_item("cutoverCommitted")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+                assert_eq!(
+                    first
+                        .get_item("generation")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    2
+                );
+                let catalog_hash = first
+                    .get_item("catalogHash")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap();
+
+                let normal_request = json!({
+                    "version": 1,
+                    "principal": "anima",
+                    "commitMode": "normal",
+                    "selectedGeneration": 2,
+                    "selectedCatalogHash": catalog_hash,
+                    "timestampMs": 1_700_000_000_001_u64,
+                    "timestamp": "2026-08-13T20:15:01Z",
+                    "mutation": {
+                        "operation": "mkdir",
+                        "path": "Notes/Projects/Sub"
+                    }
+                })
+                .to_string();
+                let normal = session
+                    .logical_mutate_v1(py, &fixture.keys, &normal_request, None)
+                    .unwrap();
+                let normal = normal.bind(py).downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    normal
+                        .get_item("generation")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    3
+                );
+                assert!(!normal
+                    .get_item("cutoverCommitted")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+                let marker = session.authoritative_cutover_v1(py, &fixture.keys).unwrap();
+                let marker = marker.bind(py).downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    marker
+                        .get_item("cutoverEpoch")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    91
+                );
             });
         }
 
