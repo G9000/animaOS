@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 15:54 MYT
+- Updated: 2026-08-13 15:58 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -26,10 +26,10 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
-| PCF-004 | Diary, folders, drafts, and notes | in_progress | PCF-003 |
+| PCF-004 | Diary, folders, drafts, and notes | done | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | done | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | done | PCF-003, PCF-005 |
-| PCF-007 | Account profile, tasks, preferences, and credentials | backlog | PCF-004, PCF-006 |
+| PCF-007 | Account profile, tasks, preferences, and credentials | in_progress | PCF-004, PCF-006 |
 | PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
@@ -82,6 +82,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
 - PCF-003 - Machine-local Runtime and progressive indexing (PR #127 second-phase closeout completed 2026-08-01 19:49 MYT).
+- PCF-004 - Diary, folders, drafts, and notes (implementation slice completed 2026-08-13 15:58 MYT; final signed-package evidence retained by PCF-008).
 - PCF-005 - Canonical threads, messages, and transcript merge (completed locally 2026-08-13 11:36 MYT).
 - PCF-006 - Gallery, attachments, documents, and knowledge sources (completed locally 2026-08-13 12:41 MYT).
 - PCF-011 - Windows lease-diagnostic CI flake (completed locally 2026-08-13 12:52 MYT).
@@ -369,6 +370,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 12:52 MYT - Completed PCF-011 locally with a one-retry, exact-signature, fresh-fixture policy for the tracked Windows resource-budget diagnostic; persistent exact failures and unrelated failures remain fatal. Platform-neutral retry regressions passed on current and Rust 1.75 toolchains, the complete affected catalog target passed `11`, logical-path `4`, validation-batch `9`, strict current/pinned Clippy, format, and diff hygiene passed. The paid workflow remains manual-only and was not dispatched. PCF-004's cost-deferred signed-package evidence is now the sole open prerequisite before PCF-007 can be claimed; no external action was authorized.
 - 2026-08-13 12:53 MYT - Dependency recomputation after PCF-011 completion found no eligible child. PCF-004 and this parent are now `blocked` on the user's intentionally cost-deferred Windows/macOS/DEB/RPM signed replacement-install results and artifact digests. PCF-007 depends on PCF-004; PCF-008 depends on PCF-007; PCF-009 and PCF-010 require PCF-008 plus their separate observation/backup/approval gates. The protected workflow remains triggerless/manual-only and was not dispatched. Clearance requires later authorization for funded execution or equivalent authenticated four-platform evidence.
 - 2026-08-13 15:54 MYT - User approved moving PCF-004's cost-bearing final signed-package executions into PCF-008 as a mandatory pre-cutover/first-release gate, without waiving them. Cleared PCF-004's blocker and restored this parent plus its child row to `in_progress` for closeout. PCF-008 now explicitly requires all four protected native results and exact artifact digests; the workflow remains triggerless and no external action was authorized.
+- 2026-08-13 15:58 MYT - Completed PCF-004 as the fully implemented, locally validated, independently reviewed diary/notes slice under the user-approved evidence sequencing; final signed Windows/macOS/DEB/RPM execution remains mandatory in PCF-008. In the same dependency transaction, claimed now-eligible PCF-007 for Codex on local branch `codex/pcf-007-account-settings` from `031f5857` and synchronized its row to `in_progress`. Parent ownership is unchanged, the workflow remains triggerless, and no external action was authorized.
 
 ## Validation
 
@@ -558,6 +560,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001, PCF-002, PCF-003, PCF-005, PCF-006, and PCF-011 are complete. PCF-004 is resumed for implementation closeout after its cost-bearing final signed-package evidence moved, without waiver, to PCF-008. PCF-007 becomes eligible only after that closeout transaction; PCF-009 and PCF-010 retain their separate approval gates.
+  - PCF-001 through PCF-006 and PCF-011 are complete. PCF-007 is active. PCF-008 retains the mandatory deferred final signed-package evidence before cutover/release; PCF-009 and PCF-010 retain their separate approval gates.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.

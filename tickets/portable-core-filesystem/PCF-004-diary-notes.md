@@ -1,6 +1,6 @@
 # PCF-004 - Diary, folders, drafts, and notes
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: `apps/server` diary/CoreFS, `apps/desktop` Journal
 - Parent: `PCF-000`
@@ -10,9 +10,9 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 15:54 MYT
+- Updated: 2026-08-13 15:58 MYT
 - Started: 2026-08-02 04:06 MYT
-- Completed:
+- Completed: 2026-08-13 15:58 MYT
 
 ## Goal
 
@@ -77,6 +77,13 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   the evidence. Resumed the child for metadata closeout with its original
   `Started:` timestamp; implementation, local validation, and independent
   review remain complete, and the paid workflow remains triggerless.
+- 2026-08-13 15:58 MYT - Completed PCF-004 as an implementation slice after
+  synchronizing the approved evidence boundary. The original diary, folders,
+  drafts, notes, large-corpus preparation, no-loss cleanup authority, local
+  validation, and independent review acceptance are satisfied. The protected
+  final signed Windows/macOS/DEB/RPM executions and artifact digests remain a
+  mandatory PCF-008 pre-cutover/first-release gate. The workflow was not
+  enabled or dispatched, and authoritative `HEAD` remains inactive.
 
 ## Validation
 

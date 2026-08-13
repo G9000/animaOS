@@ -1,16 +1,16 @@
 # PCF-007 - Account profile, tasks, preferences, and credentials
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: account/auth/tasks/settings/credentials across server, desktop/Tauri, local daemon, and anima-mod
 - Parent: `PCF-000`
 - Depends on: `PCF-004`, `PCF-006`
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 17:34 MYT
-- Started:
+- Updated: 2026-08-13 15:58 MYT
+- Started: 2026-08-13 15:58 MYT
 - Completed:
 
 ## Goal
@@ -41,6 +41,11 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
 
 - 2026-07-12 06:07 MYT - Ticket created.
 - 2026-07-12 17:34 MYT - Added user-controlled client/mod folder capability settings.
+- 2026-08-13 15:58 MYT - Claimed by Codex on local branch
+  `codex/pcf-007-account-settings` from approved evidence-sequencing head
+  `031f5857`. PCF-004 and PCF-006 are both done, no competing claim is visible,
+  and the paid PCF-008 package workflow remains triggerless. No external action
+  is authorized for this ticket.
 
 ## Validation
 
@@ -49,4 +54,5 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
 - Changed paths:
   - none
 - Notes:
-  - Claim after PCF-004 and PCF-006 are done.
+  - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
+    final signed-package evidence before cutover or release publication.
