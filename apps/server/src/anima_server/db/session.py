@@ -497,7 +497,12 @@ def get_session_factory(database_url: str) -> sessionmaker[Session]:
         return factory
 
 
-def get_user_database_path(user_id: int):
+def get_user_database_path(user_id: int) -> Path:
+    from anima_server.services.corefs.soul_relocation import active_soul_database_path
+
+    active_path = active_soul_database_path(user_id)
+    if active_path is not None:
+        return active_path
     return get_user_data_dir(user_id) / "anima.db"
 
 
