@@ -266,6 +266,14 @@ export interface CoreImportOperation {
   errorCode: string | null;
 }
 
+export interface CoreActiveStatus {
+  generation: number;
+  activeCoreId: string;
+  retainedCoreId: string | null;
+  activationId: string;
+  rollbackScheduled: boolean;
+}
+
 export type CoreFsClientScope = "none" | "read" | "write" | "manage";
 export type CoreFsClientInstallationStatus =
   | "pending"

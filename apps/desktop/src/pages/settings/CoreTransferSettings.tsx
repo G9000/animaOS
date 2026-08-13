@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type {
+  CoreActiveStatus,
   CoreArchivePayloadKind,
   CoreImportOperation,
   CoreImportProbe,
@@ -64,6 +65,25 @@ export default function CoreTransferSettings() {
   const [importOperation, setImportOperation] = useState<CoreImportOperation | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importStatus, setImportStatus] = useState("");
+  const [activeCoreStatus, setActiveCoreStatus] = useState<CoreActiveStatus | null>(null);
+  const [rollbackConfirmed, setRollbackConfirmed] = useState(false);
+  const [rollbackBusy, setRollbackBusy] = useState(false);
+  const [rollbackStatus, setRollbackStatus] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    void api.corefs.transfer
+      .activeCore()
+      .then((value) => {
+        if (active) setActiveCoreStatus(value);
+      })
+      .catch(() => {
+        // Startup may still be initializing the authenticated registry.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -267,6 +287,24 @@ export default function CoreTransferSettings() {
       setImportStatus(error instanceof Error ? error.message : "Activation scheduling failed.");
     } finally {
       setImportBusy(false);
+    }
+  };
+
+  const handleScheduleRollback = async () => {
+    if (!activeCoreStatus?.retainedCoreId || !rollbackConfirmed) return;
+    setRollbackBusy(true);
+    setRollbackStatus("");
+    try {
+      const scheduled = await api.corefs.transfer.rollbackOnRestart();
+      setActiveCoreStatus(scheduled);
+      setRollbackConfirmed(false);
+      setRollbackStatus(
+        "Rollback is authenticated and scheduled. The current Core remains active until animaOS restarts.",
+      );
+    } catch (error) {
+      setRollbackStatus(error instanceof Error ? error.message : "Rollback scheduling failed.");
+    } finally {
+      setRollbackBusy(false);
     }
   };
 
@@ -485,6 +523,59 @@ export default function CoreTransferSettings() {
           <p className="font-mono text-caption text-foreground/45 leading-relaxed">{importStatus}</p>
         )}
       </section>
+
+      {activeCoreStatus?.retainedCoreId && (
+        <section className={`${glass} p-6 space-y-5`}>
+          <div>
+            <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
+              Retained Core rollback
+            </h2>
+            <p className="mt-2 font-mono text-caption text-foreground/35 leading-relaxed">
+              The prior authenticated Core is retained after activation. Rollback changes no live
+              resources and can run only during the next pre-resource startup.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <Metric label="Active Core ID" value={activeCoreStatus.activeCoreId} />
+            <Metric label="Retained Core ID" value={activeCoreStatus.retainedCoreId} />
+          </div>
+
+          {activeCoreStatus.rollbackScheduled ? (
+            <p className="font-mono text-caption text-foreground/45 leading-relaxed">
+              Rollback is scheduled for the next animaOS restart. The current Core remains active
+              until shutdown.
+            </p>
+          ) : (
+            <>
+              <label className="flex items-start gap-3 font-mono text-caption text-foreground/45 leading-relaxed">
+                <input
+                  type="checkbox"
+                  checked={rollbackConfirmed}
+                  onChange={(event) => setRollbackConfirmed(event.target.checked)}
+                  className="mt-0.5"
+                />
+                I understand that the retained Core will become active only after restart, and the
+                current Core will then be retained for recovery.
+              </label>
+              <div>
+                <ActionButton
+                  onClick={handleScheduleRollback}
+                  disabled={rollbackBusy || !rollbackConfirmed}
+                >
+                  {rollbackBusy ? "Scheduling…" : "Rollback on restart"}
+                </ActionButton>
+              </div>
+            </>
+          )}
+
+          {rollbackStatus && (
+            <p className="font-mono text-caption text-foreground/45 leading-relaxed">
+              {rollbackStatus}
+            </p>
+          )}
+        </section>
+      )}
     </div>
   );
 }

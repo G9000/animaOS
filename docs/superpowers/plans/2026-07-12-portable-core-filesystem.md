@@ -911,9 +911,11 @@ Progress (2026-08-13): export plus non-activating restore staging are wired
 through the authenticated API client and desktop UI. Restore rechecks the exact
 archive/capacity/staging inputs at consumption, authenticates the complete
 native inventory into a create-only same-volume sibling, and cleans every
-failed/cancelled partial. Active-Core registry activation, retained-Core
-rollback controls, and multipart UI remain open, so this step is intentionally
-not checked complete.
+failed/cancelled partial. Active-Core registry activation and retained-Core
+rollback are now both exposed as authenticated restart-only intents, with
+explicit rollback confirmation and no machine paths in the status contract.
+Multipart UI and scoped partial-mode recovery controls remain open, so this
+step is intentionally not checked complete.
 
 Implement `corefs_transfer` schemas/routes for local destination probe, estimate, prepare, progress, cancel, verify, import, and completion. Wire `packages/api-client` and `CoreTransferSettings.tsx` to present **Export ANIMA CORE** and **Restore ANIMA CORE** as the primary flow, with **Soul only** and **CoreFS only** under Advanced Recovery. Show write-barrier/checkpoint state, selected artifact kind, required/available export bytes, required/available same-volume import-staging bytes, detected single-file limit, single/multipart decision, bounded streaming progress, verification, and safe destination result. Soul-only recovery clearly labels degraded `filesystem_missing`; CoreFS-only recovery exposes authenticated browse/export and returns `corefs_reattachment_not_supported` for V1 attach attempts. Do not instruct users to drag-copy a live Core or run the live Core from removable media.
 
@@ -930,14 +932,17 @@ Startup progress (2026-08-13): the machine-local active-Core registry is now
 authenticated by an OS-credential-held key, resolved before the Core lock and
 database bootstrap, and able to recover an interrupted full-restore pointer
 swap while retaining the prior Core. Partial recovery artifacts are
-structurally ineligible for activation. Product activation/rollback commands
-remain open and deliberately absent.
+structurally ineligible for activation. Product activation and rollback
+commands are now restart-only and deliberately cannot change live resources.
 
 Activation progress (2026-08-13): verified full restores can now create a
 machine-local authenticated activation intent while the running pointer remains
 unchanged. The next pre-resource startup consumes that intent through the
 journaled rename/pointer/completion protocol and retains the old Core. Partial
-artifacts remain ineligible. Retained-Core rollback controls are still open.
+artifacts remain ineligible. Retained-Core rollback now uses a separate
+authenticated, explicitly confirmed restart intent; it exposes only identifier
+metadata, re-verifies both selected Cores before the pointer transaction, and is
+idempotent across a crash after the rollback pointer write.
 
 Implement `anima_core_v2` in Rust as one streaming container with authenticated payload kind `full`, `soul`, or `fs`; keep `capsule.rs` only for backward V1 `anima_capsule` import. A full artifact includes manifest, active Soul, committed content catalogs/objects, required keyslots/recovery material, and the coherent `(soulGeneration, filesystemGeneration)` pair. Soul-only and CoreFS-only artifacts enforce compartment-specific record/key allowlists and restore respectively to `filesystem_missing` and restricted recovery/export mode. Every kind excludes Runtime, device config, and OS credentials.
 

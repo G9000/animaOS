@@ -250,6 +250,45 @@ describe("createApiClient error handling", () => {
     ]);
   });
 
+  test("requires explicit confirmation for restart-only retained Core rollback", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            generation: 3,
+            activeCoreId: "active-core",
+            retainedCoreId: "retained-core",
+            activationId: "activation-a",
+            rollbackScheduled: init?.method === "POST",
+          }),
+        );
+      },
+    });
+
+    await api.corefs.transfer.activeCore();
+    await api.corefs.transfer.rollbackOnRestart();
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/corefs/transfer/active-core",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/active-core/rollback-on-restart",
+        method: "POST",
+        body: { confirmed: true },
+      },
+    ]);
+  });
+
   test("surfaces normalized validation details arrays", async () => {
     const api = createApiClient({
       baseUrl: "https://api.test/api",

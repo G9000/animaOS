@@ -8,13 +8,16 @@ import pytest
 from anima_server.config import settings
 from anima_server.services.corefs.active_core_registry import (
     initialize_active_core_after_manifest,
+    read_active_core_status,
     resolve_active_core_for_startup,
+    schedule_active_core_rollback,
     schedule_full_restore_activation,
     verify_full_core_candidate,
 )
 from anima_server.services.corefs.transfer import (
     TransferError,
     activate_staged_core,
+    read_active_core_pointer,
 )
 from anima_server.services.credentials import CredentialStore, MemoryCredentialBackend
 
@@ -28,12 +31,11 @@ def _manifest_core(path: Path, core_id: str, *, complete: bool = False) -> None:
     if complete:
         manifest["archive_payload_scope"] = "full"
     (path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    if complete:
-        (path / "soul").mkdir()
-        (path / "soul" / "soul.db").write_bytes(b"encrypted-soul")
-        (path / "fs" / "catalogs").mkdir(parents=True)
-        (path / "fs" / "HEAD").write_bytes(b"authenticated-head")
-        (path / "fs" / "catalogs" / "catalog.acore").write_bytes(b"encrypted-catalog")
+    (path / "soul").mkdir()
+    (path / "soul" / "soul.db").write_bytes(b"encrypted-soul")
+    (path / "fs" / "catalogs").mkdir(parents=True)
+    (path / "fs" / "HEAD").write_bytes(b"authenticated-head")
+    (path / "fs" / "catalogs" / "catalog.acore").write_bytes(b"encrypted-catalog")
 
 
 def test_startup_registry_selects_activated_full_core_and_retains_old_core(
@@ -171,6 +173,84 @@ def test_scheduled_activation_does_not_swap_running_core_until_restart(
     assert resumed.pointer.retained_core_path == configured
     assert settings.data_dir == scheduled.final_core_path
     assert not scheduled.request_path.exists()
+
+
+def test_retained_core_rollback_is_scheduled_without_live_swap_and_consumed_on_restart(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = managed_tmp_path / ".anima"
+    configured_id = str(uuid4())
+    _manifest_core(configured, configured_id)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", configured)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(managed_tmp_path / "app-data"))
+    startup = resolve_active_core_for_startup(store=store)
+    initialize_active_core_after_manifest(startup)
+
+    restored_id = str(uuid4())
+    staging = managed_tmp_path / ".restore.partial"
+    _manifest_core(staging, restored_id, complete=True)
+    scheduled_activation = schedule_full_restore_activation(
+        staging,
+        core_id=restored_id,
+        store=store,
+    )
+    activated = resolve_active_core_for_startup(store=store)
+    assert activated.pointer is not None
+    assert settings.data_dir == scheduled_activation.final_core_path
+
+    scheduled_rollback = schedule_active_core_rollback(store=store)
+    status = read_active_core_status(store=store)
+    assert status.active_core_id == restored_id
+    assert status.retained_core_id == configured_id
+    assert status.rollback_scheduled is True
+    assert settings.data_dir == scheduled_activation.final_core_path
+    assert scheduled_rollback.request_path.is_file()
+
+    monkeypatch.setattr(settings, "data_dir", configured)
+    resumed = resolve_active_core_for_startup(store=store)
+    assert resumed.pointer is not None
+    assert resumed.pointer.active_core_path == configured.resolve()
+    assert resumed.pointer.retained_core_path == scheduled_activation.final_core_path
+    assert settings.data_dir == configured.resolve()
+    assert not scheduled_rollback.request_path.exists()
+
+
+def test_scheduled_rollback_rejects_incomplete_retained_core_before_pointer_change(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = managed_tmp_path / ".anima"
+    _manifest_core(configured, str(uuid4()))
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", configured)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(managed_tmp_path / "app-data"))
+    startup = resolve_active_core_for_startup(store=store)
+    initialize_active_core_after_manifest(startup)
+
+    restored_id = str(uuid4())
+    staging = managed_tmp_path / ".restore.partial"
+    _manifest_core(staging, restored_id, complete=True)
+    scheduled_activation = schedule_full_restore_activation(
+        staging,
+        core_id=restored_id,
+        store=store,
+    )
+    resolve_active_core_for_startup(store=store)
+    scheduled_rollback = schedule_active_core_rollback(store=store)
+    (configured / "soul" / "soul.db").unlink()
+
+    monkeypatch.setattr(settings, "data_dir", configured)
+    with pytest.raises(TransferError, match="registry Core candidate is incomplete"):
+        resolve_active_core_for_startup(store=store)
+
+    pointer = read_active_core_pointer(
+        startup.registry_path,
+        authentication_key=startup.authentication_key,
+    )
+    assert pointer.active_core_path == scheduled_activation.final_core_path
+    assert scheduled_rollback.request_path.is_file()
 
 
 @pytest.mark.parametrize("degraded_state", ["filesystem_missing", "recovery_only"])

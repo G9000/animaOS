@@ -6,16 +6,22 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.schemas.corefs_transfer import (
+    CoreActiveStatusResponse,
     CoreImportOperationResponse,
     CoreImportPrepareRequest,
     CoreImportProbeRequest,
     CoreImportProbeResponse,
+    CoreRollbackRequest,
     CoreTransferDestinationRequest,
     CoreTransferEstimateResponse,
     CoreTransferOperationResponse,
     CoreTransferPayloadRequest,
     CoreTransferPrepareRequest,
     CoreTransferProbeResponse,
+)
+from anima_server.services.corefs.active_core_registry import (
+    read_active_core_status,
+    schedule_active_core_rollback,
 )
 from anima_server.services.corefs.archive_transfer import (
     CoreArchivePayloadKind,
@@ -255,6 +261,44 @@ def schedule_core_import_activation(
     except (CoreArchiveTransferError, TransferError, OSError, ValueError) as exc:
         raise _transfer_conflict() from exc
     return CoreImportOperationResponse(**operation.public())
+
+
+@router.get("/active-core", response_model=CoreActiveStatusResponse)
+def get_active_core_transfer_status(request: Request) -> CoreActiveStatusResponse:
+    require_unlocked_session(request)
+    try:
+        active = read_active_core_status()
+    except (TransferError, OSError, ValueError) as exc:
+        raise _transfer_conflict() from exc
+    return CoreActiveStatusResponse(
+        generation=active.generation,
+        activeCoreId=active.active_core_id,
+        retainedCoreId=active.retained_core_id,
+        activationId=active.activation_id,
+        rollbackScheduled=active.rollback_scheduled,
+    )
+
+
+@router.post("/active-core/rollback-on-restart", response_model=CoreActiveStatusResponse)
+def schedule_active_core_transfer_rollback(
+    payload: CoreRollbackRequest,
+    request: Request,
+) -> CoreActiveStatusResponse:
+    require_unlocked_session(request)
+    if payload.confirmed is not True:
+        raise _transfer_conflict()
+    try:
+        schedule_active_core_rollback()
+        active = read_active_core_status()
+    except (TransferError, OSError, ValueError) as exc:
+        raise _transfer_conflict() from exc
+    return CoreActiveStatusResponse(
+        generation=active.generation,
+        activeCoreId=active.active_core_id,
+        retainedCoreId=active.retained_core_id,
+        activationId=active.activation_id,
+        rollbackScheduled=active.rollback_scheduled,
+    )
 
 
 def _transfer_conflict() -> HTTPException:

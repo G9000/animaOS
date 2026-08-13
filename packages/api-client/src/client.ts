@@ -9,6 +9,7 @@ import type {
   CapabilitiesResponse,
   ChangePasswordResponse,
   CorefsCredentialResponse,
+  CoreActiveStatus,
   CoreImportOperation,
   CoreImportProbe,
   CoreFsOperationRequest,
@@ -809,6 +810,13 @@ export function createApiClient(options: ApiClientOptions) {
           request<CoreImportOperation>(
             `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/activate-on-restart`,
             { method: "POST" },
+          ),
+        activeCore: () =>
+          request<CoreActiveStatus>("/corefs/transfer/active-core"),
+        rollbackOnRestart: () =>
+          request<CoreActiveStatus>(
+            "/corefs/transfer/active-core/rollback-on-restart",
+            { method: "POST", body: { confirmed: true } },
           ),
       },
     },

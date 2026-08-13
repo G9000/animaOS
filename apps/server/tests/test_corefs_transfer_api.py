@@ -311,6 +311,48 @@ def test_import_api_probes_and_stages_without_exposing_passphrase(
     assert "passphrase" not in prepare.text.casefold()
 
 
+def test_active_core_status_and_confirmed_restart_rollback_expose_no_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(user_id=7)
+    scheduled = False
+
+    def status_value():
+        return SimpleNamespace(
+            generation=3,
+            active_core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+            retained_core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855be",
+            activation_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+            rollback_scheduled=scheduled,
+        )
+
+    def schedule() -> None:
+        nonlocal scheduled
+        scheduled = True
+
+    monkeypatch.setattr(corefs_transfer, "require_unlocked_session", lambda _request: session)
+    monkeypatch.setattr(corefs_transfer, "read_active_core_status", status_value)
+    monkeypatch.setattr(corefs_transfer, "schedule_active_core_rollback", schedule)
+
+    with TestClient(_app()) as client:
+        status_response = client.get("/api/corefs/transfer/active-core")
+        missing_confirmation = client.post(
+            "/api/corefs/transfer/active-core/rollback-on-restart",
+            json={"confirmed": False},
+        )
+        rollback_response = client.post(
+            "/api/corefs/transfer/active-core/rollback-on-restart",
+            json={"confirmed": True},
+        )
+
+    assert status_response.status_code == 200
+    assert status_response.json()["rollbackScheduled"] is False
+    assert missing_confirmation.status_code == 422
+    assert rollback_response.status_code == 200
+    assert rollback_response.json()["rollbackScheduled"] is True
+    assert "path" not in rollback_response.text.casefold()
+
+
 def test_import_manager_rechecks_exact_inputs_before_extraction(
     managed_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

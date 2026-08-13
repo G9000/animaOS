@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 20:56 MYT
+- Updated: 2026-08-13 21:03 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -218,6 +218,18 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   transfer/startup coverage passes `67`, API/desktop contracts pass `32`, and
   the desktop production build passes. No live pointer swap, paid workflow,
   push, or irreversible cutover action occurred.
+- 2026-08-13 21:03 MYT - Added authenticated restart-only rollback to the
+  retained prior Core. The API requires explicit confirmation and returns only
+  generation/identifier/status metadata; it never exposes machine paths. The
+  running pointer remains unchanged while an HMAC-authenticated rollback intent
+  is pending. The next pre-resource startup re-verifies both pointer-selected
+  Cores, consumes the existing atomic rollback/completion path, and deletes the
+  request durably; replay after a crash following the pointer swap is
+  idempotent. The desktop displays retained-Core identity and requires a checked
+  confirmation before scheduling. Focused backend coverage passes `71`, API
+  client/desktop contracts pass `33`, and the desktop production build passes.
+  No live pointer swap, paid workflow, push, or irreversible cutover action
+  occurred.
 
 ## Validation
 
@@ -287,6 +299,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
     after activation scheduling UI/client wiring (`32 passed`)
   - `bun run --cwd apps/desktop build` after activation scheduling UI wiring
+    (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_active_core_registry.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py -q`
+    after retained-Core restart rollback integration (`71 passed`)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
+    after rollback confirmation/status wiring (`33 passed`)
+  - `bun run --cwd apps/desktop build` after retained-Core rollback UI wiring
     (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;

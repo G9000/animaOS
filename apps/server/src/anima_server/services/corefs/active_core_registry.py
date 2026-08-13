@@ -14,11 +14,15 @@ from anima_server.services.core import get_core_id
 from anima_server.services.corefs.transfer import (
     ActiveCorePointer,
     ScheduledActivation,
+    ScheduledRollback,
     TransferError,
     consume_scheduled_core_activation,
+    consume_scheduled_core_rollback,
     initialize_active_core_pointer,
     read_active_core_pointer,
+    read_scheduled_core_rollback,
     recover_active_core_activation,
+    schedule_retained_core_rollback,
     schedule_staged_core_activation,
 )
 from anima_server.services.credentials import (
@@ -41,6 +45,15 @@ class ActiveCoreStartup:
     store: CredentialStore = field(repr=False, compare=False)
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveCoreStatus:
+    generation: int
+    active_core_id: str
+    retained_core_id: str | None
+    activation_id: str
+    rollback_scheduled: bool
+
+
 def resolve_active_core_for_startup(
     *,
     store: CredentialStore | None = None,
@@ -52,6 +65,11 @@ def resolve_active_core_for_startup(
     if not registry.exists():
         return ActiveCoreStartup(registry, authentication_key, None, store or credential_store())
 
+    consume_scheduled_core_rollback(
+        registry,
+        authentication_key=authentication_key,
+        verifier=verify_registry_core_candidate,
+    )
     consume_scheduled_core_activation(
         registry,
         authentication_key=authentication_key,
@@ -120,6 +138,43 @@ def schedule_full_restore_activation(
     )
 
 
+def read_active_core_status(*, store: CredentialStore | None = None) -> ActiveCoreStatus:
+    current_core = settings.data_dir.expanduser().resolve(strict=True)
+    registry = _registry_path(current_core)
+    authentication_key = _load_or_create_authentication_key(store or credential_store())
+    pointer = read_active_core_pointer(registry, authentication_key=authentication_key)
+    if pointer.active_core_path != current_core:
+        raise TransferError("running Core does not match the active-Core registry")
+    rollback_request = read_scheduled_core_rollback(
+        registry,
+        authentication_key=authentication_key,
+    )
+    return ActiveCoreStatus(
+        generation=pointer.generation,
+        active_core_id=pointer.core_id,
+        retained_core_id=pointer.retained_core_id,
+        activation_id=pointer.activation_id,
+        rollback_scheduled=rollback_request is not None,
+    )
+
+
+def schedule_active_core_rollback(
+    *,
+    store: CredentialStore | None = None,
+) -> ScheduledRollback:
+    current_core = settings.data_dir.expanduser().resolve(strict=True)
+    registry = _registry_path(current_core)
+    authentication_key = _load_or_create_authentication_key(store or credential_store())
+    pointer = read_active_core_pointer(registry, authentication_key=authentication_key)
+    if pointer.active_core_path != current_core:
+        raise TransferError("running Core does not match the active-Core registry")
+    return schedule_retained_core_rollback(
+        registry,
+        authentication_key=authentication_key,
+        rollback_id=str(uuid4()),
+    )
+
+
 def verify_full_core_candidate(path: Path) -> None:
     """Verify the minimum complete-Core shape required for registry activation."""
     candidate_input = path.expanduser()
@@ -152,9 +207,13 @@ def verify_full_core_candidate(path: Path) -> None:
         "recovery_only",
     }:
         raise TransferError("only a complete full archive can activate as ANIMA CORE")
+    _verify_complete_core_shape(candidate, label="restore activation candidate")
+
+
+def _verify_complete_core_shape(candidate: Path, *, label: str) -> None:
     for required in (candidate / "soul" / "soul.db", candidate / "fs" / "HEAD"):
         if required.is_symlink() or not required.is_file():
-            raise TransferError("restore activation candidate is incomplete")
+            raise TransferError(f"{label} is incomplete")
     catalogs = candidate / "fs" / "catalogs"
     if (
         catalogs.is_symlink()
@@ -164,7 +223,35 @@ def verify_full_core_candidate(path: Path) -> None:
             for child in catalogs.iterdir()
         )
     ):
-        raise TransferError("restore activation candidate has no committed catalog")
+        raise TransferError(f"{label} has no committed catalog")
+
+
+def verify_registry_core_candidate(path: Path) -> None:
+    """Verify a pointer-selected Core without imposing restored-full metadata."""
+    candidate_input = path.expanduser()
+    if candidate_input.is_symlink():
+        raise TransferError("registry Core candidate must be a regular directory")
+    candidate = candidate_input.resolve(strict=True)
+    manifest_path = candidate / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise TransferError("registry Core candidate has no regular manifest")
+    try:
+        if manifest_path.stat().st_size > _MAX_MANIFEST_BYTES:
+            raise TransferError("registry Core manifest exceeds its bound")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TransferError("registry Core manifest is invalid") from exc
+    if not isinstance(manifest, dict):
+        raise TransferError("registry Core manifest is invalid")
+    for identity_field in ("core_id", "owner_id"):
+        value = manifest.get(identity_field)
+        if not isinstance(value, str):
+            raise TransferError("registry Core identity is invalid")
+        try:
+            UUID(value)
+        except ValueError as exc:
+            raise TransferError("registry Core identity is invalid") from exc
+    _verify_complete_core_shape(candidate, label="registry Core candidate")
 
 
 def _registry_path(configured_core: Path) -> Path:

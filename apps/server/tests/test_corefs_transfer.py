@@ -22,8 +22,10 @@ from anima_server.services.corefs.transfer import (
     publish_multipart,
     publish_single_file,
     read_active_core_pointer,
+    read_scheduled_core_rollback,
     recover_active_core_activation,
     rollback_to_retained_core,
+    schedule_retained_core_rollback,
 )
 
 
@@ -642,3 +644,58 @@ def test_retained_old_core_rollback_is_atomic_and_idempotent(
     assert rolled_back.pointer.retained_core_path == final.resolve()
     assert rolled_back.pointer.retained_core_id == core_id
     assert old.is_dir() and final.is_dir()
+
+
+def test_scheduled_rollback_record_is_authenticated_and_requires_retained_core(
+    tmp_path: Path,
+) -> None:
+    core_id = str(uuid4())
+    key = b"q" * 32
+    active = tmp_path / "cores" / "active"
+    active.parent.mkdir()
+    _core(active, core_id, "active")
+    registry = tmp_path / "app-data" / "active-core.json"
+    initialize_active_core_pointer(
+        registry,
+        authentication_key=key,
+        core_id=core_id,
+        active_core_path=active,
+    )
+
+    with pytest.raises(TransferError, match="no retained rollback Core"):
+        schedule_retained_core_rollback(
+            registry,
+            authentication_key=key,
+            rollback_id=str(uuid4()),
+        )
+
+    staging = tmp_path / "cores" / "restored.staging"
+    final = tmp_path / "cores" / "restored"
+    _core(staging, core_id, "restored")
+    activate_staged_core(
+        staging,
+        final,
+        registry,
+        authentication_key=key,
+        core_id=core_id,
+        activation_id=str(uuid4()),
+        verifier=_core_verifier(core_id),
+    )
+    scheduled = schedule_retained_core_rollback(
+        registry,
+        authentication_key=key,
+        rollback_id=str(uuid4()),
+    )
+    assert (
+        read_scheduled_core_rollback(
+            registry,
+            authentication_key=key,
+        )
+        == scheduled
+    )
+
+    record = json.loads(scheduled.request_path.read_text(encoding="utf-8"))
+    record["rollbackId"] = str(uuid4())
+    scheduled.request_path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(TransferError, match="tag is invalid"):
+        read_scheduled_core_rollback(registry, authentication_key=key)

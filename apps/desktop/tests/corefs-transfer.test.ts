@@ -42,6 +42,11 @@ describe("ANIMA CORE transfer settings", () => {
       "partial extraction was removed",
       "Activate on restart",
       "current Core remains active until shutdown",
+      "Retained Core rollback",
+      "Rollback on restart",
+      "rollbackConfirmed",
+      "activeCoreId",
+      "retainedCoreId",
     ]) {
       expect(page).toContain(contract);
     }

@@ -27,6 +27,7 @@ REGISTRY_AUTH_DOMAIN = b"anima-active-core-registry-v1\x00"
 ACTIVATION_AUTH_DOMAIN = b"anima-active-core-activation-v1\x00"
 COMPLETION_AUTH_DOMAIN = b"anima-active-core-completion-v1\x00"
 ACTIVATION_REQUEST_AUTH_DOMAIN = b"anima-active-core-request-v1\x00"
+ROLLBACK_REQUEST_AUTH_DOMAIN = b"anima-active-core-rollback-request-v1\x00"
 _ACTIVATION_LOCK = threading.RLock()
 
 
@@ -107,6 +108,12 @@ class ScheduledActivation:
     core_id: str
     staging_core_path: Path
     final_core_path: Path
+    request_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledRollback:
+    rollback_id: str
     request_path: Path
 
 
@@ -535,6 +542,7 @@ def schedule_staged_core_activation(
     if staging.parent != final.parent or staging == final or final.exists():
         raise TransferError("scheduled activation paths are invalid")
     request = registry.with_name(f"{registry.name}.request")
+    rollback_request = registry.with_name(f"{registry.name}.rollback-request")
     body = {
         "version": 1,
         "activationId": normalized_activation_id,
@@ -561,6 +569,8 @@ def schedule_staged_core_activation(
         )
         if pointer.retained_core_path is not None:
             raise TransferError("a retained rollback Core must be resolved before activation")
+        if rollback_request.exists():
+            raise TransferError("a retained-Core rollback is already scheduled")
         _verify_manifest_core_id(staging, core_id)
         verifier(staging)
         if request.exists():
@@ -633,6 +643,118 @@ def consume_scheduled_core_activation(
     _fsync_directory(request.parent)
     _boundary(boundary_hook, "activation-request:after_delete")
     return result
+
+
+def schedule_retained_core_rollback(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    rollback_id: str,
+) -> ScheduledRollback:
+    """Durably schedule retained-Core rollback for the next startup."""
+    _validate_authentication_key(authentication_key)
+    try:
+        normalized_rollback_id = str(UUID(rollback_id))
+    except (ValueError, AttributeError) as exc:
+        raise TransferError("rollback ID is invalid") from exc
+    registry = registry_path.expanduser().resolve(strict=True)
+    request = registry.with_name(f"{registry.name}.rollback-request")
+    activation_request = registry.with_name(f"{registry.name}.request")
+    body = {"version": 1, "rollbackId": normalized_rollback_id}
+    with _ACTIVATION_LOCK, _exclusive_activation_lock(registry):
+        pointer = _pointer_from_body(
+            _read_authenticated_record(
+                registry,
+                authentication_key,
+                REGISTRY_AUTH_DOMAIN,
+                expected_keys={
+                    "version",
+                    "generation",
+                    "coreId",
+                    "activeCorePath",
+                    "retainedCorePath",
+                    "retainedCoreId",
+                    "activationId",
+                },
+            )
+        )
+        if pointer.retained_core_path is None:
+            raise TransferError("active Core pointer has no retained rollback Core")
+        if activation_request.exists():
+            raise TransferError("a Core activation is already scheduled")
+        if request.exists():
+            existing = _read_authenticated_record(
+                request,
+                authentication_key,
+                ROLLBACK_REQUEST_AUTH_DOMAIN,
+                expected_keys=set(body),
+            )
+            if existing != body:
+                raise TransferError("another retained-Core rollback is already scheduled")
+        else:
+            _write_authenticated_record(
+                request,
+                body,
+                authentication_key,
+                ROLLBACK_REQUEST_AUTH_DOMAIN,
+            )
+    return ScheduledRollback(rollback_id=normalized_rollback_id, request_path=request)
+
+
+def consume_scheduled_core_rollback(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    verifier: CoreVerifier,
+    boundary_hook: BoundaryHook | None = None,
+) -> ActivationResult | None:
+    """Consume an authenticated rollback request during pre-resource startup."""
+    _validate_authentication_key(authentication_key)
+    registry = registry_path.expanduser().resolve(strict=True)
+    scheduled = read_scheduled_core_rollback(
+        registry,
+        authentication_key=authentication_key,
+    )
+    if scheduled is None:
+        return None
+    result = rollback_to_retained_core(
+        registry,
+        authentication_key=authentication_key,
+        rollback_id=scheduled.rollback_id,
+        verifier=verifier,
+        boundary_hook=boundary_hook,
+    )
+    _boundary(boundary_hook, "rollback-request:after_rollback")
+    scheduled.request_path.unlink(missing_ok=True)
+    _fsync_directory(scheduled.request_path.parent)
+    _boundary(boundary_hook, "rollback-request:after_delete")
+    return result
+
+
+def read_scheduled_core_rollback(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+) -> ScheduledRollback | None:
+    _validate_authentication_key(authentication_key)
+    registry = registry_path.expanduser().resolve(strict=True)
+    request = registry.with_name(f"{registry.name}.rollback-request")
+    if not request.exists():
+        return None
+    body = _read_authenticated_record(
+        request,
+        authentication_key,
+        ROLLBACK_REQUEST_AUTH_DOMAIN,
+        expected_keys={"version", "rollbackId"},
+    )
+    rollback_id = body.get("rollbackId")
+    if body.get("version") != 1 or not isinstance(rollback_id, str):
+        raise TransferError("scheduled retained-Core rollback is invalid")
+    try:
+        normalized = str(UUID(rollback_id))
+    except ValueError as exc:
+        raise TransferError("scheduled retained-Core rollback is invalid") from exc
+    return ScheduledRollback(rollback_id=normalized, request_path=request)
 
 
 def _pointer_body(

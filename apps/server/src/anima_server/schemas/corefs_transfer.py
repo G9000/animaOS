@@ -101,3 +101,17 @@ class CoreImportOperationResponse(BaseModel):
     activationId: str | None
     restartRequired: bool
     errorCode: str | None
+
+
+class CoreRollbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: Literal[True]
+
+
+class CoreActiveStatusResponse(BaseModel):
+    generation: int
+    activeCoreId: str
+    retainedCoreId: str | None
+    activationId: str
+    rollbackScheduled: bool
