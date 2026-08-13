@@ -248,6 +248,8 @@ def build_writing_source_inventory(
         "diary",
         "attachment",
         "draft",
+        "gallery-asset",
+        "knowledge-source",
         "note",
         "thread",
         "message-segment",
@@ -274,11 +276,12 @@ def build_writing_source_inventory(
         item.role is not None for item in supplemental_folders
     ):
         raise DiaryMigrationError("Supplemental source contains duplicate stable roles.")
-    if set(supplemental_roles) - {"core.conversations"}:
+    if set(supplemental_roles) - {"core.conversations", "core.gallery"}:
         raise DiaryMigrationError("Supplemental source contains an unsupported stable role.")
     conversations = supplemental_roles.get("core.conversations") or preserved_roles.get(
         "core.conversations"
     )
+    gallery = supplemental_roles.get("core.gallery") or preserved_roles.get("core.gallery")
     root_id = root.stable_id if root is not None else migration_opaque_id("core-folder", "root")
     journal_id = (
         journal.stable_id
@@ -294,6 +297,11 @@ def build_writing_source_inventory(
         conversations.stable_id
         if conversations is not None
         else migration_opaque_id("core-folder-role", "core.conversations")
+    )
+    gallery_id = (
+        gallery.stable_id
+        if gallery is not None
+        else migration_opaque_id("core-folder-role", "core.gallery")
     )
     folders: list[Any] = [
         InactiveFolder(
@@ -339,6 +347,20 @@ def build_writing_source_inventory(
                 agent_access="manage",
                 policy="shared-manage",
                 metadata=getattr(conversations, "metadata", {}),
+            )
+        )
+    if gallery is not None:
+        folders.append(
+            InactiveFolder(
+                stable_id=gallery_id,
+                parent_id=gallery.parent_id or root_id,
+                name=gallery.name,
+                order=3,
+                role="core.gallery",
+                owner="user",
+                agent_access="write",
+                policy="user-write",
+                metadata=getattr(gallery, "metadata", {}),
             )
         )
 
@@ -474,6 +496,16 @@ def build_writing_source_inventory(
     supplemental_ids = {
         item.descriptor.stable_id for item in supplemental_objects
     }
+    for item in sorted(current_objects, key=lambda value: value.stable_id):
+        is_gallery_object = item.kind in {"gallery-asset", "knowledge-source"} or (
+            item.kind == "attachment" and item.parent_id == gallery_id
+        )
+        if not is_gallery_object or item.stable_id in supplemental_ids:
+            continue
+        body = read_prepared_writing_body(session=session, item=item)
+        add(_prepared_descriptor(item, revision=current_revisions[item.stable_id] + 1))
+        del body
+
     for item in sorted(current_objects, key=lambda value: value.stable_id):
         if item.kind not in {"thread", "message-segment"}:
             continue
@@ -822,10 +854,23 @@ def build_writing_source_inventory(
     for supplemental in supplemental_objects:
         descriptor = supplemental.descriptor
         body = supplemental.body
-        if descriptor.kind not in {"thread", "message-segment", "attachment"}:
+        if descriptor.kind not in {
+            "thread",
+            "message-segment",
+            "attachment",
+            "gallery-asset",
+            "knowledge-source",
+        }:
             raise DiaryMigrationError("Supplemental source contains an unsupported object kind.")
-        if descriptor.parent_id != conversations_id:
-            raise DiaryMigrationError("Supplemental conversation object has the wrong parent.")
+        allowed_parents = (
+            {conversations_id}
+            if descriptor.kind in {"thread", "message-segment"}
+            else {gallery_id}
+        )
+        if descriptor.kind == "attachment":
+            allowed_parents.add(conversations_id)
+        if descriptor.parent_id not in allowed_parents:
+            raise DiaryMigrationError("Supplemental object has the wrong stable parent.")
         if descriptor.body_source not in {"supplemental", "supplemental_path"}:
             descriptor = replace(descriptor, body_source="supplemental")
         descriptor = replace(
@@ -836,7 +881,7 @@ def build_writing_source_inventory(
             if body is None or len(body) != descriptor.body_length or hashlib.sha256(
                 body
             ).hexdigest() != descriptor.content_sha256:
-                raise DiaryMigrationError("Supplemental conversation body identity is invalid.")
+                raise DiaryMigrationError("Supplemental body identity is invalid.")
         elif body is not None or not descriptor.source_key:
             raise DiaryMigrationError("Supplemental path source identity is invalid.")
         add(descriptor, replace_existing=True)
@@ -856,7 +901,10 @@ def build_writing_source_inventory(
         "notes": sum(item.kind == "note" for item in objects),
         "threads": sum(item.kind == "thread" for item in objects),
         "messageSegments": sum(item.kind == "message-segment" for item in objects),
+        "galleryAssets": sum(item.kind == "gallery-asset" for item in objects),
+        "knowledgeSources": sum(item.kind == "knowledge-source" for item in objects),
         "conversationRoot": int(conversations is not None),
+        "galleryRoot": int(gallery is not None),
     }
     source_digest = _source_inventory_hash(
         user_id=session.user_id,

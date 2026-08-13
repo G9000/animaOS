@@ -17,6 +17,11 @@ from anima_server.services.ingestion.retrieval import EmbeddingFn
 
 
 def register_source(db: Session, identity: SourceIdentity) -> RuntimeSource:
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(identity.user_id)
     source_uri = runtime_private_exact_lookup_value(
         db,
         owner_id=identity.user_id,

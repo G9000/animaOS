@@ -549,6 +549,12 @@ mod python {
             anima_corefs::crypto::ObjectKind::Attachment => {
                 anima_corefs::transaction::MAX_WRITING_ATTACHMENT_BYTES
             }
+            anima_corefs::crypto::ObjectKind::GalleryAsset => {
+                anima_corefs::transaction::MAX_GALLERY_ASSET_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::KnowledgeSource => {
+                anima_corefs::transaction::MAX_KNOWLEDGE_SOURCE_BYTES
+            }
             anima_corefs::crypto::ObjectKind::Thread => {
                 anima_corefs::transaction::MAX_THREAD_DOCUMENT_BYTES
             }

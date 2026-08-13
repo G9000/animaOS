@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from pathlib import Path, PureWindowsPath
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -11,6 +12,9 @@ from anima_server.config import settings
 from anima_server.models.runtime import RuntimeImageAsset
 from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
 from anima_server.services.images.models import StoredImageAsset
+
+if TYPE_CHECKING:
+    from anima_server.services.corefs.asset_authority import CoreFsByteSource
 
 ALLOWED_IMAGE_MIME_TYPES = {
     "image/png": "png",
@@ -37,6 +41,11 @@ def register_image_asset(
     filename: str | None = None,
     metadata_json: dict[str, object] | None = None,
 ) -> StoredImageAsset:
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
     normalized_mime = _normalize_mime_type(mime_type)
     ext = ALLOWED_IMAGE_MIME_TYPES.get(normalized_mime)
     if ext is None:
@@ -120,6 +129,80 @@ def resolve_image_storage_path(storage_path: str, *, user_id: int) -> Path:
         raise ImageStoragePathError("Invalid image storage path.") from exc
 
     return resolved_path
+
+
+def resolve_image_byte_source(
+    asset: RuntimeImageAsset,
+    *,
+    user_id: int,
+) -> Path | CoreFsByteSource:
+    from anima_server.services.corefs.asset_authority import (
+        active_asset_authority_session,
+        open_corefs_byte_source,
+    )
+    from anima_server.services.corefs.diary_migration import migration_opaque_id
+
+    session = active_asset_authority_session(user_id)
+    if session is not None:
+        stable_id = migration_opaque_id("image-asset", str(asset.id))
+        return open_corefs_byte_source(
+            session=session,
+            object_uri=f"corefs://object/{stable_id}",
+            expected_kinds=frozenset({"gallery-asset"}),
+        )
+    return resolve_image_storage_path(asset.storage_path, user_id=user_id)
+
+
+def resolve_projected_image_byte_source(
+    *,
+    user_id: int,
+    image_asset_id: int,
+) -> CoreFsByteSource | None:
+    """Resolve an image from unlock memory without consulting Runtime rows."""
+    from anima_server.services.corefs.asset_authority import (
+        active_asset_authority_session,
+        open_corefs_byte_source,
+    )
+
+    session = active_asset_authority_session(user_id)
+    if session is None:
+        return None
+    index = getattr(session, "runtime_index", None)
+    projection = (
+        index.image_projection(image_asset_id) if index is not None else None
+    )
+    if projection is None:
+        raise LookupError("Canonical image projection is unavailable.")
+    source = open_corefs_byte_source(
+        session=session,
+        object_uri=f"corefs://object/{projection.stable_id}",
+        expected_kinds=frozenset({"gallery-asset"}),
+    )
+    if (
+        source.content_sha256 != projection.content_sha256
+        or source.content_type != projection.mime_type
+        or source.size != projection.size
+    ):
+        raise ValueError("Canonical image projection changed identity.")
+    return source
+
+
+def resolve_identity_avatar_byte_source(*, user_id: int) -> CoreFsByteSource | None:
+    from anima_server.services.corefs.asset_authority import (
+        active_asset_authority_session,
+        open_corefs_byte_source,
+    )
+    from anima_server.services.corefs.diary_migration import migration_opaque_id
+
+    session = active_asset_authority_session(user_id)
+    if session is None:
+        return None
+    stable_id = migration_opaque_id("identity-avatar", "agent-profile")
+    return open_corefs_byte_source(
+        session=session,
+        object_uri=f"corefs://object/{stable_id}",
+        expected_kinds=frozenset({"gallery-asset"}),
+    )
 
 
 def delete_image_asset_file_if_safe(asset: RuntimeImageAsset) -> bool:

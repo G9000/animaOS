@@ -14,6 +14,11 @@ from anima_server.services.agent.tool_context import (
     clear_tool_context,
     set_tool_context,
 )
+from anima_server.services.corefs.indexer import (
+    CoreFSDocumentChunkProjection,
+    CoreFSDocumentProjection,
+    CoreFSProgressiveIndex,
+)
 from anima_server.services.documents import rag as documents_rag
 from anima_server.services.documents.models import (
     DocumentRegistration,
@@ -116,6 +121,43 @@ def test_get_document_outline_returns_section_tree(runtime_db, tool_ctx) -> None
     assert "- Guide > Inspection pages 2-4 (2 chunks" in output
     assert "- Guide > Replacement pages 5 (1 chunk," in output
     assert tool_ctx.document_tool_citations == {document.id: "manual.pdf"}
+
+
+def test_document_tools_use_unlock_scoped_corefs_projection_without_runtime_rows(
+    tool_ctx,
+    monkeypatch: Any,
+) -> None:
+    index = CoreFSProgressiveIndex("core-document-tools")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    index.replace_document_projection(
+        CoreFSDocumentProjection(
+            document_id=91,
+            stable_id="01K0N4D8QJKPH4GWD02Y30M7KQ",
+            filename="offline.pdf",
+            mime_type="application/pdf",
+            content_sha256="a" * 64,
+            chunks=(
+                CoreFSDocumentChunkProjection(
+                    chunk_index=0,
+                    content_text="Canonical offline relay instructions.",
+                    page_start=1,
+                    page_end=1,
+                    section_title="Relay Guide",
+                    metadata_json=None,
+                ),
+            ),
+        )
+    )
+    session = type("Session", (), {"runtime_index": index})()
+    monkeypatch.setattr(
+        "anima_server.services.corefs.asset_authority.active_asset_authority_session",
+        lambda _user_id: session,
+    )
+
+    assert "offline.pdf" in search_documents("relay", scope="all")
+    assert "Relay Guide" in get_document_outline("91")
+    assert "Canonical offline relay" in read_document_section("91")
+    assert tool_ctx.document_tool_citations == {91: "offline.pdf"}
 
 
 def test_get_document_outline_page_fallback_for_legacy_documents(

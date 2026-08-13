@@ -672,11 +672,11 @@ git -c commit.gpgsign=false commit -m "chat: make encrypted message segments can
 - Test: `apps/server/tests/test_knowledge_autocompile.py`
 - Test: `apps/server/tests/test_retrieval_eval.py`
 
-- [ ] **Step 1: Add failing binary-object/reference tests**
+- [x] **Step 1: Add failing binary-object/reference tests**
 
 Cover per-object DEKs, chunk-authenticated streaming/range reads, content hashes, truncation/reordering rejection, gallery metadata revisions, `core.gallery` stable-role resolution across rename/move/restart, chat/document/diary attachment reference counts, agent-avatar identity assets, and trash without host-path escape.
 
-- [ ] **Step 2: Add failing source migration tests**
+- [x] **Step 2: Add failing source migration tests**
 
 Seed `runtime_image_assets`, annotations/links, `runtime_documents`, original uploads, pasted text/Markdown, captured web pages, source artifacts/spans, derived chunks, contextual blurbs, compiled concepts, and concept citations. Verify original user-owned bytes and every captured source needed for deterministic offline rebuild become canonical CoreFS objects. Enforce this current-field migration matrix:
 
@@ -687,29 +687,29 @@ Seed `runtime_image_assets`, annotations/links, `runtime_documents`, original up
 
 Delete Runtime, rebuild without network access, compare document/source/concept retrieval behavior, and scan the rebuilt persistent store for seeded plaintext markers.
 
-- [ ] **Step 3: Rewire image and attachment storage**
+- [x] **Step 3: Rewire image and attachment storage**
 
 Implement adapters replacing direct `users/<id>/avatars`, `users/<id>/attachments/chat`, diary/image paths, and document storage paths with Core object streams and CoreFS URIs. Bind Gallery to the unique `core.gallery` folder role/stable ID rather than its display path. Treat the agent avatar as an encrypted identity asset referenced by `AgentProfile`, not as a SQLCipher blob or plaintext host file. Preserve API authorization and MIME/size validation. Keep adapters behind the inactive authority gate until PCF-008; pre-cutover feature writes remain legacy-authoritative while converters validate the shadow catalog.
 
-- [ ] **Step 4: Rewire document registration**
+- [x] **Step 4: Rewire document registration**
 
 Register the original document as a canonical attachment object; runtime ingestion rows reference its object ID/revision and rebuild chunks/indexes. Change `documents/parsing.py`, PDF reindex, and text extraction to consume a typed bounded authenticated CoreFS byte/range source instead of a host `Path`. Rewire `agent/document_tools.py` to query the unlocked in-memory document index and hydrate canonical CoreFS/source content rather than reading persisted `RuntimeDocumentChunk.content_text`. Generate contextual blurbs in memory for the active unlock/index generation; never persist them in Runtime chunk metadata. Never materialize a decrypted normal temp file merely to satisfy a host-`Path` API.
 
-- [ ] **Step 5: Canonicalize imported knowledge sources**
+- [x] **Step 5: Canonicalize imported knowledge sources**
 
 Store pasted text/Markdown and, for web capture, both the original raw HTML and its normalized structured snapshot as encrypted source objects with source URI, fetch timestamp, content type, extractor/sanitizer version, and content hash. Keeping raw HTML permits future deterministic re-extraction without network refetch; the normalized snapshot preserves the exact imported revision. Runtime source rows point only to CoreFS IDs/revisions and safe progress metadata; refresh creates new canonical revisions rather than silently replacing history. Rework `ingestion/compiler.py` so compiled concept title/description/body/frontmatter, source spans, citation quote text, and chunks exist only in the active unlocked index/projection. Persist no compiled plaintext duplicate in PostgreSQL. The merged `documents/reranker.py`, `ingestion/structured.py`, `ingestion/html_extract.py`, and `ingestion/web_fetch.py` remain validation surfaces because they are pure/in-memory adapters; their regression tests must still pass, and any future persistence or host-path dependency moves them into the explicit migration inventory.
 
-- [ ] **Step 6: Reconcile conversation attachment links**
+- [x] **Step 6: Reconcile conversation attachment links**
 
 Ensure canonical message segments reference migrated gallery/document CoreFS URIs before runtime legacy links are discarded.
 
-- [ ] **Step 7: Run focused tests**
+- [x] **Step 7: Run focused tests**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_assets.py apps/server/tests/test_corefs_document_migration.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_image_retrieval_context.py apps/server/tests/test_agent_biography_preview.py apps/server/tests/test_pdf_workflow.py apps/server/tests/test_pdf_workflow_checkpoints.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py -q
 ```
 
-- [ ] **Step 8: Commit asset/document/knowledge-source slice**
+- [x] **Step 8: Commit asset/document/knowledge-source slice**
 
 ```powershell
 git add apps/server/src/anima_server/services/images apps/server/src/anima_server/services/agent/attachments.py apps/server/src/anima_server/services/agent/state.py apps/server/src/anima_server/services/agent/document_tools.py apps/server/src/anima_server/services/agent/tools.py apps/server/src/anima_server/services/documents apps/server/src/anima_server/services/ingestion/artifacts.py apps/server/src/anima_server/services/ingestion/sources.py apps/server/src/anima_server/services/ingestion/compiler.py apps/server/src/anima_server/services/ingestion/document_compiler.py apps/server/src/anima_server/services/ingestion/retrieval.py apps/server/src/anima_server/services/ingestion/okf.py apps/server/src/anima_server/services/ingestion/lint.py apps/server/src/anima_server/services/ingestion/adapters apps/server/src/anima_server/api/routes/images.py apps/server/src/anima_server/api/routes/documents.py apps/server/src/anima_server/api/routes/consciousness.py apps/server/src/anima_server/api/routes/knowledge.py apps/server/src/anima_server/services/corefs/migration.py apps/server/tests/test_corefs_assets.py apps/server/tests/test_corefs_document_migration.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_agent_biography_preview.py apps/server/tests/test_pdf_workflow.py apps/server/tests/test_pdf_workflow_checkpoints.py apps/server/tests/test_document_parsing.py apps/server/tests/test_document_tools.py apps/server/tests/test_contextual_rerank.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py apps/server/tests/test_knowledge_autocompile.py apps/server/tests/test_retrieval_eval.py

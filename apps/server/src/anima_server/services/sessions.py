@@ -991,15 +991,18 @@ def _zero_dek(dek: bytes) -> None:
 # Initialize the process-global store only after every restore helper above is
 # defined. Dev reloads import this module with a snapshot already present.
 def _schedule_published_session_rebuild(session: UnlockSession) -> None:
-    # PCF-004/005 prepare and verify one combined writing/conversation shadow
+    # PCF-004/005/006 prepare and verify one combined authored-content shadow
     # only after SQLCipher, Runtime, and CoreFS keys are live. Legacy routes
     # remain authoritative until the global PCF-008 cutover marker is accepted.
     if session.corefs_session is not None and session.corefs_keys is not None:
         from anima_server.config import settings
         from anima_server.db.runtime import get_runtime_session_factory
         from anima_server.db.session import get_user_session_factory
+        from anima_server.services.corefs.asset_migration import (
+            prepare_portable_content_validation_catalog,
+            record_asset_migration_failure,
+        )
         from anima_server.services.corefs.conversation_migration import (
-            prepare_conversation_validation_catalog,
             record_conversation_migration_failure,
         )
         from anima_server.services.corefs.diary_migration import (
@@ -1015,7 +1018,7 @@ def _schedule_published_session_rebuild(session: UnlockSession) -> None:
                     prepare_diary_validation_catalog(session=session, db=db)
                 else:
                     with runtime_factory() as runtime_db:
-                        prepare_conversation_validation_catalog(
+                        prepare_portable_content_validation_catalog(
                             session=session,
                             soul_db=db,
                             runtime_db=runtime_db,
@@ -1024,7 +1027,8 @@ def _schedule_published_session_rebuild(session: UnlockSession) -> None:
         except Exception as exc:
             record_diary_migration_failure(user_id=session.user_id, error=exc)
             record_conversation_migration_failure(user_id=session.user_id, error=exc)
-            logger.exception("PCF-004/005 inactive content preparation failed")
+            record_asset_migration_failure(user_id=session.user_id, error=exc)
+            logger.exception("PCF-004/005/006 inactive content preparation failed")
     from anima_server.services.corefs.migration import schedule_unlocked_rebuild
 
     schedule_unlocked_rebuild(session)

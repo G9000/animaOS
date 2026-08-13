@@ -689,14 +689,12 @@ def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
         assert snapshot.state is ReadinessState.READY
         assert snapshot.processed_objects == 4
         assert snapshot.families["attachment"].processed == 1
-        assert snapshot.families["attachment"].failed == 1
-        assert snapshot.families["attachment"].degraded is True
+        assert snapshot.families["attachment"].failed == 0
+        assert snapshot.families["attachment"].degraded is False
         assert snapshot.families["note"].processed == 3
         assert snapshot.families["note"].failed == 1
         assert snapshot.families["note"].degraded is True
-        assert snapshot.families["attachment"].unavailable_object_ids == (
-            "attachment-binary",
-        )
+        assert snapshot.families["attachment"].unavailable_object_ids == ()
         assert snapshot.families["note"].unavailable_object_ids == (
             "note-oversized",
         )
@@ -713,10 +711,9 @@ def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
             )
         ).all()
         assert {checkpoint.status for checkpoint in checkpoints} == {
-            "ready_degraded"
+            "ready",
+            "ready_degraded",
         }
-        assert all(checkpoint.error_code is not None for checkpoint in checkpoints)
-        assert all(checkpoint.error_digest is not None for checkpoint in checkpoints)
         note_checkpoint = next(
             checkpoint for checkpoint in checkpoints if checkpoint.family == "note"
         )
@@ -724,6 +721,11 @@ def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
         assert note_checkpoint.error_digest == corefs_migration._digest(
             "CoreFS object exceeds the in-memory indexing limit"
         )
+        attachment_checkpoint = next(
+            checkpoint for checkpoint in checkpoints if checkpoint.family == "attachment"
+        )
+        assert attachment_checkpoint.error_code is None
+        assert attachment_checkpoint.error_digest is None
 
 
 def test_semantic_retry_rebuilds_all_vectors_after_embedding_config_changes() -> None:

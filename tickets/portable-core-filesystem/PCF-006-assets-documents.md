@@ -1,6 +1,6 @@
 # PCF-006 - Gallery, attachments, documents, and knowledge sources
 
-- Status: in_progress
+- Status: done
 - Priority: P1
 - Scope: `apps/server` image, document parsing/tools/contextual retrieval, ingestion/compiler, and content services
 - Parent: `PCF-000`
@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-6-gallery-attachments-and-original-documents`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 11:39 MYT
+- Updated: 2026-08-13 12:41 MYT
 - Started: 2026-08-13 11:39 MYT
-- Completed:
+- Completed: 2026-08-13 12:41 MYT
 
 ## Goal
 
@@ -46,12 +46,31 @@ Move original user-owned images, attachments, documents, pasted text/Markdown, a
 - 2026-07-12 17:34 MYT - Added stable Gallery role/ID requirements.
 - 2026-07-13 20:47 MYT - Added merged document parsing, document tools, contextual ranking, and compiler boundaries; classified current plaintext fields and expanded the existing ingestion/retrieval regression matrix.
 - 2026-08-13 11:39 MYT - Codex claimed PCF-006 after PCF-005 completed locally at `d3ab653e` and PCF-003 was already done. Started on local stacked branch `codex/pcf-006-assets-documents`; the child and parent row moved to `in_progress` together. PCF-004 remains independently open on cost-deferred package evidence, and no PCF-006 publication, PR, review, monitoring, or merge action is authorized.
+- 2026-08-13 12:41 MYT - Completed PCF-006 locally. One atomic inactive preparation now preserves gallery originals, agent avatars, original documents, pasted/Markdown content, raw HTML, normalized captures, and conversation attachment CoreFS URIs under stable `core.gallery`; native admission enforces binary/UTF-8 kind bounds and stable user/write policy. Authenticated bounded byte sources drive streaming image responses and pathless PDF parsing. Runtime deletion rebuilds unlock-only image, document, source, evidence, and deterministic concept/citation projections without network refetch, while lock/rebuild scrubs stale plaintext and post-cutover legacy mutations fail before Runtime access. PCF-008 remains the authenticated global authority/mutation activation boundary. No PCF-006 external action was authorized or performed.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest -q <PCF-006 focused files plus test_corefs_indexer.py>` -> `219 passed, 1 deselected`
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest -q <adjacent CoreFS conversation/migration, document API/store/reparse, and image regression files>` -> `121 passed`
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest -q apps/server/tests/test_corefs_runtime_privacy.py` -> `52 passed`
+  - `cargo test -p anima-corefs --test validation_batch` -> `9 passed`
+  - `cargo clippy -p anima-corefs --all-targets -- -D warnings` -> passed
+  - `PYO3_PYTHON=/Users/julio/animaOS/.venv/bin/python cargo check -p anima-core --features python` -> passed
+  - `rustfmt --edition 2021 --check packages/anima-core/src/ffi.rs packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/converter.rs packages/anima-corefs/tests/validation_batch.rs` -> passed
+  - `bun run lint:server` -> passed
+  - `bun run build` -> passed
+  - `bun run check:repo` -> passed
+  - `git diff --check` -> passed
 - Changed paths:
-  - none
+  - `packages/anima-corefs/src/transaction.rs`, `packages/anima-corefs/src/transaction/converter.rs`, `packages/anima-corefs/tests/validation_batch.rs`
+  - `packages/anima-core/src/ffi.rs`
+  - `apps/server/src/anima_server/services/corefs/{asset_authority.py,asset_migration.py,conversation_migration.py,indexer.py,migration.py,writing_source.py}`
+  - `apps/server/src/anima_server/services/{documents,images,ingestion}`, `apps/server/src/anima_server/services/agent/document_tools.py`, `apps/server/src/anima_server/services/sessions.py`
+  - `apps/server/src/anima_server/api/routes/{consciousness.py,images.py,knowledge.py}`
+  - `apps/server/tests/test_corefs_{assets,document_migration,knowledge_sources,indexer,migration}.py`, `apps/server/tests/test_document_{parsing,tools}.py`
+  - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`, `tickets/portable-core-filesystem/{PCF-000-portable-core-filesystem.md,PCF-006-assets-documents.md}`
 - Notes:
-  - PCF-003 and PCF-005 are done. PCF-006 is active locally; no external action is authorized.
+  - The plan's `apps/server/tests/test_pdf_workflow.py` path does not exist; the canonical available `test_pdf_workflow_checkpoints.py` plus document parsing/store/reparse/API coverage passed.
+  - Persistent Runtime private fields remain protected by PCF-003's unlock-derived sealing before PCF-008; PCF-006 adds canonical CoreFS rebuild sources and unlock-only post-deletion projections. PCF-008 owns the authenticated global cutover and writable CoreFS mutation activation.
+  - PCF-007 remains dependency-ineligible solely because PCF-004 still awaits the user-deferred paid four-platform signed-package evidence. PCF-011 is the next dependency-eligible backlog child.

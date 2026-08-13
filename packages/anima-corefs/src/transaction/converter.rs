@@ -32,7 +32,12 @@ const NOTE_CONTENT_TYPE: &str = "application/vnd.anima.note+json;version=1";
 const THREAD_CONTENT_TYPE: &str = "application/vnd.anima.thread+json;version=1";
 const MESSAGE_SEGMENT_CONTENT_TYPE: &str = "application/vnd.anima.message-segment+jsonl;version=1";
 const REQUIRED_WRITING_ROLES: [&str; 2] = ["core.journal", "core.notes"];
-const ALLOWED_ROLES: [&str; 3] = ["core.journal", "core.notes", "core.conversations"];
+const ALLOWED_ROLES: [&str; 4] = [
+    "core.journal",
+    "core.notes",
+    "core.conversations",
+    "core.gallery",
+];
 pub const MAX_WRITING_BODY_CHARS: usize = 20_000_000;
 // Canonical HTML and JSON can expand one public source scalar to six ASCII
 // bytes (for example an apostrophe becomes `&#x27;` or a control becomes a
@@ -41,6 +46,8 @@ pub const MAX_WRITING_CANONICAL_EXPANSION: usize = 6;
 pub const MAX_WRITING_DOCUMENT_BYTES: usize =
     MAX_WRITING_BODY_CHARS * MAX_WRITING_CANONICAL_EXPANSION + 1024 * 1024;
 pub const MAX_WRITING_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
+pub const MAX_GALLERY_ASSET_BYTES: usize = 100 * 1024 * 1024;
+pub const MAX_KNOWLEDGE_SOURCE_BYTES: usize = 100 * 1024 * 1024;
 pub const MAX_THREAD_DOCUMENT_BYTES: usize = 1024 * 1024;
 pub const MAX_MESSAGE_SEGMENT_BYTES: usize = 1024 * 1024;
 
@@ -594,6 +601,7 @@ fn validate_batch(
         .iter()
         .any(|role| role_counts.get(role).copied() != Some(1))
         || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
+        || role_counts.get("core.gallery").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -714,6 +722,7 @@ pub(super) fn build_prepared_validation_catalog(
         .iter()
         .any(|role| role_counts.get(role).copied() != Some(1))
         || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
+        || role_counts.get("core.gallery").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -879,7 +888,10 @@ fn validate_stable_root_policy(
 ) -> Result<(), ValidationBatchError> {
     match (role, policy) {
         (None, _) => Ok(()),
-        (Some("core.journal" | "core.notes"), ValidationBatchPolicy::UserWrite)
+        (
+            Some("core.journal" | "core.notes" | "core.gallery"),
+            ValidationBatchPolicy::UserWrite,
+        )
         | (Some("core.conversations"), ValidationBatchPolicy::SharedManage) => Ok(()),
         _ => Err(ValidationBatchError::Invalid(
             "stable roots require their explicit default policy",
@@ -964,6 +976,8 @@ pub(super) fn validate_converter_object_metadata(
     let kind_limit = u64::try_from(match object.kind {
         ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note => MAX_WRITING_DOCUMENT_BYTES,
         ObjectKind::Attachment => MAX_WRITING_ATTACHMENT_BYTES,
+        ObjectKind::GalleryAsset => MAX_GALLERY_ASSET_BYTES,
+        ObjectKind::KnowledgeSource => MAX_KNOWLEDGE_SOURCE_BYTES,
         ObjectKind::Thread => MAX_THREAD_DOCUMENT_BYTES,
         ObjectKind::MessageSegment => MAX_MESSAGE_SEGMENT_BYTES,
         _ => 0,
@@ -994,6 +1008,12 @@ pub(super) fn validate_converter_object_metadata(
         }
         ObjectKind::Attachment => {
             !object.content_type.is_empty() && object.body_encoding == BodyEncoding::Binary
+        }
+        ObjectKind::GalleryAsset => {
+            !object.content_type.is_empty() && object.body_encoding == BodyEncoding::Binary
+        }
+        ObjectKind::KnowledgeSource => {
+            !object.content_type.is_empty() && object.body_encoding == BodyEncoding::Utf8
         }
         ObjectKind::Thread => {
             object.content_type == THREAD_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8

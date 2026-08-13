@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -1044,6 +1044,11 @@ async def upload_agent_avatar(
 ) -> dict[str, object]:
     """Upload a custom avatar image for the agent."""
     await require_unlocked_user_async(request, user_id)
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
 
     if file.content_type not in ALLOWED_AVATAR_TYPES:
         raise HTTPException(
@@ -1099,11 +1104,19 @@ async def get_agent_avatar(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
-) -> FileResponse:
+) -> Response:
     """Serve the agent's avatar image."""
     await require_unlocked_user_async(request, user_id)
 
+    from anima_server.services.images.store import resolve_identity_avatar_byte_source
     from anima_server.services.storage import get_user_data_dir
+
+    core_source = resolve_identity_avatar_byte_source(user_id=user_id)
+    if core_source is not None:
+        return StreamingResponse(
+            core_source.iter_chunks(),
+            media_type=core_source.content_type,
+        )
 
     avatar_dir = get_user_data_dir(user_id) / "avatars"
     if avatar_dir.is_dir():
@@ -1133,6 +1146,11 @@ async def delete_agent_avatar(
 ) -> dict[str, object]:
     """Delete the agent's custom avatar, reverting to default."""
     await require_unlocked_user_async(request, user_id)
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.storage import get_user_data_dir

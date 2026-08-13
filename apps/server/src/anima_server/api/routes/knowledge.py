@@ -114,6 +114,17 @@ async def list_sources(
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
     safe_limit = min(max(limit, 1), 200)
+    corefs_index = _active_knowledge_index(userId)
+    if corefs_index is not None:
+        by_source: dict[int, Any] = {}
+        for projection in corefs_index.knowledge_source_projections():
+            by_source.setdefault(projection.source_id, projection)
+        return {
+            "sources": [
+                _corefs_source_summary(projection)
+                for _, projection in sorted(by_source.items(), reverse=True)[:safe_limit]
+            ]
+        }
     sources = list(
         runtime_db.scalars(
             select(RuntimeSource)
@@ -132,6 +143,7 @@ async def ingest_text_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, payload.userId)
+    _require_legacy_knowledge_mutation_allowed(payload.userId)
     try:
         source, artifacts, spans = ingest_text_content(
             runtime_db,
@@ -160,6 +172,7 @@ async def ingest_markdown_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, payload.userId)
+    _require_legacy_knowledge_mutation_allowed(payload.userId)
     try:
         source, artifacts, spans = ingest_markdown_content(
             runtime_db,
@@ -188,6 +201,7 @@ async def ingest_web_capture_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, payload.userId)
+    _require_legacy_knowledge_mutation_allowed(payload.userId)
     url = payload.url
     html = payload.html
     if payload.fetch:
@@ -257,6 +271,7 @@ async def ingest_html_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
+    _require_legacy_knowledge_mutation_allowed(userId)
     filename = file.filename or "page.html"
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     has_html_extension = filename.lower().endswith((".html", ".htm"))
@@ -312,6 +327,7 @@ async def reextract_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
+    _require_legacy_knowledge_mutation_allowed(userId)
     # Checked before re-extraction: replacing spans cascades citation rows,
     # so an already-compiled source must be recompiled afterwards or its
     # concepts would go stale/orphaned until a manual compile.
@@ -374,6 +390,19 @@ async def get_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
+    corefs_index = _active_knowledge_index(userId)
+    if corefs_index is not None:
+        projections = tuple(
+            item
+            for item in corefs_index.knowledge_source_projections()
+            if item.source_id == source_id
+        )
+        if not projections:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source not found.",
+            )
+        return _corefs_source_response(projections)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
     return _source_response(
         source,
@@ -391,6 +420,15 @@ async def list_concepts(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
+    corefs_index = _active_knowledge_index(userId)
+    if corefs_index is not None:
+        safe_limit = min(max(limit, 1), 200)
+        return {
+            "concepts": [
+                _corefs_concept_summary(concept)
+                for concept in corefs_index.knowledge_concept_projections()[:safe_limit]
+            ]
+        }
     safe_limit = min(max(limit, 1), 200)
     stmt = select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.user_id == userId)
     if not includeRetired:
@@ -417,6 +455,15 @@ async def get_concept(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
+    corefs_index = _active_knowledge_index(userId)
+    if corefs_index is not None:
+        concept = corefs_index.knowledge_concept_projection(concept_id)
+        if concept is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Concept not found.",
+            )
+        return _corefs_concept_response(concept)
     concept = runtime_db.scalar(
         select(RuntimeKnowledgeConcept).where(
             RuntimeKnowledgeConcept.id == concept_id,
@@ -452,6 +499,7 @@ async def compile_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
+    _require_legacy_knowledge_mutation_allowed(userId)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
     run = await _compile_source_now(
         runtime_db,
@@ -478,6 +526,26 @@ async def search_knowledge(
             detail="q must not be empty.",
         )
     safe_limit = min(max(limit, 1), 50)
+    corefs_index = _active_knowledge_index(userId)
+    if corefs_index is not None:
+        projections = corefs_index.search_knowledge_source_projections(
+            query,
+            limit=safe_limit,
+        )
+        return {
+            "query": query,
+            "concepts": [
+                _corefs_concept_summary(concept)
+                for concept in corefs_index.search_knowledge_concept_projections(
+                    query,
+                    limit=safe_limit,
+                )
+            ],
+            "evidenceSpans": [
+                _corefs_evidence_response(projection)
+                for projection in projections
+            ],
+        }
     lowered = query.lower()
     concepts = [
         _concept_summary(concept)
@@ -565,6 +633,7 @@ async def import_knowledge(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
+    _require_legacy_knowledge_mutation_allowed(userId)
     content = await file.read()
     with tempfile.TemporaryDirectory(prefix="anima-okf-import-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
@@ -741,6 +810,111 @@ def _source_summary(source: RuntimeSource) -> dict[str, Any]:
         "mediaType": source.media_type,
         "status": source.status,
         "metadata": source.metadata_json,
+    }
+
+
+def _active_knowledge_index(user_id: int) -> Any | None:
+    from anima_server.services.corefs.asset_authority import (
+        active_asset_authority_session,
+    )
+
+    session = active_asset_authority_session(user_id)
+    return getattr(session, "runtime_index", None) if session is not None else None
+
+
+def _require_legacy_knowledge_mutation_allowed(user_id: int) -> None:
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
+
+
+def _corefs_source_summary(projection: Any) -> dict[str, Any]:
+    return {
+        "id": projection.source_id,
+        "kind": projection.source_kind,
+        "sourceUri": projection.source_uri,
+        "contentHash": projection.content_sha256,
+        "title": projection.source_title,
+        "mediaType": projection.source_media_type,
+        "status": "indexed",
+        "metadata": {"authority": "corefs"},
+    }
+
+
+def _corefs_source_response(projections: tuple[Any, ...]) -> dict[str, Any]:
+    source = projections[0]
+    return {
+        "source": _corefs_source_summary(source),
+        "artifacts": [
+            {
+                "id": item.artifact_id,
+                "sourceId": item.source_id,
+                "artifactKind": item.artifact_kind,
+                "contentText": item.content_text,
+                "contentHash": item.content_sha256,
+                "metadata": {
+                    "authority": "corefs",
+                    "objectUri": f"corefs://object/{item.stable_id}",
+                },
+            }
+            for item in projections
+        ],
+        "spans": [_corefs_evidence_response(item) for item in projections],
+    }
+
+
+def _corefs_evidence_response(projection: Any) -> dict[str, Any]:
+    return {
+        "id": projection.artifact_id,
+        "sourceId": projection.source_id,
+        "sourceTitle": projection.source_title,
+        "sourceUri": projection.source_uri,
+        "spanKind": projection.artifact_kind,
+        "locator": {"corefsObjectId": projection.stable_id},
+        "contentText": projection.content_text,
+        "metadata": {"authority": "corefs"},
+    }
+
+
+def _corefs_concept_summary(concept: Any) -> dict[str, Any]:
+    return {
+        "id": concept.concept_id,
+        "slug": concept.slug,
+        "title": concept.title,
+        "description": concept.description,
+        "conceptType": concept.concept_type,
+        "status": "active",
+        "metadata": {"authority": "corefs", "derived": True},
+    }
+
+
+def _corefs_concept_response(concept: Any) -> dict[str, Any]:
+    return {
+        **_corefs_concept_summary(concept),
+        "bodyMarkdown": concept.body_markdown,
+        "frontmatter": {
+            "type": concept.concept_type,
+            "title": concept.title,
+            "anima": {"source_id": concept.source_id, "derived": True},
+        },
+        "citations": [
+            {
+                "id": concept.artifact_id,
+                "sourceId": concept.source_id,
+                "spanId": concept.artifact_id,
+                "citationLabel": concept.title,
+                "quoteText": concept.body_markdown,
+                "sourceTitle": concept.title,
+                "sourceUri": concept.source_uri,
+                "spanKind": concept.artifact_kind,
+                "locator": {"corefsObjectId": concept.stable_id},
+                "contentText": concept.body_markdown,
+                "metadata": {"authority": "corefs", "derived": True},
+            }
+        ],
+        "links": [],
     }
 
 
