@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 19:39 MYT
+- Updated: 2026-08-13 19:45 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -112,6 +112,16 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   session/account routing follows the single canonical Soul path afterward.
   Step 3 remains open for converter-journal orchestration, parity acceptance,
   and the fresh outside-Core Runtime transition.
+- 2026-08-13 19:45 MYT - Added the resumable converter coordinator portion of
+  Step 3. One instance-scoped Runtime journal now drives preflight, write
+  freeze, the combined PCF-004/005/006/007 portable-content converter,
+  validation verification, and explicit accept or reject. Every checkpoint
+  resumes idempotently; acceptance recovers a crash after pending-cutover
+  publication, rejection recovers a crash after legacy rollback, failures
+  require an explicit retry, and journal errors persist only a class name plus
+  a class-only domain digest rather than private exception text. Step 3 remains
+  open for full production API wiring, parity evidence across real fixtures,
+  and the fresh outside-Core Runtime transition.
 
 ## Validation
 
@@ -135,6 +145,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     (`35 passed`)
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_security_hardening.py apps/server/tests/test_runtime_db.py -q`
     (`70 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_corefs_transfer.py -q`
+    (`76 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_runtime_privacy.py -q`
+    (`52 passed`)
 - Changed paths:
   - `apps/server/src/anima_server/services/corefs/cutover.py`
   - `apps/server/src/anima_server/services/sessions.py`
@@ -152,6 +166,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/services/corefs/soul_relocation.py`
   - `apps/server/src/anima_server/db/{session.py,user_store.py}`
   - `apps/server/tests/test_corefs_soul_relocation.py`
+  - `apps/server/src/anima_server/services/corefs/orchestration.py`
+  - `apps/server/tests/test_corefs_orchestration.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by
