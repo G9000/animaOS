@@ -1,17 +1,17 @@
 # PCF-008 - Cutover, transfer, and first-release validation
 
-- Status: backlog
+- Status: in_progress
 - Priority: P0
 - Scope: migration cutover, local ANIMA CORE transfer/recovery, release validation
 - Parent: `PCF-000`
 - Depends on: `PCF-001`, `PCF-002`, `PCF-003`, `PCF-004`, `PCF-005`, `PCF-006`, `PCF-007`
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 15:54 MYT
-- Started:
+- Updated: 2026-08-13 18:41 MYT
+- Started: 2026-08-13 18:41 MYT
 - Completed:
 
 ## Goal
@@ -65,6 +65,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   funded execution is separately authorized; irreversible cutover and release
   publication are forbidden until all four native results and exact artifact
   digests are recorded.
+- 2026-08-13 18:41 MYT - Claimed by Codex on local branch
+  `codex/pcf-008-cutover-transfer` from completed PCF-007 head `1067becf` after
+  confirming PCF-001 through PCF-007 are done and no competing claim is
+  visible. Local reversible implementation and validation may proceed; the
+  triggerless paid package workflow, irreversible first-write marker, release
+  publication, and merge remain unauthorized.
 
 ## Validation
 
@@ -73,4 +79,6 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
 - Changed paths:
   - none
 - Notes:
-  - Claim only after PCF-001 through PCF-007 are done.
+  - PCF-001 through PCF-007 are done. The four-platform signed-package gate
+    remains mandatory and cost-deferred; it cannot be dispatched or waived by
+    local ticket execution.
