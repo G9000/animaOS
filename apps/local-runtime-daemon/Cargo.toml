@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anima-credential-store = { path = "../../packages/anima-credential-store" }
 axum = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
@@ -20,4 +21,3 @@ tracing-subscriber = { workspace = true }
 [dependencies.uuid]
 version = "=1.10.0"
 features = ["v4", "serde", "fast-rng"]
-

@@ -89,6 +89,9 @@ function resolveStorageArgument(
     if (path.endsWith("useLocalStorage.ts") && expression.text === "key") {
       return databaseStorageKeys(file);
     }
+    if (path.endsWith("daemon.ts") && expression.text === "key") {
+      return ["anima_daemon_control_token", "ANIMA_DAEMON_CONTROL_TOKEN"];
+    }
     if (path.endsWith("draftMigration.ts")) {
       if (expression.text === "storageKey") return ["legacy-journal-draft:*"];
       if (expression.text === "stateKey") return ["anima:diary:draft-migration-state:v1:*"];

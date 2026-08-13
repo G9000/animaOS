@@ -1,12 +1,21 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { modConfig } from "../db/schema.js";
 import type { ModConfigSchema } from "../core/types.js";
 
 import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
 import type * as schema from "../db/schema.js";
+import {
+  CredentialBroker,
+  type ModCredentialStore,
+} from "../security/credential-broker.js";
+
+const CREDENTIAL_REFERENCE_PATTERN = /^anima-credential:v1:[0-9a-f]{64}$/;
 
 export class ConfigService {
-  constructor(private db: BunSQLiteDatabase<typeof schema>) {}
+  constructor(
+    private db: BunSQLiteDatabase<typeof schema>,
+    private credentials: ModCredentialStore = new CredentialBroker("config"),
+  ) {}
 
   async getConfig(
     modId: string,
@@ -22,6 +31,10 @@ export class ConfigService {
     for (const row of rows) {
       if (opts.maskSecrets && row.isSecret) {
         result[row.key] = "***";
+      } else if (row.isSecret) {
+        const reference = await this.ensureSecretReference(row.modId, row.key, row.value);
+        const secrets = await this.credentials.resolve([reference]);
+        result[row.key] = JSON.parse(secrets[reference]);
       } else {
         result[row.key] = JSON.parse(row.value);
       }
@@ -41,24 +54,72 @@ export class ConfigService {
 
     for (const [key, value] of Object.entries(values)) {
       const isSecret = schema?.[key]?.type === "secret";
+      if (isSecret && value === "***") continue;
+      const storedValue = isSecret
+        ? await this.storeSecretReference(modId, key, value)
+        : JSON.stringify(value);
       this.db
         .insert(modConfig)
         .values({
           modId,
           key,
-          value: JSON.stringify(value),
+          value: storedValue,
           isSecret,
         })
         .onConflictDoUpdate({
           target: [modConfig.modId, modConfig.key],
           set: {
-            value: JSON.stringify(value),
+            value: storedValue,
             isSecret,
             updatedAt: new Date().toISOString(),
           },
         })
         .run();
     }
+  }
+
+  private async storeSecretReference(
+    modId: string,
+    key: string,
+    value: unknown,
+  ): Promise<string> {
+    if (typeof value !== "string" || !value) {
+      throw new Error(`Secret field '${key}' must be a non-empty string`);
+    }
+    const reference = this.credentials.reference("mod-config", `${modId}:${key}`);
+    const encoded = JSON.stringify(value);
+    await this.credentials.put(reference, encoded);
+    const verified = await this.credentials.resolve([reference]);
+    if (verified[reference] !== encoded) {
+      throw new Error(`Secret field '${key}' failed credential verification`);
+    }
+    return JSON.stringify(reference);
+  }
+
+  private async ensureSecretReference(
+    modId: string,
+    key: string,
+    rawValue: string,
+  ): Promise<string> {
+    const decoded = JSON.parse(rawValue);
+    if (typeof decoded !== "string") {
+      throw new Error(`Secret field '${key}' has an invalid stored value`);
+    }
+    if (CREDENTIAL_REFERENCE_PATTERN.test(decoded)) return decoded;
+
+    const reference = this.credentials.reference("mod-config", `${modId}:${key}`);
+    const encoded = JSON.stringify(decoded);
+    await this.credentials.put(reference, encoded);
+    const verified = await this.credentials.resolve([reference]);
+    if (verified[reference] !== encoded) {
+      throw new Error(`Secret field '${key}' failed migration verification`);
+    }
+    this.db
+      .update(modConfig)
+      .set({ value: JSON.stringify(reference), isSecret: true })
+      .where(and(eq(modConfig.modId, modId), eq(modConfig.key, key)))
+      .run();
+    return reference;
   }
 
   async hasConfig(modId: string): Promise<boolean> {

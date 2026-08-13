@@ -790,7 +790,7 @@ Create a checked row/field matrix for every SQLCipher model/table/column, runtim
 
 Cover encrypted account profile, opaque owner ID, no plaintext username index, task JSON objects, portable preference mapping, device-local exclusions, and session-only state.
 
-- [ ] **Step 3: Implement OS credential service**
+- [x] **Step 3: Implement OS credential service**
 
 Implement one OS-credential boundary across Python, Tauri/local-runtime-daemon, and anima-mod. Python owns provider credentials and an authenticated loopback credential broker with short-lived audience-scoped capabilities for the mod process; it never exposes a generic secret-read route to the browser. Tauri and the local daemon share a platform keyring entry for the daemon control token. `ConfigService` stores only opaque credential references for schema fields marked `secret`, and Google OAuth uses a dedicated `SecretStore`/broker path rather than `mod_store`. Fail closed with a clear configuration error when no secure backend is available; do not silently fall back to SQLite, YAML, files, environment persistence, or localStorage.
 

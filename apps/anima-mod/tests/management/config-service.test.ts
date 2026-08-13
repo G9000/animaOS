@@ -4,6 +4,36 @@ import { drizzle } from "drizzle-orm/bun-sqlite";
 import * as schema from "../../src/db/schema.js";
 import { ConfigService } from "../../src/management/config-service.js";
 import type { ModConfigSchema } from "../../src/core/types.js";
+import {
+  credentialReference,
+  type ModCredentialStore,
+} from "../../src/security/credential-broker.js";
+
+class MemoryCredentialStore implements ModCredentialStore {
+  values = new Map<string, string>();
+
+  reference(scope: string, name: string): string {
+    return credentialReference(scope, name);
+  }
+
+  async put(reference: string, secret: string): Promise<void> {
+    this.values.set(reference, secret);
+  }
+
+  async resolve(references: string[]): Promise<Record<string, string>> {
+    return Object.fromEntries(
+      references.map((reference) => {
+        const value = this.values.get(reference);
+        if (value === undefined) throw new Error("unavailable secret");
+        return [reference, value];
+      }),
+    );
+  }
+
+  async delete(reference: string): Promise<void> {
+    this.values.delete(reference);
+  }
+}
 
 const telegramSchema: ModConfigSchema = {
   token: { type: "secret", label: "Bot Token", required: true },
@@ -15,6 +45,7 @@ describe("ConfigService", () => {
   let sqlite: Database;
   let db: ReturnType<typeof drizzle>;
   let service: ConfigService;
+  let credentials: MemoryCredentialStore;
 
   beforeEach(() => {
     sqlite = new Database(":memory:");
@@ -26,7 +57,8 @@ describe("ConfigService", () => {
       );
     `);
     db = drizzle(sqlite, { schema });
-    service = new ConfigService(db);
+    credentials = new MemoryCredentialStore();
+    service = new ConfigService(db, credentials);
   });
 
   afterEach(() => sqlite.close());
@@ -47,6 +79,28 @@ describe("ConfigService", () => {
     await service.setConfig("telegram", { token: "abc123" }, telegramSchema);
     const config = await service.getConfig("telegram", { maskSecrets: false });
     expect(config.token).toBe("abc123");
+  });
+
+  test("secret config stores only an opaque verified credential reference", async () => {
+    await service.setConfig("telegram", { token: "abc123" }, telegramSchema);
+    const row = sqlite.query("SELECT value FROM mod_config WHERE mod_id = 'telegram'").get() as {
+      value: string;
+    };
+    expect(row.value).not.toContain("abc123");
+    expect(JSON.parse(row.value)).toMatch(/^anima-credential:v1:[0-9a-f]{64}$/);
+    expect([...credentials.values.values()]).toEqual([JSON.stringify("abc123")]);
+  });
+
+  test("legacy plaintext secret rows migrate copy-verify-scrub on read", async () => {
+    sqlite.query(
+      "INSERT INTO mod_config (mod_id, key, value, is_secret) VALUES (?, ?, ?, 1)",
+    ).run("telegram", "token", JSON.stringify("legacy-secret"));
+
+    expect((await service.getConfig("telegram")).token).toBe("legacy-secret");
+    const row = sqlite.query("SELECT value FROM mod_config WHERE mod_id = 'telegram'").get() as {
+      value: string;
+    };
+    expect(row.value).not.toContain("legacy-secret");
   });
 
   test("setConfig validates required fields", async () => {

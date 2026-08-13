@@ -62,6 +62,11 @@ from anima_server.db.runtime_base import RuntimeBase
 from anima_server.services.agent import fastembed_backend as fastembed_backend_module
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
+from anima_server.services.credentials import (
+    CredentialStore,
+    MemoryCredentialBackend,
+    set_credential_store_for_tests,
+)
 from anima_server.services.documents import reranker as reranker_module
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 from fastapi.testclient import TestClient
@@ -73,6 +78,7 @@ from sqlalchemy.pool import StaticPool
 # Tests exercise the deterministic knowledge compiler by default; LLM-path
 # tests opt in explicitly with a scripted client.
 settings.knowledge_compiler = "deterministic"
+set_credential_store_for_tests(CredentialStore(MemoryCredentialBackend()))
 
 
 def _reranker_model_unavailable_in_tests() -> Any:

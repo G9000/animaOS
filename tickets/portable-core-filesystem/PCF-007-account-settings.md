@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 16:26 MYT
+- Updated: 2026-08-13 16:56 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -52,6 +52,14 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   prepare bounded encrypted account-profile, preferences, and task objects while
   excluding the password hash and plaintext username index. Legacy SQL remains
   authoritative until the PCF-008 cutover marker. No external action was taken.
+- 2026-08-13 16:56 MYT - Completed Step 3 locally. Python now owns a
+  fail-closed OS credential service plus authenticated loopback, audience-bound,
+  one-shot mod capabilities; the supervised dev launcher shares a rotating
+  process-pair bootstrap only with server/anima-mod. Runtime provider secrets,
+  schema-declared mod secrets, Google OAuth tokens, and the daemon control token
+  now use verified OS storage. Legacy runtime-config, SQLite, daemon-file, and
+  browser token copies use copy-verify-scrub migration, with no generic browser
+  secret-read route or plaintext fallback. No external action was taken.
 
 ## Validation
 
@@ -60,6 +68,11 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - affected CoreFS migration regression band (`73 passed`)
   - `cargo test -p anima-corefs validates_bounded_account_preferences_and_task_documents` (`1 passed`)
   - focused Ruff, desktop storage-classification (`2 passed`), Rust formatting, and diff hygiene passed
+  - credential API/service (`6 passed`), credential plus inventory (`11 passed`),
+    desktop credential/storage (`4 passed`), anima-mod config/Google (`12 passed`),
+    shared native credential store (`3 passed`), local daemon test/check, desktop
+    native check, anima-mod build, focused dev broker-environment test, Ruff,
+    Rust formatting, and diff hygiene passed
 - Changed paths:
   - `docs/architecture/system/portable-state-inventory.md`
   - `apps/server/src/anima_server/services/corefs/{formats.py,writing_source.py}`
@@ -67,6 +80,13 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - `packages/anima-core/src/ffi.rs`
   - `apps/server/tests/test_corefs_{account_migration,preferences,state_inventory}.py`
   - `apps/desktop/tests/settings-storage-classification.test.ts`
+  - `packages/anima-credential-store/{Cargo.toml,src/lib.rs}`
+  - `apps/server/src/anima_server/{services/credentials.py,api/routes/credentials.py,config.py,main.py}`
+  - `apps/anima-mod/src/security/credential-broker.ts`
+  - `apps/anima-mod/src/{core,management}` and Google credential integrations
+  - `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/lib/daemon.ts`
+  - `apps/local-runtime-daemon/src/main.rs`
+  - `scripts/dev-root{,-lib}.mjs`
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.

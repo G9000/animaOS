@@ -155,13 +155,13 @@ export async function getValidAccessToken(
   clientSecret: string,
   userId: number,
 ): Promise<string | null> {
-  const tokens = await ctx.store.get<GoogleTokens>(`google:tokens:${userId}`);
+  const tokens = await ctx.secrets.get<GoogleTokens>(`google:tokens:${userId}`, userId);
   if (!tokens) return null;
 
   // Refresh if expiring in < 5 minutes
   if (Date.now() > tokens.expiresAt - 5 * 60 * 1000) {
     if (!tokens.refreshToken) {
-      await ctx.store.delete(`google:tokens:${userId}`);
+      await ctx.secrets.delete(`google:tokens:${userId}`);
       return null;
     }
     try {
@@ -175,10 +175,10 @@ export async function getValidAccessToken(
         accessToken: refreshed.accessToken,
         expiresAt: refreshed.expiresAt,
       };
-      await ctx.store.set(`google:tokens:${userId}`, updated);
+      await ctx.secrets.set(`google:tokens:${userId}`, updated);
       return refreshed.accessToken;
     } catch {
-      await ctx.store.delete(`google:tokens:${userId}`);
+      await ctx.secrets.delete(`google:tokens:${userId}`);
       return null;
     }
   }

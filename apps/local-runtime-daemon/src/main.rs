@@ -1,3 +1,5 @@
+#[cfg(not(test))]
+use anima_credential_store::{credential_reference, CredentialStore, OsCredentialBackend};
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode},
@@ -8,6 +10,8 @@ use axum::{
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::io::Write;
 use std::{
     env,
     fmt::Display,
@@ -19,8 +23,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-#[cfg(unix)]
-use std::io::Write;
 use tokio::{
     process::{Child, Command},
     sync::Mutex,
@@ -189,7 +191,9 @@ impl RuntimeConfig {
             .or_else(default_data_dir)
             .unwrap_or_else(default_fallback_data_dir);
         let control_token_path = data_dir.join(DEFAULT_DAEMON_CONTROL_TOKEN_FILE);
-        let control_token = resolve_control_token(&control_token_path);
+        let control_token = resolve_control_token(&control_token_path).unwrap_or_else(|error| {
+            panic!("Secure daemon control-token initialization failed: {error}")
+        });
 
         Self {
             daemon_bind_host,
@@ -244,10 +248,7 @@ impl RuntimeConfig {
 
     fn runtime_health_url_with_prefix(&self) -> String {
         let host = runtime_probe_host(&self.runtime_host);
-        format!(
-            "http://{host}:{}/api/health",
-            self.runtime_port
-        )
+        format!("http://{host}:{}/api/health", self.runtime_port)
     }
 
     fn runtime_port_file(&self) -> PathBuf {
@@ -260,10 +261,6 @@ impl RuntimeConfig {
 
     fn runtime_log_file(&self) -> PathBuf {
         self.data_dir.join("runtime.log")
-    }
-
-    fn control_token_file(&self) -> PathBuf {
-        self.data_dir.join(DEFAULT_DAEMON_CONTROL_TOKEN_FILE)
     }
 
     fn lock_file(&self) -> PathBuf {
@@ -466,42 +463,31 @@ fn http_url_host(host: &str) -> String {
     trimmed.to_string()
 }
 
-fn resolve_control_token(path: &FsPath) -> String {
-    let explicit = env_opt("ANIMA_DAEMON_CONTROL_TOKEN")
-        .and_then(|token| {
-            let trimmed = token.trim().to_string();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed)
-            }
-        });
-
-    if let Some(token) = explicit {
-        return token;
-    }
-
-    if let Some(stored) = read_control_token(path) {
-        return stored;
-    }
-
-    random_nonce()
+#[cfg(not(test))]
+fn resolve_control_token(path: &FsPath) -> Result<String, String> {
+    let backend = OsCredentialBackend::new().map_err(|error| error.to_string())?;
+    let store = CredentialStore::new(backend);
+    let reference =
+        credential_reference("daemon", "control-token").map_err(|error| error.to_string())?;
+    let supplied = env_opt("ANIMA_DAEMON_CONTROL_TOKEN");
+    store
+        .load_or_create_migrating_legacy(&reference, path, supplied.as_deref(), random_nonce)
+        .map_err(|error| error.to_string())
 }
 
-fn persist_control_token(path: &FsPath, token: &str) -> std::io::Result<()> {
-    write_state_file(path, token)?;
-    tighten_private_file_permissions(path, "daemon control token");
-    Ok(())
-}
-
-fn read_control_token(path: &FsPath) -> Option<String> {
-    let token = fs::read_to_string(path).ok()?;
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        tighten_private_file_permissions(path, "daemon control token");
-        Some(trimmed.to_string())
+#[cfg(test)]
+fn resolve_control_token(path: &FsPath) -> Result<String, String> {
+    let supplied = env_opt("ANIMA_DAEMON_CONTROL_TOKEN").filter(|value| !value.trim().is_empty());
+    if let Some(supplied) = supplied {
+        return Ok(supplied.trim().to_owned());
+    }
+    match fs::read_to_string(path) {
+        Ok(value) if !value.trim().is_empty() => Ok(value.trim().to_owned()),
+        Ok(_) => Ok("test-daemon-control-token".to_owned()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok("test-daemon-control-token".to_owned())
+        }
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -512,16 +498,16 @@ fn tighten_private_file_permissions(path: &FsPath, label: &str) {
     let Ok(metadata) = fs::metadata(path) else {
         return;
     };
-
-    let mode = metadata.permissions().mode() & 0o777;
-    if mode == 0o600 {
+    if metadata.permissions().mode() & 0o777 == 0o600 {
         return;
     }
-
     let mut permissions = metadata.permissions();
     permissions.set_mode(0o600);
-    if let Err(err) = fs::set_permissions(path, permissions) {
-        warn!("Failed to tighten permissions for {label} {}: {err}", path.display());
+    if let Err(error) = fs::set_permissions(path, permissions) {
+        warn!(
+            "Failed to tighten permissions for {label} {}: {error}",
+            path.display()
+        );
     }
 }
 
@@ -530,7 +516,9 @@ fn tighten_private_file_permissions(_path: &FsPath, _label: &str) {}
 
 fn daemon_allowed_origins() -> DaemonCorsOrigins {
     match env_opt("ANIMA_DAEMON_ALLOWED_ORIGINS") {
-        Some(configured) => parse_daemon_allowed_origins(&configured, "ANIMA_DAEMON_ALLOWED_ORIGINS"),
+        Some(configured) => {
+            parse_daemon_allowed_origins(&configured, "ANIMA_DAEMON_ALLOWED_ORIGINS")
+        }
         None => parse_daemon_allowed_origins(
             &DEFAULT_DAEMON_ALLOWED_ORIGINS.join(","),
             "DEFAULT_DAEMON_ALLOWED_ORIGINS",
@@ -599,16 +587,6 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .unwrap_or_else(|err| panic!("Failed to bind daemon control socket at {bind}: {err}"));
-
-    if let Err(err) = persist_control_token(
-        &runtime.state.config.control_token_file(),
-        &runtime.state.config.control_token,
-    ) {
-        warn!(
-            "Failed to persist daemon control token {}: {err}",
-            runtime.state.config.control_token_file().display()
-        );
-    }
 
     if let Err(err) = write_state_file(&runtime.state.config.lock_file(), "created") {
         warn!(
@@ -1062,10 +1040,7 @@ async fn stop_runtime(runtime: &DaemonRuntime) -> Result<String, String> {
                 }
             }
             Err(err) => {
-                let message = format!(
-                    "Failed to stop runtime process {}: {err}",
-                    process.pid
-                );
+                let message = format!("Failed to stop runtime process {}: {err}", process.pid);
                 cleanup_runtime_tracking_files(&runtime.state.config);
                 {
                     let mut state = runtime.state.inner.lock().await;
@@ -1272,12 +1247,15 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
                     state.last_error = Some(err.clone());
                     state.status = DaemonState::Degraded;
                     if state.consecutive_health_failures >= 2 {
-                        should_restart_in_seconds = state
-                            .mark_restart_delay(&runtime.state.config, "runtime health check failed");
+                        should_restart_in_seconds = state.mark_restart_delay(
+                            &runtime.state.config,
+                            "runtime health check failed",
+                        );
                         if should_restart_in_seconds.is_some() {
                             process_to_restart = state.process.take();
                         }
-                        if should_restart_in_seconds.is_some() && state.consecutive_health_failures > 1
+                        if should_restart_in_seconds.is_some()
+                            && state.consecutive_health_failures > 1
                         {
                             state.status = DaemonState::Degraded;
                         }
@@ -1310,7 +1288,9 @@ async fn tick_poll(runtime: &DaemonRuntime) -> Result<(), String> {
 
         {
             let state = runtime.state.inner.lock().await;
-            if !state.expected_running || state.process.is_some() || !state.policy.background_enabled
+            if !state.expected_running
+                || state.process.is_some()
+                || !state.policy.background_enabled
             {
                 return Ok(());
             }
@@ -1353,17 +1333,19 @@ async fn shutdown_runtime_process(process: &mut RuntimeProcess) -> Result<ExitSt
         }
     }
 
-    process
-        .child
-        .kill()
-        .await
-        .map_err(|err| format!("Failed to force-kill runtime process {}: {err}", process.pid))?;
+    process.child.kill().await.map_err(|err| {
+        format!(
+            "Failed to force-kill runtime process {}: {err}",
+            process.pid
+        )
+    })?;
 
-    process
-        .child
-        .wait()
-        .await
-        .map_err(|err| format!("Failed waiting for force-killed runtime process {}: {err}", process.pid))
+    process.child.wait().await.map_err(|err| {
+        format!(
+            "Failed waiting for force-killed runtime process {}: {err}",
+            process.pid
+        )
+    })
 }
 
 async fn shutdown_existing_runtime_from_pid_file(config: &RuntimeConfig) -> Result<(), String> {
@@ -1443,7 +1425,10 @@ fn read_runtime_pid_file_entry(path: &FsPath) -> Result<Option<RuntimePidFileEnt
         Ok(raw) => raw,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => {
-            return Err(format!("Failed to read runtime pid file {}: {err}", path.display()));
+            return Err(format!(
+                "Failed to read runtime pid file {}: {err}",
+                path.display()
+            ));
         }
     };
 
@@ -1474,7 +1459,10 @@ fn cleanup_runtime_tracking_files(config: &RuntimeConfig) {
     for path in [config.runtime_pid_file(), config.runtime_port_file()] {
         if let Err(err) = fs::remove_file(&path) {
             if err.kind() != std::io::ErrorKind::NotFound {
-                warn!("Failed to remove runtime tracking file {}: {err}", path.display());
+                warn!(
+                    "Failed to remove runtime tracking file {}: {err}",
+                    path.display()
+                );
             }
         }
     }
@@ -1620,8 +1608,10 @@ async fn read_runtime_process_snapshot(pid: u32) -> Result<Option<RuntimeProcess
         }
 
         let raw = String::from_utf8_lossy(&output.stdout);
-        let snapshot = serde_json::from_str::<RuntimeProcessSnapshot>(raw.trim())
-            .map_err(|err| format!("Failed to parse runtime process snapshot for pid {pid}: {err}"))?;
+        let snapshot =
+            serde_json::from_str::<RuntimeProcessSnapshot>(raw.trim()).map_err(|err| {
+                format!("Failed to parse runtime process snapshot for pid {pid}: {err}")
+            })?;
 
         if snapshot.command_line.trim().is_empty() {
             return Ok(None);
@@ -1651,7 +1641,9 @@ async fn read_runtime_process_snapshot(pid: u32) -> Result<Option<RuntimeProcess
         }
 
         let Some((elapsed_raw, command_line_raw)) = line.split_once(char::is_whitespace) else {
-            return Err(format!("Unexpected process snapshot format for pid {pid}: {line}"));
+            return Err(format!(
+                "Unexpected process snapshot format for pid {pid}: {line}"
+            ));
         };
         let elapsed = parse_process_elapsed_time(elapsed_raw, pid)?;
         let command_line = command_line_raw.trim().to_string();
@@ -1762,7 +1754,9 @@ async fn request_runtime_process_shutdown(pid: u32) -> Result<(), String> {
         .stderr(Stdio::null())
         .status()
         .await
-        .map_err(|err| format!("Failed to request graceful shutdown for runtime process {pid}: {err}"))?;
+        .map_err(|err| {
+            format!("Failed to request graceful shutdown for runtime process {pid}: {err}")
+        })?;
 
     if status.success() {
         Ok(())
@@ -2061,4 +2055,3 @@ fn default_data_dir() -> Option<PathBuf> {
 fn default_fallback_data_dir() -> PathBuf {
     PathBuf::from(".").join(".anima").join("runtime-daemon")
 }
-

@@ -10,6 +10,7 @@ import { AnimaApiClient } from "./anima-client.js";
 import { ModStoreImpl } from "./store.js";
 import { DispatchBusImpl } from "./dispatch.js";
 import { loadConfig } from "./config.js";
+import { BrokerSecretStore, CredentialBroker } from "../security/credential-broker.js";
 
 /**
  * Create a ModContext for the given module
@@ -32,6 +33,7 @@ export async function createModContext(
   });
 
   const store = new ModStoreImpl(modId);
+  const secrets = new BrokerSecretStore(new CredentialBroker(modId), "runtime-secret");
 
   const dispatch = DispatchBusImpl.getInstance();
 
@@ -41,6 +43,7 @@ export async function createModContext(
     logger,
     anima,
     store,
+    secrets,
     dispatch,
   };
 }

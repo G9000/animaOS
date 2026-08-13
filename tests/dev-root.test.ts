@@ -173,14 +173,31 @@ describe("dev session continuity", () => {
         ANIMA_DEV_SESSION_KEY: "stale-key",
       };
       expect(
-        buildTargetEnvironment("server", baseEnv, continuity.serverEnv),
-      ).toEqual({ PATH: "test-path", ...continuity.serverEnv });
+        buildTargetEnvironment(
+          "server",
+          baseEnv,
+          continuity.serverEnv,
+          "broker-secret",
+        ),
+      ).toEqual({
+        PATH: "test-path",
+        ...continuity.serverEnv,
+        ANIMA_CREDENTIAL_BROKER_SECRET: "broker-secret",
+      });
       expect(
         buildTargetEnvironment("desktop", baseEnv, continuity.serverEnv),
       ).toEqual({ PATH: "test-path" });
       expect(
-        buildTargetEnvironment("anima-mod", baseEnv, continuity.serverEnv),
-      ).toEqual({ PATH: "test-path" });
+        buildTargetEnvironment(
+          "anima-mod",
+          baseEnv,
+          continuity.serverEnv,
+          "broker-secret",
+        ),
+      ).toEqual({
+        PATH: "test-path",
+        ANIMA_CREDENTIAL_BROKER_SECRET: "broker-secret",
+      });
       expect(baseEnv).toEqual({
         PATH: "test-path",
         ANIMA_DEV_SESSION_STATE_PATH: "stale-state",

@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import importlib.util
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,6 +23,7 @@ from .api.routes.consciousness import router as consciousness_router
 from .api.routes.core import router as core_router
 from .api.routes.corefs import router as corefs_router
 from .api.routes.corefs_security import router as corefs_security_router
+from .api.routes.credentials import router as credentials_router
 from .api.routes.db import router as db_router
 from .api.routes.diary import router as diary_router
 from .api.routes.documents import router as documents_router
@@ -82,8 +84,16 @@ def get_cors_origins() -> list[str]:
 
 
 # Paths exempt from sidecar-nonce validation.
-_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health", "/api/health/detailed",
-                                "/api/health/check", "/api/health/logs", "/api/health/logs/summary"})
+_NONCE_EXEMPT_PATHS = frozenset(
+    {
+        "/health",
+        "/api/health",
+        "/api/health/detailed",
+        "/api/health/check",
+        "/api/health/logs",
+        "/api/health/logs/summary",
+    }
+)
 _NONCE_EXEMPT_PREFIXES = ("/api/health/",)
 logger = logging.getLogger(__name__)
 _active_runtime_registry: RuntimeInstanceRegistry | None = None
@@ -130,9 +140,7 @@ def _claim_runtime_instance(
         if configured_health_logs.is_relative_to(settings.data_dir.resolve()):
             registry.release(binding)
             settings.runtime_instance_data_dir = ""
-            raise RuntimeError(
-                "ANIMA_HEALTH_LOG_DIR must not resolve inside the portable Core"
-            )
+            raise RuntimeError("ANIMA_HEALTH_LOG_DIR must not resolve inside the portable Core")
     else:
         settings.health_log_dir = str(binding.health_log_dir)
         _active_runtime_default_health_log = True
@@ -161,9 +169,7 @@ def _start_embedded_pg() -> EmbeddedPG | None:
         return None
     binding = _claim_runtime_instance()
     if importlib.util.find_spec("pgserver") is None:
-        logger.warning(
-            "pgserver is not installed; skipping embedded runtime PostgreSQL startup."
-        )
+        logger.warning("pgserver is not installed; skipping embedded runtime PostgreSQL startup.")
         return None
 
     if settings.runtime_pg_data_dir:
@@ -182,23 +188,21 @@ def _start_embedded_pg() -> EmbeddedPG | None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    from .services.credentials import provision_broker_bootstrap_secret
     from .services.sessions import unlock_session_store
 
+    provision_broker_bootstrap_secret(os.environ.get("ANIMA_CREDENTIAL_BROKER_SECRET"))
     unlock_session_store.start()
     embedded_pg: EmbeddedPG | None = None
     runtime_binding: RuntimeInstanceBinding | None = None
     sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
-        runtime_binding = _claim_runtime_instance(
-            runtime_url=settings.runtime_database_url or None
-        )
+        runtime_binding = _claim_runtime_instance(runtime_url=settings.runtime_database_url or None)
         embedded_pg = _start_embedded_pg()
         load_persisted_runtime_settings()
         runtime_url = (
-            embedded_pg.database_url
-            if embedded_pg is not None
-            else settings.runtime_database_url
+            embedded_pg.database_url if embedded_pg is not None else settings.runtime_database_url
         )
         if runtime_url:
             init_runtime_engine(
@@ -250,6 +254,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     health_logger: EventLogger | None = None
 
     try:
+
         async def _periodic_inactivity_sweep() -> None:
             while True:
                 await asyncio.sleep(60)
@@ -314,9 +319,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         # local reranker when enabled) off the chat/request path so the
         # first query after startup doesn't pay for the load. Cancelled on
         # shutdown like the sweep tasks above; never raises.
-        sweep_tasks.append(
-            asyncio.create_task(asyncio.to_thread(warm_up_retrieval_models))
-        )
+        sweep_tasks.append(asyncio.create_task(asyncio.to_thread(warm_up_retrieval_models)))
 
         # Install structured health event logger
         health_logger = get_event_logger()
@@ -329,6 +332,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         from .services.agent.consolidation import drain_background_memory_tasks
         from .services.agent.reflection import cancel_pending_reflection
+
         try:
             # Flush pending Soul Writer candidates for all active users unless
             # background memory work was explicitly disabled for this process.
@@ -341,19 +345,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
                     rt_factory = get_runtime_session_factory()
                     with rt_factory() as rt_db:
-                        active_user_ids = list(rt_db.scalars(
-                            _sel(RuntimeThread.user_id).where(
-                                RuntimeThread.status == "active")
-                        ).all())
+                        active_user_ids = list(
+                            rt_db.scalars(
+                                _sel(RuntimeThread.user_id).where(RuntimeThread.status == "active")
+                            ).all()
+                        )
                     for uid in set(active_user_ids):
                         try:
                             await run_soul_writer(uid)
                         except Exception:
-                            logger.debug(
-                                "Shutdown Soul Writer failed for user %s", uid)
+                            logger.debug("Shutdown Soul Writer failed for user %s", uid)
                 except Exception:
-                    logger.debug(
-                        "Shutdown Soul Writer sweep failed", exc_info=True)
+                    logger.debug("Shutdown Soul Writer sweep failed", exc_info=True)
 
             for task in sweep_tasks:
                 task.cancel()
@@ -389,14 +392,17 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
     def __init__(self, app) -> None:
         super().__init__(app)
         if not settings.sidecar_nonce and settings.app_env != "development":
-            logger.warning(
-                "Sidecar nonce is not configured in non-development environment")
+            logger.warning("Sidecar nonce is not configured in non-development environment")
 
     # type: ignore[override]
     async def dispatch(self, request: Request, call_next):
         nonce = settings.sidecar_nonce
         path = request.url.path
-        if nonce and path not in _NONCE_EXEMPT_PATHS and not path.startswith(_NONCE_EXEMPT_PREFIXES):
+        if (
+            nonce
+            and path not in _NONCE_EXEMPT_PATHS
+            and not path.startswith(_NONCE_EXEMPT_PREFIXES)
+        ):
             header_value = (request.headers.get("x-anima-nonce") or "").strip()
             if not hmac.compare_digest(header_value, nonce):
                 return JSONResponse(
@@ -413,11 +419,9 @@ def create_app() -> FastAPI:
         and not settings.sidecar_nonce
         and settings.app_env != "development"
     ):
-        raise RuntimeError(
-            "Sidecar nonce must be configured when encryption is required.")
+        raise RuntimeError("Sidecar nonce must be configured when encryption is required.")
     if not settings.sidecar_nonce and settings.app_env != "development":
-        logger.warning(
-            "Sidecar nonce is not configured in non-development environment")
+        logger.warning("Sidecar nonce is not configured in non-development environment")
     if not acquire_core_lock():
         raise RuntimeError("Core is already open in another process")
     ensure_core_manifest()
@@ -446,10 +450,15 @@ def create_app() -> FastAPI:
             content: dict[str, object] = {"error": exc.detail}
         else:
             content = {"error": "Request failed", "details": exc.detail}
-        health_emit("http", "error_response", "warn", data={
-            "status_code": exc.status_code,
-            "detail": str(exc.detail)[:200],
-        })
+        health_emit(
+            "http",
+            "error_response",
+            "warn",
+            data={
+                "status_code": exc.status_code,
+                "detail": str(exc.detail)[:200],
+            },
+        )
         return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RequestValidationError)
@@ -493,6 +502,7 @@ def create_app() -> FastAPI:
     app.include_router(core_router)
     app.include_router(corefs_router)
     app.include_router(corefs_security_router)
+    app.include_router(credentials_router)
     app.include_router(db_router)
     app.include_router(diary_router)
     app.include_router(documents_router)
