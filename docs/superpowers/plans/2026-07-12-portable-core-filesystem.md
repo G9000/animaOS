@@ -782,11 +782,11 @@ git -c commit.gpgsign=false commit -m "content: move user assets into encrypted 
 - Test: `apps/anima-mod/tests/management/config-service.test.ts`
 - Test: `apps/anima-mod/mods/google/mod.test.ts`
 
-- [ ] **Step 1: Generate the persisted-setting inventory fixture**
+- [x] **Step 1: Generate the persisted-setting inventory fixture**
 
 Create a checked row/field matrix for every SQLCipher model/table/column, runtime table/column, localStorage/sessionStorage key, persisted server setting, Tauri/daemon app-data file, anima-mod SQLite/YAML/store value, and credential call. At minimum classify: `users` fields -> account profile/opaque Soul owner; `user_keys` -> manifest roots or `soul_keyslots`; `presence_configs` flags/custom instruction -> portable preferences; Telegram/Discord chat/channel links -> machine-local integration registry; provider/model/URLs -> device runtime config; provider/connector/daemon/OAuth secrets -> OS credentials; durable AgentProfile/SelfModel/memory/emotional/growth fields -> Soul. Treat mixed rows field-by-field: `AgentProfile.setup_complete` is portable onboarding/app state, while `SelfModelBlock.needs_regeneration` and `MemoryEpisode.needs_regeneration` are disposable runtime work flags rather than Soul identity. Fail tests when any persisted key, table, or column is absent from the approved matrix.
 
-- [ ] **Step 2: Add failing account/task/preference migration tests**
+- [x] **Step 2: Add failing account/task/preference migration tests**
 
 Cover encrypted account profile, opaque owner ID, no plaintext username index, task JSON objects, portable preference mapping, device-local exclusions, and session-only state.
 

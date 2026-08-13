@@ -561,6 +561,13 @@ mod python {
             anima_corefs::crypto::ObjectKind::MessageSegment => {
                 anima_corefs::transaction::MAX_MESSAGE_SEGMENT_BYTES
             }
+            anima_corefs::crypto::ObjectKind::AccountProfile => {
+                anima_corefs::transaction::MAX_ACCOUNT_PROFILE_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Preferences => {
+                anima_corefs::transaction::MAX_PREFERENCES_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Task => anima_corefs::transaction::MAX_TASK_BYTES,
             _ => 0,
         };
         if buffer_length > kind_limit {
@@ -1221,6 +1228,8 @@ mod python {
             json_value_to_py(py, value)
         }
 
+        /// Prepare one bounded object, including PCF-007 account, task, and
+        /// preferences documents validated by the native CoreFS converter.
         fn preparation_prepare_object_v1(
             &self,
             py: Python<'_>,

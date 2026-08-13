@@ -31,6 +31,9 @@ const DRAFT_CONTENT_TYPE: &str = "application/vnd.anima.draft+json;version=1";
 const NOTE_CONTENT_TYPE: &str = "application/vnd.anima.note+json;version=1";
 const THREAD_CONTENT_TYPE: &str = "application/vnd.anima.thread+json;version=1";
 const MESSAGE_SEGMENT_CONTENT_TYPE: &str = "application/vnd.anima.message-segment+jsonl;version=1";
+const ACCOUNT_PROFILE_CONTENT_TYPE: &str = "application/vnd.anima.account-profile+json;version=1";
+const PREFERENCES_CONTENT_TYPE: &str = "application/vnd.anima.preferences+json;version=1";
+const TASK_CONTENT_TYPE: &str = "application/vnd.anima.task+json;version=1";
 const REQUIRED_WRITING_ROLES: [&str; 2] = ["core.journal", "core.notes"];
 const ALLOWED_ROLES: [&str; 4] = [
     "core.journal",
@@ -50,6 +53,9 @@ pub const MAX_GALLERY_ASSET_BYTES: usize = 100 * 1024 * 1024;
 pub const MAX_KNOWLEDGE_SOURCE_BYTES: usize = 100 * 1024 * 1024;
 pub const MAX_THREAD_DOCUMENT_BYTES: usize = 1024 * 1024;
 pub const MAX_MESSAGE_SEGMENT_BYTES: usize = 1024 * 1024;
+pub const MAX_ACCOUNT_PROFILE_BYTES: usize = 64 * 1024;
+pub const MAX_PREFERENCES_BYTES: usize = 1024 * 1024;
+pub const MAX_TASK_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ValidationBatchMode {
@@ -956,6 +962,14 @@ fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), Valid
             "non-writing object cannot declare a source character count",
         ));
     }
+    if matches!(
+        object.kind,
+        ObjectKind::AccountProfile | ObjectKind::Preferences | ObjectKind::Task
+    ) {
+        let document: Value = serde_json::from_slice(&object.content)
+            .map_err(|_| ValidationBatchError::Invalid("portable state is not valid JSON"))?;
+        validate_portable_state_document(object, &document)?;
+    }
     Ok(())
 }
 
@@ -980,20 +994,39 @@ pub(super) fn validate_converter_object_metadata(
         ObjectKind::KnowledgeSource => MAX_KNOWLEDGE_SOURCE_BYTES,
         ObjectKind::Thread => MAX_THREAD_DOCUMENT_BYTES,
         ObjectKind::MessageSegment => MAX_MESSAGE_SEGMENT_BYTES,
+        ObjectKind::AccountProfile => MAX_ACCOUNT_PROFILE_BYTES,
+        ObjectKind::Preferences => MAX_PREFERENCES_BYTES,
+        ObjectKind::Task => MAX_TASK_BYTES,
         _ => 0,
     })
     .map_err(|_| ValidationBatchError::Invalid("object body limit overflow"))?;
-    if object.body_length > kind_limit
-        || object.body_length > MAX_BODY_LENGTH
-        || object.content_type.len() > 255
-        || object.created_at.is_empty()
+    if object.body_length > kind_limit {
+        return Err(ValidationBatchError::Invalid(
+            "object metadata or body exceeds kind-specific converter limits",
+        ));
+    }
+    if object.body_length > MAX_BODY_LENGTH {
+        return Err(ValidationBatchError::Invalid(
+            "object body exceeds the CoreFS envelope limit",
+        ));
+    }
+    if object.content_type.len() > 255 {
+        return Err(ValidationBatchError::Invalid(
+            "object content type exceeds the converter limit",
+        ));
+    }
+    if object.created_at.is_empty()
         || object.created_at.len() > 128
         || object.updated_at.is_empty()
         || object.updated_at.len() > 128
-        || object.references.len() > MAX_CATALOG_ENTRIES
     {
         return Err(ValidationBatchError::Invalid(
-            "object metadata or body exceeds kind-specific converter limits",
+            "object timestamp exceeds the converter limit",
+        ));
+    }
+    if object.references.len() > MAX_CATALOG_ENTRIES {
+        return Err(ValidationBatchError::Invalid(
+            "object references exceed the converter limit",
         ));
     }
     let valid_format = match object.kind {
@@ -1021,6 +1054,17 @@ pub(super) fn validate_converter_object_metadata(
         ObjectKind::MessageSegment => {
             object.content_type == MESSAGE_SEGMENT_CONTENT_TYPE
                 && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::AccountProfile => {
+            object.content_type == ACCOUNT_PROFILE_CONTENT_TYPE
+                && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Preferences => {
+            object.content_type == PREFERENCES_CONTENT_TYPE
+                && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::Task => {
+            object.content_type == TASK_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
         }
         _ => false,
     };
@@ -1069,6 +1113,79 @@ pub(super) fn validate_converter_object_metadata(
     }
     validation_metadata(object.graph_metadata)?;
     Ok(())
+}
+
+fn validate_portable_state_document(
+    object: &ValidationBatchObject,
+    document: &Value,
+) -> Result<(), ValidationBatchError> {
+    let value = document.as_object().ok_or(ValidationBatchError::Invalid(
+        "portable state must be a JSON object",
+    ))?;
+    let expected_format = match object.kind {
+        ObjectKind::AccountProfile => "anima.account-profile",
+        ObjectKind::Preferences => "anima.preferences",
+        ObjectKind::Task => "anima.task",
+        _ => {
+            return Err(ValidationBatchError::Invalid(
+                "unsupported portable state kind",
+            ))
+        }
+    };
+    if value.get("format").and_then(Value::as_str) != Some(expected_format)
+        || value.get("version").and_then(Value::as_u64) != Some(1)
+        || value.get("stableId").and_then(Value::as_str) != Some(object.stable_id.as_str())
+    {
+        return Err(ValidationBatchError::Invalid(
+            "portable state identity or version is invalid",
+        ));
+    }
+
+    match object.kind {
+        ObjectKind::AccountProfile => {
+            if !has_nonempty_string(value, "ownerId")
+                || !has_nonempty_string(value, "username")
+                || !has_nonempty_string(value, "displayName")
+                || value.get("legacyUserId").and_then(Value::as_u64).is_none()
+                || !value.get("setupComplete").is_some_and(Value::is_boolean)
+                || value.contains_key("password")
+                || value.contains_key("passwordHash")
+                || value.contains_key("password_hash")
+            {
+                return Err(ValidationBatchError::Invalid(
+                    "account profile fields are invalid",
+                ));
+            }
+        }
+        ObjectKind::Preferences => {
+            if !has_nonempty_string(value, "ownerId")
+                || !value.get("values").is_some_and(Value::is_object)
+            {
+                return Err(ValidationBatchError::Invalid(
+                    "preferences fields are invalid",
+                ));
+            }
+        }
+        ObjectKind::Task => {
+            let priority = value.get("priority").and_then(Value::as_u64);
+            if value.get("legacyId").and_then(Value::as_u64).is_none()
+                || !has_nonempty_string(value, "text")
+                || !value.get("done").is_some_and(Value::is_boolean)
+                || !priority.is_some_and(|value| (1..=3).contains(&value))
+            {
+                return Err(ValidationBatchError::Invalid("task fields are invalid"));
+            }
+        }
+        _ => unreachable!("portable state kinds were matched above"),
+    }
+    Ok(())
+}
+
+fn has_nonempty_string(value: &serde_json::Map<String, Value>, key: &str) -> bool {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.is_empty())
 }
 
 pub(super) fn validate_converter_graph_relationships<'a, I>(
@@ -1252,6 +1369,73 @@ mod tests {
         assert!(validate_writing_character_counts(7, 42, 7, 6).is_ok());
         assert!(validate_writing_character_counts(8, 8, 7, 6).is_err());
         assert!(validate_writing_character_counts(7, 43, 7, 6).is_err());
+    }
+
+    #[test]
+    fn validates_bounded_account_preferences_and_task_documents() {
+        let parent_id = native_id("folder", "root");
+        let fixtures = [
+            (
+                ObjectKind::AccountProfile,
+                ACCOUNT_PROFILE_CONTENT_TYPE,
+                native_id("account-profile", "owner"),
+                serde_json::json!({
+                    "format": "anima.account-profile",
+                    "version": 1,
+                    "ownerId": "owner",
+                    "legacyUserId": 7,
+                    "username": "private",
+                    "displayName": "Private",
+                    "setupComplete": true,
+                }),
+            ),
+            (
+                ObjectKind::Preferences,
+                PREFERENCES_CONTENT_TYPE,
+                native_id("preferences", "owner"),
+                serde_json::json!({
+                    "format": "anima.preferences",
+                    "version": 1,
+                    "ownerId": "owner",
+                    "values": {"theme": "dark"},
+                }),
+            ),
+            (
+                ObjectKind::Task,
+                TASK_CONTENT_TYPE,
+                native_id("task", "7"),
+                serde_json::json!({
+                    "format": "anima.task",
+                    "version": 1,
+                    "legacyId": 7,
+                    "text": "Ship Core",
+                    "done": false,
+                    "priority": 3,
+                }),
+            ),
+        ];
+        for (kind, content_type, stable_id, mut body) in fixtures {
+            body.as_object_mut()
+                .unwrap()
+                .insert("stableId".into(), stable_id.clone().into());
+            let object = ValidationBatchObject {
+                stable_id,
+                parent_id: parent_id.clone(),
+                name: format!("{}.json", kind.as_str()),
+                kind,
+                content_type: content_type.into(),
+                body_encoding: BodyEncoding::Utf8,
+                content: serde_json::to_vec(&body).unwrap(),
+                created_at: "2026-08-13T00:00:00Z".into(),
+                updated_at: "2026-08-13T00:00:00Z".into(),
+                source_character_count: None,
+                expected_revision: None,
+                references: vec![],
+                policy: ValidationBatchPolicy::Inherit,
+                metadata: BTreeMap::new(),
+            };
+            validate_kind_and_content(&object).unwrap();
+        }
     }
 
     fn batch(mode: ValidationBatchMode, content: &[u8], revision: Option<u64>) -> ValidationBatch {

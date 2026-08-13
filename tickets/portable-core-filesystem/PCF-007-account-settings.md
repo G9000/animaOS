@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 15:58 MYT
+- Updated: 2026-08-13 16:26 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -46,13 +46,28 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   `031f5857`. PCF-004 and PCF-006 are both done, no competing claim is visible,
   and the paid PCF-008 package workflow remains triggerless. No external action
   is authorized for this ticket.
+- 2026-08-13 16:26 MYT - Completed Task 7 Steps 1-2 locally. The checked
+  inventory now classifies every SQLCipher/Runtime field plus browser, app-data,
+  anima-mod, runtime-config, and credential state. Native and Python converters
+  prepare bounded encrypted account-profile, preferences, and task objects while
+  excluding the password hash and plaintext username index. Legacy SQL remains
+  authoritative until the PCF-008 cutover marker. No external action was taken.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `uv run pytest apps/server/tests/test_corefs_account_migration.py apps/server/tests/test_corefs_preferences.py apps/server/tests/test_corefs_state_inventory.py -q` (`10 passed`)
+  - affected CoreFS migration regression band (`73 passed`)
+  - `cargo test -p anima-corefs validates_bounded_account_preferences_and_task_documents` (`1 passed`)
+  - focused Ruff, desktop storage-classification (`2 passed`), Rust formatting, and diff hygiene passed
 - Changed paths:
-  - none
+  - `docs/architecture/system/portable-state-inventory.md`
+  - `apps/server/src/anima_server/services/corefs/{formats.py,writing_source.py}`
+  - `packages/anima-corefs/src/{transaction.rs,transaction/converter.rs}`
+  - `packages/anima-core/src/ffi.rs`
+  - `apps/server/tests/test_corefs_{account_migration,preferences,state_inventory}.py`
+  - `apps/desktop/tests/settings-storage-classification.test.ts`
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.
+  - Steps 3-9 remain open; this checkpoint does not activate CoreFS authority.

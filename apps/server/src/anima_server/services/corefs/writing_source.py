@@ -13,14 +13,21 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.services.corefs.formats import (
+    ACCOUNT_PROFILE_CONTENT_TYPE,
     DIARY_CONTENT_TYPE,
     DRAFT_CONTENT_TYPE,
     NOTE_CONTENT_TYPE,
+    PREFERENCES_CONTENT_TYPE,
+    TASK_CONTENT_TYPE,
     decode_draft_document,
     decode_note_document,
+    decode_preferences_document,
+    encode_account_profile_document,
     encode_diary_document,
     encode_draft_document,
     encode_note_document,
+    encode_preferences_document,
+    encode_task_document,
 )
 
 _SOURCE_SCHEMA_VERSION = 1
@@ -33,8 +40,11 @@ _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 BodySource = Literal[
     "sql_attachment",
+    "sql_account",
     "sql_diary",
     "sql_inline",
+    "sql_preferences",
+    "sql_task",
     "prepared",
     "staged_draft",
     "staged_draft_inline",
@@ -165,6 +175,19 @@ class _AttachmentMetadata:
     created_at: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class _PortableStateSource:
+    stable_id: str
+    kind: Literal["account-profile", "preferences", "task"]
+    name: str
+    content_type: str
+    body: bytes
+    created_at: str
+    updated_at: str
+    source_key: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
 def read_writing_source_generation(db: Session, *, user_id: int) -> int:
     from anima_server.models import CoreFSWritingSourceState
 
@@ -245,12 +268,15 @@ def build_writing_source_inventory(
         current_objects = current.objects
 
     allowed_kinds = {
+        "account-profile",
         "diary",
         "attachment",
         "draft",
         "gallery-asset",
         "knowledge-source",
         "note",
+        "preferences",
+        "task",
         "thread",
         "message-segment",
     }
@@ -269,12 +295,8 @@ def build_writing_source_inventory(
     root = next((item for item in current_folders if item.parent_id is None), None)
     journal = preserved_roles.get("core.journal")
     notes = preserved_roles.get("core.notes")
-    supplemental_roles = {
-        item.role: item for item in supplemental_folders if item.role is not None
-    }
-    if len(supplemental_roles) != sum(
-        item.role is not None for item in supplemental_folders
-    ):
+    supplemental_roles = {item.role: item for item in supplemental_folders if item.role is not None}
+    if len(supplemental_roles) != sum(item.role is not None for item in supplemental_folders):
         raise DiaryMigrationError("Supplemental source contains duplicate stable roles.")
     if set(supplemental_roles) - {"core.conversations", "core.gallery"}:
         raise DiaryMigrationError("Supplemental source contains an unsupported stable role.")
@@ -493,9 +515,7 @@ def build_writing_source_inventory(
             del decoded_note
         del body
 
-    supplemental_ids = {
-        item.descriptor.stable_id for item in supplemental_objects
-    }
+    supplemental_ids = {item.descriptor.stable_id for item in supplemental_objects}
     for item in sorted(current_objects, key=lambda value: value.stable_id):
         is_gallery_object = item.kind in {"gallery-asset", "knowledge-source"} or (
             item.kind == "attachment" and item.parent_id == gallery_id
@@ -545,15 +565,45 @@ def build_writing_source_inventory(
         del body
 
     referenced_current_attachments.update(
-        reference
-        for reference in conversation_references
-        if reference in current_attachments
+        reference for reference in conversation_references if reference in current_attachments
     )
     for attachment_id in sorted(referenced_current_attachments):
         item = current_attachments.get(attachment_id)
         if item is None:
             raise DiaryMigrationError("Prepared draft contains a dangling attachment reference.")
         add(_prepared_descriptor(item, revision=item.revision + 1))
+
+    portable_state_sources = _account_settings_sources(
+        session=session,
+        db=db,
+        current_objects=current_objects,
+    )
+    for source in portable_state_sources:
+        body_digest = hashlib.sha256(source.body).hexdigest()
+        add(
+            WritingSourceObjectDescriptor(
+                stable_id=source.stable_id,
+                parent_id=root_id,
+                name=source.name,
+                kind=source.kind,
+                content_type=source.content_type,
+                body_encoding="utf-8",
+                body_length=len(source.body),
+                content_sha256=body_digest,
+                source_fingerprint_sha256=body_digest,
+                created_at=source.created_at,
+                updated_at=source.updated_at,
+                revision=current_revisions.get(source.stable_id, 0) + 1,
+                metadata=source.metadata,
+                body_source={
+                    "account-profile": "sql_account",
+                    "preferences": "sql_preferences",
+                    "task": "sql_task",
+                }[source.kind],
+                source_key=source.source_key,
+            ),
+            replace_existing=True,
+        )
 
     entry_ids = tuple(
         int(value)
@@ -863,9 +913,7 @@ def build_writing_source_inventory(
         }:
             raise DiaryMigrationError("Supplemental source contains an unsupported object kind.")
         allowed_parents = (
-            {conversations_id}
-            if descriptor.kind in {"thread", "message-segment"}
-            else {gallery_id}
+            {conversations_id} if descriptor.kind in {"thread", "message-segment"} else {gallery_id}
         )
         if descriptor.kind == "attachment":
             allowed_parents.add(conversations_id)
@@ -878,9 +926,11 @@ def build_writing_source_inventory(
             revision=current_revisions.get(descriptor.stable_id, 0) + 1,
         )
         if descriptor.body_source == "supplemental":
-            if body is None or len(body) != descriptor.body_length or hashlib.sha256(
-                body
-            ).hexdigest() != descriptor.content_sha256:
+            if (
+                body is None
+                or len(body) != descriptor.body_length
+                or hashlib.sha256(body).hexdigest() != descriptor.content_sha256
+            ):
                 raise DiaryMigrationError("Supplemental body identity is invalid.")
         elif body is not None or not descriptor.source_key:
             raise DiaryMigrationError("Supplemental path source identity is invalid.")
@@ -903,6 +953,9 @@ def build_writing_source_inventory(
         "messageSegments": sum(item.kind == "message-segment" for item in objects),
         "galleryAssets": sum(item.kind == "gallery-asset" for item in objects),
         "knowledgeSources": sum(item.kind == "knowledge-source" for item in objects),
+        "accountProfiles": sum(item.kind == "account-profile" for item in objects),
+        "preferences": sum(item.kind == "preferences" for item in objects),
+        "tasks": sum(item.kind == "task" for item in objects),
         "conversationRoot": int(conversations is not None),
         "galleryRoot": int(gallery is not None),
     }
@@ -944,6 +997,7 @@ def iter_writing_source_objects(
     notes = {item.id: item for item in staged_notes}
     supplemental = {item.descriptor.stable_id: item for item in supplemental_objects}
     prepared = None
+    portable_state_bodies: dict[str, bytes] | None = None
     attachments_by_entry = _attachment_metadata_by_entry(db, user_id=session.user_id)
 
     for descriptor in inventory.objects:
@@ -960,6 +1014,23 @@ def iter_writing_source_objects(
             decrypted = read_attachment_blob(user_id=session.user_id, attachment=row)
             body = decrypted.data
             db.expunge(row)
+        elif descriptor.body_source in {"sql_account", "sql_preferences", "sql_task"}:
+            if portable_state_bodies is None:
+                try:
+                    current_objects = read_prepared_writing_snapshot(session=session).objects
+                except ValueError as exc:
+                    if str(exc) != "CoreFS validation snapshot is missing":
+                        raise
+                    current_objects = ()
+                portable_state_bodies = {
+                    source.stable_id: source.body
+                    for source in _account_settings_sources(
+                        session=session,
+                        db=db,
+                        current_objects=current_objects,
+                    )
+                }
+            body = portable_state_bodies.get(descriptor.stable_id, b"")
         elif descriptor.body_source in {"sql_diary", "sql_inline"}:
             row = db.scalar(
                 select(DiaryEntry).where(
@@ -1089,6 +1160,153 @@ def iter_writing_source_objects(
         elif descriptor.body_source in {"staged_draft", "staged_draft_inline"}:
             del encoded
             del captured
+
+
+def _account_settings_sources(
+    *,
+    session: Any,
+    db: Session,
+    current_objects: Iterable[Any],
+) -> tuple[_PortableStateSource, ...]:
+    """Project legacy-authoritative account/settings rows into canonical bodies.
+
+    Until PCF-008 flips global authority, SQLCipher remains the write source.
+    Existing portable preference fields imported by the desktop are preserved,
+    while the legacy presence subsection is deterministically refreshed.
+    """
+    from anima_server.models import AgentProfile, Task, User
+    from anima_server.services.core import get_owner_id
+    from anima_server.services.corefs.diary_migration import (
+        DiaryMigrationError,
+        migration_opaque_id,
+        read_prepared_writing_body,
+    )
+    from anima_server.services.presence_config import get_presence_config_values
+
+    user = db.get(User, session.user_id)
+    if user is None:
+        return ()
+    owner_id = get_owner_id()
+    if not owner_id:
+        raise DiaryMigrationError("Account migration requires an opaque Core owner ID.")
+
+    account_id = migration_opaque_id("account-profile", owner_id)
+    preferences_id = migration_opaque_id("preferences", owner_id)
+    current_by_id = {item.stable_id: item for item in current_objects}
+    for item in current_objects:
+        if item.kind == "account-profile" and item.stable_id != account_id:
+            raise DiaryMigrationError("Core contains a conflicting account-profile object.")
+        if item.kind == "preferences" and item.stable_id != preferences_id:
+            raise DiaryMigrationError("Core contains a conflicting preferences object.")
+
+    profile = db.scalar(select(AgentProfile).where(AgentProfile.user_id == session.user_id))
+    created_at = _timestamp(user.created_at)
+    updated_at = _timestamp(user.updated_at)
+    if created_at is None or updated_at is None:
+        raise DiaryMigrationError("Legacy account timestamps are incomplete.")
+    account_body = encode_account_profile_document(
+        stable_id=account_id,
+        owner_id=owner_id,
+        legacy_user_id=int(user.id),
+        username=str(user.username),
+        display_name=str(user.display_name),
+        gender=user.gender,
+        age=user.age,
+        birthday=user.birthday,
+        setup_complete=bool(profile.setup_complete) if profile is not None else False,
+        created_at=created_at,
+        updated_at=updated_at,
+    )
+
+    existing_values: dict[str, Any] = {}
+    existing_preferences = current_by_id.get(preferences_id)
+    if existing_preferences is not None:
+        body = read_prepared_writing_body(session=session, item=existing_preferences)
+        decoded = decode_preferences_document(body)
+        if decoded.owner_id != owner_id:
+            raise DiaryMigrationError("Prepared preferences owner does not match this Core.")
+        existing_values.update(decoded.values)
+        del body
+
+    presence = get_presence_config_values(db, session.user_id)
+    existing_values["presence"] = {
+        "enabled": presence.enabled,
+        "mainChatEnabled": presence.main_chat_enabled,
+        "homeGreetingContextEnabled": presence.home_greeting_context_enabled,
+        "taskNudgesEnabled": presence.task_nudges_enabled,
+        "memoryNudgesEnabled": presence.memory_nudges_enabled,
+        "checkInNudgesEnabled": presence.checkin_nudges_enabled,
+        "customInstruction": presence.custom_instruction,
+        "initiativeEnabled": presence.initiative_enabled,
+        "quietHoursStart": presence.quiet_hours_start,
+        "quietHoursEnd": presence.quiet_hours_end,
+        "dreamSharing": presence.dream_sharing,
+    }
+    preferences_updated_at = updated_at
+    if existing_preferences is not None and existing_preferences.updated_at > updated_at:
+        preferences_updated_at = existing_preferences.updated_at
+    preferences_body = encode_preferences_document(
+        stable_id=preferences_id,
+        owner_id=owner_id,
+        values=existing_values,
+        updated_at=preferences_updated_at,
+    )
+
+    sources = [
+        _PortableStateSource(
+            stable_id=account_id,
+            kind="account-profile",
+            name="account-profile.json",
+            content_type=ACCOUNT_PROFILE_CONTENT_TYPE,
+            body=account_body,
+            created_at=created_at,
+            updated_at=updated_at,
+            source_key=str(user.id),
+            metadata={"ownerId": owner_id},
+        ),
+        _PortableStateSource(
+            stable_id=preferences_id,
+            kind="preferences",
+            name="preferences.json",
+            content_type=PREFERENCES_CONTENT_TYPE,
+            body=preferences_body,
+            created_at=created_at,
+            updated_at=preferences_updated_at,
+            source_key=str(user.id),
+            metadata={"ownerId": owner_id},
+        ),
+    ]
+    tasks = db.scalars(select(Task).where(Task.user_id == session.user_id).order_by(Task.id)).all()
+    for task in tasks:
+        task_created_at = _timestamp(task.created_at)
+        task_updated_at = _timestamp(task.updated_at)
+        if task_created_at is None or task_updated_at is None:
+            raise DiaryMigrationError("Legacy task timestamps are incomplete.")
+        stable_id = migration_opaque_id("task", str(task.id))
+        sources.append(
+            _PortableStateSource(
+                stable_id=stable_id,
+                kind="task",
+                name=f"task-{task.id}.json",
+                content_type=TASK_CONTENT_TYPE,
+                body=encode_task_document(
+                    stable_id=stable_id,
+                    legacy_id=int(task.id),
+                    text=str(task.text),
+                    done=bool(task.done),
+                    priority=int(task.priority),
+                    due_date=task.due_date,
+                    completed_at=_timestamp(task.completed_at),
+                    created_at=task_created_at,
+                    updated_at=task_updated_at,
+                ),
+                created_at=task_created_at,
+                updated_at=task_updated_at,
+                source_key=str(task.id),
+                metadata={"legacyId": int(task.id)},
+            )
+        )
+    return tuple(sources)
 
 
 def prepare_writing_source_catalog(
@@ -1683,9 +1901,7 @@ def _abandon(native: Any, keys: Any, status: dict[str, object]) -> None:
     )
 
 
-def _ready_validation_head(
-    status: dict[str, object], *, intended: bool
-) -> tuple[int, str] | None:
+def _ready_validation_head(status: dict[str, object], *, intended: bool) -> tuple[int, str] | None:
     from anima_server.services.corefs.diary_migration import DiaryMigrationError
 
     prefix = "intended" if intended else "expected"
@@ -1729,9 +1945,7 @@ def _reconcile_ready_source_drift(
     if current == expected:
         return "unpublished"
     if current != intended:
-        raise DiaryMigrationError(
-            "Current validation head conflicts with the ready preparation."
-        )
+        raise DiaryMigrationError("Current validation head conflicts with the ready preparation.")
 
     receipt = dict(
         native.preparation_finalize_v1(
@@ -1851,9 +2065,7 @@ def _inventory_matches_current(*, session: Any, inventory: WritingSourceInventor
     for descriptor in inventory.objects:
         # Exact no-op acceptance includes authenticated, bounded envelope/body
         # verification; catalog metadata alone cannot prove object-file integrity.
-        body = read_prepared_writing_body(
-            session=session, item=current_by_id[descriptor.stable_id]
-        )
+        body = read_prepared_writing_body(session=session, item=current_by_id[descriptor.stable_id])
         del body
     return True
 

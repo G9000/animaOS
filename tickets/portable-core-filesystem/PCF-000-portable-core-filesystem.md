@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 15:58 MYT
+- Updated: 2026-08-13 16:26 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -371,6 +371,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 12:53 MYT - Dependency recomputation after PCF-011 completion found no eligible child. PCF-004 and this parent are now `blocked` on the user's intentionally cost-deferred Windows/macOS/DEB/RPM signed replacement-install results and artifact digests. PCF-007 depends on PCF-004; PCF-008 depends on PCF-007; PCF-009 and PCF-010 require PCF-008 plus their separate observation/backup/approval gates. The protected workflow remains triggerless/manual-only and was not dispatched. Clearance requires later authorization for funded execution or equivalent authenticated four-platform evidence.
 - 2026-08-13 15:54 MYT - User approved moving PCF-004's cost-bearing final signed-package executions into PCF-008 as a mandatory pre-cutover/first-release gate, without waiving them. Cleared PCF-004's blocker and restored this parent plus its child row to `in_progress` for closeout. PCF-008 now explicitly requires all four protected native results and exact artifact digests; the workflow remains triggerless and no external action was authorized.
 - 2026-08-13 15:58 MYT - Completed PCF-004 as the fully implemented, locally validated, independently reviewed diary/notes slice under the user-approved evidence sequencing; final signed Windows/macOS/DEB/RPM execution remains mandatory in PCF-008. In the same dependency transaction, claimed now-eligible PCF-007 for Codex on local branch `codex/pcf-007-account-settings` from `031f5857` and synchronized its row to `in_progress`. Parent ownership is unchanged, the workflow remains triggerless, and no external action was authorized.
+- 2026-08-13 16:26 MYT - PCF-007 Steps 1-2 completed locally with an exact persisted-state classification and bounded encrypted account-profile/preferences/task conversion. Focused Python passed `10`, the affected CoreFS migration band passed `73`, native converter coverage and desktop storage classification passed, and lint/format/diff hygiene is clean. PCF-007 remains `in_progress` on credentials, unlock/task/preference rewiring, secret/config migration, client grants, and neutral pre-unlock behavior; no external action was taken.
 
 ## Validation
 
