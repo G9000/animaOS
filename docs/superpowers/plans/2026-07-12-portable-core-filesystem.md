@@ -910,8 +910,13 @@ inventory/footer with one monotonic nonce sequence, publishes create-only
 outside the portable Core, and re-verifies the final bundle. Durable partial
 publication resumes without overwrite. Plaintext retirement independently
 requires forward-only CoreFS authority, stopped PostgreSQL, the authenticated
-bundle, and a present fresh Runtime database. Automatic stop/switch/retire
-orchestration remains open, so this step is intentionally not checked complete.
+bundle, and a present fresh Runtime database. On the next startup after the
+marker, embedded Runtime recovery runs before PostgreSQL selection, starts the
+fresh data directory instead of the retained source, verifies its instance
+binding and schema, and only then retires plaintext; an explicitly configured
+fresh Runtime follows the same post-binding gate. First-mutation shutdown/
+restart coordination remains open, so this step is intentionally not checked
+complete.
 
 Before enabling writes, create and verify an authenticated encrypted recovery bundle of `legacy-runtime-source` outside `.anima/` while retaining plaintext rollback source. After the marked first mutation makes rollback forward-only, stop the legacy server, switch to the fresh runtime, delete the plaintext legacy directory, and retain only the encrypted recovery bundle for the later cleanup release. A moved Core never includes either runtime form.
 

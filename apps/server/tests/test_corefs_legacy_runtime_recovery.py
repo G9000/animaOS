@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -14,8 +15,10 @@ from anima_server.services.corefs.instance_registry import (
 )
 from anima_server.services.corefs.legacy_runtime_recovery import (
     LegacyRuntimeRecoveryError,
+    finalize_runtime_transition_after_startup,
     prepare_legacy_runtime_recovery_bundle,
     retire_legacy_runtime_plaintext,
+    select_runtime_pg_data_dir_for_startup,
     verify_legacy_runtime_recovery_bundle,
 )
 from anima_server.services.credentials import CredentialStore, MemoryCredentialBackend
@@ -48,7 +51,7 @@ def test_recovery_bundle_is_encrypted_verified_and_outside_portable_core(
 
     bundle = prepare_legacy_runtime_recovery_bundle(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
     verified = verify_legacy_runtime_recovery_bundle(binding, store=store)
@@ -72,7 +75,7 @@ def test_recovery_bundle_tampering_fails_closed_without_touching_source(
     store = CredentialStore(MemoryCredentialBackend())
     bundle = prepare_legacy_runtime_recovery_bundle(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
     encoded = bytearray(bundle.path.read_bytes())
@@ -98,7 +101,7 @@ def test_source_change_after_inventory_removes_unpublished_partial(
     with pytest.raises(LegacyRuntimeRecoveryError, match="source changed"):
         prepare_legacy_runtime_recovery_bundle(
             binding,
-            postgres_running=False,
+            legacy_postgres_running=False,
             store=store,
             boundary_hook=mutate_after_manifest,
         )
@@ -109,6 +112,25 @@ def test_source_change_after_inventory_removes_unpublished_partial(
     assert (binding.legacy_pg_data_dir / "PG_VERSION").read_text(encoding="ascii") == "16"
 
 
+def test_live_postmaster_pid_fails_closed_even_if_caller_reports_stopped(
+    managed_tmp_path: Path,
+) -> None:
+    _core, binding, _private_marker = _fixture(managed_tmp_path)
+    (binding.legacy_pg_data_dir / "postmaster.pid").write_text(
+        f"{os.getpid()}\n",
+        encoding="ascii",
+    )
+
+    with pytest.raises(LegacyRuntimeRecoveryError, match="PostgreSQL is stopped"):
+        prepare_legacy_runtime_recovery_bundle(
+            binding,
+            legacy_postgres_running=False,
+            store=CredentialStore(MemoryCredentialBackend()),
+        )
+
+    assert not (binding.instance_root / "recovery").exists()
+
+
 def test_existing_bundle_never_gets_overwritten_for_changed_source(
     managed_tmp_path: Path,
 ) -> None:
@@ -116,7 +138,7 @@ def test_existing_bundle_never_gets_overwritten_for_changed_source(
     store = CredentialStore(MemoryCredentialBackend())
     bundle = prepare_legacy_runtime_recovery_bundle(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
     original = bundle.path.read_bytes()
@@ -125,7 +147,7 @@ def test_existing_bundle_never_gets_overwritten_for_changed_source(
     with pytest.raises(LegacyRuntimeRecoveryError, match="does not match the source"):
         prepare_legacy_runtime_recovery_bundle(
             binding,
-            postgres_running=False,
+            legacy_postgres_running=False,
             store=store,
         )
 
@@ -139,7 +161,7 @@ def test_durable_partial_resumes_create_only_with_same_authenticated_bundle(
     store = CredentialStore(MemoryCredentialBackend())
     bundle = prepare_legacy_runtime_recovery_bundle(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
     partial = bundle.path.with_name(f".{bundle.path.name}.partial")
@@ -147,7 +169,7 @@ def test_durable_partial_resumes_create_only_with_same_authenticated_bundle(
 
     resumed = prepare_legacy_runtime_recovery_bundle(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
 
@@ -165,7 +187,7 @@ def test_existing_bundle_never_generates_a_replacement_for_missing_credential(
     store = CredentialStore(backend)
     bundle = prepare_legacy_runtime_recovery_bundle(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
     original = bundle.path.read_bytes()
@@ -174,7 +196,7 @@ def test_existing_bundle_never_generates_a_replacement_for_missing_credential(
     with pytest.raises(LegacyRuntimeRecoveryError, match="credential is unavailable"):
         prepare_legacy_runtime_recovery_bundle(
             binding,
-            postgres_running=False,
+            legacy_postgres_running=False,
             store=store,
         )
 
@@ -189,7 +211,7 @@ def test_plaintext_retirement_requires_marker_stopped_source_and_fresh_runtime(
     store = CredentialStore(MemoryCredentialBackend())
     bundle = prepare_legacy_runtime_recovery_bundle(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
     monkeypatch.setattr(
@@ -201,7 +223,7 @@ def test_plaintext_retirement_requires_marker_stopped_source_and_fresh_runtime(
     with pytest.raises(LegacyRuntimeRecoveryError, match="forward-only"):
         retire_legacy_runtime_plaintext(
             binding,
-            postgres_running=False,
+            legacy_postgres_running=False,
             store=store,
         )
     assert binding.legacy_pg_data_dir.is_dir()
@@ -214,13 +236,13 @@ def test_plaintext_retirement_requires_marker_stopped_source_and_fresh_runtime(
     with pytest.raises(LegacyRuntimeRecoveryError, match="PostgreSQL is stopped"):
         retire_legacy_runtime_plaintext(
             binding,
-            postgres_running=True,
+            legacy_postgres_running=True,
             store=store,
         )
     with pytest.raises(LegacyRuntimeRecoveryError, match="fresh Runtime"):
         retire_legacy_runtime_plaintext(
             binding,
-            postgres_running=False,
+            legacy_postgres_running=False,
             store=store,
         )
 
@@ -228,7 +250,7 @@ def test_plaintext_retirement_requires_marker_stopped_source_and_fresh_runtime(
     (binding.pg_data_dir / "PG_VERSION").write_text("17", encoding="ascii")
     retired = retire_legacy_runtime_plaintext(
         binding,
-        postgres_running=False,
+        legacy_postgres_running=False,
         store=store,
     )
 
@@ -236,3 +258,69 @@ def test_plaintext_retirement_requires_marker_stopped_source_and_fresh_runtime(
     assert not binding.legacy_pg_data_dir.exists()
     assert bundle.path.is_file()
     assert verify_legacy_runtime_recovery_bundle(binding, store=store) == bundle
+
+
+def test_startup_transition_selects_fresh_runtime_only_after_bundle_and_marker(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _core, binding, _private_marker = _fixture(managed_tmp_path)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.LEGACY_AUTHORITATIVE),
+    )
+
+    assert select_runtime_pg_data_dir_for_startup(binding, store=store) == (
+        binding.legacy_pg_data_dir
+    )
+    assert not (binding.instance_root / "recovery").exists()
+
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY),
+    )
+    assert select_runtime_pg_data_dir_for_startup(binding, store=store) == binding.pg_data_dir
+    assert binding.legacy_pg_data_dir.is_dir()
+    bundle = verify_legacy_runtime_recovery_bundle(binding, store=store)
+
+    binding.pg_data_dir.mkdir(parents=True)
+    (binding.pg_data_dir / "PG_VERSION").write_text("17", encoding="ascii")
+    finalized = finalize_runtime_transition_after_startup(binding, store=store)
+
+    assert finalized == bundle
+    assert not binding.legacy_pg_data_dir.exists()
+    assert bundle.path.is_file()
+    assert select_runtime_pg_data_dir_for_startup(binding, store=store) == binding.pg_data_dir
+    assert finalize_runtime_transition_after_startup(binding, store=store) is None
+
+
+def test_verified_external_runtime_can_finalize_forward_only_transition(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _core, binding, _private_marker = _fixture(managed_tmp_path)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY),
+    )
+    select_runtime_pg_data_dir_for_startup(binding, store=store)
+    verified = False
+
+    def verify_external_runtime() -> None:
+        nonlocal verified
+        verified = True
+
+    finalized = finalize_runtime_transition_after_startup(
+        binding,
+        store=store,
+        fresh_runtime_verifier=verify_external_runtime,
+    )
+
+    assert finalized is not None
+    assert verified is True
+    assert not binding.legacy_pg_data_dir.exists()

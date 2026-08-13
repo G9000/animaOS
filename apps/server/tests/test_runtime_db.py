@@ -1256,13 +1256,11 @@ def test_runtime_app_data_root_rejects_portable_core_paths(
     try:
         settings.data_dir = core
         settings.runtime_app_data_dir = str(runtime_root)
-        main_module = _reload_main_module()
-
         with pytest.raises(
             RuntimeError,
-            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
+            match="active-Core registry must not overlap the portable Core",
         ):
-            main_module._claim_runtime_instance()
+            _reload_main_module()
 
         assert not (runtime_root / "core-instance-registry.json").exists()
     finally:
@@ -1291,13 +1289,11 @@ def test_runtime_app_data_root_rejects_portable_core_nested_within_it(
     try:
         settings.data_dir = core
         settings.runtime_app_data_dir = str(app_data_root)
-        main_module = _reload_main_module()
-
         with pytest.raises(
             RuntimeError,
-            match="ANIMA_RUNTIME_APP_DATA_DIR must not overlap the portable Core",
+            match="active-Core registry must not overlap the portable Core",
         ):
-            main_module._claim_runtime_instance()
+            _reload_main_module()
 
         assert not (app_data_root / "core-instance-registry.json").exists()
     finally:
@@ -1375,7 +1371,7 @@ def test_embedded_runtime_reuses_relocated_legacy_pg_until_cutover(
     core = managed_tmp_path / "portable" / ".anima"
     core.mkdir(parents=True)
     (core / "manifest.json").write_text(
-        json.dumps({"core_id": "core-legacy-runtime"}),
+        json.dumps({"core_id": str(uuid4())}),
         encoding="utf-8",
     )
     legacy_pg = core / "runtime" / "pg_data"

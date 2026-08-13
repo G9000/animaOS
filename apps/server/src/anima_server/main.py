@@ -76,6 +76,10 @@ from .services.corefs.instance_registry import (
     RuntimeInstanceRegistry,
 )
 from .services.corefs.legacy_runtime import relocate_legacy_runtime
+from .services.corefs.legacy_runtime_recovery import (
+    finalize_runtime_transition_after_startup,
+    select_runtime_pg_data_dir_for_startup,
+)
 from .services.health.event_logger import emit as health_emit
 
 
@@ -185,16 +189,16 @@ def _start_embedded_pg() -> EmbeddedPG | None:
         logger.warning("pgserver is not installed; skipping embedded runtime PostgreSQL startup.")
         return None
 
+    selected_pg_data_dir = select_runtime_pg_data_dir_for_startup(binding)
     if settings.runtime_pg_data_dir:
         configured_pg_data = Path(settings.runtime_pg_data_dir).expanduser().resolve()
-        if configured_pg_data != binding.active_pg_data_dir:
+        if configured_pg_data != selected_pg_data_dir:
             raise RuntimeError(
                 "ANIMA_RUNTIME_PG_DATA_DIR must match the claimed machine-local "
                 "Core instance path; configure ANIMA_RUNTIME_APP_DATA_DIR instead"
             )
-    pg_data_dir = binding.active_pg_data_dir
 
-    pg = EmbeddedPG(data_dir=pg_data_dir)
+    pg = EmbeddedPG(data_dir=selected_pg_data_dir)
     pg.start()
     return pg
 
@@ -231,6 +235,20 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             ensure_pgvector()
             ensure_runtime_tables()
             unlock_session_store.initialize_runtime_indexes()
+            if embedded_pg is not None:
+                finalize_runtime_transition_after_startup(runtime_binding)
+            else:
+                # An explicitly configured Runtime can be the fresh target too.
+                # Prepare only after its instance binding and schema pass; a
+                # live relocated postmaster still fails the recovery gate.
+                select_runtime_pg_data_dir_for_startup(runtime_binding)
+                finalize_runtime_transition_after_startup(
+                    runtime_binding,
+                    fresh_runtime_verifier=lambda: ensure_runtime_database_binding(
+                        core_id=runtime_binding.core_id,
+                        local_instance_id=runtime_binding.local_instance_id,
+                    ),
+                )
 
             try:
                 from .services.agent.inner_life.catchup import apply_offline_catchup

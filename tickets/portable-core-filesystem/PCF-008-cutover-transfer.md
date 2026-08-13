@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:13 MYT
+- Updated: 2026-08-13 21:21 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -245,6 +245,21 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   orchestration/cutover coverage passes `46`. Automatic server stop, fresh
   Runtime switch, and post-marker orchestration remain open. No paid workflow,
   push, real plaintext deletion, or irreversible cutover action occurred.
+- 2026-08-13 21:21 MYT - Wired the Step 5 recovery primitive into restart
+  lifecycle selection. Before default embedded PostgreSQL can open after a
+  forward-only marker, the stopped retained source must produce/re-verify its
+  encrypted bundle; startup then selects the fresh Runtime directory rather
+  than the still-present legacy source. Only after the fresh database starts,
+  claims the exact Core/instance identity, applies pgvector/Alembic, and
+  initializes Runtime indexes can the legacy plaintext directory be retired.
+  An explicit external Runtime follows the same post-binding/schema gate, and
+  a live or ambiguous `postmaster.pid` fails closed even if a caller reports
+  the source stopped. Crash-before-fresh-start and crash-before-retirement
+  preserve the authenticated bundle and plaintext for retry. The expanded
+  recovery/relocation/orchestration/cutover/startup/runtime band passes `96`;
+  the focused final recovery/runtime rerun passes `55`. First-mutation process
+  restart coordination remains open. No paid workflow, push, real source
+  deletion, or irreversible cutover action occurred.
 
 ## Validation
 
@@ -325,6 +340,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after the encrypted legacy Runtime recovery milestone (`46 passed`)
   - scoped Ruff check/format and `git diff --check` for legacy Runtime recovery
     (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_cutover.py apps/server/tests/test_health_startup.py apps/server/tests/test_runtime_db.py -q`
+    after restart lifecycle integration (`96 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_runtime_db.py -q`
+    final focused rerun (`55 passed`)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -370,6 +389,7 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/test_encrypted_core_regression.py`
   - `apps/server/src/anima_server/services/corefs/legacy_runtime_recovery.py`
   - `apps/server/tests/test_corefs_legacy_runtime_recovery.py`
+  - `apps/server/tests/test_runtime_db.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

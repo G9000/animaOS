@@ -70,21 +70,60 @@ class _SourceRecord:
 BoundaryHook = Callable[[str], None]
 
 
+def select_runtime_pg_data_dir_for_startup(
+    binding: RuntimeInstanceBinding,
+    *,
+    store: CredentialStore | None = None,
+) -> Path:
+    """Prepare recovery and choose fresh Runtime only after forward-only cutover."""
+    if read_cutover_record().state is not CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+        return binding.active_pg_data_dir
+    if binding.legacy_pg_data_dir.exists():
+        prepare_legacy_runtime_recovery_bundle(
+            binding,
+            legacy_postgres_running=False,
+            store=store,
+        )
+    return binding.pg_data_dir
+
+
+def finalize_runtime_transition_after_startup(
+    binding: RuntimeInstanceBinding,
+    *,
+    store: CredentialStore | None = None,
+    fresh_runtime_verifier: Callable[[], None] | None = None,
+) -> LegacyRuntimeRecoveryBundle | None:
+    """Retire stopped legacy plaintext after the fresh Runtime is ready."""
+    if (
+        read_cutover_record().state is not CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY
+        or not binding.legacy_pg_data_dir.exists()
+    ):
+        return None
+    return retire_legacy_runtime_plaintext(
+        binding,
+        legacy_postgres_running=False,
+        store=store,
+        fresh_runtime_verifier=fresh_runtime_verifier,
+    )
+
+
 def prepare_legacy_runtime_recovery_bundle(
     binding: RuntimeInstanceBinding,
     *,
-    postgres_running: bool,
+    legacy_postgres_running: bool,
     store: CredentialStore | None = None,
     boundary_hook: BoundaryHook | None = None,
 ) -> LegacyRuntimeRecoveryBundle:
     """Create and re-verify an encrypted recovery bundle without deleting source."""
-    if postgres_running:
+    if legacy_postgres_running:
         raise LegacyRuntimeRecoveryError("legacy Runtime recovery requires PostgreSQL is stopped")
     source = binding.legacy_pg_data_dir.expanduser()
     _require_instance_path(binding, source)
     _reject_link_chain(source, boundary=binding.instance_root)
     if not source.is_dir():
         raise LegacyRuntimeRecoveryError("legacy Runtime source is unavailable")
+    if _postgres_process_is_live(source):
+        raise LegacyRuntimeRecoveryError("legacy Runtime recovery requires PostgreSQL is stopped")
 
     target = _bundle_path(binding)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -270,27 +309,35 @@ def verify_legacy_runtime_recovery_bundle(
 def retire_legacy_runtime_plaintext(
     binding: RuntimeInstanceBinding,
     *,
-    postgres_running: bool,
+    legacy_postgres_running: bool,
     store: CredentialStore | None = None,
+    fresh_runtime_verifier: Callable[[], None] | None = None,
 ) -> LegacyRuntimeRecoveryBundle:
     """Delete legacy plaintext only after irreversible authority and recovery proof."""
     if read_cutover_record().state is not CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
         raise LegacyRuntimeRecoveryError(
             "legacy Runtime plaintext retirement requires forward-only CoreFS authority"
         )
-    if postgres_running:
+    if legacy_postgres_running:
         raise LegacyRuntimeRecoveryError(
             "legacy Runtime plaintext retirement requires PostgreSQL is stopped"
         )
-    fresh = binding.pg_data_dir.expanduser()
-    _require_instance_path(binding, fresh)
-    _reject_link_chain(fresh, boundary=binding.instance_root)
-    if not fresh.is_dir() or not (fresh / "PG_VERSION").is_file():
-        raise LegacyRuntimeRecoveryError("fresh Runtime database is not ready")
+    if fresh_runtime_verifier is None:
+        fresh = binding.pg_data_dir.expanduser()
+        _require_instance_path(binding, fresh)
+        _reject_link_chain(fresh, boundary=binding.instance_root)
+        if not fresh.is_dir() or not (fresh / "PG_VERSION").is_file():
+            raise LegacyRuntimeRecoveryError("fresh Runtime database is not ready")
+    else:
+        fresh_runtime_verifier()
     verified = verify_legacy_runtime_recovery_bundle(binding, store=store)
     source = binding.legacy_pg_data_dir.expanduser()
     _require_instance_path(binding, source)
     _reject_link_chain(source, boundary=binding.instance_root)
+    if source.exists() and _postgres_process_is_live(source):
+        raise LegacyRuntimeRecoveryError(
+            "legacy Runtime plaintext retirement requires PostgreSQL is stopped"
+        )
     if source.exists():
         shutil.rmtree(source)
         _fsync_directory(source.parent)
@@ -677,6 +724,27 @@ def _file_identity(path: Path) -> tuple[int, int, int, int]:
         int(metadata.st_size),
         int(metadata.st_mtime_ns),
     )
+
+
+def _postgres_process_is_live(source: Path) -> bool:
+    pid_path = source / "postmaster.pid"
+    _reject_link(pid_path)
+    if not pid_path.is_file():
+        return False
+    try:
+        first_line = pid_path.read_text(encoding="ascii", errors="strict").splitlines()[0]
+        pid = int(first_line)
+    except (IndexError, OSError, UnicodeError, ValueError):
+        return True
+    if pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
 
 
 def _hash_file(path: Path) -> str:
