@@ -133,3 +133,11 @@ def test_mod_secret_sources_have_explicit_credential_destinations() -> None:
     google_tokens = _destinations("anima-mod-store", "google:tokens:*")
     assert set(google_tokens) == {"accessToken", "refreshToken", "expiresAt", "email"}
     assert set(google_tokens.values()) == {"os-credential"}
+
+
+def test_machine_local_registry_files_have_explicit_nonportable_destinations() -> None:
+    files = _destinations("app-data", "files")
+    assert files["core-instance-registry.json"] == "device-instance-registry"
+    assert files["integration-links.json"] == "device-integration-registry"
+    assert files["regeneration.json"] == "device-runtime-state"
+    assert files["corefs-client-access.json"] == "device-client-grants"

@@ -11,6 +11,8 @@ import type {
   CorefsCredentialResponse,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
+  CoreFsClientAccessState,
+  CoreFsClientScope,
   CoreFSRotationResponse,
   CoreFSSecurityStatus,
   ConfirmRecoveryCredentialResponse,
@@ -717,6 +719,28 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: { currentPassword, recoveryPhrase },
         }),
+      clientAccess: () =>
+        request<CoreFsClientAccessState>("/corefs/access"),
+      approveClient: (installationId: string) =>
+        request<CoreFsClientAccessState>(
+          `/corefs/access/installations/${encodeURIComponent(installationId)}/approve`,
+          { method: "POST", body: { confirmed: true } },
+        ),
+      updateClientGrant: (
+        installationId: string,
+        folderStableId: string,
+        scope: CoreFsClientScope,
+        confirmed = false,
+      ) =>
+        request<CoreFsClientAccessState>(
+          `/corefs/access/installations/${encodeURIComponent(installationId)}/grants/${encodeURIComponent(folderStableId)}`,
+          { method: "PUT", body: { scope, confirmed } },
+        ),
+      revokeClient: (installationId: string) =>
+        request<CoreFsClientAccessState>(
+          `/corefs/access/installations/${encodeURIComponent(installationId)}`,
+          { method: "DELETE" },
+        ),
     },
     chat: {
       send: (

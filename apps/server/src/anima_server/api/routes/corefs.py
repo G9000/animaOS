@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException, Request, status
 
@@ -15,6 +15,15 @@ from anima_server.schemas.corefs import (
     CoreFsSelectedSnapshotResponse,
 )
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.client_access import (
+    ClientAccessError,
+    ClientCapabilityIdentity,
+    ClientScope,
+    CoreFsFolderGrantTarget,
+    authorize_client_path,
+    client_capability_broker,
+    list_corefs_grant_folders,
+)
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
     CoreFSRuntimeLocked,
@@ -56,6 +65,8 @@ class CoreFsPrincipal:
     id: str
     user_id: int
     install_digest: str | None = None
+    installation_id: str | None = None
+    package_id: str | None = None
 
     def to_response(self) -> CoreFsPrincipalResponse:
         return CoreFsPrincipalResponse(
@@ -63,6 +74,8 @@ class CoreFsPrincipal:
             id=self.id,
             userId=self.user_id,
             installDigest=self.install_digest,
+            installationId=self.installation_id,
+            packageId=self.package_id,
         )
 
 
@@ -100,6 +113,32 @@ def _principal_from_authenticated_broker(
     session: UnlockSession,
 ) -> CoreFsPrincipal | None:
     principal = getattr(request.state, "corefs_principal", None)
+    capability = request.headers.get("x-anima-corefs-client-capability")
+    if principal is not None and capability is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "corefs_conflicting_broker_principals"},
+        )
+    if capability is not None:
+        try:
+            identity = client_capability_broker.consume(
+                token=capability,
+                user_id=session.user_id,
+                session=session,
+            )
+        except ClientAccessError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "corefs_client_capability_invalid", "message": str(exc)},
+            ) from exc
+        return CoreFsPrincipal(
+            kind="client",
+            id=identity.client_id,
+            user_id=identity.user_id,
+            install_digest=identity.install_digest,
+            installation_id=identity.installation_id,
+            package_id=identity.package_id,
+        )
     if principal is None:
         return None
     if not isinstance(principal, CoreFsPrincipal):
@@ -209,13 +248,53 @@ def _decode_logical_response(raw: bytes | None) -> dict[str, Any] | None:
     return decoded
 
 
-def _client_grant_required(principal: CoreFsPrincipal) -> None:
+def _client_grant_required(principal: CoreFsPrincipal) -> NoReturn:
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail={
             "code": "corefs_client_grant_required",
             "principal": principal.to_response().model_dump(exclude_none=True),
         },
+    )
+
+
+def _client_logical_path(payload: CoreFsOperationRequest) -> str | None:
+    if payload.operation in {"walk", "glob", "grep"}:
+        return _require_path(payload, field="root")
+    if payload.operation == "search_readiness":
+        return None
+    if payload.operation == "search":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "corefs_client_search_not_folder_scoped",
+                "message": "Client search is unavailable until results can be filtered by grant.",
+            },
+        )
+    return _require_path(payload)
+
+
+def _client_required_scope(operation: str) -> ClientScope:
+    if operation in {"move", "trash", "restore"}:
+        return "manage"
+    if operation in _WRITE_OPERATIONS:
+        return "write"
+    return "read"
+
+
+def _client_identity(principal: CoreFsPrincipal) -> ClientCapabilityIdentity:
+    if (
+        principal.installation_id is None
+        or principal.install_digest is None
+        or principal.package_id is None
+    ):
+        _client_grant_required(principal)
+    return ClientCapabilityIdentity(
+        installation_id=principal.installation_id,
+        client_id=principal.id,
+        package_id=principal.package_id,
+        install_digest=principal.install_digest,
+        user_id=principal.user_id,
     )
 
 
@@ -492,24 +571,65 @@ def run_corefs_operation(
             detail={"code": "corefs_unknown_operation"},
         )
 
-    if principal.kind == "client":
+    if principal.kind == "client" and principal.installation_id is None:
         _client_grant_required(principal)
 
     context = _resolve_request_context(session)
-    if is_write_operation:
+    if is_write_operation and principal.kind != "client":
         return CoreFsOperationResponse(
             principal=principal.to_response(),
             operation=payload.operation,
             selected=None,
             result=logical.frozen_mutation_result(payload.operation),
         )
-
     try:
         selected = logical.select_validation_snapshot(
             corefs_session=context.corefs_session,
             keys=context.keys,
         )
+        client_authorization: (
+            tuple[
+                ClientCapabilityIdentity,
+                tuple[CoreFsFolderGrantTarget, ...],
+                str | None,
+                ClientScope,
+            ]
+            | None
+        ) = None
+        if principal.kind == "client":
+            identity = _client_identity(principal)
+            folders = list_corefs_grant_folders(session, selected=selected)
+            logical_path = _client_logical_path(payload)
+            required_scope = _client_required_scope(payload.operation)
+            authorize_client_path(
+                identity,
+                folders=folders,
+                logical_path=logical_path,
+                required_scope=required_scope,
+            )
+            client_authorization = (identity, folders, logical_path, required_scope)
+        if is_write_operation:
+            return CoreFsOperationResponse(
+                principal=principal.to_response(),
+                operation=payload.operation,
+                selected=None,
+                result=logical.frozen_mutation_result(payload.operation),
+            )
         result = _dispatch_read(payload, context=context, selected=selected)
+        if client_authorization is not None:
+            identity, folders, logical_path, required_scope = client_authorization
+            authorize_client_path(
+                identity,
+                folders=folders,
+                logical_path=logical_path,
+                required_scope=required_scope,
+                record_use=True,
+            )
+    except ClientAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "corefs_client_grant_required", "message": str(exc)},
+        ) from exc
     except ValueError as exc:
         http_error = _logical_http_exception(exc)
         if http_error is None:

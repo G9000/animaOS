@@ -19,6 +19,7 @@ import AdvancedSettings from "./pages/settings/AdvancedSettings";
 import AppearanceSettings from "./pages/settings/AppearanceSettings";
 import LanguageSettings from "./pages/settings/LanguageSettings";
 import DaemonSettings from "./pages/settings/DaemonSettings";
+import CoreFSAccessSettings from "./pages/settings/CoreFSAccessSettings";
 import AgentProfileSettings from "./pages/agent-customization/AgentCustomization";
 import Soul from "./pages/Soul";
 import Consciousness from "./pages/Consciousness";
@@ -117,6 +118,7 @@ function AppRoutes() {
         <Route index element={<Navigate to="ai" replace />} />
         <Route path="ai" element={<AiSettings />} />
         <Route path="security" element={<SecuritySettings />} />
+        <Route path="access" element={<CoreFSAccessSettings />} />
         <Route path="vault" element={<VaultSettings />} />
         <Route path="language" element={<LanguageSettings />} />
         <Route path="appearance" element={<AppearanceSettings />} />

@@ -174,6 +174,8 @@ class CoreFsPrincipalResponse(BaseModel):
     id: str
     userId: int
     installDigest: str | None = None
+    installationId: str | None = None
+    packageId: str | None = None
 
 
 class CoreFsSelectedSnapshotResponse(BaseModel):

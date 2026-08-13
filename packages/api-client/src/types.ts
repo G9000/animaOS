@@ -112,6 +112,8 @@ export interface CoreFsPrincipal {
   id: string;
   userId: number;
   installDigest?: string | null;
+  installationId?: string | null;
+  packageId?: string | null;
 }
 
 export interface CoreFsSelectedSnapshot {
@@ -165,6 +167,57 @@ export interface CoreFSRotationResponse {
   activeFrkVersion: number;
   committedCatalogGeneration: number;
   resumed: boolean;
+}
+
+export type CoreFsClientScope = "none" | "read" | "write" | "manage";
+export type CoreFsClientInstallationStatus =
+  | "pending"
+  | "approved"
+  | "reapproval_required"
+  | "collision"
+  | "revoked";
+
+export interface CoreFsClientGrant {
+  folderStableId: string;
+  scope: Exclude<CoreFsClientScope, "none">;
+  approvedDigest: string;
+  generation: number;
+  updatedAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface CoreFsClientInstallation {
+  installationId: string;
+  clientId: string;
+  packageId: string;
+  displayName: string;
+  packageVersion: string;
+  installDigest: string;
+  publisher: { identity: string; verified: boolean } | null;
+  declaredRoles: string[];
+  declaredMetadataKeys: string[];
+  status: CoreFsClientInstallationStatus;
+  approvedDigest: string | null;
+  grantGeneration: number;
+  verifiedAt: string;
+  approvedAt: string | null;
+  lastUsedAt: string | null;
+  grants: CoreFsClientGrant[];
+}
+
+export interface CoreFsGrantFolder {
+  stableId: string;
+  path: string;
+  role: string | null;
+}
+
+export interface CoreFsClientAccessState {
+  coreId: string;
+  localInstanceId: string;
+  deviceLocal: true;
+  reapprovalRequiredAfterTransfer: boolean;
+  installations: CoreFsClientInstallation[];
+  folders: CoreFsGrantFolder[];
 }
 
 export type VaultTransferFormat = "vault_json" | "anima_capsule";

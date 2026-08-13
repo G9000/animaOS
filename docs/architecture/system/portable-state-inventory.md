@@ -145,6 +145,10 @@ app-data|files|legacy:users/<id>/soul.md|remove-after-soul-migration
 app-data|files|runtime-daemon.control-token|os-credential
 app-data|files|runtime-daemon.state.json,runtime-port,runtime-lock,runtime-logs|device-runtime-state
 app-data|files|legacy-draft-cleanup-v1.lock,legacy-draft-cleanup-v1.epoch.json|device-migration-state
+app-data|files|core-instance-registry.json,.core-instance-registry.lock,.core-instance-registry.guard|device-instance-registry
+app-data|files|integration-links.json|device-integration-registry
+app-data|files|regeneration.json|device-runtime-state
+app-data|files|corefs-client-access.json|device-client-grants
 anima-mod-sqlite|mod_config|mod_id,key,value,is_secret,updated_at|device-mod-config-or-credential-reference
 anima-mod-sqlite|mod_state|mod_id,enabled,status,last_error,started_at,updated_at|device-runtime-state
 anima-mod-sqlite|mod_events|id,mod_id,event_type,detail,created_at|device-runtime-state
@@ -208,6 +212,10 @@ environment and launch configuration remain machine-local inputs.
 | local daemon/Tauri | `runtime-daemon.control-token` and browser copies | Shared OS credential entry, then verified deletion |
 | local daemon | `runtime-daemon.state.json`, runtime port/lock/log files | Device-local operational state |
 | Tauri | `legacy-draft-cleanup-v1.lock`, `legacy-draft-cleanup-v1.epoch.json` | Device-local cleanup authority state; contains no private draft body/hash |
+| server | `core-instance-registry.json` plus lock/guard files | Device-local Core/instance binding and runtime-engine migration state |
+| server | instance `config/integration-links.json` | Device-local Telegram/Discord link registry; relink after transfer |
+| server | instance `work/regeneration.json` | Disposable machine-local regeneration work state |
+| server | instance `config/corefs-client-access.json` | Device-local verified installation identities, folder grants, generations, and audit timestamps; never transferred with the Core |
 | CoreFS runtime | instance registry, migration journal, index/checkpoint files | Device-local authenticated metadata outside portable content |
 
 ## anima-mod stores

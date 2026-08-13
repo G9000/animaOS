@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 18:04 MYT
+- Updated: 2026-08-13 18:28 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -97,6 +97,16 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   unresolved secret placeholders, and scrubs the plaintext sources. Existing
   runtime-config, daemon-token, provider-secret, mod-config, and Google OAuth
   migrations remain the Step 3 authority. No external action was taken.
+- 2026-08-13 18:28 MYT - Completed Step 8 locally. A bounded machine-local
+  registry now binds trusted platform-verified installations to exact Core,
+  instance, package/publisher/digest, stable folder ID, scope, and grant
+  generation. User-only settings expose identity, declared namespaced roles,
+  transfer reapproval, current grants, and last-use audit metadata without body
+  content; scope expansion requires explicit confirmation while downgrade and
+  revocation take effect immediately. Short-lived one-shot client capabilities
+  bind the live unlock session and are rechecked before and after reads, with
+  digest change, collision, replay, lock, grant change, and reserved `core.*`
+  namespace cases failing closed. No external action was taken.
 
 ## Validation
 
@@ -125,6 +135,10 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
     behavior (`44 passed`), and exact legacy Soul cases (`2 passed`)
   - anima-mod YAML/config/Google credential regressions (`19 passed`),
     anima-mod TypeScript build, full server Ruff, and diff hygiene passed
+  - client access registry/API/CoreFS enforcement plus checked inventory
+    (`52 passed`), desktop client-access contract (`2 passed`), API client
+    (`27 passed`), production desktop TypeScript/Vite build, focused Ruff, and
+    diff hygiene passed
   - the known native background-index teardown race can still terminate a
     multi-client encrypted-core aggregate after its first five passing cases;
     the changed Soul cases and stable authentication band pass in isolated
@@ -162,8 +176,15 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - `apps/anima-mod/src/management/config-service.ts`
   - focused device-state, instance-registry, creation, integration,
     regeneration, and anima-mod configuration tests
+  - `apps/server/src/anima_server/services/corefs/client_access.py`
+  - `apps/server/src/anima_server/{schemas/corefs_access.py,api/routes/corefs_access.py}`
+  - `apps/server/src/anima_server/{schemas/corefs.py,api/routes/corefs.py,main.py}`
+  - `apps/desktop/src/{lib/corefsAccess.ts,pages/settings/CoreFSAccessSettings.tsx}`
+  - desktop settings routing and `apps/desktop/tests/corefs-client-access.test.ts`
+  - `packages/api-client/src/{client,types}.ts`
+  - focused CoreFS access/API/inventory tests
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.
-  - Steps 8-9 remain open before the final Step 10 validation; this checkpoint
+  - Step 9 remains open before the final Step 10 validation; this checkpoint
     does not activate CoreFS authority.
