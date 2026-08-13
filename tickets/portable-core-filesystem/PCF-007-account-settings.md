@@ -1,6 +1,6 @@
 # PCF-007 - Account profile, tasks, preferences, and credentials
 
-- Status: in_progress
+- Status: done
 - Priority: P0
 - Scope: account/auth/tasks/settings/credentials across server, desktop/Tauri, local daemon, and anima-mod
 - Parent: `PCF-000`
@@ -9,9 +9,9 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 18:35 MYT
+- Updated: 2026-08-13 18:40 MYT
 - Started: 2026-08-13 15:58 MYT
-- Completed:
+- Completed: 2026-08-13 18:40 MYT
 
 ## Goal
 
@@ -115,6 +115,13 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   motion, contrast, and forced-colors behavior from operating-system/browser
   capabilities; reduced-motion changes also stop the canvas animation and
   render a deterministic still frame. No external action was taken.
+- 2026-08-13 18:40 MYT - Completed PCF-007 locally after the full Step 10
+  validation matrix. The checked placement inventory, encrypted account/task/
+  preference shadows, keyslot unlock, machine-local registries, OS credential
+  boundary, verified client grants, and neutral pre-unlock surface satisfy the
+  child acceptance contract. Legacy app authority and inactive prepared
+  shadows remain intentionally gated for PCF-008 cutover. No external action
+  was taken.
 
 ## Validation
 
@@ -150,6 +157,11 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - neutral pre-unlock and exact renderer-storage classification (`5 passed`),
     checked state inventory (`7 passed`), production desktop TypeScript/Vite
     build, and diff hygiene passed
+  - final Step 10 backend matrix (`128 passed`), desktop matrix (`9 passed`),
+    anima-mod matrix (`13 passed`) plus TypeScript build, local Runtime daemon
+    test, desktop native check, API client (`27 passed`), startup/health
+    (`2 passed`), full repository build, full server/desktop lint, and diff
+    hygiene passed
   - the known native background-index teardown race can still terminate a
     multi-client encrypted-core aggregate after its first five passing cases;
     the changed Soul cases and stable authentication band pass in isolated
@@ -201,5 +213,6 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.
-  - Step 10 full validation remains before ticket closeout; this checkpoint does
-    not activate CoreFS authority.
+  - PCF-007 is complete without activating CoreFS authority; PCF-008 owns the
+    first-write/cutover transaction, transfer flows, and mandatory deferred
+    signed-package evidence.

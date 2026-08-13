@@ -818,7 +818,7 @@ Expose registered clients/mods, verified package identity, declared namespaced r
 
 Locked UI uses OS locale/accessibility and neutral ANIMA branding; private profile/avatar appears only after content unlock.
 
-- [ ] **Step 10: Run backend and desktop tests**
+- [x] **Step 10: Run backend and desktop tests**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_account_migration.py apps/server/tests/test_corefs_preferences.py apps/server/tests/test_corefs_state_inventory.py apps/server/tests/test_credentials_api.py apps/server/tests/test_tasks_api.py apps/server/tests/test_auth.py apps/server/tests/test_recovery.py apps/server/tests/test_config_personas.py apps/server/tests/test_telegram_routes.py -q
@@ -830,7 +830,7 @@ cargo check -p desktop
 bun run --cwd apps/desktop build
 ```
 
-- [ ] **Step 11: Commit account/settings slice**
+- [x] **Step 11: Commit account/settings slice**
 
 ```powershell
 git add apps/server/pyproject.toml uv.lock Cargo.lock docs/architecture/system/portable-state-inventory.md apps/server/src/anima_server/services/credentials.py apps/server/src/anima_server/services/core.py apps/server/src/anima_server/main.py apps/server/src/anima_server/db/user_store.py apps/server/src/anima_server/services/auth.py apps/server/src/anima_server/api/routes/credentials.py apps/server/src/anima_server/api/routes/auth.py apps/server/src/anima_server/api/routes/users.py apps/server/src/anima_server/api/routes/tasks.py apps/server/src/anima_server/api/routes/config.py apps/server/src/anima_server/api/routes/soul.py apps/server/src/anima_server/api/routes/presence.py apps/server/src/anima_server/api/routes/telegram.py apps/server/src/anima_server/services/presence_config.py apps/server/src/anima_server/models/presence.py apps/server/src/anima_server/models/links.py apps/server/src/anima_server/services/corefs/migration.py apps/desktop/src/lib/theme.ts apps/desktop/src/lib/background.ts apps/desktop/src/lib/preferences.ts apps/desktop/src/context/AsciiSettingsContext.tsx apps/desktop/src/pages/settings/AiSettings.tsx apps/desktop/src/pages/settings/DaemonSettings.tsx apps/desktop/src/pages/settings/CoreFSAccessSettings.tsx apps/desktop/src/lib/daemon.ts packages/api-client/src/client.ts packages/api-client/src/types.ts apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/src/lib.rs apps/local-runtime-daemon/Cargo.toml apps/local-runtime-daemon/src/main.rs apps/anima-mod/src/security/credential-broker.ts apps/anima-mod/src/core/types.ts apps/anima-mod/src/core/context.ts apps/anima-mod/src/core/store.ts apps/anima-mod/src/management/config-service.ts apps/anima-mod/mods/google/oauth.ts apps/anima-mod/mods/google/mod.ts apps/server/tests/test_corefs_account_migration.py apps/server/tests/test_corefs_preferences.py apps/server/tests/test_corefs_state_inventory.py apps/server/tests/test_credentials_api.py apps/server/tests/test_tasks_api.py apps/server/tests/test_auth.py apps/server/tests/test_config_personas.py apps/server/tests/test_telegram_routes.py apps/desktop/tests/settings-storage-classification.test.ts apps/desktop/tests/daemon-credential-migration.test.ts apps/desktop/tests/corefs-client-access.test.ts apps/anima-mod/tests/management/config-service.test.ts apps/anima-mod/mods/google/mod.test.ts

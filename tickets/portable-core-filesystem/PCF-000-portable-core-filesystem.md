@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 18:35 MYT
+- Updated: 2026-08-13 18:40 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -29,7 +29,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-004 | Diary, folders, drafts, and notes | done | PCF-003 |
 | PCF-005 | Canonical threads, messages, and transcript merge | done | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | done | PCF-003, PCF-005 |
-| PCF-007 | Account profile, tasks, preferences, and credentials | in_progress | PCF-004, PCF-006 |
+| PCF-007 | Account profile, tasks, preferences, and credentials | done | PCF-004, PCF-006 |
 | PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
@@ -85,6 +85,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PCF-004 - Diary, folders, drafts, and notes (implementation slice completed 2026-08-13 15:58 MYT; final signed-package evidence retained by PCF-008).
 - PCF-005 - Canonical threads, messages, and transcript merge (completed locally 2026-08-13 11:36 MYT).
 - PCF-006 - Gallery, attachments, documents, and knowledge sources (completed locally 2026-08-13 12:41 MYT).
+- PCF-007 - Account profile, tasks, preferences, and credentials (completed locally 2026-08-13 18:40 MYT).
 - PCF-011 - Windows lease-diagnostic CI flake (completed locally 2026-08-13 12:52 MYT).
 
 ## Activity Log
@@ -379,6 +380,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 18:04 MYT - PCF-007 Step 7 completed locally. Obsolete manifest runtime-engine fields, Telegram/Discord bindings, and regeneration flags now migrate copy-verify-scrub into machine-local instance state; successful unlock imports and hash-verifies legacy plaintext `soul.md`; onboarding publishes the encrypted account-profile shadow; and anima-mod literal YAML plus legacy SQLite secrets migrate into verified OS credential references before source scrubbing. Focused server bands passed `27`, `13`, `44`, `2`, and `1`; anima-mod credential/config/Google tests passed `19`, with Ruff, TypeScript, and diff hygiene green. PCF-007 remains `in_progress` on client grants, neutral locked UI, and final validation; no external action was taken.
 - 2026-08-13 18:28 MYT - PCF-007 Step 8 completed locally. Device-local trusted installation records and stable-folder grants now bind exact Core/instance/package/publisher/digest/scope/generation state; user settings require explicit approval and scope expansion, while downgrade/revocation are immediate. One-shot unlock-bound client capabilities are grant-checked before and after reads, and transfer, collision, update, replay, lock, reserved-role, and sibling-folder cases fail closed. Focused server coverage passed `52`, desktop/API-client tests passed `2 + 27`, and the production desktop build, Ruff, and diff hygiene passed. PCF-007 remains `in_progress` on neutral pre-unlock verification and final validation; no external action was taken.
 - 2026-08-13 18:35 MYT - PCF-007 Step 9 completed locally. Locked routes now scrub legacy profile/login hints and expose only neutral ANIMA state: no remembered username, profile/avatar, portable customization, or device-custom track metadata is rendered before unlock. OS locale/direction, system color scheme, reduced motion, contrast, and forced colors drive the locked surface, including a deterministic still ASCII frame under reduced motion. Desktop privacy/storage coverage passed `5`, the checked inventory passed `7`, and the production desktop build plus diff hygiene passed. PCF-007 remains `in_progress` only for full Step 10 validation and closeout; no external action was taken.
+- 2026-08-13 18:40 MYT - Completed PCF-007 locally and synchronized its child state, parent row, completed history, plan checklist, validation, changed paths, and residual PCF-008 activation boundary. The final matrix passed backend `128`, desktop `9`, anima-mod `13`, API client `27`, startup/health `2`, native daemon/Tauri checks, full repository build, full lint, and diff hygiene. PCF-008 is now dependency-eligible and retains first-write cutover, transfer/recovery, and the user-deferred signed Windows/macOS/DEB/RPM evidence; no external action was taken.
 
 ## Validation
 
@@ -568,6 +570,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001 through PCF-006 and PCF-011 are complete. PCF-007 is active. PCF-008 retains the mandatory deferred final signed-package evidence before cutover/release; PCF-009 and PCF-010 retain their separate approval gates.
+  - PCF-001 through PCF-007 and PCF-011 are complete. PCF-008 is dependency-eligible and retains the mandatory deferred final signed-package evidence before cutover/release; PCF-009 and PCF-010 retain their separate approval gates.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.
