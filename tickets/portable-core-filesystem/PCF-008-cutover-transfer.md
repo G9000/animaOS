@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 18:58 MYT
+- Updated: 2026-08-13 19:22 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -80,6 +80,18 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   catalog after cutover but remain on `VALIDATION_HEAD` beforehand. The paid
   package workflow remains disabled and no irreversible first mutation or
   external action was performed.
+- 2026-08-13 19:22 MYT - Added the first Step 2/Step 7 transfer milestone.
+  Rust now provides the exact registered `anima_core_v2` fixed header and KDF,
+  generation-bound encrypted inventory, closed full/Soul/CoreFS record
+  allowlists, 8-MiB chunk streaming, global per-container nonce ordinals,
+  authenticated footer/trailer, failed-import staging cleanup, and a binary
+  round trip above the legacy 16-MiB ceiling. Python now preflights local
+  capacity, writable atomic rename, and FAT-like file limits, then publishes
+  verified single-file or controller-last multipart output with deterministic
+  cancellation and every local publication seam covered. Step 2 and Step 7
+  remain open for live snapshot pinning, native multipart-set cryptography,
+  import activation, and API/UI integration. No paid workflow or irreversible
+  cutover action was performed.
 
 ## Validation
 
@@ -89,6 +101,14 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `cargo clippy -p anima-corefs --all-targets -- -D warnings` (passed)
   - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python` (passed)
   - scoped Ruff check/format, Rust format, and `git diff --check` (passed)
+  - `cargo test -p anima-core core_archive` (`6 passed`)
+  - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing
+    crate lints allowed (`passed`; the unchanged strict crate-wide invocation
+    remains blocked by existing `cards.rs`, `frame.rs`, and `path_engine.rs`
+    warnings)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py -q`
+    (`31 passed`)
+  - scoped Ruff check/format and `git diff --check` (passed)
 - Changed paths:
   - `apps/server/src/anima_server/services/corefs/cutover.py`
   - `apps/server/src/anima_server/services/sessions.py`
@@ -99,6 +119,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
   - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
   - `tickets/portable-core-filesystem/PCF-008-cutover-transfer.md`
+  - `packages/anima-core/src/core_archive.rs`
+  - `packages/anima-core/{Cargo.toml,src/lib.rs}` and `Cargo.lock`
+  - `apps/server/src/anima_server/services/corefs/transfer.py`
+  - `apps/server/tests/test_corefs_transfer.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by
