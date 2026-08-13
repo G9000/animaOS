@@ -1,16 +1,16 @@
 # PCF-006 - Gallery, attachments, documents, and knowledge sources
 
-- Status: backlog
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server` image, document parsing/tools/contextual retrieval, ingestion/compiler, and content services
 - Parent: `PCF-000`
 - Depends on: `PCF-003`, `PCF-005`
-- Owner: unassigned
+- Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-6-gallery-attachments-and-original-documents`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-13 20:47 MYT
-- Started:
+- Updated: 2026-08-13 11:39 MYT
+- Started: 2026-08-13 11:39 MYT
 - Completed:
 
 ## Goal
@@ -45,6 +45,7 @@ Move original user-owned images, attachments, documents, pasted text/Markdown, a
 - 2026-07-12 06:07 MYT - Ticket created.
 - 2026-07-12 17:34 MYT - Added stable Gallery role/ID requirements.
 - 2026-07-13 20:47 MYT - Added merged document parsing, document tools, contextual ranking, and compiler boundaries; classified current plaintext fields and expanded the existing ingestion/retrieval regression matrix.
+- 2026-08-13 11:39 MYT - Codex claimed PCF-006 after PCF-005 completed locally at `d3ab653e` and PCF-003 was already done. Started on local stacked branch `codex/pcf-006-assets-documents`; the child and parent row moved to `in_progress` together. PCF-004 remains independently open on cost-deferred package evidence, and no PCF-006 publication, PR, review, monitoring, or merge action is authorized.
 
 ## Validation
 
@@ -53,4 +54,4 @@ Move original user-owned images, attachments, documents, pasted text/Markdown, a
 - Changed paths:
   - none
 - Notes:
-  - Claim after PCF-003 and PCF-005 are done.
+  - PCF-003 and PCF-005 are done. PCF-006 is active locally; no external action is authorized.
