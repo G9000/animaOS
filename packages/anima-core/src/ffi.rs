@@ -727,6 +727,29 @@ mod python {
         selected_generation: u64,
         selected_catalog_hash: &str,
     ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
+        if let Some(committed) = coordinator
+            .load_committed(&keys.inner)
+            .map_err(corefs_commit_error)?
+        {
+            if committed.catalog().cutover_marker().is_some() {
+                let head = committed.head();
+                if head.generation() != selected_generation
+                    || head.catalog_hash() != selected_catalog_hash
+                {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS authoritative snapshot no longer matches selected generation/catalog hash",
+                    ));
+                }
+                let keyring = anima_corefs::rotation::FrkKeyring::new([&keys.inner])
+                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+                return anima_corefs::logical::CoreFsReadSnapshot::open_committed(
+                    coordinator,
+                    &committed,
+                    &keyring,
+                )
+                .map_err(corefs_logical_error);
+            }
+        }
         let selected = coordinator
             .load_validation_snapshot(&keys.inner)
             .map_err(corefs_commit_error)?
@@ -744,6 +767,33 @@ mod python {
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         anima_corefs::logical::CoreFsReadSnapshot::open(coordinator, &selected, &keyring)
             .map_err(corefs_logical_error)
+    }
+
+    fn corefs_selected_read_head(
+        coordinator: &anima_corefs::transaction::CoreCommitCoordinator,
+        keys: &PyCorefsSubkeys,
+    ) -> PyResult<(u64, String)> {
+        if let Some(committed) = coordinator
+            .load_committed(&keys.inner)
+            .map_err(corefs_commit_error)?
+        {
+            if committed.catalog().cutover_marker().is_some() {
+                return Ok((
+                    committed.head().generation(),
+                    committed.head().catalog_hash().to_owned(),
+                ));
+            }
+        }
+        let selected = coordinator
+            .load_validation_snapshot(&keys.inner)
+            .map_err(corefs_commit_error)?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
+            })?;
+        Ok((
+            selected.head().generation(),
+            selected.head().catalog_hash().to_owned(),
+        ))
     }
 
     fn corefs_open_read_snapshot(
@@ -1367,21 +1417,43 @@ mod python {
             keys: &PyCorefsSubkeys,
         ) -> PyResult<PyObject> {
             let _operation = self.acquire_operation()?;
-            let selected = self
-                .coordinator
-                .load_validation_snapshot(&keys.inner)
-                .map_err(corefs_commit_error)?
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
-                })?;
-            let head = selected.head();
+            let (generation, catalog_hash) =
+                corefs_selected_read_head(self.coordinator.as_ref(), keys)?;
             json_value_to_py(
                 py,
                 json!({
-                    "generation": head.generation(),
-                    "catalogHash": head.catalog_hash(),
+                    "generation": generation,
+                    "catalogHash": catalog_hash,
                 }),
             )
+        }
+
+        /// Returns the authenticated irreversible marker from committed
+        /// `fs/HEAD`, recovering incomplete receipt publication first. An
+        /// inactive validation catalog can never produce this authority.
+        fn authoritative_cutover_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let committed = py
+                .allow_threads(|| self.coordinator.load_committed(&keys.inner))
+                .map_err(corefs_commit_error)?;
+            let value = match committed {
+                Some(committed) => match committed.catalog().cutover_marker() {
+                    Some(marker) => json!({
+                        "version": 1,
+                        "legacyRollbackDisabled": marker.legacy_rollback_disabled(),
+                        "cutoverEpoch": marker.epoch(),
+                        "generation": committed.head().generation(),
+                        "catalogHash": committed.head().catalog_hash(),
+                    }),
+                    None => Value::Null,
+                },
+                None => Value::Null,
+            };
+            json_value_to_py(py, value)
         }
 
         fn validation_batch_v1(
@@ -2550,18 +2622,12 @@ mod python {
     ) -> PyResult<PyObject> {
         let coordinator = anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
             .map_err(corefs_commit_error)?;
-        let selected = coordinator
-            .load_validation_snapshot(&keys.inner)
-            .map_err(corefs_commit_error)?
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
-            })?;
-        let head = selected.head();
+        let (generation, catalog_hash) = corefs_selected_read_head(&coordinator, keys)?;
         json_value_to_py(
             py,
             json!({
-                "generation": head.generation(),
-                "catalogHash": head.catalog_hash(),
+                "generation": generation,
+                "catalogHash": catalog_hash,
             }),
         )
     }
@@ -5177,6 +5243,102 @@ mod python {
                     .stat("Notes/Alpha.md")
                     .map_err(corefs_logical_error)?;
                 Ok(())
+            }
+
+            #[test]
+            fn authoritative_cutover_binding_ignores_validation_until_marked_head_commits() {
+                let fixture = logical_fixture("cutover-authority-binding");
+                let session = isolated_session_for_test(
+                    std::path::Path::new(fixture.root_path()),
+                    LOGICAL_CORE_ID,
+                );
+
+                with_python(|py| {
+                    let absent = session.authoritative_cutover_v1(py, &fixture.keys).unwrap();
+                    assert!(absent.bind(py).is_none());
+                });
+
+                let entries = fixture.selected.catalog().entries().to_vec();
+                session
+                    .coordinator_for_test()
+                    .commit_first_mutation(
+                        &fixture.keys.inner,
+                        73,
+                        &[],
+                        &[],
+                        |_, generation| CatalogGeneration::new(generation, entries),
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+
+                with_python(|py| {
+                    let authority = session.authoritative_cutover_v1(py, &fixture.keys).unwrap();
+                    let authority = authority.bind(py).downcast::<PyDict>().unwrap();
+                    assert!(authority
+                        .get_item("legacyRollbackDisabled")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<bool>()
+                        .unwrap());
+                    assert_eq!(
+                        authority
+                            .get_item("cutoverEpoch")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        73
+                    );
+                    let generation = authority
+                        .get_item("generation")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap();
+                    let catalog_hash = authority
+                        .get_item("catalogHash")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap();
+                    assert_eq!(generation, 2);
+
+                    let selected = session.validation_snapshot(py, &fixture.keys).unwrap();
+                    let selected = selected.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        selected
+                            .get_item("generation")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        generation
+                    );
+                    assert_eq!(
+                        selected
+                            .get_item("catalogHash")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        catalog_hash
+                    );
+                    let stat = session
+                        .stat_v1(
+                            py,
+                            &fixture.keys,
+                            generation,
+                            &catalog_hash,
+                            "Notes/Alpha.md",
+                        )
+                        .unwrap();
+                    let stat = serde_json::from_slice::<serde_json::Value>(
+                        stat.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                    )
+                    .unwrap();
+                    assert_eq!(stat["result"]["stableId"], LOGICAL_OBJECT_ID);
+                    assert_eq!(stat["result"]["generation"], 2);
+                });
             }
 
             #[test]

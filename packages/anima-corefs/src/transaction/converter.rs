@@ -208,6 +208,31 @@ struct ValidatedObject {
     metadata: CatalogClientMetadata,
 }
 
+fn resolve_role_in_catalog(
+    catalog: &CatalogGeneration,
+    generation: u64,
+    catalog_hash: &str,
+    role: &str,
+) -> Result<Option<ResolvedValidationRole>, ValidationBatchError> {
+    let mut matches = catalog.entries().iter().filter(|entry| {
+        entry
+            .common_for_internal_mutation()
+            .role_for_internal_mutation()
+            .is_some_and(|value| value.as_str() == role)
+    });
+    let Some(entry) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(ValidationBatchError::Invalid("duplicate stable role"));
+    }
+    Ok(Some(ResolvedValidationRole {
+        generation,
+        catalog_hash: catalog_hash.to_owned(),
+        stable_id: entry.stable_id().as_str().to_owned(),
+    }))
+}
+
 impl CoreCommitCoordinator {
     /// Converts one complete writing graph into at most one validation generation.
     ///
@@ -302,26 +327,25 @@ impl CoreCommitCoordinator {
         if !ALLOWED_ROLES.contains(&role) {
             return Err(ValidationBatchError::Invalid("unsupported stable role"));
         }
+        if let Some(committed) = self.load_committed(keys)? {
+            if committed.catalog().cutover_marker().is_some() {
+                return resolve_role_in_catalog(
+                    committed.catalog(),
+                    committed.head().generation(),
+                    committed.head().catalog_hash(),
+                    role,
+                );
+            }
+        }
         let Some(snapshot) = self.load_validation_snapshot(keys)? else {
             return Ok(None);
         };
-        let mut matches = snapshot.catalog().entries().iter().filter(|entry| {
-            entry
-                .common_for_internal_mutation()
-                .role_for_internal_mutation()
-                .is_some_and(|value| value.as_str() == role)
-        });
-        let Some(entry) = matches.next() else {
-            return Ok(None);
-        };
-        if matches.next().is_some() {
-            return Err(ValidationBatchError::Invalid("duplicate stable role"));
-        }
-        Ok(Some(ResolvedValidationRole {
-            generation: snapshot.head().generation(),
-            catalog_hash: snapshot.head().catalog_hash().to_owned(),
-            stable_id: entry.stable_id().as_str().to_owned(),
-        }))
+        resolve_role_in_catalog(
+            snapshot.catalog(),
+            snapshot.head().generation(),
+            snapshot.head().catalog_hash(),
+            role,
+        )
     }
 
     fn prepare_validation_graph(

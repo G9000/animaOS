@@ -563,12 +563,22 @@ class UnlockSessionStore:
         copied_deks = {domain: _copy_key(dek) for domain, dek in deks.items()}
         corefs_session: object | None = None
         runtime_index: CoreFSProgressiveIndex | None = None
+        content_authority: dict[str, object] | None = None
         try:
             corefs_session = None if corefs_keys is None else self._corefs_session_factory()
             if corefs_session is not None and not callable(
                 getattr(corefs_session, "begin_close", None)
             ):
                 raise RuntimeError("CoreFS native session does not implement begin_close")
+            if corefs_session is not None:
+                from anima_server.services.corefs.cutover import (
+                    reconcile_cutover_authority,
+                )
+
+                content_authority = reconcile_cutover_authority(
+                    corefs_session=corefs_session,
+                    keys=corefs_keys,
+                )
             with self._lock:
                 sqlcipher_key = self._sqlcipher_key
             runtime_index = self._runtime_index_factory(
@@ -601,6 +611,7 @@ class UnlockSessionStore:
             corefs_keys=corefs_keys,
             corefs_session=corefs_session,
             runtime_index=runtime_index,
+            content_authority=content_authority,
         )
 
     @staticmethod

@@ -885,7 +885,7 @@ missing evidence blocks PCF-008; it cannot be treated as a skipped CI check.
 - Test: `apps/server/tests/test_health_integration.py`
 - Test: `apps/desktop/tests/corefs-transfer.test.ts`
 
-- [ ] **Step 1: Write failing cutover-state tests**
+- [x] **Step 1: Write failing cutover-state tests**
 
 Cover `migrating-write-frozen`, `corefs-validation-readonly`, `corefs-approved-pending-first-write`, authenticated first-write cutover marker, crash before manifest finalization, and forward-only rejection of legacy rollback.
 

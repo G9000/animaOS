@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 18:41 MYT
+- Updated: 2026-08-13 18:58 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -71,14 +71,40 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   visible. Local reversible implementation and validation may proceed; the
   triggerless paid package workflow, irreversible first-write marker, release
   publication, and merge remain unauthorized.
+- 2026-08-13 18:58 MYT - Completed Step 1 locally. The manifest now records
+  the exact reversible cutover states and a stable pending epoch, while only an
+  authenticated committed `fs/HEAD` catalog marker can create forward-only
+  session authority. Unlock repairs the crash seam after marked HEAD
+  publication, rejects manifest-only authority, and blocks rollback after the
+  marker. Logical reads and stable-role resolution follow the committed
+  catalog after cutover but remain on `VALIDATION_HEAD` beforehand. The paid
+  package workflow remains disabled and no irreversible first mutation or
+  external action was performed.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_indexer.py apps/server/tests/test_dev_session_continuity.py -q` (`82 passed`)
+  - `cargo test -p anima-corefs` (complete native suite passed)
+  - `cargo clippy -p anima-corefs --all-targets -- -D warnings` (passed)
+  - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python` (passed)
+  - scoped Ruff check/format, Rust format, and `git diff --check` (passed)
 - Changed paths:
-  - none
+  - `apps/server/src/anima_server/services/corefs/cutover.py`
+  - `apps/server/src/anima_server/services/sessions.py`
+  - `apps/server/tests/test_corefs_cutover.py`
+  - `packages/anima-core/src/ffi.rs`
+  - `packages/anima-corefs/src/logical/backend.rs`
+  - `packages/anima-corefs/src/transaction/converter.rs`
+  - `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md`
+  - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
+  - `tickets/portable-core-filesystem/PCF-008-cutover-transfer.md`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by
     local ticket execution.
+  - The macOS host can compile-check the Python-enabled PyO3 binding, but its
+    extension-module test target is not locally linkable against the venv
+    interpreter. The binding regression remains in the Rust test target for a
+    supported native runner and Step 4 will add the end-to-end Python first-
+    mutation exercise.
