@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Generator
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -420,6 +421,178 @@ def test_corefs_recovery_manager_replaces_controls_without_retaining_credentials
     assert not hasattr(operation, "recovery_phrase")
 
 
+def test_corefs_recovery_manager_opens_request_scoped_export_context(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = managed_tmp_path / "corefs-only.anima"
+    archive.write_bytes(b"authenticated-archive")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    staging = staging_parent / ".staged"
+    staging.mkdir()
+    destination = managed_tmp_path / "destination"
+    destination.mkdir()
+    operation = ImportOperation(
+        operation_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+        user_id=7,
+        prepared=PreparedImport(
+            archive_path=archive,
+            archive_bytes=archive.stat().st_size,
+            probe=ImportCapacityProbe(
+                staging_parent=staging_parent,
+                restored_core_bytes=archive.stat().st_size,
+                available_bytes=10**9,
+                required_capacity_bytes=64 * 1024 * 1024 + archive.stat().st_size,
+            ),
+        ),
+        state=TransferOperationState.COMPLETED,
+        phase="staged_recovery_ready",
+        payload_kind=CoreArchivePayloadKind.FS,
+        core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+        recovery_state="recovery_only",
+        staging_path=staging,
+        staging_identity=(1, 2),
+        control_records=(("manifest.json", 1, "a" * 64),),
+        filesystem_generation=7,
+        credentials_replaced=True,
+    )
+    lifecycle = {"verify": 0, "close": 0}
+
+    def verify_authority() -> None:
+        lifecycle["verify"] += 1
+
+    def close_context() -> None:
+        lifecycle["close"] += 1
+
+    context = SimpleNamespace(
+        core_root=staging,
+        manifest={"archive_payload_scope": "fs"},
+        corefs_keys=object(),
+        corefs_session=object(),
+        control_records=operation.control_records,
+        verify_authority=verify_authority,
+        close=close_context,
+    )
+    captured: dict[str, object] = {}
+
+    def open_context(**kwargs: object) -> SimpleNamespace:
+        captured["open"] = kwargs
+        return context
+
+    inventory = CoreArchiveInventory(
+        payload_kind=CoreArchivePayloadKind.FS,
+        core_id=operation.core_id,
+        owner_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855be",
+        soul_generation=None,
+        filesystem_generation=7,
+        selected_bytes=4096,
+        record_count=4,
+        filesystem_catalog_hash="a" * 64,
+    )
+    probe = DestinationProbe(
+        destination=destination,
+        available_bytes=10**9,
+        maximum_single_file_bytes=None,
+        publication_mode=PublicationMode.SINGLE_FILE,
+        part_limit_bytes=None,
+        declared_volume_count=1,
+    )
+
+    class Thread:
+        def __init__(self, **kwargs: object) -> None:
+            captured["thread"] = kwargs
+
+        def start(self) -> None:
+            captured["started"] = True
+
+    monkeypatch.setattr(transfer_jobs, "open_staged_corefs_export", open_context)
+    monkeypatch.setattr(
+        transfer_jobs,
+        "_validation_pointer_alias",
+        lambda *_args, **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(
+        transfer_jobs,
+        "inspect_core_archive_v2",
+        lambda **_kwargs: inventory,
+    )
+    monkeypatch.setattr(
+        transfer_jobs,
+        "probe_local_destination",
+        lambda *_args, **_kwargs: probe,
+    )
+    monkeypatch.setattr(transfer_jobs.threading, "Thread", Thread)
+    export_manager = CoreTransferOperationManager()
+    manager = CoreImportOperationManager(export_manager)
+    manager._operations[operation.operation_id] = operation
+
+    export = manager.start_corefs_recovery_export(
+        operation.operation_id,
+        user_id=7,
+        credential="one request recovery phrase",
+        wrapping_path=transfer_jobs.WrappingPath.RECOVERY,
+        destination=destination,
+        final_name="recovered-fs.anima",
+        passphrase="archive passphrase",
+    )
+
+    assert export.prepared.inventory is inventory
+    assert export_manager.get(export.operation_id, user_id=7) is export
+    assert operation.recovery_export_operation_id == export.operation_id
+    assert operation.phase == "staged_recovery_exporting"
+    assert captured["started"] is True
+    assert captured["open"] == {
+        "staging_path": staging,
+        "expected_core_id": operation.core_id,
+        "expected_stage_identity": (1, 2),
+        "control_records": operation.control_records,
+        "credential": "one request recovery phrase",
+        "wrapping_path": transfer_jobs.WrappingPath.RECOVERY,
+    }
+    assert not hasattr(operation, "credential")
+    assert not hasattr(export, "credential")
+
+    def publish(
+        _destination: Path,
+        _final_name: str,
+        **kwargs: object,
+    ) -> SimpleNamespace:
+        partial = managed_tmp_path / "recovered-fs.anima.partial"
+        kwargs["producer"](partial)  # type: ignore[operator]
+        kwargs["verifier"](partial)  # type: ignore[operator]
+        return SimpleNamespace(
+            bytes_published=8192,
+            path=destination / "recovered-fs.anima",
+        )
+
+    monkeypatch.setattr(transfer_jobs, "publish_single_file", publish)
+    monkeypatch.setattr(
+        transfer_jobs,
+        "export_core_archive_v2",
+        lambda **_kwargs: CoreArchiveExportResult(
+            inventory=inventory,
+            archive_id="archive-a",
+            plaintext_bytes=4096,
+            chunk_count=4,
+            max_buffer_bytes=1024,
+        ),
+    )
+    monkeypatch.setattr(
+        transfer_jobs,
+        "verify_core_archive_v2",
+        lambda *_args, **_kwargs: {},
+    )
+    thread = captured["thread"]
+    thread["target"](**thread["kwargs"])  # type: ignore[index,operator]
+
+    assert export.state is TransferOperationState.COMPLETED
+    assert export.result_path == destination / "recovered-fs.anima"
+    assert export.archive_id == "archive-a"
+    assert operation.phase == "staged_recovery_ready"
+    assert lifecycle == {"verify": 2, "close": 1}
+
+
 def test_corefs_reattachment_api_returns_the_stable_v1_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -462,6 +635,7 @@ def test_corefs_recovery_credential_api_returns_phrase_once_without_source_discl
                 "activationId": None,
                 "restartRequired": False,
                 "credentialsReplaced": True,
+                "recoveryExportOperationId": None,
                 "errorCode": None,
             }
 
@@ -563,6 +737,69 @@ def test_corefs_recovery_credential_api_precharges_and_hides_failures(
     assert "new portable password" not in limited.text
 
 
+def test_corefs_recovery_export_api_uses_request_credentials_without_disclosure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Operation:
+        def public(self) -> dict[str, object]:
+            return {
+                "operationId": "export-a",
+                "payloadKind": "fs",
+                "state": "prepared",
+                "phase": "prepared",
+                "selectedBytes": 4096,
+                "bytesPublished": 0,
+                "progressPercent": 0,
+                "publicationMode": "single_file",
+                "declaredVolumeCount": 1,
+                "resultPath": None,
+                "archiveId": None,
+                "errorCode": None,
+            }
+
+    class Manager:
+        def start_corefs_recovery_export(self, operation_id: str, **kwargs: object) -> Operation:
+            captured["operation_id"] = operation_id
+            captured.update(kwargs)
+            return Operation()
+
+    monkeypatch.setattr(
+        corefs_transfer,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(user_id=7),
+    )
+    monkeypatch.setattr(corefs_transfer, "core_import_operations", Manager())
+
+    with TestClient(_app()) as client:
+        response = client.post(
+            "/api/corefs/transfer/import/operations/import-a/export-corefs",
+            json={
+                "destination": "/Volumes/Recovery",
+                "finalName": "recovered-fs.anima",
+                "passphrase": "new archive passphrase",
+                "credentialKind": "recovery",
+                "credential": "  RECOVERY PHRASE  ",
+            },
+        )
+
+    assert response.status_code == 202
+    assert response.json() == Operation().public()
+    assert captured == {
+        "operation_id": "import-a",
+        "user_id": 7,
+        "credential": "recovery phrase",
+        "wrapping_path": transfer_jobs.WrappingPath.RECOVERY,
+        "destination": Path("/Volumes/Recovery"),
+        "final_name": "recovered-fs.anima",
+        "passphrase": "new archive passphrase",
+    }
+    assert "recovery phrase" not in response.text.casefold()
+    assert "archive passphrase" not in response.text.casefold()
+    assert "/volumes/recovery" not in response.text.casefold()
+
+
 def test_import_api_probes_and_stages_without_exposing_passphrase(
     managed_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -598,6 +835,7 @@ def test_import_api_probes_and_stages_without_exposing_passphrase(
                 "activationId": None,
                 "restartRequired": False,
                 "credentialsReplaced": False,
+                "recoveryExportOperationId": None,
                 "errorCode": None,
             }
 

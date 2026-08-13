@@ -225,6 +225,7 @@ describe("createApiClient error handling", () => {
             activationId: null,
             restartRequired: false,
             credentialsReplaced: false,
+            recoveryExportOperationId: null,
             errorCode: null,
           }),
         );
@@ -247,6 +248,13 @@ describe("createApiClient error handling", () => {
       newPassword: "new portable password",
       confirmed: true,
     });
+    await api.corefs.transfer.exportCoreFsRecovery("import-a", {
+      destination: "/Volumes/Recovery",
+      finalName: "recovered-fs.anima",
+      passphrase: "new archive passphrase",
+      credentialKind: "recovery",
+      credential: "one request phrase",
+    });
     await api.corefs.transfer.browseCoreFsRecovery("import-a", {
       operation: "list",
       credentialKind: "recovery",
@@ -262,13 +270,21 @@ describe("createApiClient error handling", () => {
       "https://api.test/api/corefs/transfer/import/operations/import-a/activate-on-restart",
       "https://api.test/api/corefs/transfer/import/operations/import-a/attach-corefs",
       "https://api.test/api/corefs/transfer/import/operations/import-a/replace-corefs-credentials",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/export-corefs",
       "https://api.test/api/corefs/transfer/import/operations/import-a/browse-corefs",
     ]);
-    expect(requests.at(-2)?.body).toEqual({
+    expect(requests.at(-3)?.body).toEqual({
       sourceCredentialKind: "password",
       sourceCredential: "old portable password",
       newPassword: "new portable password",
       confirmed: true,
+    });
+    expect(requests.at(-2)?.body).toEqual({
+      destination: "/Volumes/Recovery",
+      finalName: "recovered-fs.anima",
+      passphrase: "new archive passphrase",
+      credentialKind: "recovery",
+      credential: "one request phrase",
     });
     expect(requests.at(-1)?.body).toEqual({
       operation: "list",

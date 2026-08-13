@@ -16,6 +16,7 @@ import type {
   CoreFsRecoveryBrowseResponse,
   CoreFsRecoveryCredentialRequest,
   CoreFsRecoveryCredentialResponse,
+  CoreFsRecoveryExportRequest,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
   CoreArchivePayloadKind,
@@ -826,6 +827,14 @@ export function createApiClient(options: ApiClientOptions) {
         ) =>
           request<CoreFsRecoveryCredentialResponse>(
             `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/replace-corefs-credentials`,
+            { method: "POST", body: options },
+          ),
+        exportCoreFsRecovery: (
+          operationId: string,
+          options: CoreFsRecoveryExportRequest,
+        ) =>
+          request<CoreTransferOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/export-corefs`,
             { method: "POST", body: options },
           ),
         browseCoreFsRecovery: (

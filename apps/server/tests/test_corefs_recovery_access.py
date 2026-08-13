@@ -11,6 +11,7 @@ from anima_server.services.corefs.keyslots import unlock_manifest_compartment_at
 from anima_server.services.corefs.recovery_access import (
     CoreFsRecoveryAccessError,
     browse_staged_corefs,
+    open_staged_corefs_export,
     replace_staged_corefs_credentials,
     staged_core_identity,
 )
@@ -427,6 +428,68 @@ def test_recovery_credential_replacement_publishes_only_fresh_fs_wrappers(
     ]
     assert not list(root.glob(".manifest-credential-check-*.json"))
     recovery_access._verify_control_records(root, result.control_records)
+
+
+def test_recovery_export_context_uses_exact_authenticated_manifest_and_closes(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = managed_tmp_path / "staged"
+    records = _credential_staged_core(root)
+    observed: dict[str, object] = {}
+
+    def unlock(path: Path, **kwargs: object) -> SimpleNamespace:
+        observed["snapshot"] = path
+        observed.update(kwargs)
+        assert path.name.startswith(".manifest-credential-source-")
+        assert path.read_bytes() == (root / "manifest.json").read_bytes()
+        return SimpleNamespace(sqlcipher_key=None, frks={1: b"filesystem-root"})
+
+    class Native:
+        def __init__(self, path: str, core_id: str) -> None:
+            observed["native"] = (path, core_id)
+
+        def begin_close(self) -> None:
+            observed["begin_close"] = True
+
+        def close(self) -> None:
+            observed["close"] = True
+
+    monkeypatch.setattr(recovery_access, "unlock_manifest_compartment_at", unlock)
+    monkeypatch.setattr(
+        recovery_access,
+        "derive_active_corefs_subkeys",
+        lambda _manifest, frks: ("derived", frks),
+    )
+
+    context = open_staged_corefs_export(
+        staging_path=root,
+        expected_core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+        expected_stage_identity=staged_core_identity(root),
+        control_records=records,
+        credential="one request recovery phrase",
+        wrapping_path=WrappingPath.RECOVERY,
+        session_factory=Native,
+    )
+
+    assert context.core_root == root
+    assert context.corefs_keys == ("derived", {1: b"filesystem-root"})
+    assert context.manifest["archive_payload_scope"] == "fs"
+    assert observed["credential"] == "one request recovery phrase"
+    assert observed["compartment"] is PayloadScope.FS
+    assert observed["native"] == (
+        str(root),
+        "018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+    )
+    assert not list(root.glob(".manifest-credential-source-*.json"))
+    context.verify_authority()
+    (root / "keyslots" / "root-keyslots.json").write_bytes(b"tampered")
+    with pytest.raises(CoreFsRecoveryAccessError, match="control record changed"):
+        context.verify_authority()
+    context.close()
+    context.close()
+    assert observed["begin_close"] is True
+    assert observed["close"] is True
 
 
 @pytest.mark.parametrize("failure_boundary", ["keyslots_durable", "manifest_durable"])

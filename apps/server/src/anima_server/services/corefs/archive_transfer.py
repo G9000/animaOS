@@ -78,6 +78,8 @@ def inspect_core_archive_v2(
     session: Any,
     payload_kind: CoreArchivePayloadKind,
     soul_generation: int | None,
+    core_root: Path | None = None,
+    manifest: dict[str, object] | None = None,
 ) -> CoreArchiveInventory:
     """Return the exact current archive selection without exposing its paths."""
     with tempfile.TemporaryDirectory(prefix="anima-core-archive-inspect-") as temporary_name:
@@ -86,6 +88,8 @@ def inspect_core_archive_v2(
             payload_kind=payload_kind,
             soul_generation=soul_generation,
             snapshot_root=Path(temporary_name),
+            core_root=core_root,
+            manifest=manifest,
         ).inventory
 
 
@@ -96,6 +100,8 @@ def export_core_archive_v2(
     passphrase: str,
     payload_kind: CoreArchivePayloadKind,
     soul_generation: int | None,
+    core_root: Path | None = None,
+    manifest: dict[str, object] | None = None,
 ) -> CoreArchiveExportResult:
     """Write one bounded V2 archive through the native streaming implementation.
 
@@ -112,6 +118,8 @@ def export_core_archive_v2(
             payload_kind=payload_kind,
             soul_generation=soul_generation,
             snapshot_root=temporary_root,
+            core_root=core_root,
+            manifest=manifest,
         )
         inventory = prepared.inventory
         sources = list(prepared.sources)
@@ -165,18 +173,39 @@ def export_core_archive_v2(
     )
 
 
+def _archive_source(
+    *,
+    core_root: Path | None,
+    manifest: dict[str, object] | None,
+) -> tuple[Path, dict[str, object]]:
+    if core_root is None and manifest is None:
+        manifest_path = get_manifest_path().expanduser().resolve(strict=True)
+        return manifest_path.parent, _read_manifest(manifest_path)
+    if core_root is None or manifest is None:
+        raise CoreArchiveTransferError(
+            "explicit Core archive source requires both root and manifest"
+        )
+    candidate = core_root.expanduser()
+    if candidate.is_symlink():
+        raise CoreArchiveTransferError("explicit Core archive root is invalid")
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_dir():
+        raise CoreArchiveTransferError("explicit Core archive root is invalid")
+    return resolved, deepcopy(manifest)
+
+
 def _prepare_core_archive(
     *,
     session: Any,
     payload_kind: CoreArchivePayloadKind,
     soul_generation: int | None,
     snapshot_root: Path,
+    core_root: Path | None = None,
+    manifest: dict[str, object] | None = None,
 ) -> _PreparedCoreArchive:
     if session.corefs_session is None or session.corefs_keys is None:
         raise CoreArchiveTransferError("ANIMA CORE archive requires an unlocked Core")
-    manifest_path = get_manifest_path().expanduser().resolve(strict=True)
-    core_root = manifest_path.parent
-    manifest = _read_manifest(manifest_path)
+    core_root, manifest = _archive_source(core_root=core_root, manifest=manifest)
     core_id = _required_uuid(manifest, "core_id")
     owner_id = _required_uuid(manifest, "owner_id")
 

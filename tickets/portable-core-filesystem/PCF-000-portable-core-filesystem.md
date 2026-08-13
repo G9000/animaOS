@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 22:21 MYT
+- Updated: 2026-08-13 22:35 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -401,6 +401,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 21:42 MYT - PCF-008 now exposes the required closed V1 CoreFS-to-Soul attachment operation: an authenticated owner may address only a completed CoreFS-only staged recovery, which deterministically returns HTTP 409 `corefs_reattachment_not_supported` without paths or internals. Backend coverage passes `9` and API-client coverage `30`; recovery-only browse/export and scoped credential controls remain open. No external or irreversible action occurred.
 - 2026-08-13 21:58 MYT - PCF-008 CoreFS-only staged recovery now supports authenticated bounded stat/list/read without attachment or activation. Each request uses an ephemeral compartment-limited unlock, authenticates filtered filesystem wrappers under their original source-scope AAD, rejects foreign root material, rechecks the archive-authenticated control records and imported generation before and after native access, rate-limits expensive unwrap attempts, closes the native session, and exposes no staging path or private error. Pre-cutover archives use a serialized byte-exact temporary validation-pointer alias derived from authenticated HEAD and remove it on every exit. The broader transfer band passes `76`, API-client/desktop contracts `33`, and the desktop production build passes. Re-export and scoped recovery-credential replacement remain open; no external or irreversible action occurred.
 - 2026-08-13 22:21 MYT - PCF-008 CoreFS-only recovery now supports separately confirmed scoped credential replacement. One request-local source credential opens only the FS compartment; fresh password/recovery generations wrap exactly those FRKs at `fs` scope and independently reopen before keyslot-inventory-then-manifest publication. Injected failures restore both original controls, updated authenticated hashes gate later access, no Soul authority can enter, and neither request credentials nor the returned-once phrase are retained. The transfer band passes `82`, API-client/desktop contracts `33`, desktop build and scoped hygiene pass. Recovery-only re-export remains open; no external or irreversible action occurred.
+- 2026-08-13 22:35 MYT - PCF-008 recovery-only re-export now streams a new verified FS artifact from the exact authenticated staging Core without consulting, attaching, or activating the live Core. One request-local credential opens the FS compartment; explicit staged root/manifest authority, generation/control rechecks, native object-lease pinning, verified cancellable `.partial` publication, forbidden active/staged destinations, and unconditional native-session close protect the flow. The transfer band passes `86`, API-client/desktop contracts `33`, desktop build and scoped hygiene pass. Multipart remains open; no external or irreversible action occurred.
 
 ## Validation
 

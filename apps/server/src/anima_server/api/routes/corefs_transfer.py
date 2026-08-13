@@ -12,6 +12,7 @@ from anima_server.schemas.corefs_transfer import (
     CoreFsRecoveryBrowseResponse,
     CoreFsRecoveryCredentialRequest,
     CoreFsRecoveryCredentialResponse,
+    CoreFsRecoveryExportRequest,
     CoreImportOperationResponse,
     CoreImportPrepareRequest,
     CoreImportProbeRequest,
@@ -352,6 +353,58 @@ def replace_corefs_recovery_credentials(
         recoveryGeneration=completed.result.recovery_generation,
         operation=CoreImportOperationResponse(**completed.operation.public()),
     )
+
+
+@router.post(
+    "/import/operations/{operation_id}/export-corefs",
+    response_model=CoreTransferOperationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def export_corefs_recovery(
+    operation_id: str,
+    payload: CoreFsRecoveryExportRequest,
+    request: Request,
+) -> CoreTransferOperationResponse:
+    session = require_unlocked_session(request)
+    try:
+        client_host = request.client.host if request.client is not None else "unknown"
+        admission_key = f"{client_host}:{session.user_id}:{operation_id}"
+        credential = payload.credential.get_secret_value()
+        if payload.credentialKind == "recovery":
+            credential = credential.strip().lower()
+        with _RECOVERY_BROWSE_ADMISSION.admit(admission_key):
+            operation = core_import_operations.start_corefs_recovery_export(
+                operation_id,
+                user_id=session.user_id,
+                credential=credential,
+                wrapping_path=WrappingPath(payload.credentialKind),
+                destination=Path(payload.destination),
+                final_name=payload.finalName,
+                passphrase=payload.passphrase.get_secret_value(),
+            )
+    except FsCredentialAdmissionRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": "corefs_recovery_export_rate_limited"},
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "core_import_operation_not_found"},
+        ) from exc
+    except (
+        CoreFsRecoveryAccessError,
+        CoreArchiveTransferError,
+        TransferError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_recovery_export_failed"},
+        ) from exc
+    return CoreTransferOperationResponse(**operation.public())
 
 
 @router.post(

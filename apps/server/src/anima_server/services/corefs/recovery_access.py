@@ -59,6 +59,35 @@ class CoreFsRecoveryCredentialResult:
     control_records: tuple[ControlRecord, ...]
 
 
+@dataclass(slots=True)
+class CoreFsRecoveryExportContext:
+    core_root: Path
+    manifest: dict[str, object]
+    corefs_keys: object
+    corefs_session: object
+    expected_stage_identity: StageIdentity
+    control_records: tuple[ControlRecord, ...]
+    closed: bool = False
+
+    def verify_authority(self) -> None:
+        if self.closed:
+            raise CoreFsRecoveryAccessError("CoreFS recovery export context is closed")
+        if staged_core_identity(self.core_root) != self.expected_stage_identity:
+            raise CoreFsRecoveryAccessError("recovery staging Core changed during export")
+        _verify_control_records(self.core_root, self.control_records)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        begin_close = getattr(self.corefs_session, "begin_close", None)
+        if callable(begin_close):
+            begin_close()
+        close = getattr(self.corefs_session, "close", None)
+        if callable(close):
+            close()
+
+
 def staged_core_identity(path: Path) -> StageIdentity:
     candidate = path.expanduser()
     if candidate.is_symlink():
@@ -68,6 +97,68 @@ def staged_core_identity(path: Path) -> StageIdentity:
         raise CoreFsRecoveryAccessError("recovery staging Core must be a directory")
     stat = resolved.stat()
     return (stat.st_dev, stat.st_ino)
+
+
+def open_staged_corefs_export(
+    *,
+    staging_path: Path,
+    expected_core_id: str,
+    expected_stage_identity: StageIdentity,
+    control_records: tuple[ControlRecord, ...],
+    credential: str,
+    wrapping_path: WrappingPath,
+    session_factory: Callable[[str, str], object] | None = None,
+) -> CoreFsRecoveryExportContext:
+    """Open one credential-bound, non-activatable staged export context."""
+    if not 1 <= len(credential) <= 1024:
+        raise CoreFsRecoveryAccessError("CoreFS recovery export credential is invalid")
+    root = staging_path.expanduser().resolve(strict=True)
+    if staged_core_identity(root) != expected_stage_identity:
+        raise CoreFsRecoveryAccessError("recovery staging Core changed after import")
+    _verify_control_records(root, control_records)
+    manifest_bytes = (root / "manifest.json").read_bytes()
+    _verify_control_payload(control_records, "manifest.json", manifest_bytes)
+    manifest = _decode_recovery_manifest(manifest_bytes)
+    if (
+        manifest.get("core_id") != expected_core_id
+        or manifest.get("archive_payload_scope") != PayloadScope.FS.value
+        or manifest.get("degraded_state") != "recovery_only"
+    ):
+        raise CoreFsRecoveryAccessError("recovery staging manifest is not FS-scoped")
+
+    native: object | None = None
+    try:
+        roots = _unlock_manifest_snapshot(
+            root=root,
+            manifest_bytes=manifest_bytes,
+            credential=credential,
+            wrapping_path=wrapping_path,
+        )
+        if roots.sqlcipher_key is not None or not roots.frks:
+            raise CoreFsRecoveryAccessError(
+                "recovery staging credential contains invalid key material"
+            )
+        keys = derive_active_corefs_subkeys(manifest, roots.frks)
+        factory = session_factory or anima_core.CorefsSession
+        native = factory(str(root), expected_core_id)
+        context = CoreFsRecoveryExportContext(
+            core_root=root,
+            manifest=manifest,
+            corefs_keys=keys,
+            corefs_session=native,
+            expected_stage_identity=expected_stage_identity,
+            control_records=control_records,
+        )
+        context.verify_authority()
+        return context
+    except CoreFsRecoveryAccessError:
+        if native is not None:
+            _close_native(native)
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        if native is not None:
+            _close_native(native)
+        raise CoreFsRecoveryAccessError("CoreFS recovery export credential is invalid") from exc
 
 
 def replace_staged_corefs_credentials(
@@ -464,6 +555,15 @@ def _roots_match(first: dict[int, object], second: dict[int, object]) -> bool:
     return set(first) == set(second) and all(
         _manifest_secret_matches(first[version], second[version]) for version in first
     )
+
+
+def _close_native(native: object) -> None:
+    begin_close = getattr(native, "begin_close", None)
+    if callable(begin_close):
+        begin_close()
+    close = getattr(native, "close", None)
+    if callable(close):
+        close()
 
 
 def _atomic_replace_file(path: Path, payload: bytes) -> None:

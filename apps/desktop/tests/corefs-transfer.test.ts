@@ -57,6 +57,11 @@ describe("ANIMA CORE transfer settings", () => {
       "fresh FS-only password and recovery",
       "shown only in this response",
       "cannot attach a Soul or promote",
+      "Re-export recovered CoreFS",
+      "exportCoreFsRecovery",
+      "exact staged generation",
+      "never becomes the running Core",
+      "Cancel recovery export safely",
     ]) {
       expect(page).toContain(contract);
     }

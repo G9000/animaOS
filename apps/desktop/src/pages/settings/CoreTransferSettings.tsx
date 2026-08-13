@@ -84,6 +84,13 @@ export default function CoreTransferSettings() {
   const [replacementRecoveryPhrase, setReplacementRecoveryPhrase] = useState<string | null>(null);
   const [replacementBusy, setReplacementBusy] = useState(false);
   const [replacementStatus, setReplacementStatus] = useState("");
+  const [recoveryExportDestination, setRecoveryExportDestination] = useState("");
+  const [recoveryExportPassphrase, setRecoveryExportPassphrase] = useState("");
+  const [recoveryExportCredentialKind, setRecoveryExportCredentialKind] = useState<"password" | "recovery">("recovery");
+  const [recoveryExportCredential, setRecoveryExportCredential] = useState("");
+  const [recoveryExportOperation, setRecoveryExportOperation] = useState<CoreTransferOperation | null>(null);
+  const [recoveryExportBusy, setRecoveryExportBusy] = useState(false);
+  const [recoveryExportStatus, setRecoveryExportStatus] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -414,6 +421,85 @@ export default function CoreTransferSettings() {
     }
   };
 
+  const handleRecoveryExport = async () => {
+    if (
+      !importOperation ||
+      importOperation.state !== "completed" ||
+      importOperation.recoveryState !== "recovery_only"
+    ) {
+      return;
+    }
+    if (!recoveryExportDestination.trim()) {
+      setRecoveryExportStatus("Choose an existing local destination folder.");
+      return;
+    }
+    if (recoveryExportPassphrase.length < 8) {
+      setRecoveryExportStatus("Archive passphrase must be at least 8 characters.");
+      return;
+    }
+    if (!recoveryExportCredential) {
+      setRecoveryExportStatus("Enter a current credential for this recovered CoreFS.");
+      return;
+    }
+    setRecoveryExportBusy(true);
+    setRecoveryExportStatus("");
+    try {
+      const started = await api.corefs.transfer.exportCoreFsRecovery(
+        importOperation.operationId,
+        {
+          destination: recoveryExportDestination.trim(),
+          finalName: "ANIMA-CORE-FS-recovered.anima",
+          passphrase: recoveryExportPassphrase,
+          credentialKind: recoveryExportCredentialKind,
+          credential: recoveryExportCredential,
+        },
+      );
+      setRecoveryExportOperation(started);
+      let current = started;
+      while (!["completed", "cancelled", "failed"].includes(current.state)) {
+        await new Promise((resolve) => window.setTimeout(resolve, 350));
+        current = await api.corefs.transfer.operation(current.operationId);
+        setRecoveryExportOperation(current);
+      }
+      setRecoveryExportStatus(
+        current.state === "completed"
+          ? `Verified FS-only recovery archive published safely to ${current.resultPath}.`
+          : current.state === "cancelled"
+            ? "Recovery export cancelled; unpublished partial output was removed."
+            : "Recovery export failed closed; the staged and running Cores were unchanged.",
+      );
+    } catch (error) {
+      setRecoveryExportStatus(
+        error instanceof Error ? error.message : "CoreFS recovery export failed closed.",
+      );
+    } finally {
+      setRecoveryExportPassphrase("");
+      setRecoveryExportCredential("");
+      setRecoveryExportBusy(false);
+    }
+  };
+
+  const handleRecoveryExportCancel = async () => {
+    if (
+      !recoveryExportOperation ||
+      ["completed", "cancelled", "failed"].includes(recoveryExportOperation.state)
+    ) {
+      return;
+    }
+    try {
+      setRecoveryExportOperation(
+        await api.corefs.transfer.cancel(recoveryExportOperation.operationId),
+      );
+      setRecoveryExportStatus(
+        "Recovery export cancellation requested; unpublished output will be removed safely.",
+      );
+    } catch (error) {
+      setRecoveryExportStatus(
+        error instanceof Error ? error.message : "Recovery export cancellation failed.",
+      );
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className={`${glass} p-6 space-y-5`}>
@@ -707,6 +793,75 @@ export default function CoreTransferSettings() {
                   {replacementStatus}
                 </p>
               )}
+
+              <div className="border-t border-hairline pt-5 space-y-4">
+                <div>
+                  <h3 className="font-mono text-label tracking-caps-3 uppercase text-foreground/45">
+                    Re-export recovered CoreFS
+                  </h3>
+                  <p className="mt-1 font-mono text-micro text-foreground/30 leading-relaxed">
+                    Create a new verified FS-only archive from this exact staged generation. The
+                    staged Core remains recovery-only and never becomes the running Core.
+                  </p>
+                </div>
+                <input
+                  value={recoveryExportDestination}
+                  onChange={(event) => setRecoveryExportDestination(event.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="Existing local destination folder"
+                />
+                <div className="grid gap-3 md:grid-cols-2">
+                  <select
+                    value={recoveryExportCredentialKind}
+                    onChange={(event) =>
+                      setRecoveryExportCredentialKind(
+                        event.target.value as "password" | "recovery",
+                      )
+                    }
+                    className={INPUT_CLASS}
+                  >
+                    <option value="recovery">Recovery phrase</option>
+                    <option value="password">CoreFS password</option>
+                  </select>
+                  <input
+                    type="password"
+                    value={recoveryExportCredential}
+                    onChange={(event) => setRecoveryExportCredential(event.target.value)}
+                    className={INPUT_CLASS}
+                    placeholder="Current CoreFS credential"
+                    autoComplete="off"
+                  />
+                  <input
+                    type="password"
+                    value={recoveryExportPassphrase}
+                    onChange={(event) => setRecoveryExportPassphrase(event.target.value)}
+                    className={INPUT_CLASS}
+                    placeholder="New archive passphrase"
+                    autoComplete="new-password"
+                  />
+                </div>
+                <ActionButton onClick={handleRecoveryExport} disabled={recoveryExportBusy}>
+                  {recoveryExportBusy ? "Exporting…" : "Export recovered CoreFS"}
+                </ActionButton>
+                {recoveryExportOperation &&
+                  !["completed", "cancelled", "failed"].includes(
+                    recoveryExportOperation.state,
+                  ) && (
+                    <ActionButton onClick={handleRecoveryExportCancel}>
+                      Cancel recovery export safely
+                    </ActionButton>
+                  )}
+                {recoveryExportOperation && (
+                  <p className="font-mono text-micro uppercase tracking-caps-2 text-foreground/35">
+                    {recoveryExportOperation.phase} · {recoveryExportOperation.progressPercent}% · {formatBytes(recoveryExportOperation.bytesPublished)} published
+                  </p>
+                )}
+                {recoveryExportStatus && (
+                  <p className="font-mono text-caption text-foreground/45 leading-relaxed">
+                    {recoveryExportStatus}
+                  </p>
+                )}
+              </div>
 
               <div className="border-t border-hairline pt-5">
                 <h3 className="font-mono text-label tracking-caps-3 uppercase text-foreground/45">

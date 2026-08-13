@@ -955,9 +955,13 @@ generations, independently reopens both before publication, and returns the
 new recovery phrase once without retaining any request credential or phrase.
 Keyslot inventory publishes before manifest authority and ordinary failures
 restore both original control files byte-for-byte; a process crash can only
-invalidate the disposable, non-activatable staging copy. Multipart UI and
-recovery-only re-export remain open, so this step is intentionally not checked
-complete.
+invalidate the disposable, non-activatable staging copy. Recovery-only
+re-export now opens a credential-bound staged native context, uses only the
+explicit archive-authenticated staged root and manifest, pins the filesystem
+generation/object lease, rechecks control authority around streaming, and
+publishes through the verified cancellable `.partial` flow without attachment
+or activation. Multipart UI remains open, so this step is intentionally not
+checked complete.
 
 Implement `corefs_transfer` schemas/routes for local destination probe, estimate, prepare, progress, cancel, verify, import, and completion. Wire `packages/api-client` and `CoreTransferSettings.tsx` to present **Export ANIMA CORE** and **Restore ANIMA CORE** as the primary flow, with **Soul only** and **CoreFS only** under Advanced Recovery. Show write-barrier/checkpoint state, selected artifact kind, required/available export bytes, required/available same-volume import-staging bytes, detected single-file limit, single/multipart decision, bounded streaming progress, verification, and safe destination result. Soul-only recovery clearly labels degraded `filesystem_missing`; CoreFS-only recovery exposes authenticated browse/export and returns `corefs_reattachment_not_supported` for V1 attach attempts. Do not instruct users to drag-copy a live Core or run the live Core from removable media.
 

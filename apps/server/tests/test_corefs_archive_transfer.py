@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from anima_server.config import settings
 from anima_server.services import anima_core_bindings
+from anima_server.services.corefs import archive_transfer
 from anima_server.services.corefs.archive_transfer import (
     CoreArchivePayloadKind,
     CoreArchiveTransferError,
@@ -161,6 +162,93 @@ def test_full_export_uses_only_native_reachable_inventory_and_wrapped_keyslots(
     assert result.inventory.soul_generation == 3
     assert result.max_buffer_bytes <= 32 * 1024 * 1024
     assert result.inventory.soul_inventory_hash is not None
+
+
+def test_fs_export_accepts_only_an_explicit_staged_root_and_manifest(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _core(managed_tmp_path, monkeypatch)
+    output = managed_tmp_path / "recovered.anima"
+    manifest = {
+        "core_id": CORE_ID,
+        "owner_id": OWNER_ID,
+        "keyslots_version": 1,
+        "keyslots": [
+            {
+                "purpose": "filesystem-root",
+                "wrapping_path": "password",
+                "status": "active",
+                "scope": "fs",
+                "key_version": 1,
+                "credential_generation": 2,
+                "frk_version": 1,
+                "object_key_epoch": 1,
+                "kdf_algorithm": "argon2id-v1",
+                "wrap_algorithm": "aes-256-gcm",
+                "envelope_version": 1,
+                "wrapped": {"ciphertext": "opaque"},
+            }
+        ],
+        "active_password_credential_generation": 2,
+        "active_recovery_credential_generation": 2,
+        "frk_rotation": {
+            "active_version": 1,
+            "pending_version": None,
+            "decrypt_only_versions": [],
+            "phase": "idle",
+            "object_key_epoch": 1,
+        },
+        "archive_payload_scope": "fs",
+        "degraded_state": "recovery_only",
+    }
+
+    def writer(path: str, _passphrase: bytes, request_json: str) -> dict[str, object]:
+        request = json.loads(request_json)
+        manifest_source = next(
+            source for source in request["sources"] if source["recordType"] == "manifest"
+        )
+        emitted = json.loads(Path(manifest_source["sourcePath"]).read_text(encoding="utf-8"))
+        assert emitted["archive_payload_scope"] == "fs"
+        assert emitted["degraded_state"] == "recovery_only"
+        assert {slot["purpose"] for slot in emitted["keyslots"]} == {"filesystem-root"}
+        selected_bytes = sum(
+            Path(source["sourcePath"]).stat().st_size for source in request["sources"]
+        )
+        Path(path).write_bytes(b"archive")
+        return {
+            "version": 2,
+            "archiveId": ARCHIVE_ID,
+            "volumeSetId": ARCHIVE_ID,
+            "payloadKind": "fs",
+            "coreId": CORE_ID,
+            "ownerId": OWNER_ID,
+            "soulGeneration": None,
+            "filesystemGeneration": 7,
+            "recordCount": len(request["sources"]),
+            "chunkCount": len(request["sources"]),
+            "plaintextBytes": selected_bytes,
+            "maxBufferBytes": 2 * 1024 * 1024,
+        }
+
+    monkeypatch.setattr(
+        archive_transfer,
+        "get_manifest_path",
+        lambda: pytest.fail("explicit staged export must not consult the active Core"),
+    )
+    result = export_core_archive_v2(
+        session=_session(root, writer=writer),
+        output_path=output,
+        passphrase="correct horse battery staple",
+        payload_kind=CoreArchivePayloadKind.FS,
+        soul_generation=None,
+        core_root=root,
+        manifest=manifest,
+    )
+
+    assert result.inventory.payload_kind is CoreArchivePayloadKind.FS
+    assert result.inventory.soul_generation is None
+    assert result.inventory.filesystem_generation == 7
 
 
 def test_live_export_snapshots_committed_wal_and_cleans_temporary_database(

@@ -102,6 +102,7 @@ class CoreImportOperationResponse(BaseModel):
     activationId: str | None
     restartRequired: bool
     credentialsReplaced: bool
+    recoveryExportOperationId: str | None
     errorCode: str | None
 
 
@@ -120,6 +121,21 @@ class CoreFsRecoveryCredentialResponse(BaseModel):
     passwordGeneration: int = Field(ge=1)
     recoveryGeneration: int = Field(ge=1)
     operation: CoreImportOperationResponse
+
+
+class CoreFsRecoveryExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    destination: str = Field(min_length=1, max_length=4096)
+    finalName: str = Field(
+        default="ANIMA-CORE-FS-recovered.anima",
+        min_length=1,
+        max_length=255,
+        pattern=r"^[^/\\]+$",
+    )
+    passphrase: SecretStr = Field(min_length=8, max_length=1024)
+    credentialKind: Literal["password", "recovery"]
+    credential: SecretStr = Field(min_length=1, max_length=1024)
 
 
 class CoreFsRecoveryBrowseRequest(BaseModel):
