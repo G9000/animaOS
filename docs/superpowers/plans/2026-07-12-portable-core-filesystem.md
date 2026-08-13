@@ -491,6 +491,12 @@ PCF-005 are dependency-eligible but remain unclaimed in backlog.
 
 > **Approved protocol follow-up:** The bounded, crash-resumable preparation work needed to complete this slice is specified in `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md` and sequenced in `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`. That dedicated plan supersedes the aggregate whole-corpus transport described in Step 3 below; all other Task 4 product acceptance remains in force.
 
+> **Approved evidence sequencing:** PCF-004 closes after the packaged cleanup
+> implementation, local validation, and independent review. PCF-008 inherits
+> the protected final signed Windows/macOS/DEB/RPM replacement-install runs and
+> exact artifact digests as a mandatory pre-cutover/first-release gate. This
+> defers the paid execution only; it does not waive or weaken the release gate.
+
 **Files:**
 - Modify: `packages/anima-corefs/src/id.rs`
 - Modify: `packages/anima-corefs/src/logical/mod.rs`
@@ -836,6 +842,14 @@ git -c commit.gpgsign=false commit -m "core: separate portable account and app p
 **Ticket:** `PCF-008`  
 **Depends on:** `PCF-001` through `PCF-007`
 
+**Inherited signed-package gate:** Before the irreversible cutover event or any
+cleanup-capable first-release publication, separately authorize and run the
+triggerless protected desktop workflow against the final signed Windows,
+macOS, DEB, and RPM artifacts. Every replacement-install, launch-target,
+process-census, post-WebView capability, and source-first cleanup gate must
+pass, and the exact artifact digests/results must be recorded. Failure or
+missing evidence blocks PCF-008; it cannot be treated as a skipped CI check.
+
 **Files:**
 - Create: `apps/server/src/anima_server/services/corefs/transfer.py`
 - Create: `apps/server/src/anima_server/schemas/corefs_transfer.py`
@@ -859,6 +873,10 @@ git -c commit.gpgsign=false commit -m "core: separate portable account and app p
 - Create: `apps/desktop/src/pages/settings/CoreTransferSettings.tsx`
 - Modify: `apps/desktop/src/pages/settings/VaultSettings.tsx` (redirect/deprecate legacy UI)
 - Modify: architecture/thesis/PRD docs listed in the design, including `docs/architecture/agent/document-processing.md` and `docs/architecture/agent/source-ingestion.md`
+- Modify: `.github/workflows/desktop-draft-cleanup-authority.yml`
+- Modify: `scripts/verify-desktop-release-contract.ts`
+- Test: `apps/desktop/tests/desktop-release-contract.test.ts`
+- Test: `apps/desktop/tests/journal-draft-cleanup-authority.test.ts`
 - Test: `apps/server/tests/test_corefs_cutover.py`
 - Test: `apps/server/tests/test_corefs_transfer.py`
 - Test: `apps/server/tests/test_corefs_authority.py`
@@ -928,6 +946,11 @@ bun test apps/desktop/tests/corefs-transfer.test.ts
 cargo test -p anima-core capsule
 cargo test -p anima-core core_archive
 ```
+
+Then, under separate funded execution authority, enable/dispatch the protected
+desktop package gate against the final signed MSI, notarized PKG, DEB, and RPM.
+Require all four native jobs to pass and record the exact package digests before
+Step 4 can publish the irreversible marker or Step 12 can publish a release.
 
 - [ ] **Step 11: Run full validation**
 
@@ -1139,6 +1162,9 @@ No default cutover until all are true:
 - first-write forward-only marker and crash recovery pass
 - cold and live prepared transfers work in a clean environment
 - full backend/desktop build, lint, test, health, and smoke suite pass
+- final signed MSI, notarized PKG, DEB, and RPM replacement-install evidence
+  passes the protected draft-cleanup authority workflow, with exact artifact
+  digests recorded before irreversible cutover or release publication
 
 Task 9 has two distinct gates:
 

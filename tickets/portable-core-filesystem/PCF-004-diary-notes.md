@@ -1,6 +1,6 @@
 # PCF-004 - Diary, folders, drafts, and notes
 
-- Status: blocked
+- Status: in_progress
 - Priority: P1
 - Scope: `apps/server` diary/CoreFS, `apps/desktop` Journal
 - Parent: `PCF-000`
@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md`
 - Plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 12:53 MYT
+- Updated: 2026-08-13 15:54 MYT
 - Started: 2026-08-02 04:06 MYT
 - Completed:
 
@@ -71,6 +71,12 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
 - 2026-08-13 03:48 MYT - At the user's explicit cost constraint, disabled every GitHub Actions trigger for the reviewed four-platform package-evidence workflow while retaining its complete definition for later re-enablement. Added a source-contract assertion that the workflow stays cost-disabled. No push or workflow execution occurred. PCF-004 remains `in_progress`; its signed-package evidence gate is intentionally deferred until the user separately authorizes funding, re-enablement, publication, and execution.
 - 2026-08-13 03:58 MYT - Published the reviewed Task 6 through Task 10 implementation and cost-disable follow-up to existing PR #142 on `codex/pcf-004-resumable-preparation`. GitHub reported exact head `0243e0e04f6939b3d67602b31c42c8b2e9af415a`; no checks or paid package-evidence workflow were launched. PCF-004 remains `in_progress` on the intentionally deferred four-platform signed-package evidence gate. No review request, monitoring, or merge action was taken.
 - 2026-08-13 12:53 MYT - After PCF-011 completed, dependency selection found no other eligible child. PCF-004 is now explicitly `blocked` on the intentionally cost-deferred protected workflow evidence: signed replacement-install results and artifact digests for Windows, macOS, DEB, and RPM. The workflow remains triggerless/manual-only and was not dispatched. Clearance requires the user to authorize funded execution later or provide equivalent authenticated four-platform package evidence; implementation and prior review remain complete.
+- 2026-08-13 15:54 MYT - User approved moving the cost-bearing final signed
+  Windows/macOS/DEB/RPM evidence into PCF-008 as a mandatory pre-cutover and
+  first-release gate. This clears PCF-004's recorded blocker without waiving
+  the evidence. Resumed the child for metadata closeout with its original
+  `Started:` timestamp; implementation, local validation, and independent
+  review remain complete, and the paid workflow remains triggerless.
 
 ## Validation
 
@@ -176,4 +182,7 @@ Make encrypted sanitized-HTML diary objects plus CoreFS folder, draft, and note 
   - Tasks 5 through 10 are implemented and independently reviewed locally. Authoritative `HEAD` remains untouched.
   - Repository-wide validation passed `3457` tests with `2` intentional skips before the final focused review repairs; the final changed Rust, Python, desktop, build, formatting, and diff surfaces all passed their complete affected gates.
   - Strict Clippy remains blocked only by documented untouched baseline warnings outside the PCF-004 diff.
-  - Required closeout evidence: run the protected replacement-install workflow against signed Windows, macOS, DEB, and RPM packages, record all four results and artifact digests, and only then mark plaintext cleanup accepted or PCF-004 complete. The user has intentionally deferred that paid external action.
+  - PCF-004 closeout is based on completed implementation, local validation,
+    and independent review. PCF-008 now owns the still-mandatory protected
+    replacement-install runs against final signed Windows, macOS, DEB, and RPM
+    packages plus exact artifact digests before cutover or release publication.
