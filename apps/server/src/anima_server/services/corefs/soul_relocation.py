@@ -16,6 +16,7 @@ from anima_server.services.corefs.cutover import CutoverState, read_cutover_reco
 
 SOUL_DATABASE_RELATIVE_PATH = "soul/soul.db"
 COPY_BUFFER_BYTES = 1024 * 1024
+SOUL_SNAPSHOT_BACKUP_PAGES = 256
 _RELOCATION_STATES = frozenset(
     {
         CutoverState.MIGRATING_WRITE_FROZEN,
@@ -148,6 +149,100 @@ def active_soul_database_path(legacy_user_id: int) -> Path | None:
     return result.active_path
 
 
+def create_verified_soul_snapshot(
+    source_path: Path,
+    snapshot_path: Path,
+    *,
+    boundary_hook: BoundaryHook | None = None,
+) -> SoulDatabaseInventory:
+    """Create one encrypted, point-in-time Soul database snapshot.
+
+    SQLite's online-backup API reads the source through the already-keyed
+    SQLAlchemy connection and writes through a second connection configured
+    with the same SQLCipher key.  A pinned read transaction keeps one exact
+    source view while normal WAL writers continue.  The resulting standalone
+    database is checkpointed and receives the same page/cipher/FK/logical
+    inventory verification used by physical Soul relocation.
+    """
+    source_candidate = source_path.expanduser()
+    if source_candidate.is_symlink():
+        raise SoulRelocationError("Soul snapshot source must be a regular file")
+    try:
+        source = source_candidate.resolve(strict=True)
+    except OSError as exc:
+        raise SoulRelocationError("Soul snapshot source is unavailable") from exc
+    if not source.is_file():
+        raise SoulRelocationError("Soul snapshot source must be a regular file")
+
+    target = snapshot_path.expanduser().resolve(strict=False)
+    try:
+        target_parent = target.parent.resolve(strict=True)
+    except OSError as exc:
+        raise SoulRelocationError("Soul snapshot directory is unavailable") from exc
+    if target.parent != target_parent or target.exists() or source == target:
+        raise SoulRelocationError("Soul snapshot destination is invalid")
+
+    source_url = _database_url(source)
+    target_url = _database_url(target)
+    source_engine = db_session.get_engine(source_url)
+    target_engine = db_session.get_engine(target_url)
+    try:
+        with source_engine.connect() as source_connection:
+            checkpoint = source_connection.exec_driver_sql(
+                "PRAGMA wal_checkpoint(PASSIVE)"
+            ).fetchone()
+            if (
+                checkpoint is None
+                or len(checkpoint) != 3
+                or int(checkpoint[0]) != 0
+                or int(checkpoint[2]) != int(checkpoint[1])
+            ):
+                raise SoulRelocationError("Soul WAL checkpoint is busy or incomplete")
+
+            source_driver = _driver_connection(source_connection)
+            source_driver.execute("BEGIN")
+            try:
+                source_driver.execute("SELECT count(*) FROM sqlite_schema").fetchone()
+                _boundary(boundary_hook, "soul_snapshot:after_read_pin")
+                with target_engine.connect() as target_connection:
+                    target_driver = _driver_connection(target_connection)
+                    if not hasattr(source_driver, "backup"):
+                        raise SoulRelocationError(
+                            "Soul database driver does not support online snapshots"
+                        )
+                    source_driver.backup(
+                        target_driver,
+                        pages=SOUL_SNAPSHOT_BACKUP_PAGES,
+                        sleep=0.01,
+                    )
+                    target_driver.commit()
+            finally:
+                source_driver.rollback()
+    except BaseException as exc:
+        db_session.dispose_database(target_url)
+        _remove_sqlite_snapshot(target)
+        if isinstance(exc, SoulRelocationError):
+            raise
+        raise SoulRelocationError("Soul database snapshot failed") from exc
+    finally:
+        db_session.dispose_database(target_url)
+
+    try:
+        inventory = _checkpoint_and_inventory(target_url)
+        if not target.is_file() or target.is_symlink():
+            raise SoulRelocationError("Soul database snapshot was not published")
+        if os.name != "nt":
+            target.chmod(0o600)
+        with target.open("rb+") as handle:
+            os.fsync(handle.fileno())
+        _fsync_directory(target.parent)
+        _boundary(boundary_hook, "soul_snapshot:after_verify")
+        return inventory
+    except BaseException:
+        _remove_sqlite_snapshot(target)
+        raise
+
+
 def _read_active_soul_record() -> dict[str, object] | None:
     path = get_manifest_path()
     if not path.is_file():
@@ -232,6 +327,20 @@ def _checkpoint_and_inventory(database_url: str) -> SoulDatabaseInventory:
             return _database_inventory(connection)
     finally:
         db_session.dispose_database(database_url)
+
+
+def _driver_connection(connection: Connection) -> Any:
+    raw = connection.connection
+    return getattr(raw, "driver_connection", raw)
+
+
+def _remove_sqlite_snapshot(path: Path) -> None:
+    for candidate in (
+        path,
+        path.with_name(f"{path.name}-wal"),
+        path.with_name(f"{path.name}-shm"),
+    ):
+        candidate.unlink(missing_ok=True)
 
 
 def _verify_database_at_path(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,7 +37,18 @@ def _core(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         ),
         encoding="utf-8",
     )
-    (root / "soul" / "soul.db").write_bytes(b"encrypted-soul")
+    soul = sqlite3.connect(root / "soul" / "soul.db")
+    try:
+        soul.execute("PRAGMA journal_mode = WAL")
+        soul.execute("CREATE TABLE alembic_version (version_num TEXT PRIMARY KEY)")
+        soul.execute("INSERT INTO alembic_version VALUES ('202608130001')")
+        soul.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
+        soul.execute("INSERT INTO users VALUES (7, 'owner')")
+        soul.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT NOT NULL)")
+        soul.execute("INSERT INTO memories VALUES (1, 'portable memory')")
+        soul.commit()
+    finally:
+        soul.close()
     (root / "fs" / "HEAD").write_bytes(b"authenticated-head")
     catalog = "catalog-00000000000000000007-" + ("a" * 64) + ".acore"
     (root / "fs" / "catalogs" / catalog).write_bytes(b"encrypted-catalog")
@@ -110,6 +122,10 @@ def test_full_export_uses_only_native_reachable_inventory_and_wrapped_keyslots(
         assert Path(path) == output
         assert all(Path(item["sourcePath"]).is_file() for item in sources)
         keyslot = next(item for item in sources if item["recordType"] == "keyslots")
+        head = next(item for item in sources if item["recordPath"] == "fs/HEAD")
+        assert Path(head["sourcePath"]) != root / "fs" / "HEAD"
+        assert Path(head["sourcePath"]).read_bytes() == b"authenticated-head"
+        assert request["filesystemCatalogHash"] == "a" * 64
         assert json.loads(Path(keyslot["sourcePath"]).read_text(encoding="utf-8"))["keyslots"] == [
             {"kind": "wrapped-test-key"}
         ]
@@ -144,6 +160,129 @@ def test_full_export_uses_only_native_reachable_inventory_and_wrapped_keyslots(
     assert result.inventory.filesystem_generation == 7
     assert result.inventory.soul_generation == 3
     assert result.max_buffer_bytes <= 32 * 1024 * 1024
+    assert result.inventory.soul_inventory_hash is not None
+
+
+def test_live_export_snapshots_committed_wal_and_cleans_temporary_database(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _core(managed_tmp_path, monkeypatch)
+    output = managed_tmp_path / "core.anima"
+    live = sqlite3.connect(root / "soul" / "soul.db")
+    captured_snapshot: Path | None = None
+    try:
+        live.execute("PRAGMA wal_autocheckpoint = 0")
+        live.execute("INSERT INTO memories VALUES (2, 'committed only in WAL')")
+        live.commit()
+        wal_path = root / "soul" / "soul.db-wal"
+        assert wal_path.is_file() and wal_path.stat().st_size > 0
+
+        def writer(path: str, _passphrase: bytes, request_json: str) -> dict[str, object]:
+            nonlocal captured_snapshot
+            request = json.loads(request_json)
+            sources = request["sources"]
+            soul_source = next(item for item in sources if item["recordType"] == "soul_database")
+            captured_snapshot = Path(soul_source["sourcePath"])
+            assert captured_snapshot != root / "soul" / "soul.db"
+            snapshot = sqlite3.connect(captured_snapshot)
+            try:
+                assert snapshot.execute("SELECT content FROM memories WHERE id = 2").fetchone() == (
+                    "committed only in WAL",
+                )
+                assert snapshot.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            finally:
+                snapshot.close()
+            selected_bytes = sum(Path(item["sourcePath"]).stat().st_size for item in sources)
+            Path(path).write_bytes(b"archive")
+            return {
+                "version": 2,
+                "archiveId": ARCHIVE_ID,
+                "volumeSetId": ARCHIVE_ID,
+                "payloadKind": "full",
+                "coreId": CORE_ID,
+                "ownerId": OWNER_ID,
+                "soulGeneration": 3,
+                "filesystemGeneration": 7,
+                "recordCount": len(sources),
+                "chunkCount": len(sources),
+                "plaintextBytes": selected_bytes,
+                "maxBufferBytes": 2 * 1024 * 1024,
+            }
+
+        result = export_core_archive_v2(
+            session=_session(root, writer=writer),
+            output_path=output,
+            passphrase="correct horse battery staple",
+            payload_kind=CoreArchivePayloadKind.FULL,
+            soul_generation=3,
+        )
+        assert result.inventory.soul_inventory_hash is not None
+    finally:
+        live.close()
+
+    assert captured_snapshot is not None
+    assert not captured_snapshot.exists()
+
+
+def test_full_export_rejects_filesystem_generation_change_during_soul_snapshot(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _core(managed_tmp_path, monkeypatch)
+    session = _session(root, writer=lambda *_args: None)
+    original_inventory = session.corefs_session.archive_inventory_v2
+    calls = 0
+
+    def changing_inventory(keys: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        inventory = original_inventory(keys)
+        if calls == 2:
+            inventory["generation"] = 8
+            inventory["catalogHash"] = "b" * 64
+        return inventory
+
+    session.corefs_session.archive_inventory_v2 = changing_inventory
+
+    with pytest.raises(CoreArchiveTransferError, match="changed during archive capture"):
+        export_core_archive_v2(
+            session=session,
+            output_path=managed_tmp_path / "core.anima",
+            passphrase="correct horse battery staple",
+            payload_kind=CoreArchivePayloadKind.FULL,
+            soul_generation=3,
+        )
+
+
+def test_failed_native_export_removes_verified_soul_snapshot(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _core(managed_tmp_path, monkeypatch)
+    captured_snapshot: Path | None = None
+
+    def fail(_path: str, _passphrase: bytes, request_json: str) -> None:
+        nonlocal captured_snapshot
+        request = json.loads(request_json)
+        soul_source = next(
+            item for item in request["sources"] if item["recordType"] == "soul_database"
+        )
+        captured_snapshot = Path(soul_source["sourcePath"])
+        assert captured_snapshot.is_file()
+        raise RuntimeError("simulated native failure")
+
+    with pytest.raises(CoreArchiveTransferError, match="native ANIMA CORE archive export failed"):
+        export_core_archive_v2(
+            session=_session(root, writer=fail),
+            output_path=managed_tmp_path / "core.anima",
+            passphrase="correct horse battery staple",
+            payload_kind=CoreArchivePayloadKind.FULL,
+            soul_generation=3,
+        )
+
+    assert captured_snapshot is not None
+    assert not captured_snapshot.exists()
 
 
 @pytest.mark.parametrize(

@@ -545,6 +545,7 @@ mod python {
         owner_id: String,
         soul_generation: Option<u64>,
         filesystem_generation: Option<u64>,
+        filesystem_catalog_hash: Option<String>,
         archive_id: Option<String>,
         volume_set_id: Option<String>,
         #[serde(default = "core_archive_default_volume_mode")]
@@ -759,6 +760,19 @@ mod python {
         })
     }
 
+    fn core_archive_sha256(value: &str, label: &'static str) -> PyResult<String> {
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "ANIMA CORE archive {label} is invalid"
+            )));
+        }
+        Ok(value.to_owned())
+    }
+
     fn core_archive_summary_value(
         summary: &crate::core_archive::ArchiveSummary,
     ) -> serde_json::Value {
@@ -794,6 +808,25 @@ mod python {
         let payload_kind = core_archive_payload_kind(&wire.payload_kind)?;
         let core_id = core_archive_uuid(&wire.core_id, "Core ID")?;
         let owner_id = core_archive_uuid(&wire.owner_id, "owner ID")?;
+        match payload_kind {
+            crate::core_archive::PayloadKind::Full | crate::core_archive::PayloadKind::Fs => {
+                core_archive_sha256(
+                    wire.filesystem_catalog_hash.as_deref().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "filesystem archive requires a catalog hash",
+                        )
+                    })?,
+                    "filesystem catalog hash",
+                )?;
+            }
+            crate::core_archive::PayloadKind::Soul => {
+                if wire.filesystem_catalog_hash.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "Soul archive cannot declare a filesystem catalog hash",
+                    ));
+                }
+            }
+        }
         let capture = match payload_kind {
             crate::core_archive::PayloadKind::Full => crate::core_archive::ArchiveCapture::full(
                 core_id,
@@ -2197,16 +2230,43 @@ mod python {
         ) -> PyResult<PyObject> {
             let _operation = self.acquire_operation()?;
             let request: CoreArchiveWriteWire = decode_preparation_json(request_json)?;
-            if request.payload_kind != "soul" {
-                py.allow_threads(|| self.coordinator.load_committed(&keys.inner))
+            let payload_kind = core_archive_payload_kind(&request.payload_kind)?;
+            let committed = if payload_kind != crate::core_archive::PayloadKind::Soul {
+                let committed = py
+                    .allow_threads(|| self.coordinator.load_committed(&keys.inner))
                     .map_err(corefs_commit_error)?
                     .ok_or_else(|| {
                         pyo3::exceptions::PyValueError::new_err(
                             "ANIMA CORE has no committed filesystem snapshot",
                         )
                     })?;
-            }
-            core_archive_write_v2(py, output_path, passphrase, request_json)
+                let expected_generation = request.filesystem_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "filesystem archive requires a committed generation",
+                    )
+                })?;
+                let expected_hash = core_archive_sha256(
+                    request.filesystem_catalog_hash.as_deref().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "filesystem archive requires a catalog hash",
+                        )
+                    })?,
+                    "filesystem catalog hash",
+                )?;
+                if committed.head().generation() != expected_generation
+                    || committed.head().catalog_hash() != expected_hash
+                {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "committed filesystem snapshot changed before archive streaming",
+                    ));
+                }
+                Some(committed)
+            } else {
+                None
+            };
+            let result = core_archive_write_v2(py, output_path, passphrase, request_json);
+            drop(committed);
+            result
         }
 
         fn validation_batch_v1(
@@ -9197,6 +9257,57 @@ mod python {
                     .add_rule("r1", ".*", "bogus", "user", "slot", "value")
                     .is_err());
             });
+        }
+
+        #[test]
+        fn archive_binding_rejects_stale_committed_catalog_before_streaming() {
+            let fixture = logical_fixture("archive-stale-catalog-binding");
+            let session = corefs_session::isolated_session_for_test(
+                std::path::Path::new(fixture.root_path()),
+                LOGICAL_CORE_ID,
+            );
+            let entries = fixture.selected.catalog().entries().to_vec();
+            let committed = session
+                .coordinator_for_test()
+                .commit_first_mutation(
+                    &fixture.keys.inner,
+                    73,
+                    &[],
+                    &[],
+                    |_, generation| CatalogGeneration::new(generation, entries),
+                    |_| Ok(()),
+                )
+                .unwrap();
+            let output = fixture._root.path().join("must-not-exist.anima-core");
+            let request = json!({
+                "payloadKind": "fs",
+                "coreId": "018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+                "ownerId": "018f0f4e-4ee4-7aa5-8eb2-1eb7699855be",
+                "soulGeneration": null,
+                "filesystemGeneration": committed.generation(),
+                "filesystemCatalogHash": "0".repeat(64),
+                "volumeMode": "single",
+                "declaredVolumeCount": 1,
+                "volumeOrdinal": 0,
+                "sources": []
+            })
+            .to_string();
+
+            with_python(|py| {
+                let error = session
+                    .archive_write_v2(
+                        py,
+                        &fixture.keys,
+                        output.to_str().unwrap(),
+                        b"correct horse battery staple",
+                        &request,
+                    )
+                    .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("committed filesystem snapshot changed"));
+            });
+            assert!(!output.exists());
         }
     }
 }

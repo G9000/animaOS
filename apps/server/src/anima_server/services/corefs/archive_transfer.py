@@ -13,6 +13,10 @@ from uuid import UUID
 
 from anima_server.services import anima_core_bindings
 from anima_server.services.core import get_manifest_path
+from anima_server.services.corefs.soul_relocation import (
+    SoulRelocationError,
+    create_verified_soul_snapshot,
+)
 
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_RECOVERY_RECORDS = 10_000
@@ -37,6 +41,8 @@ class CoreArchiveInventory:
     filesystem_generation: int | None
     selected_bytes: int
     record_count: int
+    soul_inventory_hash: str | None = None
+    filesystem_catalog_hash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,11 +78,13 @@ def inspect_core_archive_v2(
     soul_generation: int | None,
 ) -> CoreArchiveInventory:
     """Return the exact current archive selection without exposing its paths."""
-    return _prepare_core_archive(
-        session=session,
-        payload_kind=payload_kind,
-        soul_generation=soul_generation,
-    ).inventory
+    with tempfile.TemporaryDirectory(prefix="anima-core-archive-inspect-") as temporary_name:
+        return _prepare_core_archive(
+            session=session,
+            payload_kind=payload_kind,
+            soul_generation=soul_generation,
+            snapshot_root=Path(temporary_name),
+        ).inventory
 
 
 def export_core_archive_v2(
@@ -95,16 +103,16 @@ def export_core_archive_v2(
     """
     if len(passphrase) < 8:
         raise CoreArchiveTransferError("archive passphrase must be at least 8 characters")
-    prepared = _prepare_core_archive(
-        session=session,
-        payload_kind=payload_kind,
-        soul_generation=soul_generation,
-    )
-    inventory = prepared.inventory
-    sources = list(prepared.sources)
-
     with tempfile.TemporaryDirectory(prefix="anima-core-archive-metadata-") as temporary_name:
         temporary_root = Path(temporary_name)
+        prepared = _prepare_core_archive(
+            session=session,
+            payload_kind=payload_kind,
+            soul_generation=soul_generation,
+            snapshot_root=temporary_root,
+        )
+        inventory = prepared.inventory
+        sources = list(prepared.sources)
         manifest_path = temporary_root / "manifest.json"
         keyslots_path = temporary_root / "root-keyslots.json"
         _write_private_file(manifest_path, prepared.manifest_snapshot)
@@ -120,6 +128,7 @@ def export_core_archive_v2(
             "ownerId": inventory.owner_id,
             "soulGeneration": inventory.soul_generation,
             "filesystemGeneration": inventory.filesystem_generation,
+            "filesystemCatalogHash": inventory.filesystem_catalog_hash,
             "volumeMode": "single",
             "declaredVolumeCount": 1,
             "volumeOrdinal": 0,
@@ -159,6 +168,7 @@ def _prepare_core_archive(
     session: Any,
     payload_kind: CoreArchivePayloadKind,
     soul_generation: int | None,
+    snapshot_root: Path,
 ) -> _PreparedCoreArchive:
     if session.corefs_session is None or session.corefs_keys is None:
         raise CoreArchiveTransferError("ANIMA CORE archive requires an unlocked Core")
@@ -174,19 +184,45 @@ def _prepare_core_archive(
         if not isinstance(raw, dict):
             raise CoreArchiveTransferError("native archive inventory is invalid")
         filesystem_inventory = cast(dict[str, object], raw)
-    filesystem_generation = _filesystem_generation(filesystem_inventory)
+    filesystem_generation, filesystem_catalog_hash = _filesystem_checkpoint(filesystem_inventory)
     normalized_soul_generation = _soul_generation(payload_kind, soul_generation)
 
     sources: list[dict[str, str]] = []
+    soul_inventory_hash: str | None = None
     if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}:
         soul_path = core_root / "soul" / "soul.db"
         if not soul_path.is_file() or soul_path.is_symlink():
             raise CoreArchiveTransferError("canonical Soul database is unavailable")
-        sources.append(_source("soul_database", "soul/soul.db", soul_path))
+        soul_snapshot = snapshot_root / "soul.db"
+        try:
+            soul_inventory = create_verified_soul_snapshot(soul_path, soul_snapshot)
+        except SoulRelocationError as exc:
+            raise CoreArchiveTransferError("canonical Soul snapshot failed verification") from exc
+        soul_inventory_hash = soul_inventory.combined_hash
+        sources.append(_source("soul_database", "soul/soul.db", soul_snapshot))
     if filesystem_inventory is not None:
-        sources.extend(_native_filesystem_sources(filesystem_inventory, core_root=core_root))
+        filesystem_sources = _native_filesystem_sources(
+            filesystem_inventory,
+            core_root=core_root,
+        )
+        sources.extend(
+            _freeze_filesystem_pointer(
+                filesystem_sources,
+                snapshot_root=snapshot_root,
+            )
+        )
     if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}:
         sources.extend(_recovery_sources(core_root))
+    if filesystem_inventory is not None:
+        refreshed = session.corefs_session.archive_inventory_v2(session.corefs_keys)
+        if not isinstance(refreshed, dict) or not _filesystem_inventory_matches(
+            filesystem_inventory,
+            cast(dict[str, object], refreshed),
+            core_root=core_root,
+        ):
+            raise CoreArchiveTransferError(
+                "committed filesystem snapshot changed during archive capture"
+            )
     scoped_manifest = _scoped_archive_manifest(manifest, payload_kind)
     manifest_snapshot = json.dumps(
         scoped_manifest,
@@ -208,6 +244,8 @@ def _prepare_core_archive(
             filesystem_generation=filesystem_generation,
             selected_bytes=selected_bytes,
             record_count=len(sources) + 2,
+            soul_inventory_hash=soul_inventory_hash,
+            filesystem_catalog_hash=filesystem_catalog_hash,
         ),
         sources=tuple(sources),
         manifest_snapshot=manifest_snapshot,
@@ -313,9 +351,11 @@ def _required_uuid(manifest: dict[str, object], key: str) -> str:
         raise CoreArchiveTransferError(f"ANIMA CORE manifest {key} is invalid") from exc
 
 
-def _filesystem_generation(inventory: dict[str, object] | None) -> int | None:
+def _filesystem_checkpoint(
+    inventory: dict[str, object] | None,
+) -> tuple[int | None, str | None]:
     if inventory is None:
-        return None
+        return None, None
     if inventory.get("version") != 1 or set(inventory) != {
         "version",
         "generation",
@@ -326,7 +366,10 @@ def _filesystem_generation(inventory: dict[str, object] | None) -> int | None:
     generation = inventory.get("generation")
     if isinstance(generation, bool) or not isinstance(generation, int) or generation <= 0:
         raise CoreArchiveTransferError("native archive generation is invalid")
-    return generation
+    catalog_hash = inventory.get("catalogHash")
+    if not _is_sha256(catalog_hash):
+        raise CoreArchiveTransferError("native archive catalog hash is invalid")
+    return generation, catalog_hash
 
 
 def _soul_generation(
@@ -343,8 +386,11 @@ def _soul_generation(
 
 
 def _source(record_type: str, record_path: str, source_path: Path) -> dict[str, str]:
-    resolved = source_path.expanduser().resolve(strict=True)
-    if not resolved.is_file() or resolved.is_symlink():
+    candidate = source_path.expanduser()
+    if candidate.is_symlink():
+        raise CoreArchiveTransferError("archive source must be a regular file")
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_file():
         raise CoreArchiveTransferError("archive source must be a regular file")
     return {
         "recordType": record_type,
@@ -457,6 +503,56 @@ def _native_filesystem_sources(
     return sources
 
 
+def _freeze_filesystem_pointer(
+    sources: list[dict[str, str]],
+    *,
+    snapshot_root: Path,
+) -> list[dict[str, str]]:
+    frozen: list[dict[str, str]] = []
+    found_head = False
+    for source in sources:
+        if source["recordPath"] != "fs/HEAD":
+            frozen.append(source)
+            continue
+        if found_head:
+            raise CoreArchiveTransferError("native archive inventory repeats fs/HEAD")
+        found_head = True
+        snapshot = snapshot_root / "fs-HEAD"
+        _copy_private_file(Path(source["sourcePath"]), snapshot)
+        frozen.append(_source(source["recordType"], source["recordPath"], snapshot))
+    if not found_head:
+        raise CoreArchiveTransferError("native archive inventory has no committed pointer")
+    return frozen
+
+
+def _copy_private_file(source: Path, target: Path) -> None:
+    descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        with source.open("rb") as source_handle, os.fdopen(descriptor, "wb") as target_handle:
+            shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
+            target_handle.flush()
+            os.fsync(target_handle.fileno())
+    except BaseException:
+        target.unlink(missing_ok=True)
+        raise
+
+
+def _filesystem_inventory_matches(
+    expected: dict[str, object],
+    actual: dict[str, object],
+    *,
+    core_root: Path,
+) -> bool:
+    try:
+        if _filesystem_checkpoint(expected) != _filesystem_checkpoint(actual):
+            return False
+        expected_sources = _native_filesystem_sources(expected, core_root=core_root)
+        actual_sources = _native_filesystem_sources(actual, core_root=core_root)
+    except (CoreArchiveTransferError, OSError):
+        return False
+    return expected_sources == actual_sources
+
+
 def _recovery_sources(core_root: Path) -> list[dict[str, str]]:
     recovery = core_root / "recovery"
     if not recovery.exists():
@@ -552,6 +648,14 @@ def _positive_generation(value: object, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise CoreArchiveTransferError(f"native archive {name} generation is invalid")
     return value
+
+
+def _is_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _validate_staged_core(

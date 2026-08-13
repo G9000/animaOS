@@ -891,6 +891,16 @@ Cover `migrating-write-frozen`, `corefs-validation-readonly`, `corefs-approved-p
 
 - [ ] **Step 2: Write failing transfer tests**
 
+Progress (2026-08-13): live Soul-bearing capture now checkpoints WAL, pins one
+SQLite/SQLCipher read snapshot, writes an independently verified encrypted
+online-backup database, and uses its private inventory hash as the
+preflight-to-export fence. Full/CoreFS capture freezes `fs/HEAD`, rechecks the
+native generation/catalog/source inventory after Soul capture, and binds the
+native streaming session to that exact authenticated catalog while retaining
+the object lease. WAL inclusion, temporary cleanup, concurrent catalog change,
+and real SQLCipher-at-rest regressions pass. Multipart-set and backward-V1
+cases remain open, so this step is intentionally not checked complete.
+
 Cover closed cold copy; live write-barrier snapshots; SQLCipher checkpoint; catalog/GC pinning; reachable-object selection; no Runtime inclusion; `full`, `soul`, and `fs` artifact/key allowlists, scoped credential replacement, and recovery states; fixed-header/profile bounds; exact normative AAD tuple; pre-archive record hash; global nonce ordinal; destination capacity/writable/single-file-limit preflight; <=8-MiB buffers and <=32-MiB aggregate transfer working set excluding the fixed Argon2 workspace; `.partial` cleanup; single-file and FAT32-like multipart output; failure at every part/controller/directory publication boundary; disconnect/cancel; missing/reordered/mixed/tampered volumes; same-volume import capacity/staging; final-directory and active-Core registry-pointer activation failures; V1 CoreFS-reattachment rejection; destination hash/decrypt verification; rejection of incoherent live raw copies; same-machine duplicate-Core instance handling; and binary objects larger than the legacy 16-MiB section limit.
 
 - [ ] **Step 3: Implement resumable migration orchestration and physical Soul relocation**
@@ -939,9 +949,12 @@ Implement `corefs_transfer` schemas/routes for local destination probe, estimate
 Progress (2026-08-13): single-file V2 export/import primitives are in place,
 including payload-kind record allowlists and key-material-scoped transient
 manifest snapshots. Soul artifacts cannot carry FRK wrappers or filesystem
-authority; CoreFS-only artifacts cannot carry SQLCipher root wrappers. Native
-multipart set authentication, staged product import, and activation remain
-open, so this step is intentionally not checked complete.
+authority; CoreFS-only artifacts cannot carry SQLCipher root wrappers. Live
+Soul is captured through a verified encrypted online backup, and full/CoreFS
+streaming is bound to a frozen authenticated `fs/HEAD` plus exact native
+generation/catalog hash under the object lease. Native multipart-set
+authentication and backward V1 import remain open, so this step is
+intentionally not checked complete.
 
 Startup progress (2026-08-13): the machine-local active-Core registry is now
 authenticated by an OS-credential-held key, resolved before the Core lock and

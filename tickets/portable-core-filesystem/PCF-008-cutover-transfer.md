@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:21 MYT
+- Updated: 2026-08-13 21:34 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -260,6 +260,22 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   the focused final recovery/runtime rerun passes `55`. First-mutation process
   restart coordination remains open. No paid workflow, push, real source
   deletion, or irreversible cutover action occurred.
+- 2026-08-13 21:34 MYT - Closed the live Soul/CoreFS snapshot-coherence
+  portion of Steps 2 and 7. Soul-bearing estimate/probe/export now uses
+  SQLite/SQLCipher online backup from a pinned read transaction after a
+  complete WAL checkpoint, verifies page/cipher/FK/schema plus deterministic
+  table hashes on the standalone snapshot, preserves SQLCipher encryption,
+  and removes the private temporary database on success or failure. Full and
+  CoreFS exports also freeze `fs/HEAD`, re-read the authenticated native
+  inventory after Soul capture, and make the native session reject a changed
+  generation/catalog hash before streaming while retaining its object lease.
+  The private Soul inventory and catalog hashes are used only as in-process
+  preflight fences and are not returned by the API. Transfer/Soul coverage
+  passes `70`, native archive coverage passes `6`, the Python-enabled binding
+  compiles, and a real SQLCipher regression proves the snapshot remains
+  encrypted. Native multipart-set authentication, backward V1 import, and the
+  remaining cutover gates stay open. No paid workflow, external action, or
+  irreversible mutation occurred.
 
 ## Validation
 
@@ -344,6 +360,16 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after restart lifecycle integration (`96 passed`)
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_runtime_db.py -q`
     final focused rerun (`55 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_soul_relocation.py -q`
+    after coherent Soul/CoreFS snapshot capture (`70 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_encrypted_core_regression.py -k 'verified_soul_snapshot_remains_sqlcipher_encrypted' -q`
+    (`1 passed`, real SQLCipher snapshot remains encrypted)
+  - `cargo test -p anima-core core_archive --lib` after catalog-bound native
+    streaming (`6 passed`)
+  - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python`
+    after catalog-bound native streaming (passed)
+  - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python --tests`
+    (passed; compiles the stale-catalog pre-stream rejection regression)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
