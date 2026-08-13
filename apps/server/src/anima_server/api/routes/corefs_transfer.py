@@ -29,6 +29,7 @@ from anima_server.services.corefs.archive_transfer import (
 )
 from anima_server.services.corefs.transfer import TransferError
 from anima_server.services.corefs.transfer_jobs import (
+    CorefsReattachmentNotSupported,
     PreparedTransfer,
     core_import_operations,
     core_transfer_operations,
@@ -259,6 +260,35 @@ def schedule_core_import_activation(
             detail={"code": "core_import_operation_not_found"},
         ) from exc
     except (CoreArchiveTransferError, TransferError, OSError, ValueError) as exc:
+        raise _transfer_conflict() from exc
+    return CoreImportOperationResponse(**operation.public())
+
+
+@router.post(
+    "/import/operations/{operation_id}/attach-corefs",
+    response_model=CoreImportOperationResponse,
+)
+def reject_v1_corefs_reattachment(
+    operation_id: str,
+    request: Request,
+) -> CoreImportOperationResponse:
+    session = require_unlocked_session(request)
+    try:
+        operation = core_import_operations.request_corefs_reattachment(
+            operation_id,
+            user_id=session.user_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "core_import_operation_not_found"},
+        ) from exc
+    except CorefsReattachmentNotSupported as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_reattachment_not_supported"},
+        ) from exc
+    except TransferError as exc:
         raise _transfer_conflict() from exc
     return CoreImportOperationResponse(**operation.public())
 

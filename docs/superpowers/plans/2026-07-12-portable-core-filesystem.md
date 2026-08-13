@@ -939,8 +939,11 @@ native inventory into a create-only same-volume sibling, and cleans every
 failed/cancelled partial. Active-Core registry activation and retained-Core
 rollback are now both exposed as authenticated restart-only intents, with
 explicit rollback confirmation and no machine paths in the status contract.
-Multipart UI and scoped partial-mode recovery controls remain open, so this
-step is intentionally not checked complete.
+CoreFS-only attachment attempts now return the stable V1
+`corefs_reattachment_not_supported` conflict through the authenticated API and
+client. Multipart UI plus authenticated browse/export and scoped partial-mode
+credential controls remain open, so this step is intentionally not checked
+complete.
 
 Implement `corefs_transfer` schemas/routes for local destination probe, estimate, prepare, progress, cancel, verify, import, and completion. Wire `packages/api-client` and `CoreTransferSettings.tsx` to present **Export ANIMA CORE** and **Restore ANIMA CORE** as the primary flow, with **Soul only** and **CoreFS only** under Advanced Recovery. Show write-barrier/checkpoint state, selected artifact kind, required/available export bytes, required/available same-volume import-staging bytes, detected single-file limit, single/multipart decision, bounded streaming progress, verification, and safe destination result. Soul-only recovery clearly labels degraded `filesystem_missing`; CoreFS-only recovery exposes authenticated browse/export and returns `corefs_reattachment_not_supported` for V1 attach attempts. Do not instruct users to drag-copy a live Core or run the live Core from removable media.
 

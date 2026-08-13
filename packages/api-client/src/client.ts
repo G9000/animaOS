@@ -811,6 +811,11 @@ export function createApiClient(options: ApiClientOptions) {
             `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/activate-on-restart`,
             { method: "POST" },
           ),
+        attachCoreFsRecovery: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/attach-corefs`,
+            { method: "POST" },
+          ),
         activeCore: () =>
           request<CoreActiveStatus>("/corefs/transfer/active-core"),
         rollbackOnRestart: () =>

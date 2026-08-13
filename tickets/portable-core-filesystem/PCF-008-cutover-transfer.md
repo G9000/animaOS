@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:34 MYT
+- Updated: 2026-08-13 21:42 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -276,6 +276,16 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   encrypted. Native multipart-set authentication, backward V1 import, and the
   remaining cutover gates stay open. No paid workflow, external action, or
   irreversible mutation occurred.
+- 2026-08-13 21:42 MYT - Closed the explicit V1 CoreFS reattachment boundary
+  in Step 6. Only the owner of a completed authenticated CoreFS-only staged
+  recovery can reach the attachment operation, and it always returns HTTP 409
+  `corefs_reattachment_not_supported` without exposing paths or internal
+  details. Full/Soul/incomplete operations remain ordinary transfer
+  precondition failures, and the API client exposes the same closed operation
+  for recovery UI callers. Focused backend coverage passes `9` and API-client
+  coverage passes `30`. Authenticated browse/export and scoped credential
+  replacement for recovery-only mode remain open. No external or irreversible
+  action occurred.
 
 ## Validation
 
@@ -370,6 +380,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after catalog-bound native streaming (passed)
   - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python --tests`
     (passed; compiles the stale-catalog pre-stream rejection regression)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer_api.py -q`
+    after explicit V1 CoreFS reattachment rejection (`9 passed`)
+  - `bun test packages/api-client/tests/client.test.ts` after the same client
+    boundary (`30 passed`)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in

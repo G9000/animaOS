@@ -240,6 +240,7 @@ describe("createApiClient error handling", () => {
     await api.corefs.transfer.importOperation("import-a");
     await api.corefs.transfer.cancelImport("import-a");
     await api.corefs.transfer.activateImportOnRestart("import-a");
+    await api.corefs.transfer.attachCoreFsRecovery("import-a");
 
     expect(requests.map((request) => request.url)).toEqual([
       "https://api.test/api/corefs/transfer/import/probe",
@@ -247,6 +248,7 @@ describe("createApiClient error handling", () => {
       "https://api.test/api/corefs/transfer/import/operations/import-a",
       "https://api.test/api/corefs/transfer/import/operations/import-a/cancel",
       "https://api.test/api/corefs/transfer/import/operations/import-a/activate-on-restart",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/attach-corefs",
     ]);
   });
 

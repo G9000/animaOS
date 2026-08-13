@@ -46,6 +46,10 @@ class TransferOperationState(StrEnum):
     FAILED = "failed"
 
 
+class CorefsReattachmentNotSupported(TransferError):
+    """V1 deliberately cannot combine a CoreFS-only recovery with a Soul."""
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedTransfer:
     inventory: CoreArchiveInventory
@@ -380,6 +384,22 @@ class CoreImportOperationManager:
         operation = self.get(operation_id, user_id=user_id)
         operation.cancel.set()
         return operation
+
+    def request_corefs_reattachment(
+        self,
+        operation_id: str,
+        *,
+        user_id: int,
+    ) -> ImportOperation:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FS
+                or operation.recovery_state != "recovery_only"
+            ):
+                raise TransferError("CoreFS recovery operation is not attachable")
+        raise CorefsReattachmentNotSupported("CoreFS-to-Soul reattachment is not supported in V1")
 
     def schedule_activation(self, operation_id: str, *, user_id: int) -> ImportOperation:
         operation = self.get(operation_id, user_id=user_id)

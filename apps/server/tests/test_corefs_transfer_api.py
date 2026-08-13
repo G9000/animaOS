@@ -20,10 +20,13 @@ from anima_server.services.corefs.transfer import (
     TransferEstimate,
 )
 from anima_server.services.corefs.transfer_jobs import (
+    CorefsReattachmentNotSupported,
     CoreImportOperationManager,
     CoreTransferOperationManager,
+    ImportOperation,
     PreparedImport,
     PreparedTransfer,
+    TransferOperationState,
 )
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -240,6 +243,63 @@ def test_import_manager_stages_verified_core_without_activation_or_passphrase_re
     assert scheduled.activation_id == "activation-a"
     assert scheduled.restart_required is True
     assert scheduled.phase == "activation_scheduled"
+
+
+def test_corefs_only_recovery_cannot_attach_to_a_soul_in_v1(
+    managed_tmp_path: Path,
+) -> None:
+    archive = managed_tmp_path / "corefs-only.anima"
+    archive.write_bytes(b"authenticated-archive")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    operation = ImportOperation(
+        operation_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+        user_id=7,
+        prepared=PreparedImport(
+            archive_path=archive,
+            archive_bytes=archive.stat().st_size,
+            probe=ImportCapacityProbe(
+                staging_parent=staging_parent,
+                restored_core_bytes=archive.stat().st_size,
+                available_bytes=10**9,
+                required_capacity_bytes=64 * 1024 * 1024 + archive.stat().st_size,
+            ),
+        ),
+        state=TransferOperationState.COMPLETED,
+        phase="staged_credential_required",
+        payload_kind=CoreArchivePayloadKind.FS,
+        recovery_state="recovery_only",
+    )
+    manager = CoreImportOperationManager()
+    manager._operations[operation.operation_id] = operation
+
+    with pytest.raises(
+        CorefsReattachmentNotSupported,
+        match="not supported in V1",
+    ):
+        manager.request_corefs_reattachment(operation.operation_id, user_id=7)
+
+
+def test_corefs_reattachment_api_returns_the_stable_v1_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Manager:
+        def request_corefs_reattachment(self, *_args, **_kwargs):
+            raise CorefsReattachmentNotSupported("private internal details")
+
+    monkeypatch.setattr(
+        corefs_transfer,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(user_id=7),
+    )
+    monkeypatch.setattr(corefs_transfer, "core_import_operations", Manager())
+
+    with TestClient(_app()) as client:
+        response = client.post("/api/corefs/transfer/import/operations/import-a/attach-corefs")
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": {"code": "corefs_reattachment_not_supported"}}
+    assert "private internal" not in response.text
 
 
 def test_import_api_probes_and_stages_without_exposing_passphrase(
