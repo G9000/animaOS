@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:49 MYT
+- Updated: 2026-08-13 23:56 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -393,6 +393,15 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   reference metadata. Route and migration coverage passes `15`. Approval
   resume, visible edit/delete, attachments, the remaining writer families, and
   raw scans keep Step 8 open. No external or irreversible action occurred.
+- 2026-08-13 23:56 MYT - Closed the post-cutover approval/resume seam.
+  Approval prompts and tool arguments remain unlock-sealed operational Runtime
+  state with null raw fields, resumed traces allocate collision-free step and
+  Runtime sequence identities, and the resumed visible assistant response
+  appends only to the canonical CoreFS transcript. Canonical references now
+  carry their source sequence separately from Runtime ordering. The combined
+  approval/agent/persistence/chat regression band and scoped Ruff/diff gates
+  pass. Visible edit/delete, attachments, remaining writer families, and raw
+  scans keep Step 8 open. No external or irreversible action occurred.
 
 ## Validation
 
@@ -539,6 +548,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after canonical blocking/streaming agent persistence (`15 passed`)
   - `uv run pytest -q --tb=short apps/server/tests/test_agent_service.py apps/server/tests/test_agent_persistence.py apps/server/tests/test_chat.py`
     after canonical agent persistence (`101 passed`)
+  - `uv run pytest -q --tb=short apps/server/tests/test_threads_api.py apps/server/tests/test_approval_reentry.py apps/server/tests/test_agent_persistence.py apps/server/tests/test_agent_service.py apps/server/tests/test_chat.py`
+    after canonical approval/resume persistence (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in

@@ -18,6 +18,7 @@ from anima_server.models.runtime import (
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.retrieval_feedback import record_retrieval_feedback
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
+from anima_server.services.agent.sequencing import reserve_message_sequences
 from anima_server.services.agent.state import (
     AgentResult,
     StoredAttachment,
@@ -274,12 +275,17 @@ def append_corefs_message_reference(
     source: str | None = None,
     transient_content_json: dict[str, object] | None = None,
 ) -> RuntimeMessage:
+    runtime_sequence_id = reserve_message_sequences(
+        db,
+        thread_id=thread.id,
+        count=1,
+    )
     reference = RuntimeMessage(
         thread_id=thread.id,
         user_id=thread.user_id,
         run_id=run_id,
         step_id=step_id,
-        sequence_id=message.sequence,
+        sequence_id=runtime_sequence_id,
         role=message.role,
         content_text=None,
         content_json=None,
@@ -291,6 +297,7 @@ def append_corefs_message_reference(
         source=source,
         corefs_message_id=message.message_id,
         corefs_event_id=message.current_event_id,
+        corefs_sequence_id=message.sequence,
     )
     db.add(reference)
     db.flush()
@@ -527,7 +534,7 @@ def save_approval_checkpoint(
     """
     from dataclasses import asdict
 
-    approval_msg = append_message(
+    approval_msg = _append_runtime_message(
         db,
         thread=thread,
         run_id=run.id,
@@ -626,6 +633,41 @@ def append_message(
     is_archived_history: bool = False,
 ) -> RuntimeMessage:
     _reject_legacy_conversation_mutation(int(thread.user_id))
+    return _append_runtime_message(
+        db,
+        thread=thread,
+        run_id=run_id,
+        step_id=step_id,
+        sequence_id=sequence_id,
+        role=role,
+        content_text=content_text,
+        content_json=content_json,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_args_json=tool_args_json,
+        source=source,
+        is_in_context=is_in_context,
+        is_archived_history=is_archived_history,
+    )
+
+
+def _append_runtime_message(
+    db: Session,
+    *,
+    thread: RuntimeThread,
+    run_id: int | None,
+    step_id: int | None,
+    sequence_id: int,
+    role: str,
+    content_text: str | None,
+    content_json: dict[str, object] | None = None,
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
+    tool_args_json: dict[str, object] | None = None,
+    source: str | None = None,
+    is_in_context: bool = True,
+    is_archived_history: bool = False,
+) -> RuntimeMessage:
     timestamp = datetime.now(UTC)
     runtime_index = runtime_index_for_sensitive_write(
         db,

@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:49 MYT
+- Updated: 2026-08-13 23:56 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -436,6 +436,13 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   and migration coverage passes `15`; approval resume, edit/delete,
   attachments, remaining writer families, and raw scans remain. No external
   or irreversible action occurred.
+- 2026-08-13 23:56 MYT - PCF-008 approval checkpoints now remain sealed
+  operational Runtime state with null raw prompt/argument fields, while a
+  resumed visible response returns only to canonical CoreFS. Independent
+  canonical and Runtime sequence identities plus resumed step offsets prevent
+  collisions. The combined approval/agent/chat regression band passes;
+  edit/delete, attachments, remaining writers, and raw scans remain. No
+  external or irreversible action occurred.
 
 ## Validation
 

@@ -3,8 +3,17 @@ from __future__ import annotations
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.db.session import get_user_session_factory
-from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
 from anima_server.services.agent import invalidate_agent_runtime_cache
+from anima_server.services.agent import service as agent_service
+from anima_server.services.agent.persistence import create_run
+from anima_server.services.agent.runtime_types import (
+    StepTrace,
+    StopReason,
+    ToolCall,
+    ToolExecutionResult,
+)
+from anima_server.services.agent.state import AgentResult
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.conversation_migration import (
     prepare_conversation_validation_catalog,
@@ -33,6 +42,14 @@ def _register_user(client: TestClient) -> dict[str, object]:
     )
     assert response.status_code == 201
     return response.json()
+
+
+class _ApprovalResumeRunner:
+    def __init__(self, result: AgentResult) -> None:
+        self.result = result
+
+    async def resume_after_approval(self, **_kwargs) -> AgentResult:
+        return self.result
 
 
 def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch) -> None:
@@ -205,6 +222,91 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch)
             "assistant",
         ], streamed_body
 
+        pending_result = AgentResult(
+            response="",
+            model="test-model",
+            provider="test-provider",
+            stop_reason=StopReason.AWAITING_APPROVAL.value,
+            step_traces=[
+                StepTrace(
+                    step_index=0,
+                    assistant_text="This operation needs approval.",
+                    tool_calls=(
+                        ToolCall(
+                            id="approval-call-1",
+                            name="delete_file",
+                            arguments={"path": "/tmp/test.txt"},
+                        ),
+                    ),
+                    tool_results=(
+                        ToolExecutionResult(
+                            call_id="approval-call-1",
+                            name="delete_file",
+                            output="Approval required for tool: delete_file",
+                            is_error=True,
+                        ),
+                    ),
+                )
+            ],
+        )
+        with runtime_factory() as runtime_db:
+            thread = runtime_db.get(RuntimeThread, reset_thread_id)
+            assert thread is not None
+            run = create_run(
+                runtime_db,
+                thread_id=thread.id,
+                user_id=user_id,
+                provider="test-provider",
+                model="test-model",
+                mode="blocking",
+            )
+            pending_call = agent_service._persist_approval_checkpoint(
+                runtime_db,
+                thread=thread,
+                run=run,
+                result=pending_result,
+            )
+            assert pending_call is not None
+            approval_run_id = int(run.id)
+            approval_message_id = int(run.pending_approval_message_id or 0)
+            raw_approval = runtime_db.execute(
+                select(
+                    RuntimeMessage.content_text,
+                    RuntimeMessage.content_json,
+                    RuntimeMessage.tool_args_json,
+                ).where(RuntimeMessage.id == approval_message_id)
+            ).one()
+            assert raw_approval == (None, None, None)
+
+        resumed_result = AgentResult(
+            response="Approval resumed through canonical authority.",
+            model="test-model",
+            provider="test-provider",
+            stop_reason="terminal_tool",
+            tools_used=["delete_file"],
+            step_traces=[StepTrace(step_index=0, assistant_text="Approval complete.")],
+        )
+        monkeypatch.setattr(
+            agent_service,
+            "get_or_build_runner",
+            lambda: _ApprovalResumeRunner(resumed_result),
+        )
+        monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **_kwargs: None)
+        approval = client.post(
+            f"/api/chat/runs/{approval_run_id}/approval",
+            headers=headers,
+            json={"userId": user_id, "approved": True},
+        )
+        assert approval.status_code == 200, approval.text
+        assert approval.json()["response"] == resumed_result.response
+        after_approval = client.get(
+            f"/api/threads/{reset_thread_id}/messages",
+            headers=headers,
+        )
+        assert [item["content"] for item in after_approval.json()["messages"]][-1] == (
+            resumed_result.response
+        )
+
         closed = client.post(
             f"/api/threads/{reset_thread_id}/close",
             headers=headers,
@@ -251,6 +353,7 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch)
                     select(RuntimeMessage).where(RuntimeMessage.user_id == user_id)
                 ).all()
             )
+            completed_run = runtime_db.get(RuntimeRun, approval_run_id)
         runtime_threads_by_id = {thread.id: thread for thread in runtime_threads}
         assert runtime_threads_by_id[legacy_thread_id].status == "active"
         assert reset_thread_id in runtime_threads_by_id
@@ -263,8 +366,25 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch)
         canonical_references = [
             message for message in runtime_messages if message.thread_id == reset_thread_id
         ]
-        assert len(canonical_references) == 4
-        assert all(message.content_text is None for message in canonical_references)
-        assert all(message.content_json is None for message in canonical_references)
-        assert all(message.corefs_message_id for message in canonical_references)
-        assert all(message.corefs_event_id for message in canonical_references)
+        visible_references = [
+            message for message in canonical_references if message.corefs_message_id is not None
+        ]
+        assert len(visible_references) == 5
+        assert all(message.content_text is None for message in visible_references)
+        assert all(message.content_json is None for message in visible_references)
+        assert all(message.corefs_event_id for message in visible_references)
+        assert sorted(message.corefs_sequence_id for message in visible_references) == [
+            1,
+            2,
+            3,
+            4,
+            5,
+        ]
+        approval_messages = [
+            message for message in canonical_references if message.role == "approval"
+        ]
+        assert len(approval_messages) == 1
+        assert approval_messages[0].is_in_context is False
+        assert approval_messages[0].corefs_message_id is None
+        assert completed_run is not None
+        assert completed_run.status == "completed"

@@ -5,7 +5,7 @@ import contextlib
 import logging
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -24,6 +24,7 @@ from anima_server.models.runtime import (
     RuntimeRun,
     RuntimeSource,
     RuntimeSourceSpan,
+    RuntimeStep,
     RuntimeThread,
 )
 from anima_server.schemas.chat import (
@@ -500,39 +501,52 @@ async def _approve_or_deny_turn_locked(
             await event_callback(build_cancelled_event(run.id))
         return result
 
-    # Persist result
-    result_message_count = count_persisted_result_messages(result)
-    persist_agent_result(
-        runtime_db,
-        thread=thread,
-        run=run,
-        result=result,
-        initial_sequence_id=(
-            reserve_message_sequences(
-                runtime_db,
-                thread_id=thread.id,
-                count=result_message_count,
-            )
-            if result_message_count > 0
-            else None
-        ),
-        record_feedback=False,
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
     )
-    compact_thread_context(
-        runtime_db,
-        thread=thread,
-        run_id=run.id,
-        trigger_token_limit=max(
-            1,
-            int(resolve_context_budget_tokens() * settings.agent_compaction_trigger_ratio),
-        ),
-        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
-        reserved_prompt_tokens=(
-            result.prompt_budget.system_prompt_token_estimate
-            if result.prompt_budget is not None
-            else 0
-        ),
-    )
+
+    authority_session = active_conversation_authority_session(user_id)
+    if authority_session is not None:
+        await _persist_corefs_turn_result(
+            runtime_db,
+            authority_session=authority_session,
+            thread=thread,
+            run=run,
+            result=result,
+        )
+    else:
+        result_message_count = count_persisted_result_messages(result)
+        persist_agent_result(
+            runtime_db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=(
+                reserve_message_sequences(
+                    runtime_db,
+                    thread_id=thread.id,
+                    count=result_message_count,
+                )
+                if result_message_count > 0
+                else None
+            ),
+            record_feedback=False,
+        )
+        compact_thread_context(
+            runtime_db,
+            thread=thread,
+            run_id=run.id,
+            trigger_token_limit=max(
+                1,
+                int(resolve_context_budget_tokens() * settings.agent_compaction_trigger_ratio),
+            ),
+            keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
+            reserved_prompt_tokens=(
+                result.prompt_budget.system_prompt_token_estimate
+                if result.prompt_budget is not None
+                else 0
+            ),
+        )
     runtime_db.commit()
     _index_run_user_image_attachments_inline(runtime_db, user_id=user_id, run=run)
     runtime_db.commit()
@@ -3153,25 +3167,31 @@ def _persist_approval_checkpoint(
     ``approval_pending`` streaming event, or ``None`` if the tool call
     could not be reconstructed (run is marked failed in that case).
     """
-    # First persist the normal step traces (assistant msg + tool error).
-    result_message_count = count_persisted_result_messages(result)
-    persist_agent_result(
-        runtime_db,
-        thread=thread,
-        run=run,
-        result=result,
-        initial_sequence_id=(
-            reserve_message_sequences(
-                runtime_db,
-                thread_id=thread.id,
-                count=result_message_count,
-            )
-            if result_message_count > 0
-            else None
-        ),
-        record_feedback=False,
-        assistant_pills=assistant_pills,
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
     )
+
+    if active_conversation_authority_session(int(thread.user_id)) is not None:
+        _persist_corefs_step_traces(runtime_db, thread=thread, run=run, result=result)
+    else:
+        result_message_count = count_persisted_result_messages(result)
+        persist_agent_result(
+            runtime_db,
+            thread=thread,
+            run=run,
+            result=result,
+            initial_sequence_id=(
+                reserve_message_sequences(
+                    runtime_db,
+                    thread_id=thread.id,
+                    count=result_message_count,
+                )
+                if result_message_count > 0
+                else None
+            ),
+            record_feedback=False,
+            assistant_pills=assistant_pills,
+        )
 
     # Find the pending tool call from the last step trace.
     pending_tool_call = None
@@ -3286,16 +3306,12 @@ async def _persist_corefs_turn_result(
 ) -> None:
     from anima_server.services.corefs.conversation_mutations import append_canonical_message
 
-    last_step_id: int | None = None
-    for trace_index, trace in enumerate(result.step_traces):
-        step = create_step(
-            runtime_db,
-            thread_id=thread.id,
-            run_id=run.id,
-            trace=trace,
-            prompt_budget=result.prompt_budget if trace_index == 0 else None,
-        )
-        last_step_id = int(step.id)
+    last_step_id = _persist_corefs_step_traces(
+        runtime_db,
+        thread=thread,
+        run=run,
+        result=result,
+    )
     if result.response:
         canonical = append_canonical_message(
             session=authority_session,
@@ -3312,6 +3328,30 @@ async def _persist_corefs_turn_result(
         )
     finalize_run(runtime_db, run=run, result=result)
     runtime_db.commit()
+
+
+def _persist_corefs_step_traces(
+    runtime_db: Session,
+    *,
+    thread: RuntimeThread,
+    run: RuntimeRun,
+    result: AgentResult,
+) -> int | None:
+    last_step_id: int | None = None
+    prior_step_index = runtime_db.scalar(
+        select(func.max(RuntimeStep.step_index)).where(RuntimeStep.run_id == run.id)
+    )
+    next_step_index = int(prior_step_index) + 1 if prior_step_index is not None else 0
+    for trace_index, trace in enumerate(result.step_traces):
+        step = create_step(
+            runtime_db,
+            thread_id=thread.id,
+            run_id=run.id,
+            trace=replace(trace, step_index=next_step_index + trace_index),
+            prompt_budget=result.prompt_budget if trace_index == 0 else None,
+        )
+        last_step_id = int(step.id)
+    return last_step_id
 
 
 async def _compact_thread_in_background(

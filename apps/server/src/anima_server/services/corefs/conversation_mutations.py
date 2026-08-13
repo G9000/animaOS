@@ -503,7 +503,11 @@ def _new_message_legacy_id(existing: set[int | str]) -> int:
 
 
 def _require_complete_thread(view: CanonicalThreadView) -> None:
-    if view.degraded_ranges or len(view.segments) != len(view.document.segment_ids):
+    if (
+        view.document.status == "degraded"
+        or view.degraded_ranges
+        or len(view.segments) != len(view.document.segment_ids)
+    ):
         raise ConversationMutationError("A degraded canonical thread cannot be mutated.")
 
 
