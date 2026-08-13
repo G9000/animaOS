@@ -224,6 +224,7 @@ describe("createApiClient error handling", () => {
             archiveId: null,
             activationId: null,
             restartRequired: false,
+            credentialsReplaced: false,
             errorCode: null,
           }),
         );
@@ -240,6 +241,12 @@ describe("createApiClient error handling", () => {
     await api.corefs.transfer.cancelImport("import-a");
     await api.corefs.transfer.activateImportOnRestart("import-a");
     await api.corefs.transfer.attachCoreFsRecovery("import-a");
+    await api.corefs.transfer.replaceCoreFsRecoveryCredentials("import-a", {
+      sourceCredentialKind: "password",
+      sourceCredential: "old portable password",
+      newPassword: "new portable password",
+      confirmed: true,
+    });
     await api.corefs.transfer.browseCoreFsRecovery("import-a", {
       operation: "list",
       credentialKind: "recovery",
@@ -254,8 +261,15 @@ describe("createApiClient error handling", () => {
       "https://api.test/api/corefs/transfer/import/operations/import-a/cancel",
       "https://api.test/api/corefs/transfer/import/operations/import-a/activate-on-restart",
       "https://api.test/api/corefs/transfer/import/operations/import-a/attach-corefs",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/replace-corefs-credentials",
       "https://api.test/api/corefs/transfer/import/operations/import-a/browse-corefs",
     ]);
+    expect(requests.at(-2)?.body).toEqual({
+      sourceCredentialKind: "password",
+      sourceCredential: "old portable password",
+      newPassword: "new portable password",
+      confirmed: true,
+    });
     expect(requests.at(-1)?.body).toEqual({
       operation: "list",
       credentialKind: "recovery",

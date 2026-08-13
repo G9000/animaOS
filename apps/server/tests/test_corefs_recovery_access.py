@@ -11,6 +11,7 @@ from anima_server.services.corefs.keyslots import unlock_manifest_compartment_at
 from anima_server.services.corefs.recovery_access import (
     CoreFsRecoveryAccessError,
     browse_staged_corefs,
+    replace_staged_corefs_credentials,
     staged_core_identity,
 )
 from anima_server.services.corefs.types import PayloadScope, WrappingPath
@@ -87,6 +88,39 @@ def _source_scoped_manifest(*, include_soul: bool = False) -> dict[str, object]:
         "keyslots_version": 1,
         "keyslots": slots,
     }
+
+
+def _credential_staged_core(root: Path) -> tuple[tuple[str, int, str], ...]:
+    (root / "keyslots").mkdir(parents=True)
+    manifest = {
+        **_source_scoped_manifest(),
+        "degraded_state": "recovery_only",
+        "active_password_credential_generation": 3,
+        "active_recovery_credential_generation": 4,
+        "frk_rotation": {
+            "active_version": 1,
+            "pending_version": None,
+            "decrypt_only_versions": [],
+            "phase": "idle",
+            "object_key_epoch": 7,
+        },
+        "keyslots": [
+            {
+                **dict(_source_scoped_manifest()["keyslots"][0]),
+                "wrapping_path": path,
+                "credential_generation": generation,
+                "object_key_epoch": 7,
+            }
+            for path, generation in (("password", 3), ("recovery", 4))
+        ],
+    }
+    (root / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "keyslots" / "root-keyslots.json").write_bytes(b"original-keyslots")
+    records: list[tuple[str, int, str]] = []
+    for relative in ("manifest.json", "keyslots/root-keyslots.json"):
+        payload = (root / relative).read_bytes()
+        records.append((relative, len(payload), hashlib.sha256(payload).hexdigest()))
+    return tuple(records)
 
 
 def test_partial_compartment_unlock_authenticates_source_scope_without_promoting_it(
@@ -301,3 +335,159 @@ def test_recovery_browse_removes_derived_validation_pointer_on_failure(
         )
 
     assert not (root / "fs" / "VALIDATION_HEAD").exists()
+
+
+def test_recovery_credential_replacement_publishes_only_fresh_fs_wrappers(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = managed_tmp_path / "staged"
+    records = _credential_staged_core(root)
+    roots = {1: b"filesystem-root"}
+    opened: list[tuple[str, WrappingPath]] = []
+
+    def unlock(path: Path, **kwargs: object) -> SimpleNamespace:
+        credential = str(kwargs["credential"])
+        wrapping_path = WrappingPath(kwargs["wrapping_path"])
+        assert credential in {
+            "source password",
+            "new portable password",
+            "fixed recovery phrase",
+        }
+        assert kwargs["compartment"] is PayloadScope.FS
+        assert path.parent == root
+        opened.append((credential, wrapping_path))
+        return SimpleNamespace(sqlcipher_key=None, frks=roots)
+
+    def slot(
+        _credential: str,
+        _secret: object,
+        **kwargs: object,
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "purpose": kwargs["purpose"].value,
+                "wrapping_path": kwargs["wrapping_path"].value,
+                "status": kwargs["status"].value,
+                "scope": kwargs["scope"].value,
+                "key_version": kwargs["key_version"],
+                "credential_generation": kwargs["credential_generation"],
+                "frk_version": kwargs["frk_version"],
+                "object_key_epoch": kwargs["object_key_epoch"],
+                "kdf_algorithm": "argon2id-v1",
+                "wrap_algorithm": "aes-256-gcm",
+                "envelope_version": 1,
+                "wrapped": {},
+            }
+        )
+
+    monkeypatch.setattr(recovery_access, "unlock_manifest_compartment_at", unlock)
+    monkeypatch.setattr(recovery_access, "_manifest_slot", slot)
+    monkeypatch.setattr(
+        recovery_access,
+        "generate_recovery_phrase",
+        lambda: "fixed recovery phrase",
+    )
+    boundaries: list[str] = []
+
+    result = replace_staged_corefs_credentials(
+        staging_path=root,
+        expected_core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+        expected_stage_identity=staged_core_identity(root),
+        control_records=records,
+        source_credential="source password",
+        source_wrapping_path=WrappingPath.PASSWORD,
+        new_password="new portable password",
+        boundary_hook=boundaries.append,
+    )
+
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    slots = manifest["keyslots"]
+    assert result.recovery_phrase == "fixed recovery phrase"
+    assert result.password_generation == 4
+    assert result.recovery_generation == 5
+    assert manifest["archive_payload_scope"] == "fs"
+    assert manifest["degraded_state"] == "recovery_only"
+    assert manifest["active_password_credential_generation"] == 4
+    assert manifest["active_recovery_credential_generation"] == 5
+    assert {slot["purpose"] for slot in slots} == {"filesystem-root"}
+    assert {slot["scope"] for slot in slots} == {"fs"}
+    assert {slot["status"] for slot in slots} == {"active"}
+    assert {(slot["wrapping_path"], slot["credential_generation"]) for slot in slots} == {
+        ("password", 4),
+        ("recovery", 5),
+    }
+    assert boundaries == ["keyslots_durable", "manifest_durable"]
+    assert opened == [
+        ("source password", WrappingPath.PASSWORD),
+        ("new portable password", WrappingPath.PASSWORD),
+        ("fixed recovery phrase", WrappingPath.RECOVERY),
+        ("new portable password", WrappingPath.PASSWORD),
+        ("fixed recovery phrase", WrappingPath.RECOVERY),
+    ]
+    assert not list(root.glob(".manifest-credential-check-*.json"))
+    recovery_access._verify_control_records(root, result.control_records)
+
+
+@pytest.mark.parametrize("failure_boundary", ["keyslots_durable", "manifest_durable"])
+def test_recovery_credential_replacement_rolls_back_both_control_files(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_boundary: str,
+) -> None:
+    root = managed_tmp_path / "staged"
+    records = _credential_staged_core(root)
+    original_manifest = (root / "manifest.json").read_bytes()
+    original_keyslots = (root / "keyslots" / "root-keyslots.json").read_bytes()
+    roots = {1: b"filesystem-root"}
+
+    monkeypatch.setattr(
+        recovery_access,
+        "unlock_manifest_compartment_at",
+        lambda *_args, **_kwargs: SimpleNamespace(sqlcipher_key=None, frks=roots),
+    )
+    monkeypatch.setattr(
+        recovery_access,
+        "_manifest_slot",
+        lambda *_args, **kwargs: SimpleNamespace(
+            to_dict=lambda: {
+                "purpose": kwargs["purpose"].value,
+                "wrapping_path": kwargs["wrapping_path"].value,
+                "status": kwargs["status"].value,
+                "scope": kwargs["scope"].value,
+                "key_version": kwargs["key_version"],
+                "credential_generation": kwargs["credential_generation"],
+                "frk_version": kwargs["frk_version"],
+                "object_key_epoch": kwargs["object_key_epoch"],
+                "kdf_algorithm": "argon2id-v1",
+                "wrap_algorithm": "aes-256-gcm",
+                "envelope_version": 1,
+                "wrapped": {},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        recovery_access,
+        "generate_recovery_phrase",
+        lambda: "fixed recovery phrase",
+    )
+
+    def fail(boundary: str) -> None:
+        if boundary == failure_boundary:
+            raise RuntimeError("injected credential publication failure")
+
+    with pytest.raises(CoreFsRecoveryAccessError):
+        replace_staged_corefs_credentials(
+            staging_path=root,
+            expected_core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+            expected_stage_identity=staged_core_identity(root),
+            control_records=records,
+            source_credential="source password",
+            source_wrapping_path=WrappingPath.PASSWORD,
+            new_password="new portable password",
+            boundary_hook=fail,
+        )
+
+    assert (root / "manifest.json").read_bytes() == original_manifest
+    assert (root / "keyslots" / "root-keyslots.json").read_bytes() == original_keyslots
+    recovery_access._verify_control_records(root, records)

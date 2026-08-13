@@ -262,7 +262,23 @@ export interface CoreImportOperation {
   archiveId: string | null;
   activationId: string | null;
   restartRequired: boolean;
+  credentialsReplaced: boolean;
   errorCode: string | null;
+}
+
+export interface CoreFsRecoveryCredentialRequest {
+  sourceCredentialKind: "password" | "recovery";
+  sourceCredential: string;
+  newPassword: string;
+  confirmed: true;
+}
+
+export interface CoreFsRecoveryCredentialResponse {
+  scope: "fs";
+  recoveryPhrase: string;
+  passwordGeneration: number;
+  recoveryGeneration: number;
+  operation: CoreImportOperation;
 }
 
 export interface CoreFsRecoveryBrowseRequest {

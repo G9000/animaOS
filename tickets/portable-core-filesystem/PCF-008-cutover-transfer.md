@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:58 MYT
+- Updated: 2026-08-13 22:21 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -304,6 +304,21 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   desktop production build passes. Recovery-only re-export and scoped
   credential replacement remain open. No external or irreversible action
   occurred.
+- 2026-08-13 22:21 MYT - Added scoped credential replacement for completed
+  CoreFS-only staged recovery. One current password or recovery phrase unwraps
+  only the authenticated FS compartment; fresh password and recovery
+  generations wrap exactly the retained FRKs at `fs` scope, independently
+  reopen before publication, and preserve `recovery_only` without Soul
+  authority. Keyslot inventory publishes before manifest authority, injected
+  failures restore both original control files byte-for-byte, and the updated
+  authenticated control hashes gate later access. The manager retains only a
+  boolean readiness flag and new hashes, the API precharges expensive attempts
+  and exposes stable failures, and the desktop explicitly confirms replacement
+  then shows the new phrase only in the immediate response. The broader
+  transfer band passes `82`, API-client/desktop contracts pass `33`, the
+  desktop production build passes, and scoped Ruff/format/diff hygiene is
+  clean. Recovery-only re-export remains open. No external or irreversible
+  action occurred.
 
 ## Validation
 
@@ -407,6 +422,14 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
     after recovery browser client/UI wiring (`33 passed`)
   - `bun run --cwd apps/desktop build` after recovery browser UI wiring
+    (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_recovery_access.py -q`
+    after scoped CoreFS recovery credential replacement (`82 passed`)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
+    after credential replacement client/UI wiring (`33 passed`)
+  - `bun run --cwd apps/desktop build` after credential replacement UI wiring
+    (passed)
+  - scoped Ruff check/format and `git diff --check` after credential replacement
     (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;

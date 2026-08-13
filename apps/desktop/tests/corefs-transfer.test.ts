@@ -51,9 +51,16 @@ describe("ANIMA CORE transfer settings", () => {
       "browseCoreFsRecovery",
       "Credentials stay",
       "never attaches the filesystem to a Soul",
+      "Secure recovered CoreFS",
+      "replaceCoreFsRecoveryCredentials",
+      "replacementConfirmed",
+      "fresh FS-only password and recovery",
+      "shown only in this response",
+      "cannot attach a Soul or promote",
     ]) {
       expect(page).toContain(contract);
     }
+    expect(page).not.toContain("localStorage");
   });
 
   test("redirects the legacy vault screen to the Core transfer flow", () => {

@@ -10,6 +10,8 @@ from anima_server.schemas.corefs_transfer import (
     CoreActiveStatusResponse,
     CoreFsRecoveryBrowseRequest,
     CoreFsRecoveryBrowseResponse,
+    CoreFsRecoveryCredentialRequest,
+    CoreFsRecoveryCredentialResponse,
     CoreImportOperationResponse,
     CoreImportPrepareRequest,
     CoreImportProbeRequest,
@@ -301,6 +303,55 @@ def reject_v1_corefs_reattachment(
     except TransferError as exc:
         raise _transfer_conflict() from exc
     return CoreImportOperationResponse(**operation.public())
+
+
+@router.post(
+    "/import/operations/{operation_id}/replace-corefs-credentials",
+    response_model=CoreFsRecoveryCredentialResponse,
+)
+def replace_corefs_recovery_credentials(
+    operation_id: str,
+    payload: CoreFsRecoveryCredentialRequest,
+    request: Request,
+) -> CoreFsRecoveryCredentialResponse:
+    session = require_unlocked_session(request)
+    try:
+        client_host = request.client.host if request.client is not None else "unknown"
+        admission_key = f"{client_host}:{session.user_id}:{operation_id}"
+        source_credential = payload.sourceCredential.get_secret_value()
+        if payload.sourceCredentialKind == "recovery":
+            source_credential = source_credential.strip().lower()
+        with _RECOVERY_BROWSE_ADMISSION.admit(admission_key):
+            completed = core_import_operations.replace_corefs_recovery_credentials(
+                operation_id,
+                user_id=session.user_id,
+                source_credential=source_credential,
+                source_wrapping_path=WrappingPath(payload.sourceCredentialKind),
+                new_password=payload.newPassword.get_secret_value(),
+            )
+    except FsCredentialAdmissionRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": "corefs_recovery_credential_rate_limited"},
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "core_import_operation_not_found"},
+        ) from exc
+    except (CoreFsRecoveryAccessError, TransferError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_recovery_credential_replacement_failed"},
+        ) from exc
+    return CoreFsRecoveryCredentialResponse(
+        scope="fs",
+        recoveryPhrase=completed.result.recovery_phrase,
+        passwordGeneration=completed.result.password_generation,
+        recoveryGeneration=completed.result.recovery_generation,
+        operation=CoreImportOperationResponse(**completed.operation.public()),
+    )
 
 
 @router.post(

@@ -77,6 +77,13 @@ export default function CoreTransferSettings() {
   const [recoveryBrowseResult, setRecoveryBrowseResult] = useState<CoreFsRecoveryBrowseResponse | null>(null);
   const [recoveryBrowseBusy, setRecoveryBrowseBusy] = useState(false);
   const [recoveryBrowseStatus, setRecoveryBrowseStatus] = useState("");
+  const [replacementCredentialKind, setReplacementCredentialKind] = useState<"password" | "recovery">("recovery");
+  const [replacementSourceCredential, setReplacementSourceCredential] = useState("");
+  const [replacementPassword, setReplacementPassword] = useState("");
+  const [replacementConfirmed, setReplacementConfirmed] = useState(false);
+  const [replacementRecoveryPhrase, setReplacementRecoveryPhrase] = useState<string | null>(null);
+  const [replacementBusy, setReplacementBusy] = useState(false);
+  const [replacementStatus, setReplacementStatus] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -355,6 +362,58 @@ export default function CoreTransferSettings() {
     }
   };
 
+  const handleRecoveryCredentialReplacement = async () => {
+    if (
+      !importOperation ||
+      importOperation.state !== "completed" ||
+      importOperation.recoveryState !== "recovery_only"
+    ) {
+      return;
+    }
+    if (!replacementSourceCredential) {
+      setReplacementStatus("Enter a current credential for this recovered CoreFS.");
+      return;
+    }
+    if (replacementPassword.length < 8) {
+      setReplacementStatus("The new CoreFS password must be at least 8 characters.");
+      return;
+    }
+    if (!replacementConfirmed) {
+      setReplacementStatus("Confirm that you are ready to replace both recovery credentials.");
+      return;
+    }
+    setReplacementBusy(true);
+    setReplacementStatus("");
+    setReplacementRecoveryPhrase(null);
+    try {
+      const completed = await api.corefs.transfer.replaceCoreFsRecoveryCredentials(
+        importOperation.operationId,
+        {
+          sourceCredentialKind: replacementCredentialKind,
+          sourceCredential: replacementSourceCredential,
+          newPassword: replacementPassword,
+          confirmed: true,
+        },
+      );
+      setImportOperation(completed.operation);
+      setReplacementRecoveryPhrase(completed.recoveryPhrase);
+      setReplacementStatus(
+        "Fresh FS-only credentials are verified. Save the recovery phrase now; it is not retained by animaOS.",
+      );
+    } catch (error) {
+      setReplacementStatus(
+        error instanceof Error
+          ? error.message
+          : "CoreFS recovery credential replacement failed closed.",
+      );
+    } finally {
+      setReplacementSourceCredential("");
+      setReplacementPassword("");
+      setReplacementConfirmed(false);
+      setReplacementBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className={`${glass} p-6 space-y-5`}>
@@ -574,6 +633,82 @@ export default function CoreTransferSettings() {
           importOperation.recoveryState === "recovery_only" && (
             <div className="border-t border-hairline pt-5 space-y-4">
               <div>
+                <h3 className="font-mono text-label tracking-caps-3 uppercase text-foreground/45">
+                  Secure recovered CoreFS
+                </h3>
+                <p className="mt-1 font-mono text-micro text-foreground/30 leading-relaxed">
+                  Replace the imported wrappers with a fresh FS-only password and recovery
+                  phrase. This cannot attach a Soul or promote the staged Core to full scope.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <select
+                  value={replacementCredentialKind}
+                  onChange={(event) =>
+                    setReplacementCredentialKind(
+                      event.target.value as "password" | "recovery",
+                    )
+                  }
+                  className={INPUT_CLASS}
+                >
+                  <option value="recovery">Current recovery phrase</option>
+                  <option value="password">Current CoreFS password</option>
+                </select>
+                <input
+                  type="password"
+                  value={replacementSourceCredential}
+                  onChange={(event) => setReplacementSourceCredential(event.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="Current credential; request memory only"
+                  autoComplete="off"
+                />
+                <input
+                  type="password"
+                  value={replacementPassword}
+                  onChange={(event) => setReplacementPassword(event.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="New CoreFS password"
+                  autoComplete="new-password"
+                />
+                <label className="flex items-start gap-3 border border-hairline px-3 py-2 font-mono text-micro text-foreground/40 leading-relaxed">
+                  <input
+                    type="checkbox"
+                    checked={replacementConfirmed}
+                    onChange={(event) => setReplacementConfirmed(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  Replace both staged FS-only credentials and show the new recovery phrase once.
+                </label>
+              </div>
+
+              <ActionButton
+                onClick={handleRecoveryCredentialReplacement}
+                disabled={replacementBusy || !replacementConfirmed}
+              >
+                {replacementBusy ? "Replacing…" : "Replace recovery credentials"}
+              </ActionButton>
+
+              {replacementRecoveryPhrase && (
+                <div className="border border-foreground/25 bg-foreground/[0.05] p-4 space-y-3">
+                  <p className="font-mono text-micro uppercase tracking-caps-2 text-foreground/45">
+                    Save this new recovery phrase now — it is shown only in this response.
+                  </p>
+                  <code className="block select-all break-words font-mono text-caption text-foreground/70">
+                    {replacementRecoveryPhrase}
+                  </code>
+                  <ActionButton onClick={() => setReplacementRecoveryPhrase(null)}>
+                    I saved it — hide phrase
+                  </ActionButton>
+                </div>
+              )}
+              {replacementStatus && (
+                <p className="font-mono text-caption text-foreground/45 leading-relaxed">
+                  {replacementStatus}
+                </p>
+              )}
+
+              <div className="border-t border-hairline pt-5">
                 <h3 className="font-mono text-label tracking-caps-3 uppercase text-foreground/45">
                   Browse recovered CoreFS
                 </h3>

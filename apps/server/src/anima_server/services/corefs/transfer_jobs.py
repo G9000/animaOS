@@ -24,9 +24,11 @@ from anima_server.services.corefs.cutover import CutoverState, read_cutover_reco
 from anima_server.services.corefs.recovery_access import (
     ControlRecord,
     CoreFsRecoveryBrowseResult,
+    CoreFsRecoveryCredentialResult,
     RecoveryBrowseOperation,
     StageIdentity,
     browse_staged_corefs,
+    replace_staged_corefs_credentials,
     staged_core_identity,
 )
 from anima_server.services.corefs.transfer import (
@@ -71,6 +73,12 @@ class PreparedImport:
     archive_path: Path
     archive_bytes: int
     probe: ImportCapacityProbe
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedRecoveryCredentialReplacement:
+    operation: ImportOperation
+    result: CoreFsRecoveryCredentialResult
 
 
 @dataclass(slots=True)
@@ -123,6 +131,7 @@ class ImportOperation:
     archive_id: str | None = None
     activation_id: str | None = None
     restart_required: bool = False
+    credentials_replaced: bool = False
     error_code: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event, repr=False)
     recovery_access_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
@@ -140,6 +149,7 @@ class ImportOperation:
             "archiveId": self.archive_id,
             "activationId": self.activation_id,
             "restartRequired": self.restart_required,
+            "credentialsReplaced": self.credentials_replaced,
             "errorCode": self.error_code,
         }
 
@@ -466,6 +476,51 @@ class CoreImportOperationManager:
                 max_bytes=max_bytes,
                 response_bytes=response_bytes,
             )
+
+    def replace_corefs_recovery_credentials(
+        self,
+        operation_id: str,
+        *,
+        user_id: int,
+        source_credential: str,
+        source_wrapping_path: WrappingPath,
+        new_password: str,
+    ) -> CompletedRecoveryCredentialReplacement:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FS
+                or operation.recovery_state != "recovery_only"
+                or operation.staging_path is None
+                or operation.staging_identity is None
+                or operation.core_id is None
+                or not operation.control_records
+            ):
+                raise TransferError("CoreFS recovery operation cannot replace credentials")
+            staging_path = operation.staging_path
+            identity = operation.staging_identity
+            core_id = operation.core_id
+            control_records = operation.control_records
+            access_lock = operation.recovery_access_lock
+        with access_lock:
+            result = replace_staged_corefs_credentials(
+                staging_path=staging_path,
+                expected_core_id=core_id,
+                expected_stage_identity=identity,
+                control_records=control_records,
+                source_credential=source_credential,
+                source_wrapping_path=source_wrapping_path,
+                new_password=new_password,
+            )
+            with self._lock:
+                operation.control_records = result.control_records
+                operation.credentials_replaced = True
+                operation.phase = "staged_recovery_ready"
+        return CompletedRecoveryCredentialReplacement(
+            operation=operation,
+            result=result,
+        )
 
     def schedule_activation(self, operation_id: str, *, user_id: int) -> ImportOperation:
         operation = self.get(operation_id, user_id=user_id)

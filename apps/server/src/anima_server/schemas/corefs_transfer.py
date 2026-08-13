@@ -101,7 +101,25 @@ class CoreImportOperationResponse(BaseModel):
     archiveId: str | None
     activationId: str | None
     restartRequired: bool
+    credentialsReplaced: bool
     errorCode: str | None
+
+
+class CoreFsRecoveryCredentialRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sourceCredentialKind: Literal["password", "recovery"]
+    sourceCredential: SecretStr = Field(min_length=1, max_length=1024)
+    newPassword: SecretStr = Field(min_length=8, max_length=1024)
+    confirmed: Literal[True]
+
+
+class CoreFsRecoveryCredentialResponse(BaseModel):
+    scope: Literal["fs"]
+    recoveryPhrase: str = Field(min_length=1)
+    passwordGeneration: int = Field(ge=1)
+    recoveryGeneration: int = Field(ge=1)
+    operation: CoreImportOperationResponse
 
 
 class CoreFsRecoveryBrowseRequest(BaseModel):

@@ -17,6 +17,7 @@ from anima_server.services.corefs.archive_transfer import (
 from anima_server.services.corefs.recovery_access import (
     CoreFsRecoveryAccessError,
     CoreFsRecoveryBrowseResult,
+    CoreFsRecoveryCredentialResult,
 )
 from anima_server.services.corefs.transfer import (
     DestinationProbe,
@@ -350,6 +351,75 @@ def test_corefs_recovery_manager_keeps_credentials_ephemeral(
     assert not hasattr(operation, "credential")
 
 
+def test_corefs_recovery_manager_replaces_controls_without_retaining_credentials(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = managed_tmp_path / "corefs-only.anima"
+    archive.write_bytes(b"authenticated-archive")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    staging = staging_parent / ".staged"
+    staging.mkdir()
+    operation = ImportOperation(
+        operation_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+        user_id=7,
+        prepared=PreparedImport(
+            archive_path=archive,
+            archive_bytes=archive.stat().st_size,
+            probe=ImportCapacityProbe(
+                staging_parent=staging_parent,
+                restored_core_bytes=archive.stat().st_size,
+                available_bytes=10**9,
+                required_capacity_bytes=64 * 1024 * 1024 + archive.stat().st_size,
+            ),
+        ),
+        state=TransferOperationState.COMPLETED,
+        phase="staged_credential_required",
+        payload_kind=CoreArchivePayloadKind.FS,
+        core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+        recovery_state="recovery_only",
+        staging_path=staging,
+        staging_identity=(1, 2),
+        control_records=(("manifest.json", 1, "a" * 64),),
+        filesystem_generation=7,
+    )
+    captured: dict[str, object] = {}
+    new_records = (("manifest.json", 2, "b" * 64),)
+
+    def replace(**kwargs: object) -> CoreFsRecoveryCredentialResult:
+        captured.update(kwargs)
+        return CoreFsRecoveryCredentialResult(
+            recovery_phrase="new phrase returned once",
+            password_generation=8,
+            recovery_generation=9,
+            control_records=new_records,
+        )
+
+    monkeypatch.setattr(transfer_jobs, "replace_staged_corefs_credentials", replace)
+    manager = CoreImportOperationManager()
+    manager._operations[operation.operation_id] = operation
+
+    completed = manager.replace_corefs_recovery_credentials(
+        operation.operation_id,
+        user_id=7,
+        source_credential="one-request source",
+        source_wrapping_path=transfer_jobs.WrappingPath.RECOVERY,
+        new_password="new portable password",
+    )
+
+    assert completed.result.recovery_phrase == "new phrase returned once"
+    assert captured["source_credential"] == "one-request source"
+    assert captured["new_password"] == "new portable password"
+    assert operation.control_records == new_records
+    assert operation.credentials_replaced is True
+    assert operation.phase == "staged_recovery_ready"
+    assert operation.public()["credentialsReplaced"] is True
+    assert not hasattr(operation, "source_credential")
+    assert not hasattr(operation, "new_password")
+    assert not hasattr(operation, "recovery_phrase")
+
+
 def test_corefs_reattachment_api_returns_the_stable_v1_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -370,6 +440,127 @@ def test_corefs_reattachment_api_returns_the_stable_v1_code(
     assert response.status_code == 409
     assert response.json() == {"detail": {"code": "corefs_reattachment_not_supported"}}
     assert "private internal" not in response.text
+
+
+def test_corefs_recovery_credential_api_returns_phrase_once_without_source_disclosure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Operation:
+        def public(self) -> dict[str, object]:
+            return {
+                "operationId": "import-a",
+                "state": "completed",
+                "phase": "staged_recovery_ready",
+                "archiveBytes": 7,
+                "bytesProcessed": 7,
+                "progressPercent": 100,
+                "payloadKind": "fs",
+                "recoveryState": "recovery_only",
+                "archiveId": "archive-a",
+                "activationId": None,
+                "restartRequired": False,
+                "credentialsReplaced": True,
+                "errorCode": None,
+            }
+
+    class Manager:
+        def replace_corefs_recovery_credentials(
+            self, operation_id: str, **kwargs: object
+        ) -> SimpleNamespace:
+            captured["operation_id"] = operation_id
+            captured.update(kwargs)
+            return SimpleNamespace(
+                operation=Operation(),
+                result=CoreFsRecoveryCredentialResult(
+                    recovery_phrase="new phrase returned once",
+                    password_generation=8,
+                    recovery_generation=9,
+                    control_records=(),
+                ),
+            )
+
+    monkeypatch.setattr(
+        corefs_transfer,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(user_id=7),
+    )
+    monkeypatch.setattr(corefs_transfer, "core_import_operations", Manager())
+
+    with TestClient(_app()) as client:
+        response = client.post(
+            "/api/corefs/transfer/import/operations/import-a/replace-corefs-credentials",
+            json={
+                "sourceCredentialKind": "recovery",
+                "sourceCredential": "  OLD RECOVERY PHRASE  ",
+                "newPassword": "new portable password",
+                "confirmed": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "scope": "fs",
+        "recoveryPhrase": "new phrase returned once",
+        "passwordGeneration": 8,
+        "recoveryGeneration": 9,
+        "operation": Operation().public(),
+    }
+    assert captured == {
+        "operation_id": "import-a",
+        "user_id": 7,
+        "source_credential": "old recovery phrase",
+        "source_wrapping_path": transfer_jobs.WrappingPath.RECOVERY,
+        "new_password": "new portable password",
+    }
+    assert "old recovery phrase" not in response.text.casefold()
+    assert "new portable password" not in response.text.casefold()
+
+
+def test_corefs_recovery_credential_api_precharges_and_hides_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Manager:
+        def replace_corefs_recovery_credentials(self, *_args: object, **_kwargs: object) -> object:
+            raise CoreFsRecoveryAccessError("private credential and staging details")
+
+    monkeypatch.setattr(
+        corefs_transfer,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(user_id=7),
+    )
+    monkeypatch.setattr(corefs_transfer, "core_import_operations", Manager())
+    payload = {
+        "sourceCredentialKind": "password",
+        "sourceCredential": "wrong source password",
+        "newPassword": "new portable password",
+        "confirmed": True,
+    }
+
+    with TestClient(_app()) as client:
+        failures = [
+            client.post(
+                "/api/corefs/transfer/import/operations/import-a/replace-corefs-credentials",
+                json=payload,
+            )
+            for _ in range(5)
+        ]
+        limited = client.post(
+            "/api/corefs/transfer/import/operations/import-a/replace-corefs-credentials",
+            json=payload,
+        )
+
+    assert all(response.status_code == 409 for response in failures)
+    assert all(
+        response.json() == {"detail": {"code": "corefs_recovery_credential_replacement_failed"}}
+        for response in failures
+    )
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": {"code": "corefs_recovery_credential_rate_limited"}}
+    assert "private credential" not in limited.text
+    assert "wrong source password" not in limited.text
+    assert "new portable password" not in limited.text
 
 
 def test_import_api_probes_and_stages_without_exposing_passphrase(
@@ -406,6 +597,7 @@ def test_import_api_probes_and_stages_without_exposing_passphrase(
                 "archiveId": None,
                 "activationId": None,
                 "restartRequired": False,
+                "credentialsReplaced": False,
                 "errorCode": None,
             }
 

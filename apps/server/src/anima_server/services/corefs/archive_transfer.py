@@ -231,7 +231,7 @@ def _prepare_core_archive(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    keyslot_snapshot = _keyslot_snapshot_bytes(scoped_manifest)
+    keyslot_snapshot = keyslot_snapshot_bytes(scoped_manifest)
     selected_bytes = (
         sum(Path(item["sourcePath"]).stat().st_size for item in sources)
         + len(manifest_snapshot)
@@ -402,7 +402,7 @@ def _source(record_type: str, record_path: str, source_path: Path) -> dict[str, 
     }
 
 
-def _keyslot_snapshot_bytes(manifest: dict[str, object]) -> bytes:
+def keyslot_snapshot_bytes(manifest: dict[str, object]) -> bytes:
     payload = {
         "version": 1,
         "keyslotsVersion": manifest.get("keyslots_version"),
@@ -734,7 +734,7 @@ def _validate_staged_core(
     except (OSError, json.JSONDecodeError) as exc:
         raise CoreArchiveTransferError("staged Core keyslot snapshot is invalid") from exc
     if not isinstance(keyslot_snapshot, dict) or keyslot_snapshot != json.loads(
-        _keyslot_snapshot_bytes(manifest)
+        keyslot_snapshot_bytes(manifest)
     ):
         raise CoreArchiveTransferError("staged Core keyslot snapshot does not match its manifest")
     _validate_imported_keyslot_scope(manifest, payload_kind)
