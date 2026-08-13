@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import PresenceConfig
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.cutover import (
     approve_validation_cutover,
@@ -18,8 +20,10 @@ from anima_server.services.corefs.formats import (
     decode_preferences_document,
     encode_preferences_document,
 )
+from anima_server.services.presence_config import get_presence_config_values
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
+from sqlalchemy import select
 
 
 def test_preferences_are_canonical_json_and_round_trip_portable_values() -> None:
@@ -249,3 +253,97 @@ def test_presence_update_refreshes_encrypted_preference_shadow() -> None:
         )
         assert decoded.values["presence"]["taskNudgesEnabled"] is False
         assert decoded.values["presence"]["customInstruction"] == "Be concise"
+
+
+def test_post_cutover_presence_uses_only_canonical_preferences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with managed_test_client("anima-presence-corefs-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "presence-corefs",
+                "password": "pw123456",
+                "name": "Presence CoreFS",
+            },
+        )
+        payload = registered.json()
+        user_id = int(payload["id"])
+        token = str(payload["unlockToken"])
+        headers = {"x-anima-unlock": token}
+        initial = client.put(
+            f"/api/presence/{user_id}",
+            headers=headers,
+            json={"enabled": False, "customInstruction": "Legacy value"},
+        )
+        assert initial.status_code == 200, initial.text
+
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
+        begin_migration()
+        publish_validation_readonly(
+            generation=int(selected["generation"]),
+            catalog_hash=str(selected["catalogHash"]),
+        )
+        approve_validation_cutover()
+        logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=logical.CoreFsValidationSnapshot(
+                int(selected["generation"]), str(selected["catalogHash"])
+            ),
+            principal="user",
+            mutation={"operation": "mkdir", "path": "Presence activation proof"},
+        )
+        marker = reconcile_cutover_authority(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        assert marker is not None
+        object.__setattr__(session, "content_authority", marker)
+
+        def reject_legacy_write(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("post-cutover presence touched legacy persistence")
+
+        monkeypatch.setattr(
+            "anima_server.api.routes.presence.update_presence_config",
+            reject_legacy_write,
+        )
+        monkeypatch.setattr(
+            "anima_server.api.routes.presence.prepare_writing_source_catalog",
+            reject_legacy_write,
+        )
+        updated = client.put(
+            f"/api/presence/{user_id}",
+            headers=headers,
+            json={"enabled": True, "customInstruction": "Canonical value"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["enabled"] is True
+        assert updated.json()["customInstruction"] == "Canonical value"
+
+        fetched = client.get(f"/api/presence/{user_id}", headers=headers)
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["enabled"] is True
+        assert fetched.json()["customInstruction"] == "Canonical value"
+
+        with get_user_session_factory(user_id)() as db:
+            legacy = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
+            assert legacy is not None
+            assert legacy.enabled is False
+            assert legacy.custom_instruction == "Legacy value"
+            background_values = get_presence_config_values(db, user_id)
+        assert background_values.enabled is True
+        assert background_values.custom_instruction == "Canonical value"
+
+        item = next(
+            candidate
+            for candidate in read_prepared_writing_snapshot(session=session).objects
+            if candidate.kind == "preferences"
+        )
+        decoded = decode_preferences_document(
+            read_prepared_writing_body(session=session, item=item)
+        )
+        assert decoded.values["presence"]["enabled"] is True
+        assert decoded.values["presence"]["customInstruction"] == "Canonical value"

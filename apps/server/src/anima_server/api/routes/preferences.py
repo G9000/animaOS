@@ -13,6 +13,7 @@ from anima_server.services.corefs.logical import CoreFsMutationUnavailable
 from anima_server.services.corefs.preferences import (
     PortablePreferenceError,
     portable_preference_corefs_authority_active,
+    read_canonical_preferences,
     read_portable_preferences,
     update_canonical_preferences,
     update_portable_preferences,
@@ -25,7 +26,11 @@ router = APIRouter(prefix="/api/preferences", tags=["preferences"])
 def get_preferences(user_id: int, request: Request) -> PortablePreferencesResponse:
     session = require_unlocked_user(request, user_id)
     try:
-        values = read_portable_preferences(session=session)
+        values = (
+            read_canonical_preferences(session=session)
+            if portable_preference_corefs_authority_active(session)
+            else read_portable_preferences(session=session)
+        )
     except PortablePreferenceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return PortablePreferencesResponse(userId=user_id, values=values)
@@ -62,5 +67,7 @@ def patch_preferences(
             values=payload.values,
         )
     except PortablePreferenceError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
     return PortablePreferencesResponse(userId=user_id, values=values)

@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 22:54 MYT
+- Updated: 2026-08-13 23:04 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -403,6 +403,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 22:21 MYT - PCF-008 CoreFS-only recovery now supports separately confirmed scoped credential replacement. One request-local source credential opens only the FS compartment; fresh password/recovery generations wrap exactly those FRKs at `fs` scope and independently reopen before keyslot-inventory-then-manifest publication. Injected failures restore both original controls, updated authenticated hashes gate later access, no Soul authority can enter, and neither request credentials nor the returned-once phrase are retained. The transfer band passes `82`, API-client/desktop contracts `33`, desktop build and scoped hygiene pass. Recovery-only re-export remains open; no external or irreversible action occurred.
 - 2026-08-13 22:35 MYT - PCF-008 recovery-only re-export now streams a new verified FS artifact from the exact authenticated staging Core without consulting, attaching, or activating the live Core. One request-local credential opens the FS compartment; explicit staged root/manifest authority, generation/control rechecks, native object-lease pinning, verified cancellable `.partial` publication, forbidden active/staged destinations, and unconditional native-session close protect the flow. The transfer band passes `86`, API-client/desktop contracts `33`, desktop build and scoped hygiene pass. Multipart remains open; no external or irreversible action occurred.
 - 2026-08-13 22:54 MYT - PCF-008 began Step 8 writable-authority replacement: authenticated forward-only task CRUD and portable-preference patches now use native optimistic CoreFS mutations only, propagate trusted generation changes across local sessions, invalidate active indexes, create canonical task identity/body atomically, and trash deleted tasks beneath stable `core.trash` without using the retained SQL allocator or write path. Focused task/preferences tests pass `11`, diary migration `40`, native mutation `7`, and scoped hygiene passes. Remaining content families and raw plaintext scans keep Step 8 open; no external or irreversible action occurred.
+- 2026-08-13 23:04 MYT - PCF-008 presence authority now follows the same
+  forward-only preference object: API reads/writes and background consent
+  decisions authenticate CoreFS, native mutation preserves the consent lock,
+  retained `presence_configs` remains byte-for-byte legacy recovery state, and
+  a locked forward-only process refuses stale SQL. Focused preference coverage
+  passes `7`, account/initiative/dream coverage passes `152`, and scoped
+  hygiene passes. Remaining content-family writers and raw scans keep PCF-008
+  in progress; no external or irreversible action occurred.
 
 ## Validation
 

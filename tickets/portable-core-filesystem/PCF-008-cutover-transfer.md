@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 22:54 MYT
+- Updated: 2026-08-13 23:04 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -347,6 +347,18 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   `40`, native mutation coverage passes `7`, and scoped Ruff/Rust format/diff
   hygiene passes. Other content-family writers and raw post-cutover scans keep
   Step 8 open. No external action or irreversible live cutover occurred.
+- 2026-08-13 23:04 MYT - Extended Step 8 through the complete presence
+  preference boundary. After authenticated cutover, presence GET/PUT and all
+  background consent readers now authenticate the canonical CoreFS
+  preferences object; update retains the existing consent serialization lock
+  but commits only one native optimistic preference revision and never changes
+  the legacy `presence_configs` row or invokes validation preparation. A
+  forward-only process without an unlocked canonical session fails closed
+  instead of consulting stale SQL. The focused CoreFS preference band passes
+  `7`, and the account-migration plus initiative/dream consent band passes
+  `152`; scoped Ruff, format, and diff hygiene pass. Account, conversation,
+  diary, asset/document writers and raw post-cutover scans keep Step 8 open. No
+  external action or irreversible live cutover occurred.
 
 ## Validation
 
@@ -473,6 +485,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `cargo test -p anima-corefs logical::mutation::tests --lib` (`7 passed`)
   - scoped Ruff, Rust format, and `git diff --check` after the task/preferences
     authority milestone (passed)
+  - `uv run pytest -q apps/server/tests/test_corefs_preferences.py` after the
+    presence authority adapter (`7 passed`)
+  - `uv run pytest -q apps/server/tests/test_corefs_account_migration.py apps/server/tests/test_inner_life_ambient_dream.py apps/server/tests/test_inner_life_initiative.py`
+    (`152 passed`)
+  - scoped Ruff check/format and `git diff --check` after the presence
+    authority adapter (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -522,7 +540,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/test_corefs_legacy_runtime_recovery.py`
   - `apps/server/tests/test_runtime_db.py`
   - `apps/server/src/anima_server/services/corefs/{content_authority.py,task_authority.py,task_mutations.py,preferences.py,writing_source.py}`
-  - `apps/server/src/anima_server/api/routes/{tasks.py,preferences.py}`
+  - `apps/server/src/anima_server/api/routes/{tasks.py,preferences.py,presence.py}`
+  - `apps/server/src/anima_server/services/presence_config.py`
   - `apps/server/tests/{test_tasks_api.py,test_corefs_preferences.py}`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
