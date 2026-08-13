@@ -99,7 +99,6 @@ _PORTABLE_MANIFEST_AUTHORITY_FIELDS = (
     "owner_id",
     "owner_user_id",
     "owner_binding",
-    "user_index",
     "sqlcipher_kdf_salt",
     "wrapped_sqlcipher_key",
     "recovery_sqlcipher_key",

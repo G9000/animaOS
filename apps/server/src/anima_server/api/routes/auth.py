@@ -47,6 +47,10 @@ from anima_server.services.auth import (
     normalize_username,
     serialize_user,
 )
+from anima_server.services.corefs.account_profile import (
+    read_account_profile_for_session,
+    serialize_account_profile,
+)
 from anima_server.services.corefs.admission import (
     FsCredentialAdmission,
     FsCredentialAdmissionRejected,
@@ -228,6 +232,10 @@ def me(
     session = unlock_session_store.resolve(read_unlock_token(request))
     if session is None:
         raise HTTPException(status_code=401, detail="Session locked.")
+
+    profile = read_account_profile_for_session(session)
+    if profile is not None:
+        return serialize_account_profile(profile)
 
     user = get_user_by_id(db, session.user_id)
     if user is None:

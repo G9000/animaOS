@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 16:56 MYT
+- Updated: 2026-08-13 17:07 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -60,6 +60,14 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   now use verified OS storage. Legacy runtime-config, SQLite, daemon-file, and
   browser token copies use copy-verify-scrub migration, with no generic browser
   secret-read route or plaintext fallback. No external action was taken.
+- 2026-08-13 17:07 MYT - Completed Step 4 locally. Versioned login now unwraps
+  manifest keyslots, opens SQLCipher through the opaque owner binding, unwraps
+  Soul domain keys, derives active CoreFS keys, and hydrates the authenticated
+  encrypted account-profile before returning private identity. Legacy manifests
+  are scrubbed of `user_index`; registration and crash recovery use the opaque
+  single-owner locator. SQLCipher fallback remains only for the one pre-PCF-008
+  upgrade login where no prepared account-profile exists yet. No external
+  action was taken.
 
 ## Validation
 
@@ -73,6 +81,10 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
     shared native credential store (`3 passed`), local daemon test/check, desktop
     native check, anima-mod build, focused dev broker-environment test, Ruff,
     Rust formatting, and diff hygiene passed
+  - stable authentication band (`13 passed`, `2 deselected`), focused opaque-owner/
+    keyslot crash and encrypted-profile coverage (`6 passed`), account migration
+    (`2 passed`), Ruff, and diff hygiene passed; the two deselected unrelated
+    health/LLM tests retain the known native background-index teardown segfault
 - Changed paths:
   - `docs/architecture/system/portable-state-inventory.md`
   - `apps/server/src/anima_server/services/corefs/{formats.py,writing_source.py}`
@@ -87,6 +99,9 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - `apps/desktop/src-tauri/src/lib.rs`, `apps/desktop/src/lib/daemon.ts`
   - `apps/local-runtime-daemon/src/main.rs`
   - `scripts/dev-root{,-lib}.mjs`
+  - `apps/server/src/anima_server/services/corefs/account_profile.py`
+  - `apps/server/src/anima_server/{db/user_store.py,services/core.py,api/routes/auth.py}`
+  - `apps/server/src/anima_server/services/vault.py`
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.

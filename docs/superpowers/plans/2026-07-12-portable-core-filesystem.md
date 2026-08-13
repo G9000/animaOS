@@ -794,7 +794,7 @@ Cover encrypted account profile, opaque owner ID, no plaintext username index, t
 
 Implement one OS-credential boundary across Python, Tauri/local-runtime-daemon, and anima-mod. Python owns provider credentials and an authenticated loopback credential broker with short-lived audience-scoped capabilities for the mod process; it never exposes a generic secret-read route to the browser. Tauri and the local daemon share a platform keyring entry for the daemon control token. `ConfigService` stores only opaque credential references for schema fields marked `secret`, and Google OAuth uses a dedicated `SecretStore`/broker path rather than `mod_store`. Fail closed with a clear configuration error when no secure backend is available; do not silently fall back to SQLite, YAML, files, environment persistence, or localStorage.
 
-- [ ] **Step 4: Migrate local account unlock**
+- [x] **Step 4: Migrate local account unlock**
 
 Authenticate by unwrapping manifest keyslots, open SQLCipher, load Soul domain keys, then read the encrypted account-profile object. Remove manifest `user_index`; remembered username remains optional device-local convenience.
 

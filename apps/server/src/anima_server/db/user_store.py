@@ -32,14 +32,17 @@ from anima_server.services.core import (
     ensure_core_manifest,
     get_manifest_path,
     get_owner_user_id,
-    get_user_id_from_index,
     get_wrapped_sqlcipher_key,
     is_provisioned,
     set_next_user_id,
     set_owner_user_id,
-    store_user_index_entry,
     store_wrapped_sqlcipher_key,
 )
+from anima_server.services.corefs.account_profile import (
+    read_unlocked_account_profile,
+    serialize_account_profile,
+)
+from anima_server.services.corefs.diary_migration import DiaryMigrationError
 from anima_server.services.corefs.types import PayloadScope
 from anima_server.services.storage import get_user_data_dir
 from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
@@ -186,10 +189,8 @@ def register_account(
         # At this boundary the complete legacy account remains independently usable.
         set_owner_user_id(user_id)
 
-        # Publish every legacy account locator before versioned slots become
-        # authoritative. A crash before hierarchy activation must still leave
-        # both password login and recovery able to locate/open the account.
-        store_user_index_entry(normalized, user_id)
+        # The opaque owner binding locates the single local account without
+        # publishing its private username in the manifest.
         if sqlcipher_raw_key is not None:
             from anima_server.services.core import store_recovery_sqlcipher_key
 
@@ -248,13 +249,13 @@ def authenticate_account(
             if roots.scope is PayloadScope.FS or roots.sqlcipher_key is None:
                 raise ValueError("filesystem-only credentials cannot unlock an agent")
             set_sqlcipher_key(roots.sqlcipher_key)
-            account_user_id = get_user_id_from_index(normalized)
+            account_user_id = get_owner_user_id()
             if account_user_id is None:
-                raise ValueError("versioned Core is missing its user index")
+                raise ValueError("versioned Core is missing its opaque owner binding")
             with get_user_session_factory(account_user_id)() as db:
-                user = db.scalar(select(User).where(User.username == normalized))
+                user = db.get(User, account_user_id)
                 if user is None:
-                    raise ValueError("versioned user does not match the manifest index")
+                    raise ValueError("versioned owner is missing from the Soul database")
                 finalize_pending_password_generation(db, user, password=password)
                 unlocked = unlock_key_hierarchy(
                     db,
@@ -267,8 +268,27 @@ def authenticate_account(
                     if roots.scope is PayloadScope.FULL
                     else None
                 )
-                return serialize_user(user), unlocked.soul_domains, corefs_keys
-        except (InvalidTag, KeyError, TypeError, ValueError) as exc:
+                profile = (
+                    read_unlocked_account_profile(
+                        user_id=account_user_id,
+                        corefs_keys=corefs_keys,
+                    )
+                    if corefs_keys is not None
+                    else None
+                )
+                if profile is not None:
+                    if normalize_username(profile.username) != normalized:
+                        raise ValueError("encrypted account profile does not match login")
+                    response = serialize_account_profile(profile)
+                else:
+                    # Before PCF-008, an older Core may not have prepared this
+                    # newly introduced object yet. SQLCipher remains the
+                    # legacy authority for that one upgrade login.
+                    if normalize_username(user.username) != normalized:
+                        raise ValueError("versioned owner does not match login")
+                    response = serialize_user(user)
+                return response, unlocked.soul_domains, corefs_keys
+        except (DiaryMigrationError, InvalidTag, KeyError, TypeError, ValueError) as exc:
             raise InvalidCredentialsError(
                 f"versioned key hierarchy authentication failed: {exc}"
             ) from exc
@@ -276,17 +296,14 @@ def authenticate_account(
     # Unified passphrase: unwrap SQLCipher key before opening the database
     _maybe_unwrap_sqlcipher_key(password)
 
-    # Try fast path via manifest index first, fall back to DB scan
-    indexed_user_id = get_user_id_from_index(normalized)
-    if indexed_user_id is not None:
-        account_user_id = indexed_user_id
-    else:
+    # Locate the single local account through its opaque owner binding. Older
+    # unbound legacy Cores may scan only after SQLCipher has been unlocked.
+    account_user_id = get_owner_user_id()
+    if account_user_id is None:
         account = find_account_by_username(normalized)
         if account is None:
             raise InvalidCredentialsError(f"User not found: {normalized}")
         account_user_id = account.user_id
-        # Backfill the index for next time
-        store_user_index_entry(normalized, account_user_id)
 
     with get_user_session_factory(account_user_id)() as db:
         try:
