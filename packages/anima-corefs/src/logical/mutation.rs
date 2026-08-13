@@ -38,6 +38,7 @@ pub enum LogicalMutation {
     },
     Create {
         path: String,
+        stable_id: Option<String>,
         kind: ObjectKind,
         content_type: String,
         bytes: Vec<u8>,

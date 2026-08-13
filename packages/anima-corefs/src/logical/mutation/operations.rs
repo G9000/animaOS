@@ -66,6 +66,7 @@ pub(super) fn plan_non_patch(
         }
         LogicalMutation::Create {
             path,
+            stable_id,
             kind,
             content_type,
             bytes,
@@ -79,7 +80,13 @@ pub(super) fn plan_non_patch(
                 .ok_or(MutationError::NotFound)?;
             index.authorize(principal, parent, AnimaAccess::Write)?;
             let content = validate_content(validator, kind, &content_type, &bytes)?;
-            let id = OpaqueId::generate().map_err(|_| MutationError::Storage)?;
+            let id = match stable_id {
+                Some(value) => OpaqueId::parse(&value).map_err(|_| MutationError::InvalidPath)?,
+                None => OpaqueId::generate().map_err(|_| MutationError::Storage)?,
+            };
+            if index.entry(&id).is_some() {
+                return Err(MutationError::Collision);
+            }
             let parent_common = parent.common_for_internal_mutation();
             draft.pending.push(PendingObject {
                 common: CatalogEntryCommon::new(

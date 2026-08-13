@@ -466,6 +466,8 @@ mod python {
         },
         CreateFile {
             path: String,
+            #[serde(default)]
+            stable_id: Option<String>,
             kind: String,
             content_type: String,
             body_encoding: String,
@@ -1204,12 +1206,14 @@ mod python {
             ),
             LogicalMutationWire::CreateFile {
                 path,
+                stable_id,
                 kind,
                 content_type,
                 body_encoding,
             } => (
                 anima_corefs::logical::LogicalMutation::Create {
                     path,
+                    stable_id,
                     kind: anima_corefs::crypto::ObjectKind::parse(&kind)
                         .map_err(corefs_value_error)?,
                     content_type,
@@ -7073,13 +7077,18 @@ mod python {
                     "timestampMs": 1_700_000_000_001_u64,
                     "timestamp": "2026-08-13T20:15:01Z",
                     "mutation": {
-                        "operation": "mkdir",
-                        "path": "Notes/Projects/Sub"
+                        "operation": "create_file",
+                        "path": "Notes/Projects/task.json",
+                        "stableId": "01J10000000000000000000009",
+                        "kind": "task",
+                        "contentType": "application/vnd.anima.task+json;version=1",
+                        "bodyEncoding": "utf-8"
                     }
                 })
                 .to_string();
+                let body = PyBuffer::get_bound(&PyBytes::new_bound(py, b"{}")).unwrap();
                 let normal = session
-                    .logical_mutate_v1(py, &fixture.keys, &normal_request, None)
+                    .logical_mutate_v1(py, &fixture.keys, &normal_request, Some(body))
                     .unwrap();
                 let normal = normal.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(
@@ -7097,6 +7106,19 @@ mod python {
                     .unwrap()
                     .extract::<bool>()
                     .unwrap());
+                let changes = normal.get_item("changes").unwrap().unwrap();
+                let changes = changes.downcast::<PyList>().unwrap();
+                let change = changes.get_item(0).unwrap();
+                let change = change.downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    change
+                        .get_item("stableId")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "01J10000000000000000000009"
+                );
                 let marker = session.authoritative_cutover_v1(py, &fixture.keys).unwrap();
                 let marker = marker.bind(py).downcast::<PyDict>().unwrap();
                 assert_eq!(

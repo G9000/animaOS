@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 22:35 MYT
+- Updated: 2026-08-13 22:54 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -333,6 +333,20 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   `33`, the desktop production build passes, and scoped Ruff/format/diff
   hygiene is clean. Multipart remains open. No external or irreversible action
   occurred.
+- 2026-08-13 22:54 MYT - Added the first Step 8 writable-authority adapters.
+  An authenticated forward-only session now routes task create/update/delete
+  and portable-preference patches only through native optimistic CoreFS
+  mutations, advances every local session marker to the trusted committed
+  generation, and invalidates active Runtime indexes without writing the
+  retained legacy task/preferences source. Task creation uses a caller-bound
+  native opaque ID so its canonical body and catalog identity publish in one
+  generation; deletion moves the exact revision to the new stable
+  `core.trash` recovery root. Random task API IDs remain within JavaScript's
+  exact-integer range and never require a legacy SQL allocator. The task and
+  preference API band passes `11`, the complete diary migration band passes
+  `40`, native mutation coverage passes `7`, and scoped Ruff/Rust format/diff
+  hygiene passes. Other content-family writers and raw post-cutover scans keep
+  Step 8 open. No external action or irreversible live cutover occurred.
 
 ## Validation
 
@@ -452,6 +466,13 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `bun run --cwd apps/desktop build` after recovery export UI wiring (passed)
   - scoped Ruff check/format and `git diff --check` after recovery re-export
     (passed)
+  - `uv run pytest -q apps/server/tests/test_tasks_api.py apps/server/tests/test_corefs_preferences.py`
+    after the first writable-authority adapters (`11 passed`)
+  - `uv run pytest -q apps/server/tests/test_corefs_diary_migration.py`
+    after adding the stable authenticated trash root (`40 passed`)
+  - `cargo test -p anima-corefs logical::mutation::tests --lib` (`7 passed`)
+  - scoped Ruff, Rust format, and `git diff --check` after the task/preferences
+    authority milestone (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -500,6 +521,9 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/services/corefs/legacy_runtime_recovery.py`
   - `apps/server/tests/test_corefs_legacy_runtime_recovery.py`
   - `apps/server/tests/test_runtime_db.py`
+  - `apps/server/src/anima_server/services/corefs/{content_authority.py,task_authority.py,task_mutations.py,preferences.py,writing_source.py}`
+  - `apps/server/src/anima_server/api/routes/{tasks.py,preferences.py}`
+  - `apps/server/tests/{test_tasks_api.py,test_corefs_preferences.py}`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

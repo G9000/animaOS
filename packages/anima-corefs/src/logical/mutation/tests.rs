@@ -27,6 +27,7 @@ const NOTES_ID: &str = "01J10000000000000000000001";
 const TRASH_ID: &str = "01J10000000000000000000002";
 const EXISTING_ID: &str = "01J10000000000000000000003";
 const VAULT_ID: &str = "01J10000000000000000000004";
+const CREATED_ID: &str = "01J10000000000000000000005";
 
 struct IdentityValidator;
 
@@ -127,6 +128,7 @@ fn approved_first_mutation_publishes_cutover_then_normal_mutations_use_head() {
             MutationCommitMode::Normal,
             LogicalMutation::Create {
                 path: "Notes/Projects/one.md".to_string(),
+                stable_id: None,
                 kind: ObjectKind::Note,
                 content_type: "text/markdown".to_string(),
                 bytes: b"one\n".to_vec(),
@@ -201,6 +203,7 @@ fn mkdir_create_write_and_move_each_advance_exactly_one_validation_generation() 
             &selected,
             LogicalMutation::Create {
                 path: "Notes/Projects/one.md".to_string(),
+                stable_id: Some(CREATED_ID.to_string()),
                 kind: ObjectKind::Note,
                 content_type: "text/markdown".to_string(),
                 bytes: b"one\n".to_vec(),
@@ -213,12 +216,27 @@ fn mkdir_create_write_and_move_each_advance_exactly_one_validation_generation() 
     assert_eq!(create.changes[0].revision, Some(1));
     assert!(create.changes[0].content_hash.is_some());
     let created_id = create.changes[0].stable_id.clone();
+    assert_eq!(created_id, CREATED_ID);
 
     let selected = fixture
         .coordinator
         .load_validation_snapshot(&fixture.keys)
         .unwrap()
         .unwrap();
+    let duplicate_id = mutator.execute(
+        ConverterPrincipal::User,
+        &selected,
+        LogicalMutation::Create {
+            path: "Notes/Projects/two.md".to_string(),
+            stable_id: Some(CREATED_ID.to_string()),
+            kind: ObjectKind::Note,
+            content_type: "text/markdown".to_string(),
+            bytes: b"two\n".to_vec(),
+        },
+        stamp(),
+        &validator,
+    );
+    assert!(matches!(duplicate_id, Err(MutationError::Collision)));
     let write = mutator
         .execute(
             ConverterPrincipal::Anima,
@@ -600,6 +618,7 @@ fn all_operations() -> Vec<LogicalMutation> {
         },
         LogicalMutation::Create {
             path: "x".into(),
+            stable_id: None,
             kind: ObjectKind::Note,
             content_type: "text/plain".into(),
             bytes: vec![],

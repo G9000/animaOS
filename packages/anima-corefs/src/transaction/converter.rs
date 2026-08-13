@@ -35,11 +35,12 @@ const ACCOUNT_PROFILE_CONTENT_TYPE: &str = "application/vnd.anima.account-profil
 const PREFERENCES_CONTENT_TYPE: &str = "application/vnd.anima.preferences+json;version=1";
 const TASK_CONTENT_TYPE: &str = "application/vnd.anima.task+json;version=1";
 const REQUIRED_WRITING_ROLES: [&str; 2] = ["core.journal", "core.notes"];
-const ALLOWED_ROLES: [&str; 4] = [
+const ALLOWED_ROLES: [&str; 5] = [
     "core.journal",
     "core.notes",
     "core.conversations",
     "core.gallery",
+    "core.trash",
 ];
 pub const MAX_WRITING_BODY_CHARS: usize = 20_000_000;
 // Canonical HTML and JSON can expand one public source scalar to six ASCII
@@ -632,6 +633,7 @@ fn validate_batch(
         .any(|role| role_counts.get(role).copied() != Some(1))
         || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
         || role_counts.get("core.gallery").copied().unwrap_or(0) > 1
+        || role_counts.get("core.trash").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -753,6 +755,7 @@ pub(super) fn build_prepared_validation_catalog(
         .any(|role| role_counts.get(role).copied() != Some(1))
         || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
         || role_counts.get("core.gallery").copied().unwrap_or(0) > 1
+        || role_counts.get("core.trash").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -919,7 +922,7 @@ fn validate_stable_root_policy(
     match (role, policy) {
         (None, _) => Ok(()),
         (
-            Some("core.journal" | "core.notes" | "core.gallery"),
+            Some("core.journal" | "core.notes" | "core.gallery" | "core.trash"),
             ValidationBatchPolicy::UserWrite,
         )
         | (Some("core.conversations"), ValidationBatchPolicy::SharedManage) => Ok(()),

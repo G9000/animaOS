@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 import pytest
+from anima_server.services.corefs import logical
+from anima_server.services.corefs.cutover import (
+    approve_validation_cutover,
+    begin_migration,
+    publish_validation_readonly,
+    reconcile_cutover_authority,
+)
 from anima_server.services.corefs.diary_migration import (
     migration_opaque_id,
     read_prepared_writing_body,
@@ -141,6 +148,71 @@ def test_portable_preference_api_rejects_host_media_and_unknown_keys() -> None:
             json={"values": {"providerApiKey": "must-not-persist"}},
         )
         assert unknown.status_code == 422
+
+
+def test_post_cutover_preference_patch_writes_only_corefs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with managed_test_client("anima-preferences-corefs-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "preference-corefs",
+                "password": "pw123456",
+                "name": "Preference CoreFS",
+            },
+        )
+        payload = registered.json()
+        user_id = int(payload["id"])
+        token = str(payload["unlockToken"])
+        headers = {"x-anima-unlock": token}
+        initial = client.patch(
+            f"/api/preferences/{user_id}",
+            headers=headers,
+            json={"values": {"theme": "dark"}},
+        )
+        assert initial.status_code == 200, initial.text
+
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
+        begin_migration()
+        publish_validation_readonly(
+            generation=int(selected["generation"]),
+            catalog_hash=str(selected["catalogHash"]),
+        )
+        approve_validation_cutover()
+        logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=logical.CoreFsValidationSnapshot(
+                int(selected["generation"]), str(selected["catalogHash"])
+            ),
+            principal="user",
+            mutation={"operation": "mkdir", "path": "Preference activation proof"},
+        )
+        marker = reconcile_cutover_authority(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        assert marker is not None
+        object.__setattr__(session, "content_authority", marker)
+
+        def reject_legacy_preparation(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("post-cutover preferences touched the legacy preparation path")
+
+        monkeypatch.setattr(
+            "anima_server.services.corefs.preferences.prepare_writing_source_catalog",
+            reject_legacy_preparation,
+        )
+        updated = client.patch(
+            f"/api/preferences/{user_id}",
+            headers=headers,
+            json={"values": {"theme": "light", "clockFormat": "24h"}},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["values"]["theme"] == "light"
+        assert updated.json()["values"]["clockFormat"] == "24h"
 
 
 def test_presence_update_refreshes_encrypted_preference_shadow() -> None:
