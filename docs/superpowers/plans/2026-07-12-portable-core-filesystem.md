@@ -1018,14 +1018,18 @@ Progress (2026-08-13): authenticated forward-only task CRUD, portable-
 preference patches, and presence preference GET/PUT now commit/read only
 through native authenticated CoreFS authority. Background presence/initiative/
 dream consent checks follow the same canonical object and fail closed without
-an unlocked CoreFS session instead of consulting retained SQL.
+an unlocked CoreFS session instead of consulting retained SQL. Account
+identity/demographic updates, login hydration, onboarding completion, and
+identity-override checks now use the authenticated account-profile object;
+retained SQL account/setup rows are not changed and the unsafe directory-only
+delete path fails closed pending restart-safe whole-Core deletion.
 Task bodies and caller-bound opaque catalog IDs publish atomically, task API
 IDs no longer depend on the legacy SQL allocator, delete targets a stable
 `core.trash` recovery root, local session authority generations advance after
 each trusted native result, and focused tests prove these routes do not touch
-their retained legacy write paths. Account/conversation/diary/asset/document
-writers plus the full raw Runtime/cache/log/index plaintext scan remain open,
-so this step is intentionally not checked complete.
+their retained legacy write paths. Restart-safe account deletion, conversation/
+diary/asset/document writers, and the full raw Runtime/cache/log/index
+plaintext scan remain open, so this step is intentionally not checked complete.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 

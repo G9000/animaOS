@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:04 MYT
+- Updated: 2026-08-13 23:17 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -411,6 +411,15 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   passes `7`, account/initiative/dream coverage passes `152`, and scoped
   hygiene passes. Remaining content-family writers and raw scans keep PCF-008
   in progress; no external or irreversible action occurred.
+- 2026-08-13 23:17 MYT - PCF-008 account identity/onboarding authority now
+  reads and mutates only the authenticated account-profile object after
+  cutover, including login hydration and identity-override gates. Canonical
+  username changes survive logout/login while retained SQL account/setup rows
+  remain unchanged; unsafe directory-only account deletion now fails closed
+  pending restart-safe whole-Core coordination. The account/login/onboarding
+  band passes `50` and scoped hygiene passes. Remaining writer families and
+  raw scans keep PCF-008 in progress; no external or irreversible action
+  occurred.
 
 ## Validation
 

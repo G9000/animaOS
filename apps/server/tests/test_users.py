@@ -1,8 +1,25 @@
 from __future__ import annotations
 
+import pytest
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import AgentProfile, User
+from anima_server.services.corefs import logical
+from anima_server.services.corefs.cutover import (
+    approve_validation_cutover,
+    begin_migration,
+    publish_validation_readonly,
+    reconcile_cutover_authority,
+)
+from anima_server.services.corefs.diary_migration import (
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
+from anima_server.services.corefs.formats import decode_account_profile_document
+from anima_server.services.sessions import unlock_session_store
 from anima_server.services.storage import get_user_data_dir
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 
 def _register_user(client: TestClient) -> dict[str, object]:
@@ -20,8 +37,7 @@ def test_get_user_requires_matching_unlock_session() -> None:
 
         unauthorized = client.get(f"/api/users/{user['id']}")
         assert unauthorized.status_code == 401
-        assert unauthorized.json() == {
-            "error": "Session locked. Please sign in again."}
+        assert unauthorized.json() == {"error": "Session locked. Please sign in again."}
 
         response = client.get(
             f"/api/users/{user['id']}",
@@ -82,3 +98,127 @@ def test_delete_user_removes_database_row_and_files() -> None:
             json={"username": "alice", "password": "pw123456"},
         )
         assert login_response.status_code == 401
+
+
+def test_post_cutover_account_profile_never_mutates_legacy_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with managed_test_client("anima-users-corefs-") as client:
+        user = _register_user(client)
+        user_id = int(user["id"])
+        token = str(user["unlockToken"])
+        headers = {"x-anima-unlock": token}
+
+        legacy_update = client.put(
+            f"/api/users/{user_id}",
+            headers=headers,
+            json={"name": "Legacy retained"},
+        )
+        assert legacy_update.status_code == 200, legacy_update.text
+
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
+        begin_migration()
+        publish_validation_readonly(
+            generation=int(selected["generation"]),
+            catalog_hash=str(selected["catalogHash"]),
+        )
+        approve_validation_cutover()
+        logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=logical.CoreFsValidationSnapshot(
+                int(selected["generation"]), str(selected["catalogHash"])
+            ),
+            principal="user",
+            mutation={"operation": "mkdir", "path": "Account activation proof"},
+        )
+        marker = reconcile_cutover_authority(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        assert marker is not None
+        object.__setattr__(session, "content_authority", marker)
+
+        def reject_legacy_path(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("post-cutover account touched legacy persistence")
+
+        monkeypatch.setattr("anima_server.api.routes.users.get_user_by_id", reject_legacy_path)
+        monkeypatch.setattr(
+            "anima_server.api.routes.users.prepare_writing_source_catalog",
+            reject_legacy_path,
+        )
+        monkeypatch.setattr(
+            "anima_server.api.routes.consciousness.prepare_writing_source_catalog",
+            reject_legacy_path,
+        )
+        updated = client.put(
+            f"/api/users/{user_id}",
+            headers=headers,
+            json={
+                "username": "renamed",
+                "name": "Canonical Name",
+                "gender": "other",
+                "age": 34,
+                "birthday": "1992-05-06",
+            },
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["username"] == "renamed"
+        assert updated.json()["name"] == "Canonical Name"
+
+        fetched = client.get(f"/api/users/{user_id}", headers=headers)
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["username"] == "renamed"
+        me = client.get("/api/auth/me", headers=headers)
+        assert me.status_code == 200, me.text
+        assert me.json()["name"] == "Canonical Name"
+
+        setup = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=headers,
+            json={"agentName": "Anima"},
+        )
+        assert setup.status_code == 200, setup.text
+        assert setup.json()["setupComplete"] is True
+        fetched_setup = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=headers,
+        )
+        assert fetched_setup.status_code == 200, fetched_setup.text
+        assert fetched_setup.json()["setupComplete"] is True
+
+        with get_user_session_factory(user_id)() as db:
+            legacy = db.get(User, user_id)
+            legacy_agent = db.scalar(select(AgentProfile).where(AgentProfile.user_id == user_id))
+            assert legacy is not None
+            assert legacy_agent is not None
+            assert legacy.username == "alice"
+            assert legacy.display_name == "Legacy retained"
+            assert legacy_agent.setup_complete is False
+
+        account_item = next(
+            item
+            for item in read_prepared_writing_snapshot(session=session).objects
+            if item.kind == "account-profile"
+        )
+        account = decode_account_profile_document(
+            read_prepared_writing_body(session=session, item=account_item)
+        )
+        assert account.username == "renamed"
+        assert account.display_name == "Canonical Name"
+        assert account.setup_complete is True
+
+        delete = client.delete(f"/api/users/{user_id}", headers=headers)
+        assert delete.status_code == 409
+        assert delete.json()["error"] == "corefs_account_delete_restart_required"
+
+        logged_out = client.post("/api/auth/logout", headers=headers)
+        assert logged_out.status_code == 200
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "renamed", "password": "pw123456"},
+        )
+        assert login.status_code == 200, login.text
+        assert login.json()["name"] == "Canonical Name"

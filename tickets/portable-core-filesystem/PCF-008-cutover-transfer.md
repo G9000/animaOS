@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:04 MYT
+- Updated: 2026-08-13 23:17 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -359,6 +359,19 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   `152`; scoped Ruff, format, and diff hygiene pass. Account, conversation,
   diary, asset/document writers and raw post-cutover scans keep Step 8 open. No
   external action or irreversible live cutover occurred.
+- 2026-08-13 23:17 MYT - Added canonical account identity and onboarding
+  authority. Post-cutover user GET/PUT, `/auth/me`, login hydration, setup
+  completion, and identity-override checks now authenticate the encrypted
+  account-profile object; username/display/demographic updates commit one
+  native optimistic revision and remain valid across logout/login while the
+  retained `users` row and `agent_profile.setup_complete` stay unchanged.
+  Pre-cutover user edits now refresh the validation shadow. The old
+  directory-only account deletion path is rejected after cutover with a stable
+  restart-required response until whole-Core deletion coordination exists.
+  Account/login/onboarding coverage passes `50`, with scoped Ruff and diff
+  hygiene green. Restart-safe account deletion, conversation/diary/assets/
+  documents and raw scans keep Step 8 open. No external or irreversible action
+  occurred.
 
 ## Validation
 
@@ -491,6 +504,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     (`152 passed`)
   - scoped Ruff check/format and `git diff --check` after the presence
     authority adapter (passed)
+  - `uv run pytest -q apps/server/tests/test_users.py apps/server/tests/test_auth.py apps/server/tests/test_corefs_account_migration.py apps/server/tests/test_creation_flow.py`
+    after canonical account/onboarding routing (`50 passed`)
+  - scoped Ruff check and `git diff --check` after the account authority
+    adapter (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -543,6 +560,9 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/api/routes/{tasks.py,preferences.py,presence.py}`
   - `apps/server/src/anima_server/services/presence_config.py`
   - `apps/server/tests/{test_tasks_api.py,test_corefs_preferences.py}`
+  - `apps/server/src/anima_server/services/corefs/account_profile.py`
+  - `apps/server/src/anima_server/api/routes/{users.py,consciousness.py}`
+  - `apps/server/tests/test_users.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

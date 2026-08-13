@@ -12,6 +12,13 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
+from anima_server.services.corefs.account_profile import (
+    AccountProfileAuthorityError,
+    account_profile_corefs_authority_active,
+    authoritative_setup_complete,
+    update_canonical_account_profile,
+)
+from anima_server.services.corefs.logical import CoreFsMutationUnavailable
 from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 from anima_server.services.data_crypto import df
 
@@ -684,7 +691,7 @@ async def update_self_model_section(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """User edits a self-model section. Treated as highest-confidence evidence."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.self_model import (
         ALL_SECTIONS,
@@ -711,9 +718,16 @@ async def update_self_model_section(
 
         profile = db.query(AgentProfile).filter(
             AgentProfile.user_id == user_id).first()
+        try:
+            setup_complete = authoritative_setup_complete(
+                session=session,
+                legacy_value=bool(profile.setup_complete) if profile is not None else False,
+            )
+        except AccountProfileAuthorityError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         if (
             profile is not None
-            and profile.setup_complete
+            and setup_complete
             and not payload.allowIdentityOverride
         ):
             raise HTTPException(
@@ -793,7 +807,7 @@ async def get_agent_profile(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Get the agent profile for this user."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.agent.thinking_monologue import (
@@ -814,6 +828,13 @@ async def get_agent_profile(
             "thinkingMonologue": list(DEFAULT_THINKING_MONOLOGUE),
             "setupComplete": False,
         }
+    try:
+        setup_complete = authoritative_setup_complete(
+            session=session,
+            legacy_value=bool(profile.setup_complete),
+        )
+    except AccountProfileAuthorityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return {
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
@@ -822,7 +843,7 @@ async def get_agent_profile(
         "avatarUrl": profile.avatar_url,
         "agentBirthday": _effective_agent_birthday(profile),
         "thinkingMonologue": parse_thinking_monologue(profile.thinking_monologue_json),
-        "setupComplete": profile.setup_complete,
+        "setupComplete": setup_complete,
     }
 
 
@@ -882,12 +903,20 @@ async def update_agent_profile(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
+    try:
+        setup_complete = authoritative_setup_complete(
+            session=session,
+            legacy_value=bool(profile.setup_complete),
+        )
+    except AccountProfileAuthorityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
     old_agent_name = profile.agent_name
     name_changed = False
     if payload.agentName is not None:
         next_agent_name = payload.agentName.strip() or "Anima"
         if (
-            profile.setup_complete
+            setup_complete
             and next_agent_name != old_agent_name
             and not payload.allowIdentityOverride
         ):
@@ -903,7 +932,7 @@ async def update_agent_profile(
     if payload.relationship is not None:
         next_relationship = payload.relationship.strip()
         if (
-            profile.setup_complete
+            setup_complete
             and next_relationship != old_relationship
             and not payload.allowIdentityOverride
         ):
@@ -918,7 +947,7 @@ async def update_agent_profile(
         next_agent_birthday = _parse_agent_birthday(payload.agentBirthday)
         next_agent_birthday_text = _iso_seconds(next_agent_birthday)
         if (
-            profile.setup_complete
+            setup_complete
             and next_agent_birthday_text != _effective_agent_birthday(profile)
             and not payload.allowIdentityOverride
         ):
@@ -933,7 +962,8 @@ async def update_agent_profile(
             payload.thinkingMonologue,
         )
 
-    profile.setup_complete = True
+    if not account_profile_corefs_authority_active(session):
+        profile.setup_complete = True
 
     if name_changed:
         origin_content = render_origin_block(
@@ -1005,20 +1035,33 @@ async def update_agent_profile(
         )
 
     db.commit()
-    try:
-        prepare_writing_source_catalog(session=session, db=db)
-    except Exception as exc:
-        logger.exception("Encrypted account profile shadow validation failed")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "code": "corefs_account_shadow_validation_failed",
-                "message": (
-                    "The agent profile was saved, but its encrypted account shadow "
-                    "needs retry."
-                ),
-            },
-        ) from exc
+    if account_profile_corefs_authority_active(session):
+        try:
+            update_canonical_account_profile(session=session, setup_complete=True)
+        except (
+            AccountProfileAuthorityError,
+            CoreFsMutationUnavailable,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": str(exc)},
+            ) from exc
+    else:
+        try:
+            prepare_writing_source_catalog(session=session, db=db)
+        except Exception as exc:
+            logger.exception("Encrypted account profile shadow validation failed")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "corefs_account_shadow_validation_failed",
+                    "message": (
+                        "The agent profile was saved, but its encrypted account shadow "
+                        "needs retry."
+                    ),
+                },
+            ) from exc
 
     return {
         "agentName": profile.agent_name,
