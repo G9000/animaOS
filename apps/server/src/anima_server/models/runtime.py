@@ -964,6 +964,8 @@ class RuntimeMessage(RuntimeBase):
         Index("ix_runtime_messages_user_created", "user_id", "created_at"),
         Index("ix_runtime_messages_thread_context", "thread_id", "is_in_context"),
         Index("ix_runtime_messages_thread_archived_history", "thread_id", "is_archived_history"),
+        Index("ix_runtime_messages_corefs_message_id", "corefs_message_id"),
+        Index("ux_runtime_messages_corefs_event_id", "corefs_event_id", unique=True),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -1003,6 +1005,8 @@ class RuntimeMessage(RuntimeBase):
     )
     token_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    corefs_message_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    corefs_event_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         TIMESTAMPTZ,
         nullable=False,

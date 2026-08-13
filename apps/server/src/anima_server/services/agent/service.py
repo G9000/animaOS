@@ -33,6 +33,7 @@ from anima_server.schemas.chat import (
     TodayContext,
 )
 from anima_server.services.agent.attachments import (
+    AttachmentValidationError,
     prepare_chat_attachments,
     validate_chat_attachment_inputs,
 )
@@ -62,6 +63,7 @@ from anima_server.services.agent.memory_blocks import (
 )
 from anima_server.services.agent.model_capabilities import supports_image_input
 from anima_server.services.agent.persistence import (
+    append_corefs_message_reference,
     append_message,
     append_user_message,
     cancel_run,
@@ -69,6 +71,9 @@ from anima_server.services.agent.persistence import (
     close_thread,
     count_messages_by_role,
     create_run,
+    create_step,
+    ensure_runtime_thread_reference,
+    finalize_run,
     get_or_create_thread,
     list_transcript_messages,
     load_approval_checkpoint,
@@ -739,6 +744,27 @@ async def _execute_agent_turn(
 
 def _resolve_thread_id(user_id: int, runtime_db: Session) -> int:
     """Resolve the main conversation thread ID for lock acquisition."""
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        get_active_canonical_thread,
+    )
+    from anima_server.services.corefs.conversation_mutations import create_canonical_thread
+
+    session = active_conversation_authority_session(user_id)
+    if session is not None:
+        view = get_active_canonical_thread(session=session)
+        if view is None:
+            view = create_canonical_thread(session=session)
+        thread_id = view.document.legacy_thread_id
+        if isinstance(thread_id, bool) or not isinstance(thread_id, int):
+            raise RuntimeError("Canonical thread has no compatible Runtime reference identity.")
+        ensure_runtime_thread_reference(
+            runtime_db,
+            user_id=user_id,
+            thread_id=thread_id,
+        )
+        runtime_db.commit()
+        return thread_id
     thread = get_or_create_thread(runtime_db, user_id)
     return thread.id
 
@@ -1038,8 +1064,22 @@ async def _prepare_turn_context(
         active_conversation_authority_session,
     )
 
-    if active_conversation_authority_session(user_id) is not None:
-        raise RuntimeError("Legacy agent message persistence is disabled after CoreFS cutover.")
+    authority_session = active_conversation_authority_session(user_id)
+    if authority_session is not None:
+        return await _prepare_corefs_turn_context(
+            user_message,
+            user_id,
+            db,
+            runtime_db,
+            authority_session=authority_session,
+            thread_id=thread_id,
+            event_callback=event_callback,
+            source=source,
+            attachments=attachments,
+            document_ids=document_ids,
+            context_messages=context_messages,
+            today_context=today_context,
+        )
 
     _validate_image_attachment_inputs(attachments)
     companion = _get_companion(user_id)
@@ -1186,6 +1226,143 @@ async def _prepare_turn_context(
             exc=exc,
         )
         raise
+    return thread, run, user_msg, turn_ctx
+
+
+async def _prepare_corefs_turn_context(
+    user_message: str,
+    user_id: int,
+    db: Session,
+    runtime_db: Session,
+    *,
+    authority_session: object,
+    thread_id: int | None,
+    event_callback: Callable[[AgentStreamEvent], Awaitable[None]] | None,
+    source: str | None,
+    attachments: Sequence[ChatRequestAttachment],
+    document_ids: Sequence[int],
+    context_messages: Sequence[ChatContextMessage],
+    today_context: TodayContext | None,
+) -> tuple[RuntimeThread, RuntimeRun, RuntimeMessage, _TurnContext]:
+    from anima_server.services.corefs.conversation_authority import (
+        get_active_canonical_thread,
+        get_canonical_thread,
+    )
+    from anima_server.services.corefs.conversation_mutations import (
+        append_canonical_message,
+        create_canonical_thread,
+        reactivate_canonical_thread,
+    )
+
+    _validate_image_attachment_inputs(attachments)
+    if attachments:
+        raise AttachmentValidationError(
+            "CoreFS chat attachment writes are not enabled until the asset adapter is active."
+        )
+    view = (
+        get_canonical_thread(session=authority_session, thread_id=thread_id)
+        if thread_id is not None
+        else get_active_canonical_thread(session=authority_session)
+    )
+    if view is None and thread_id is None:
+        view = create_canonical_thread(session=authority_session)
+    if view is None:
+        raise ValueError(f"Thread {thread_id} not found for user {user_id}")
+    if view.document.status != "active":
+        view = reactivate_canonical_thread(
+            session=authority_session,
+            thread_id=thread_id if thread_id is not None else view.document.thread_id,
+        )
+        if view is None:
+            raise ValueError(f"Thread {thread_id} not found for user {user_id}")
+    legacy_thread_id = view.document.legacy_thread_id
+    if isinstance(legacy_thread_id, bool) or not isinstance(legacy_thread_id, int):
+        raise RuntimeError("Canonical thread has no compatible Runtime reference identity.")
+    thread = ensure_runtime_thread_reference(
+        runtime_db,
+        user_id=user_id,
+        thread_id=legacy_thread_id,
+    )
+    companion = _get_companion(user_id)
+    previous_thread_id = companion.thread_id
+    companion.thread_id = thread.id
+    if previous_thread_id != thread.id:
+        companion.invalidate_history(thread_id=thread.id)
+    history = [StoredMessage(role=message.role, content=message.content) for message in view.messages]
+    cleaned_context_messages = [
+        (message, message.content.strip())
+        for message in context_messages
+        if message.content.strip()
+    ]
+    run = create_run(
+        runtime_db,
+        thread_id=thread.id,
+        user_id=user_id,
+        provider=settings.agent_provider,
+        model=settings.agent_model,
+        mode="streaming" if event_callback is not None else "blocking",
+    )
+    persisted_context_messages: list[RuntimeMessage] = []
+    for context_message, cleaned_content in cleaned_context_messages:
+        canonical = append_canonical_message(
+            session=authority_session,
+            thread_id=thread.id,
+            role=context_message.role,
+            content=cleaned_content,
+        )
+        reference = append_corefs_message_reference(
+            runtime_db,
+            thread=thread,
+            message=canonical,
+            run_id=None,
+            source=context_message.source,
+            transient_content_json=attach_serialized_pills(
+                None,
+                [_serialize_context_pill(pill) for pill in context_message.pills],
+            ),
+        )
+        persisted_context_messages.append(reference)
+        history.append(StoredMessage(role=canonical.role, content=canonical.content))
+    user_content_json = attach_serialized_pills(
+        None,
+        _build_user_message_document_pills(
+            runtime_db,
+            user_id=user_id,
+            document_ids=document_ids,
+        ),
+    )
+    canonical_user = append_canonical_message(
+        session=authority_session,
+        thread_id=thread.id,
+        role="user",
+        content=user_message,
+    )
+    user_msg = append_corefs_message_reference(
+        runtime_db,
+        thread=thread,
+        message=canonical_user,
+        run_id=run.id,
+        source=source,
+        transient_content_json=user_content_json,
+    )
+    conversation_turn_count = sum(message.role == "user" for message in view.messages) + sum(
+        message.role == "user" for message, _content in cleaned_context_messages
+    ) + 1
+    runtime_db.commit()
+    turn_ctx = await _assemble_turn_context(
+        user_message=user_message,
+        user_id=user_id,
+        db=db,
+        runtime_db=runtime_db,
+        thread=thread,
+        companion=companion,
+        history=history,
+        conversation_turn_count=conversation_turn_count,
+        prepared_attachments=(),
+        document_ids=document_ids,
+        persisted_context_messages=persisted_context_messages,
+        today_context=today_context,
+    )
     return thread, run, user_msg, turn_ctx
 
 
@@ -2621,11 +2798,13 @@ async def _proactive_compact_if_needed(
     turn_ctx: _TurnContext,
     user_id: int,
 ) -> _TurnContext:
-    """Pre-flight check: estimate total context tokens and compact if over limit.
+    """Compact oversized legacy Runtime history before the first LLM call."""
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
 
-    This prevents sending an oversized prompt to the LLM by compacting
-    conversation history *before* the first LLM call.
-    """
+    if active_conversation_authority_session(user_id) is not None:
+        return turn_ctx
     block_chars = sum(len(b.value) for b in turn_ctx.memory_blocks)
     history_chars = sum(len(m.content or "") for m in turn_ctx.history)
     estimated_tokens = estimate_char_tokens(block_chars + history_chars)
@@ -3049,6 +3228,21 @@ async def _persist_turn_result(
     background task so the client's ``done`` event is not delayed by a
     full non-streaming LLM call.
     """
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    authority_session = active_conversation_authority_session(int(run.user_id))
+    if authority_session is not None:
+        await _persist_corefs_turn_result(
+            runtime_db,
+            authority_session=authority_session,
+            thread=thread,
+            run=run,
+            result=result,
+        )
+        return
+
     result_message_count = count_persisted_result_messages(result)
     persist_agent_result(
         runtime_db,
@@ -3080,6 +3274,44 @@ async def _persist_turn_result(
             ),
         )
     )
+
+
+async def _persist_corefs_turn_result(
+    runtime_db: Session,
+    *,
+    authority_session: object,
+    thread: RuntimeThread,
+    run: RuntimeRun,
+    result: AgentResult,
+) -> None:
+    from anima_server.services.corefs.conversation_mutations import append_canonical_message
+
+    last_step_id: int | None = None
+    for trace_index, trace in enumerate(result.step_traces):
+        step = create_step(
+            runtime_db,
+            thread_id=thread.id,
+            run_id=run.id,
+            trace=trace,
+            prompt_budget=result.prompt_budget if trace_index == 0 else None,
+        )
+        last_step_id = int(step.id)
+    if result.response:
+        canonical = append_canonical_message(
+            session=authority_session,
+            thread_id=thread.id,
+            role="assistant",
+            content=result.response,
+        )
+        append_corefs_message_reference(
+            runtime_db,
+            thread=thread,
+            message=canonical,
+            run_id=run.id,
+            step_id=last_step_id,
+        )
+    finalize_run(runtime_db, run=run, result=result)
+    runtime_db.commit()
 
 
 async def _compact_thread_in_background(

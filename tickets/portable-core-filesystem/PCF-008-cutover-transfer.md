@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:32 MYT
+- Updated: 2026-08-13 23:49 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -384,6 +384,15 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   `36`, native patch/CoreFS coverage passes `22`, and scoped lint/diff hygiene
   passes. Visible message append/edit/delete and the remaining writer families
   keep Step 8 open. No external or irreversible action occurred.
+- 2026-08-13 23:49 MYT - Routed ordinary blocking and streaming agent turns
+  through canonical conversation authority. User and terminal assistant bodies
+  now append as optimistic authenticated message events, while fresh Runtime
+  rows retain only CoreFS message/event references and null visible bodies;
+  canonical history drives subsequent prompts. Segment names are thread-scoped
+  to prevent cross-thread catalog collisions, and a Runtime migration adds the
+  reference metadata. Route and migration coverage passes `15`. Approval
+  resume, visible edit/delete, attachments, the remaining writer families, and
+  raw scans keep Step 8 open. No external or irreversible action occurred.
 
 ## Validation
 
@@ -526,6 +535,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `cargo test -p anima-corefs logical::mutation::tests --lib` (`7 passed`)
   - scoped Ruff check and `git diff --check` after the thread lifecycle
     adapter (passed)
+  - `uv run pytest -q --tb=short apps/server/tests/test_threads_api.py apps/server/tests/test_corefs_conversation_migration.py`
+    after canonical blocking/streaming agent persistence (`15 passed`)
+  - `uv run pytest -q --tb=short apps/server/tests/test_agent_service.py apps/server/tests/test_agent_persistence.py apps/server/tests/test_chat.py`
+    after canonical agent persistence (`101 passed`)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -584,6 +597,9 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/services/corefs/{conversation_authority.py,conversation_mutations.py}`
   - `apps/server/src/anima_server/api/routes/{chat.py,threads.py}`
   - `apps/server/tests/{test_corefs_conversation_migration.py,test_threads_api.py}`
+  - `apps/server/src/anima_server/services/agent/{persistence.py,service.py}`
+  - `apps/server/src/anima_server/models/runtime.py`
+  - `apps/server/alembic_runtime/versions/035_corefs_message_references.py`
   - `packages/anima-file-tools/src/patch/parser.rs`
   - `packages/anima-file-tools/tests/patch.rs`
   - `packages/anima-corefs/src/logical/{mutation.rs,mutation/patch.rs,mutation/tests.rs}`

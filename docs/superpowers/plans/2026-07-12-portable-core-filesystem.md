@@ -1034,8 +1034,11 @@ Canonical thread lifecycle is now also active: list/read, create/reuse,
 reset/clear, close, and delete authenticate one bounded CoreFS snapshot and
 commit only native optimistic mutations, including atomic close-plus-create
 and thread-plus-segment trash. Retained Runtime thread/message rows remain
-unchanged. Visible message append/edit/delete and the live agent persistence
-path remain open alongside diary/asset/document writers.
+unchanged. Ordinary blocking and streaming agent turns now append visible
+user/assistant bodies only as canonical CoreFS message events, rebuild prompt
+history from that authority, and retain only null-body CoreFS references in
+fresh Runtime rows. Approval resume, visible message edit/delete, attachments,
+and diary/asset/document writers remain open.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 

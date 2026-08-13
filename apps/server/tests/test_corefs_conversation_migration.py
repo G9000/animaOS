@@ -184,6 +184,33 @@ def test_shadow_catalog_binds_shared_root_and_builds_thread_segment_chain() -> N
     assert document.quarantine == ()
 
 
+def test_multiple_threads_receive_collision_free_segment_names() -> None:
+    first = _message(message_id=1, sequence=1, content="first")
+    second = {**_message(message_id=2, sequence=1, content="second"), "thread_id": 5}
+    shadow = build_conversation_shadow_catalog(
+        user_id=7,
+        active_threads=[
+            {
+                "id": thread_id,
+                "title": None,
+                "status": "active" if thread_id == 4 else "closed",
+                "created_at": datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+                "updated_at": datetime(2026, 1, 1, 12, thread_id, tzinfo=UTC),
+                "last_message_at": datetime(2026, 1, 1, 12, thread_id, tzinfo=UTC),
+            }
+            for thread_id in (4, 5)
+        ],
+        active_messages=[first, second],
+    )
+    segment_names = [
+        item.descriptor.name
+        for item in shadow.objects
+        if item.descriptor.kind == "message-segment"
+    ]
+    assert len(segment_names) == 2
+    assert len(set(segment_names)) == 2
+
+
 def test_visible_attachment_is_canonicalized_and_referenced_without_host_path() -> None:
     attachment_id = migration_opaque_id("image-asset", "8")
     attachment_bytes = b"image-bytes"

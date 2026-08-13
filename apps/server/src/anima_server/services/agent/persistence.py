@@ -28,6 +28,7 @@ from anima_server.services.agent.state import (
     deserialize_stored_attachments,
     serialize_agent_retrieval,
 )
+from anima_server.services.corefs.messages import ReducedMessage
 from anima_server.services.corefs.sealed_runtime import (
     runtime_index_for_sensitive_write,
     seal_runtime_fields,
@@ -75,6 +76,21 @@ def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
 def load_thread_history(
     db: Session, thread_id: int, *, user_id: int | None = None
 ) -> list[StoredMessage]:
+    if user_id is not None:
+        from anima_server.services.corefs.conversation_authority import (
+            active_conversation_authority_session,
+            get_canonical_thread,
+        )
+
+        session = active_conversation_authority_session(user_id)
+        if session is not None:
+            view = get_canonical_thread(session=session, thread_id=thread_id)
+            if view is None:
+                return []
+            return [
+                StoredMessage(role=message.role, content=message.content)
+                for message in view.messages
+            ]
     rows = db.scalars(
         select(RuntimeMessage)
         .where(
@@ -229,6 +245,58 @@ def append_user_message(
     )
     link_message_image_assets(db, message=message, attachments=attachments)
     return message
+
+
+def ensure_runtime_thread_reference(
+    db: Session,
+    *,
+    user_id: int,
+    thread_id: int,
+) -> RuntimeThread:
+    thread = db.get(RuntimeThread, thread_id)
+    if thread is not None:
+        if int(thread.user_id) != user_id:
+            raise ValueError("Runtime thread reference belongs to another user")
+        return thread
+    thread = RuntimeThread(id=thread_id, user_id=user_id, status="active")
+    db.add(thread)
+    db.flush()
+    return thread
+
+
+def append_corefs_message_reference(
+    db: Session,
+    *,
+    thread: RuntimeThread,
+    message: ReducedMessage,
+    run_id: int | None,
+    step_id: int | None = None,
+    source: str | None = None,
+    transient_content_json: dict[str, object] | None = None,
+) -> RuntimeMessage:
+    reference = RuntimeMessage(
+        thread_id=thread.id,
+        user_id=thread.user_id,
+        run_id=run_id,
+        step_id=step_id,
+        sequence_id=message.sequence,
+        role=message.role,
+        content_text=None,
+        content_json=None,
+        token_estimate=estimate_message_tokens(
+            content_text=message.content,
+            content_json=transient_content_json,
+            tool_name=None,
+        ),
+        source=source,
+        corefs_message_id=message.message_id,
+        corefs_event_id=message.current_event_id,
+    )
+    db.add(reference)
+    db.flush()
+    set_committed_value(reference, "content_text", message.content)
+    set_committed_value(reference, "content_json", transient_content_json)
+    return reference
 
 
 def link_message_image_assets(

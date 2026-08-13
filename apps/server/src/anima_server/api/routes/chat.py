@@ -134,12 +134,7 @@ async def send_message(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResponse | StreamingResponse:
-    unlock_session = await require_unlocked_user_async(request, payload.userId)
-    if conversation_corefs_authority_active(unlock_session):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "corefs_conversation_mutation_not_enabled"},
-        )
+    await require_unlocked_user_async(request, payload.userId)
     try:
         runtime_index_for_sensitive_write(runtime_db, user_id=payload.userId)
     except RuntimeSealingLocked as exc:

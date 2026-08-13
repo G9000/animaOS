@@ -122,6 +122,17 @@ def list_canonical_threads(*, session: Any) -> tuple[CanonicalThreadView, ...]:
     return read_canonical_conversation_catalog(session=session).threads
 
 
+def get_active_canonical_thread(*, session: Any) -> CanonicalThreadView | None:
+    return next(
+        (
+            view
+            for view in list_canonical_threads(session=session)
+            if view.document.status == "active"
+        ),
+        None,
+    )
+
+
 def read_canonical_conversation_catalog(*, session: Any) -> CanonicalConversationCatalog:
     selection = _require_selection(session)
     role = session.corefs_session.resolve_validation_role_v1(

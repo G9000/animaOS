@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:32 MYT
+- Updated: 2026-08-13 23:49 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -428,6 +428,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   conversation/chat coverage passes `36` and native patch/CoreFS coverage
   passes `22`. Visible message persistence and remaining writer families keep
   PCF-008 in progress; no external or irreversible action occurred.
+- 2026-08-13 23:49 MYT - PCF-008 ordinary blocking and streaming agent turns
+  now append visible user/assistant bodies only to authenticated CoreFS message
+  segments and rebuild prompt history from canonical content. Fresh Runtime
+  message rows contain null bodies plus CoreFS message/event references, and
+  thread-scoped segment names prevent multi-thread catalog collisions. Route
+  and migration coverage passes `15`; approval resume, edit/delete,
+  attachments, remaining writer families, and raw scans remain. No external
+  or irreversible action occurred.
 
 ## Validation
 

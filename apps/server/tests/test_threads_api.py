@@ -4,10 +4,12 @@ from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.db.session import get_user_session_factory
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.conversation_migration import (
     prepare_conversation_validation_catalog,
 )
+from anima_server.services.corefs.conversation_mutations import append_canonical_message
 from anima_server.services.corefs.cutover import (
     approve_validation_cutover,
     begin_migration,
@@ -33,7 +35,12 @@ def _register_user(client: TestClient) -> dict[str, object]:
     return response.json()
 
 
-def test_global_cutover_routes_thread_lifecycle_only_through_corefs() -> None:
+def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "agent_provider", "scaffold")
+    monkeypatch.setattr(settings, "agent_model", "llama3.2")
+    monkeypatch.setattr(settings, "agent_base_url", "")
+    monkeypatch.setattr(settings, "agent_api_key", "")
+    invalidate_agent_runtime_cache()
     with managed_test_client("anima-threads-corefs-authority-") as client:
         registered = _register_user(client)
         user_id = int(registered["id"])
@@ -116,6 +123,32 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs() -> None:
         assert created.status_code == 201, created.text
         canonical_thread_id = int(created.json()["threadId"])
         assert canonical_thread_id != legacy_thread_id
+        before_messages = session.corefs_session.validation_snapshot(session.corefs_keys)
+        user_message = append_canonical_message(
+            session=session,
+            thread_id=canonical_thread_id,
+            role="user",
+            content="CoreFS-only user message",
+        )
+        assistant_message = append_canonical_message(
+            session=session,
+            thread_id=canonical_thread_id,
+            role="assistant",
+            content="CoreFS-only assistant message",
+        )
+        assert user_message.sequence == 1
+        assert assistant_message.sequence == 2
+        after_messages = session.corefs_session.validation_snapshot(session.corefs_keys)
+        assert int(after_messages["generation"]) == int(before_messages["generation"]) + 2
+        canonical_messages = client.get(
+            f"/api/threads/{canonical_thread_id}/messages",
+            headers=headers,
+        )
+        assert canonical_messages.status_code == 200, canonical_messages.text
+        assert [item["content"] for item in canonical_messages.json()["messages"]] == [
+            "CoreFS-only user message",
+            "CoreFS-only assistant message",
+        ]
 
         reset = client.post(
             "/api/chat/reset",
@@ -128,6 +161,49 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs() -> None:
         active = next(item for item in after_reset.json()["threads"] if item["status"] == "active")
         reset_thread_id = int(active["id"])
         assert reset_thread_id not in {legacy_thread_id, canonical_thread_id}
+
+        chat = client.post(
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "Persist this turn only in CoreFS",
+                "userId": user_id,
+            },
+        )
+        assert chat.status_code == 200, chat.text
+        assert "turn" in chat.json()["response"]
+        canonical_turn = client.get(
+            f"/api/threads/{reset_thread_id}/messages",
+            headers=headers,
+        )
+        assert canonical_turn.status_code == 200, canonical_turn.text
+        assert [item["content"] for item in canonical_turn.json()["messages"]] == [
+            "Persist this turn only in CoreFS",
+            chat.json()["response"],
+        ]
+        with client.stream(
+            "POST",
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "Stream this turn only through CoreFS",
+                "userId": user_id,
+                "stream": True,
+            },
+        ) as streamed:
+            streamed_body = "".join(streamed.iter_text())
+        assert streamed.status_code == 200
+        assert "event: done" in streamed_body
+        after_stream = client.get(
+            f"/api/threads/{reset_thread_id}/messages",
+            headers=headers,
+        )
+        assert [item["role"] for item in after_stream.json()["messages"]] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ], streamed_body
 
         closed = client.post(
             f"/api/threads/{reset_thread_id}/close",
@@ -175,9 +251,20 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs() -> None:
                     select(RuntimeMessage).where(RuntimeMessage.user_id == user_id)
                 ).all()
             )
-        assert [(thread.id, thread.status) for thread in runtime_threads] == [
-            (legacy_thread_id, "active")
+        runtime_threads_by_id = {thread.id: thread for thread in runtime_threads}
+        assert runtime_threads_by_id[legacy_thread_id].status == "active"
+        assert reset_thread_id in runtime_threads_by_id
+        legacy_messages = [
+            message for message in runtime_messages if message.thread_id == legacy_thread_id
         ]
-        assert [message.content_text for message in runtime_messages] == [
+        assert [message.content_text for message in legacy_messages] == [
             "Preserve this canonical message"
         ]
+        canonical_references = [
+            message for message in runtime_messages if message.thread_id == reset_thread_id
+        ]
+        assert len(canonical_references) == 4
+        assert all(message.content_text is None for message in canonical_references)
+        assert all(message.content_json is None for message in canonical_references)
+        assert all(message.corefs_message_id for message in canonical_references)
+        assert all(message.corefs_event_id for message in canonical_references)
