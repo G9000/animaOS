@@ -126,6 +126,7 @@ def test_browser_secrets_and_private_profile_are_never_portable_destinations() -
     assert local["ANIMA_DAEMON_CONTROL_TOKEN"] == "os-credential"
     assert local["anima_unlock_token"] == "remove-legacy-session"
     assert local["anima_user"] == "remove-private-profile-cache"
+    assert local["anima_last_user"] == "remove-private-profile-cache"
     assert local["legacy-journal-draft:*"] == "corefs-object"
 
 

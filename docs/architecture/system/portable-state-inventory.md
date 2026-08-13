@@ -132,8 +132,8 @@ runtime-db|working_context|id,user_id,section,content,version,updated_by,updated
 server-config|runtime-config|agent_provider,agent_model,agent_persona_template,agent_base_url,agent_extraction_model,agent_extraction_provider,agent_embedding_provider,agent_embedding_model,agent_embedding_base_url|device-runtime-config
 server-config|runtime-config|agent_api_key,agent_api_keys_json,agent_embedding_api_key|os-credential
 browser-local|keys|anima-theme,anima-background-config,anima-translate-lang,anima_ascii_settings,anima_clock_format,anima_dashboard_node_positions,anima_dashboard_closed_nodes,anima_bgm_muted,anima_bgm_state|corefs-preferences
-browser-local|keys|anima_nav_collapsed,anima-sidebar-collapsed,anima-agent-rail-collapsed,anima-show-trace,anima-debug-db-viewer,db-query-draft,db-bookmarks,db-col-widths,db-hidden-columns,db-last-session,db-query-history,db-recent-tables,db-saved-queries,db-table-preferences,anima-mod-url,anima:cloud-providers-enabled,anima:key-hint:*,anima_last_user,anima-background-media-device,anima_bgm_device_tracks|device-ui-config
-browser-local|keys|anima_user|remove-private-profile-cache
+browser-local|keys|anima_nav_collapsed,anima-sidebar-collapsed,anima-agent-rail-collapsed,anima-show-trace,anima-debug-db-viewer,db-query-draft,db-bookmarks,db-col-widths,db-hidden-columns,db-last-session,db-query-history,db-recent-tables,db-saved-queries,db-table-preferences,anima-mod-url,anima:cloud-providers-enabled,anima:key-hint:*,anima-background-media-device,anima_bgm_device_tracks|device-ui-config
+browser-local|keys|anima_user,anima_last_user|remove-private-profile-cache
 browser-local|keys|anima_unlock_token|remove-legacy-session
 browser-local|keys|anima_daemon_control_token,ANIMA_DAEMON_CONTROL_TOKEN|os-credential
 browser-local|keys|legacy-journal-draft:*|corefs-object
@@ -174,8 +174,7 @@ anima-mod-store|google:tokens:*|accessToken,refreshToken,expiresAt,email|os-cred
 | localStorage | `anima-show-trace`, `anima-debug-db-viewer`, `db-query-draft`, `db-bookmarks`, `db-col-widths`, `db-hidden-columns`, `db-last-session`, `db-query-history`, `db-recent-tables`, `db-saved-queries`, `db-table-preferences` | Device-local developer state |
 | localStorage | `anima-mod-url`, `anima:cloud-providers-enabled` | Device-local topology/security choice |
 | localStorage | `anima:key-hint:*` | Device-local derived display hint; removable |
-| localStorage | `anima_last_user` | Optional device-local convenience; never required for unlock |
-| localStorage | `anima_user` | Remove private profile cache; unlocked profile is session memory only |
+| localStorage | `anima_user`, `anima_last_user` | Remove private profile/login-hint caches; unlocked profile is session memory only |
 | localStorage | `anima_unlock_token` | Remove legacy copy; token is session/process only |
 | localStorage | `anima_daemon_control_token`, `ANIMA_DAEMON_CONTROL_TOKEN` | Migrate to OS credential and scrub |
 | localStorage | legacy Journal draft keys | Migrate to encrypted CoreFS draft objects and scrub under the PCF-004 cleanup authority |

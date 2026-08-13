@@ -814,7 +814,7 @@ Move `.anima/runtime-config.json` into platform app data with copy-verify-delete
 
 Expose registered clients/mods, verified package identity, declared namespaced roles, current folder-scoped read/write/manage grants, and last-use audit metadata without body content. Require explicit confirmation to grant or expand scope; allow immediate downgrade/revocation. Resolve folders by stable ID/role so rename/move does not invalidate a same-device grant. Show that grants are device-local and require reapproval after transfer. Never expose a control that lets a client grant itself access or claim `core.*` roles.
 
-- [ ] **Step 9: Verify neutral pre-unlock behavior**
+- [x] **Step 9: Verify neutral pre-unlock behavior**
 
 Locked UI uses OS locale/accessibility and neutral ANIMA branding; private profile/avatar appears only after content unlock.
 

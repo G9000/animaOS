@@ -30,14 +30,14 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-const STORAGE_KEY = "anima_user";
 const HEALTH_BOOT_RETRIES = 20;
 const HEALTH_BOOT_RETRY_MS = 500;
 const DAEMON_STARTUP_RETRIES = 90;
 
 function purgeLegacyStoredUser(): void {
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem("anima_user");
+    localStorage.removeItem("anima_last_user");
   } catch {
     // Ignore storage failures.
   }

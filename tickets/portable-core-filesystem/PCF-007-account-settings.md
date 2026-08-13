@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 18:28 MYT
+- Updated: 2026-08-13 18:35 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -107,6 +107,14 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   bind the live unlock session and are rechecked before and after reads, with
   digest change, collision, replay, lock, grant change, and reserved `core.*`
   namespace cases failing closed. No external action was taken.
+- 2026-08-13 18:35 MYT - Completed Step 9 locally. The locked desktop now
+  removes both legacy private profile/login-hint caches, requires the owner to
+  enter the username for the current attempt, and never renders that identity,
+  a profile/avatar, or device-custom BGM controls before content unlock. The
+  welcome surface derives its locale, text direction, color scheme, reduced
+  motion, contrast, and forced-colors behavior from operating-system/browser
+  capabilities; reduced-motion changes also stop the canvas animation and
+  render a deterministic still frame. No external action was taken.
 
 ## Validation
 
@@ -139,6 +147,9 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
     (`52 passed`), desktop client-access contract (`2 passed`), API client
     (`27 passed`), production desktop TypeScript/Vite build, focused Ruff, and
     diff hygiene passed
+  - neutral pre-unlock and exact renderer-storage classification (`5 passed`),
+    checked state inventory (`7 passed`), production desktop TypeScript/Vite
+    build, and diff hygiene passed
   - the known native background-index teardown race can still terminate a
     multi-client encrypted-core aggregate after its first five passing cases;
     the changed Soul cases and stable authentication band pass in isolated
@@ -183,8 +194,12 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - desktop settings routing and `apps/desktop/tests/corefs-client-access.test.ts`
   - `packages/api-client/src/{client,types}.ts`
   - focused CoreFS access/API/inventory tests
+  - `apps/desktop/src/lib/preUnlockEnvironment.ts`
+  - desktop auth/init/atmosphere bootstrap and global accessibility styling
+  - `packages/ascii-motion/src/AsciiBackground.tsx`
+  - `apps/desktop/tests/preunlock-privacy.test.ts`
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.
-  - Step 9 remains open before the final Step 10 validation; this checkpoint
-    does not activate CoreFS authority.
+  - Step 10 full validation remains before ticket closeout; this checkpoint does
+    not activate CoreFS authority.
