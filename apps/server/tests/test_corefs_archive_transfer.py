@@ -145,6 +145,117 @@ def test_full_export_uses_only_native_reachable_inventory_and_wrapped_keyslots(
     assert result.max_buffer_bytes <= 32 * 1024 * 1024
 
 
+@pytest.mark.parametrize(
+    ("payload_kind", "included_purpose", "excluded_purpose", "degraded_state"),
+    [
+        (CoreArchivePayloadKind.SOUL, "soul", "filesystem-root", "filesystem_missing"),
+        (CoreArchivePayloadKind.FS, "filesystem-root", "soul", "recovery_only"),
+    ],
+)
+def test_scoped_export_excludes_other_compartment_key_material(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload_kind: CoreArchivePayloadKind,
+    included_purpose: str,
+    excluded_purpose: str,
+    degraded_state: str,
+) -> None:
+    root = _core(managed_tmp_path, monkeypatch)
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update(
+        {
+            "wrapped_sqlcipher_key": {"wrapped_key": "soul-password-root"},
+            "recovery_sqlcipher_key": {"wrapped_key": "soul-recovery-root"},
+            "frk_rotation": {
+                "active_version": 1,
+                "pending_version": None,
+                "decrypt_only_versions": [],
+                "phase": "idle",
+                "object_key_epoch": 1,
+            },
+            "active_filesystem_root_generation": 1,
+            "keyslots": [
+                {"purpose": "soul", "wrapped": {"wrapped_key": "soul-root"}},
+                {
+                    "purpose": "filesystem-root",
+                    "wrapped": {"wrapped_key": "filesystem-root"},
+                },
+            ],
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    output = managed_tmp_path / f"{payload_kind.value}.anima"
+
+    def writer(path: str, _passphrase: bytes, request_json: str) -> dict[str, object]:
+        request = json.loads(request_json)
+        sources = request["sources"]
+        manifest_source = next(item for item in sources if item["recordType"] == "manifest")
+        keyslot_source = next(item for item in sources if item["recordType"] == "keyslots")
+        archived_manifest = json.loads(
+            Path(manifest_source["sourcePath"]).read_text(encoding="utf-8")
+        )
+        archived_keyslots = json.loads(
+            Path(keyslot_source["sourcePath"]).read_text(encoding="utf-8")
+        )
+
+        assert archived_manifest["archive_payload_scope"] == payload_kind.value
+        assert archived_manifest["degraded_state"] == degraded_state
+        assert {slot["purpose"] for slot in archived_manifest["keyslots"]} == {included_purpose}
+        assert archived_keyslots["keyslots"] == archived_manifest["keyslots"]
+        assert excluded_purpose not in json.dumps(archived_manifest["keyslots"])
+        if payload_kind is CoreArchivePayloadKind.SOUL:
+            assert "frk_rotation" not in archived_manifest
+            assert "active_filesystem_root_generation" not in archived_manifest
+        else:
+            assert "wrapped_sqlcipher_key" not in archived_manifest
+            assert "recovery_sqlcipher_key" not in archived_manifest
+            assert "sqlcipher_kdf_salt" not in archived_manifest
+
+        selected_bytes = sum(Path(item["sourcePath"]).stat().st_size for item in sources)
+        Path(path).write_bytes(b"archive")
+        return {
+            "version": 2,
+            "archiveId": ARCHIVE_ID,
+            "volumeSetId": ARCHIVE_ID,
+            "payloadKind": payload_kind.value,
+            "coreId": CORE_ID,
+            "ownerId": OWNER_ID,
+            "soulGeneration": 3 if payload_kind is CoreArchivePayloadKind.SOUL else None,
+            "filesystemGeneration": 7 if payload_kind is CoreArchivePayloadKind.FS else None,
+            "recordCount": len(sources),
+            "chunkCount": len(sources),
+            "plaintextBytes": selected_bytes,
+            "maxBufferBytes": 2 * 1024 * 1024,
+        }
+
+    result = export_core_archive_v2(
+        session=_session(root, writer=writer),
+        output_path=output,
+        passphrase="correct horse battery staple",
+        payload_kind=payload_kind,
+        soul_generation=3 if payload_kind is CoreArchivePayloadKind.SOUL else None,
+    )
+
+    assert result.inventory.payload_kind is payload_kind
+
+
+def test_scoped_export_rejects_ambiguous_keyslot_shape(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _core(managed_tmp_path, monkeypatch)
+
+    with pytest.raises(CoreArchiveTransferError, match="keyslot"):
+        export_core_archive_v2(
+            session=_session(root, writer=lambda *_args: None),
+            output_path=managed_tmp_path / "soul.anima",
+            passphrase="correct horse battery staple",
+            payload_kind=CoreArchivePayloadKind.SOUL,
+            soul_generation=3,
+        )
+
+
 def test_native_inventory_source_must_stay_inside_active_core(
     managed_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

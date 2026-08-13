@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 20:26 MYT
+- Updated: 2026-08-13 20:33 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -166,6 +166,17 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   anima-core Clippy passes with only the previously recorded unrelated crate
   lints allowed. No public mutation, paid workflow, or irreversible cutover
   action occurred.
+- 2026-08-13 20:33 MYT - Closed a partial-transfer authority leak before
+  exposing restore. Export now writes a stable transient manifest snapshot and
+  filters root wrappers by the authenticated payload kind: Soul artifacts
+  exclude every FRK wrapper and filesystem authority marker, while CoreFS-only
+  artifacts exclude SQLCipher password/recovery wrappers and Soul KDF state.
+  Both partial kinds carry explicit degraded state and exact archive scope;
+  malformed or empty scoped keyslot sets fail closed, and the archive
+  passphrase remains transport-only rather than becoming a Core credential.
+  The focused archive tests pass `6` and the combined transfer/API band passes
+  `51`, with Ruff, format, and diff hygiene green. Restore activation remains
+  gated; no paid workflow, push, or irreversible action occurred.
 
 ## Validation
 
@@ -214,6 +225,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_api.py -q`
     (`66 passed`)
   - `bun test packages/api-client/tests/client.test.ts` (`28 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py -q`
+    after scoping partial-transfer key material (`51 passed`)
+  - scoped Ruff check/format and `git diff --check` after scoping archive
+    manifests (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in

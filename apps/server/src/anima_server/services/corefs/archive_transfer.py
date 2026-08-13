@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -51,6 +52,7 @@ class CoreArchiveExportResult:
 class _PreparedCoreArchive:
     inventory: CoreArchiveInventory
     sources: tuple[dict[str, str], ...]
+    manifest_snapshot: bytes
     keyslot_snapshot: bytes
 
 
@@ -92,11 +94,17 @@ def export_core_archive_v2(
     inventory = prepared.inventory
     sources = list(prepared.sources)
 
-    with tempfile.TemporaryDirectory(prefix="anima-core-keyslots-") as temporary_name:
+    with tempfile.TemporaryDirectory(prefix="anima-core-archive-metadata-") as temporary_name:
         temporary_root = Path(temporary_name)
+        manifest_path = temporary_root / "manifest.json"
         keyslots_path = temporary_root / "root-keyslots.json"
+        _write_private_file(manifest_path, prepared.manifest_snapshot)
         _write_private_file(keyslots_path, prepared.keyslot_snapshot)
-        sources.append(_source("keyslots", "keyslots/root-keyslots.json", keyslots_path))
+        sources = [
+            _source("manifest", "manifest.json", manifest_path),
+            *sources,
+            _source("keyslots", "keyslots/root-keyslots.json", keyslots_path),
+        ]
         request = {
             "payloadKind": payload_kind.value,
             "coreId": inventory.core_id,
@@ -160,9 +168,7 @@ def _prepare_core_archive(
     filesystem_generation = _filesystem_generation(filesystem_inventory)
     normalized_soul_generation = _soul_generation(payload_kind, soul_generation)
 
-    sources: list[dict[str, str]] = [
-        _source("manifest", "manifest.json", manifest_path),
-    ]
+    sources: list[dict[str, str]] = []
     if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}:
         soul_path = core_root / "soul" / "soul.db"
         if not soul_path.is_file() or soul_path.is_symlink():
@@ -172,9 +178,17 @@ def _prepare_core_archive(
         sources.extend(_native_filesystem_sources(filesystem_inventory, core_root=core_root))
     if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}:
         sources.extend(_recovery_sources(core_root))
-    keyslot_snapshot = _keyslot_snapshot_bytes(manifest)
-    selected_bytes = sum(Path(item["sourcePath"]).stat().st_size for item in sources) + len(
-        keyslot_snapshot
+    scoped_manifest = _scoped_archive_manifest(manifest, payload_kind)
+    manifest_snapshot = json.dumps(
+        scoped_manifest,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    keyslot_snapshot = _keyslot_snapshot_bytes(scoped_manifest)
+    selected_bytes = (
+        sum(Path(item["sourcePath"]).stat().st_size for item in sources)
+        + len(manifest_snapshot)
+        + len(keyslot_snapshot)
     )
     return _PreparedCoreArchive(
         inventory=CoreArchiveInventory(
@@ -184,9 +198,10 @@ def _prepare_core_archive(
             soul_generation=normalized_soul_generation,
             filesystem_generation=filesystem_generation,
             selected_bytes=selected_bytes,
-            record_count=len(sources) + 1,
+            record_count=len(sources) + 2,
         ),
         sources=tuple(sources),
+        manifest_snapshot=manifest_snapshot,
         keyslot_snapshot=keyslot_snapshot,
     )
 
@@ -289,6 +304,54 @@ def _keyslot_snapshot_bytes(manifest: dict[str, object]) -> bytes:
         "activeRecoveryCredentialGeneration": manifest.get("active_recovery_credential_generation"),
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _scoped_archive_manifest(
+    manifest: dict[str, object],
+    payload_kind: CoreArchivePayloadKind,
+) -> dict[str, object]:
+    """Copy only key authority declared by the authenticated payload kind.
+
+    Keyslots remain wrapped under their normal Core credentials; the archive
+    passphrase protects transport but never becomes a Core unlock credential.
+    A partial restore must run the dedicated scoped-credential flow before it
+    can activate, so this snapshot also carries an explicit degraded state.
+    """
+    snapshot = deepcopy(manifest)
+    if payload_kind is CoreArchivePayloadKind.FULL:
+        snapshot["archive_payload_scope"] = payload_kind.value
+        return snapshot
+
+    raw_slots = snapshot.get("keyslots")
+    if not isinstance(raw_slots, list):
+        raise CoreArchiveTransferError("ANIMA CORE manifest keyslots are invalid")
+    required_purpose = "soul" if payload_kind is CoreArchivePayloadKind.SOUL else "filesystem-root"
+    selected_slots: list[dict[str, object]] = []
+    for raw_slot in raw_slots:
+        if not isinstance(raw_slot, dict):
+            raise CoreArchiveTransferError("ANIMA CORE manifest keyslot is invalid")
+        purpose = raw_slot.get("purpose")
+        if purpose not in {"soul", "filesystem-root"}:
+            raise CoreArchiveTransferError("ANIMA CORE manifest keyslot purpose is invalid")
+        if purpose == required_purpose:
+            selected_slots.append(deepcopy(raw_slot))
+    if not selected_slots:
+        raise CoreArchiveTransferError("ANIMA CORE scoped keyslot set is incomplete")
+
+    snapshot["keyslots"] = selected_slots
+    snapshot["archive_payload_scope"] = payload_kind.value
+    snapshot.pop("pending_recovery_credential", None)
+    if payload_kind is CoreArchivePayloadKind.SOUL:
+        snapshot["degraded_state"] = "filesystem_missing"
+        snapshot.pop("frk_rotation", None)
+        snapshot.pop("active_filesystem_root_generation", None)
+        snapshot.pop("corefs_cutover", None)
+    else:
+        snapshot["degraded_state"] = "recovery_only"
+        snapshot.pop("wrapped_sqlcipher_key", None)
+        snapshot.pop("recovery_sqlcipher_key", None)
+        snapshot.pop("sqlcipher_kdf_salt", None)
+    return snapshot
 
 
 def _write_private_file(path: Path, encoded: bytes) -> None:

@@ -911,6 +911,13 @@ Implement `corefs_transfer` schemas/routes for local destination probe, estimate
 
 - [ ] **Step 7: Implement scalable vault/export/import**
 
+Progress (2026-08-13): single-file V2 export/import primitives are in place,
+including payload-kind record allowlists and key-material-scoped transient
+manifest snapshots. Soul artifacts cannot carry FRK wrappers or filesystem
+authority; CoreFS-only artifacts cannot carry SQLCipher root wrappers. Native
+multipart set authentication, staged product import, and activation remain
+open, so this step is intentionally not checked complete.
+
 Implement `anima_core_v2` in Rust as one streaming container with authenticated payload kind `full`, `soul`, or `fs`; keep `capsule.rs` only for backward V1 `anima_capsule` import. A full artifact includes manifest, active Soul, committed content catalogs/objects, required keyslots/recovery material, and the coherent `(soulGeneration, filesystemGeneration)` pair. Soul-only and CoreFS-only artifacts enforce compartment-specific record/key allowlists and restore respectively to `filesystem_missing` and restricted recovery/export mode. Every kind excludes Runtime, device config, and OS credentials.
 
 Write a small typed encrypted manifest followed by a 64-bit-length, chunked sequence of selected encrypted records and an authenticated complete-inventory footer. Every implementation uses this exact derivation:
