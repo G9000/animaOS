@@ -81,6 +81,13 @@ class UnlockSession:
         repr=False,
         compare=False,
     )
+    # PCF-008 may populate this only after authenticating the global cutover
+    # marker. Domain slices must fail closed while it is absent.
+    content_authority: dict[str, object] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(slots=True)
@@ -423,6 +430,14 @@ class UnlockSessionStore:
             sessions = tuple(
                 session for session in self._sessions.values() if session.user_id == user_id
             )
+        self._run_cleanup(cleanup)
+        return sessions
+
+    def get_all_active_sessions(self) -> tuple[UnlockSession, ...]:
+        cleanup = _CleanupBatch()
+        with self._lock:
+            cleanup.extend(self._purge_expired_locked())
+            sessions = tuple(self._sessions.values())
         self._run_cleanup(cleanup)
         return sessions
 
@@ -976,11 +991,17 @@ def _zero_dek(dek: bytes) -> None:
 # Initialize the process-global store only after every restore helper above is
 # defined. Dev reloads import this module with a snapshot already present.
 def _schedule_published_session_rebuild(session: UnlockSession) -> None:
-    # PCF-004 prepares and verifies the diary-writing shadow catalog only
-    # after both SQLCipher and CoreFS keys are live. Legacy routes remain the
-    # authority until the global PCF-008 cutover marker is accepted.
+    # PCF-004/005 prepare and verify one combined writing/conversation shadow
+    # only after SQLCipher, Runtime, and CoreFS keys are live. Legacy routes
+    # remain authoritative until the global PCF-008 cutover marker is accepted.
     if session.corefs_session is not None and session.corefs_keys is not None:
+        from anima_server.config import settings
+        from anima_server.db.runtime import get_runtime_session_factory
         from anima_server.db.session import get_user_session_factory
+        from anima_server.services.corefs.conversation_migration import (
+            prepare_conversation_validation_catalog,
+            record_conversation_migration_failure,
+        )
         from anima_server.services.corefs.diary_migration import (
             prepare_diary_validation_catalog,
             record_diary_migration_failure,
@@ -988,10 +1009,22 @@ def _schedule_published_session_rebuild(session: UnlockSession) -> None:
 
         try:
             with get_user_session_factory(session.user_id)() as db:
-                prepare_diary_validation_catalog(session=session, db=db)
+                try:
+                    runtime_factory = get_runtime_session_factory()
+                except RuntimeError:
+                    prepare_diary_validation_catalog(session=session, db=db)
+                else:
+                    with runtime_factory() as runtime_db:
+                        prepare_conversation_validation_catalog(
+                            session=session,
+                            soul_db=db,
+                            runtime_db=runtime_db,
+                            transcripts_dir=settings.data_dir / "transcripts",
+                        )
         except Exception as exc:
             record_diary_migration_failure(user_id=session.user_id, error=exc)
-            logger.exception("PCF-004 inactive diary preparation failed")
+            record_conversation_migration_failure(user_id=session.user_id, error=exc)
+            logger.exception("PCF-004/005 inactive content preparation failed")
     from anima_server.services.corefs.migration import schedule_unlocked_rebuild
 
     schedule_unlocked_rebuild(session)
@@ -1020,6 +1053,10 @@ def get_active_deks(user_id: int) -> dict[str, bytes] | None:
 
 def active_unlock_sessions(user_id: int) -> tuple[UnlockSession, ...]:
     return unlock_session_store.get_active_sessions(user_id)
+
+
+def all_active_unlock_sessions() -> tuple[UnlockSession, ...]:
+    return unlock_session_store.get_all_active_sessions()
 
 
 def active_runtime_indexes(user_id: int) -> tuple[CoreFSProgressiveIndex, ...]:

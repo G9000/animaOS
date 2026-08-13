@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 04:00 MYT
+- Updated: 2026-08-13 11:36 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -27,7 +27,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
 | PCF-004 | Diary, folders, drafts, and notes | in_progress | PCF-003 |
-| PCF-005 | Canonical threads, messages, and transcript merge | in_progress | PCF-003 |
+| PCF-005 | Canonical threads, messages, and transcript merge | done | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
 | PCF-007 | Account profile, tasks, preferences, and credentials | backlog | PCF-004, PCF-006 |
 | PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
@@ -82,6 +82,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
 - PCF-003 - Machine-local Runtime and progressive indexing (PR #127 second-phase closeout completed 2026-08-01 19:49 MYT).
+- PCF-005 - Canonical threads, messages, and transcript merge (completed locally 2026-08-13 11:36 MYT).
 
 ## Activity Log
 
@@ -359,6 +360,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 03:48 MYT - At the user's explicit cost constraint, removed every trigger from PCF-004's reviewed four-platform package-evidence workflow and retained the implementation locally for later re-enablement. A source-contract regression keeps the workflow cost-disabled. PCF-004 and this parent remain `in_progress`; no push or workflow execution occurred, the evidence gate is intentionally deferred, and PCF-005 remains eligible/unclaimed.
 - 2026-08-13 03:58 MYT - Published PCF-004's reviewed Task 6 through Task 10 implementation and cost-disable follow-up to existing PR #142. GitHub reported exact branch head `0243e0e04f6939b3d67602b31c42c8b2e9af415a`; no checks or paid package-evidence workflow were launched. PCF-004 and this parent remain `in_progress`, PCF-005 remains eligible/unclaimed, and no review request, monitoring, or merge action was taken.
 - 2026-08-13 04:00 MYT - Claimed PCF-005 as the first eligible backlog child after rechecking its completed PCF-003 dependency and absence of any visible claim. Synchronized the child and parent row to `in_progress` on local stacked branch `codex/pcf-005-conversations` from published PCF-004 head `83f2490058f9e8c6565716cc5eee0b44bed530d3`; parent ownership is unchanged, PCF-004 remains independently open on cost-deferred package evidence, and no PCF-005 external action is authorized.
+- 2026-08-13 11:36 MYT - Completed PCF-005 locally and synchronized its child state, parent row, completed history, validation, changed paths, and residual follow-ups. Canonical message events/segments, projection privacy, merge quarantine, shared/manage conversations-root validation, stable-role reads, combined inactive preparation, and fail-closed post-cutover routing are implemented; focused `101`, adjacent PCF-004 `50`, native validation `8`, strict lint/Clippy/format/build/check, repository build, and diff hygiene passed. PCF-006 is now dependency-eligible. PCF-004 remains separately `in_progress` on its intentionally cost-deferred four-platform signed-package evidence; no PCF-005 external action was authorized or performed.
 
 ## Validation
 

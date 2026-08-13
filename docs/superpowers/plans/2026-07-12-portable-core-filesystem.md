@@ -580,37 +580,37 @@ git -c commit.gpgsign=false commit -m "diary: move portable writing to encrypted
 - Test: `apps/server/tests/test_multi_thread.py`
 - Test: `apps/server/tests/test_p5_transcript_archive.py`
 
-- [ ] **Step 1: Write failing message-event/segment tests**
+- [x] **Step 1: Write failing message-event/segment tests**
 
 Cover the unique `core.conversations` root across rename/move/restart, default `owner=shared` plus `agentAccess=manage`, stable thread/message IDs, version preconditions, terminal delete, stale edit conflict, 256-event/1-MiB rollover, sequence-over-timestamp ordering, hash chain, corrupt segment gaps, and concurrent tail retry.
 
-- [ ] **Step 2: Write failing canonical-projection tests**
+- [x] **Step 2: Write failing canonical-projection tests**
 
 Prove visible user/final-assistant blocks and attachment CoreFS URIs survive while system prompts, memory injection, tool wrappers/results, thinking, trace, usage, and retrieval internals do not.
 
-- [ ] **Step 3: Implement message events and segment codecs**
+- [x] **Step 3: Implement message events and segment codecs**
 
 Use one implementation for live append, edit/delete, migration, transcript import, and display projection.
 
-- [ ] **Step 4: Prepare CoreFS authority for visible messages/threads behind the cutover gate**
+- [x] **Step 4: Prepare CoreFS authority for visible messages/threads behind the cutover gate**
 
 Bind canonical thread metadata and message segments beneath the unique `core.conversations` folder role/stable ID with default `owner=shared` and `agentAccess=manage`. Implement the canonical user/assistant visibility boundary and validate the shadow message projection, but keep legacy writes authoritative until PCF-008. Rewire the live service, transcript-search tool, eager consolidation, archive pruning, and thread routes behind the shared authority switch so none constructs or scans `.anima/transcripts` after cutover. After activation, `RuntimeMessage` retains Core message/event references, run/role/status/tool metadata, and only short-lived or sealed operational payloads; it never persists a duplicate plaintext visible body.
 
-- [ ] **Step 5: Rewire thread list/display/reactivation**
+- [x] **Step 5: Rewire thread list/display/reactivation**
 
 Resolve `core.conversations` by stable role then folder ID and read canonical thread/message objects directly; prove identical thread list/display/reactivation after rename, move, and restart. Do not rehydrate archived history into PostgreSQL as authority.
 
-- [ ] **Step 6: Implement active/archive migration and deduplication**
+- [x] **Step 6: Implement active/archive migration and deduplication**
 
 Merge legacy SQLCipher rows, PostgreSQL runtime messages, and encrypted transcripts using stable ID or deterministic fallback identity. Quarantine conflicts/unknown roles.
 
-- [ ] **Step 7: Run focused conversation tests**
+- [x] **Step 7: Run focused conversation tests**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_messages.py apps/server/tests/test_corefs_conversation_migration.py apps/server/tests/test_multi_thread.py apps/server/tests/test_p5_transcript_archive.py -q
 ```
 
-- [ ] **Step 8: Commit conversation slice**
+- [x] **Step 8: Commit conversation slice**
 
 ```powershell
 git add apps/server/src/anima_server/services/corefs/messages.py apps/server/src/anima_server/api/routes/chat.py apps/server/src/anima_server/api/routes/threads.py apps/server/src/anima_server/services/agent/thread_manager.py apps/server/src/anima_server/services/agent/service.py apps/server/src/anima_server/services/agent/tools.py apps/server/src/anima_server/services/agent/eager_consolidation.py apps/server/src/anima_server/services/agent/transcript_archive.py apps/server/src/anima_server/services/agent/transcript_search.py apps/server/src/anima_server/services/corefs/migration.py apps/server/tests/test_corefs_messages.py apps/server/tests/test_corefs_conversation_migration.py apps/server/tests/test_multi_thread.py apps/server/tests/test_p5_transcript_archive.py

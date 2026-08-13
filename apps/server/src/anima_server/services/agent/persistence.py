@@ -38,12 +38,22 @@ logger = logging.getLogger(__name__)
 TERMINAL_RUN_STATUSES = ("cancelled", "failed")
 
 
+def _reject_legacy_conversation_mutation(user_id: int) -> None:
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user_id) is not None:
+        raise RuntimeError("Legacy conversation mutation is disabled after CoreFS cutover.")
+
+
 def _refresh_run_status(db: Session, run: RuntimeRun) -> str:
     db.refresh(run, attribute_names=["status"])
     return run.status
 
 
 def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
+    _reject_legacy_conversation_mutation(user_id)
     thread = db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.user_id == user_id,
@@ -162,6 +172,7 @@ def close_thread(db: Session, *, thread_id: int) -> bool:
     thread = db.get(RuntimeThread, thread_id)
     if thread is None or thread.status == "closed":
         return False
+    _reject_legacy_conversation_mutation(int(thread.user_id))
 
     thread.status = "closed"
     thread.closed_at = datetime.now(UTC)
@@ -546,6 +557,7 @@ def append_message(
     is_in_context: bool = True,
     is_archived_history: bool = False,
 ) -> RuntimeMessage:
+    _reject_legacy_conversation_mutation(int(thread.user_id))
     timestamp = datetime.now(UTC)
     runtime_index = runtime_index_for_sensitive_write(
         db,
@@ -740,6 +752,7 @@ def list_threads(db: Session, user_id: int) -> list[tuple[RuntimeThread, str | N
 
 def create_thread(db: Session, user_id: int) -> RuntimeThread:
     """Create a new active thread, closing any existing active thread first."""
+    _reject_legacy_conversation_mutation(user_id)
     existing = db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.user_id == user_id,

@@ -18,6 +18,13 @@ from anima_server.services.agent.eager_consolidation import on_thread_close
 from anima_server.services.agent.persistence import close_thread, create_thread, list_threads
 from anima_server.services.agent.service import _track_background_task
 from anima_server.services.agent.thread_manager import get_thread_messages_for_display
+from anima_server.services.corefs.conversation_authority import (
+    CanonicalThreadView,
+    canonical_messages_for_display,
+    conversation_corefs_authority_active,
+    get_canonical_thread,
+    list_canonical_threads,
+)
 from anima_server.services.images.deletion import delete_thread_with_image_cleanup
 from anima_server.services.sessions import get_active_dek_async
 
@@ -53,6 +60,40 @@ def _create_thread_response(thread: RuntimeThread) -> dict[str, object]:
     }
 
 
+def _canonical_thread_to_dict(
+    view: CanonicalThreadView,
+    *,
+    user_id: int,
+) -> dict[str, object]:
+    document = view.document
+    thread_id = document.legacy_thread_id or document.thread_id
+    first_role = view.messages[0].role if view.messages else None
+    initiated_by = "user" if first_role == "user" else ("agent" if first_role else None)
+    return {
+        "id": thread_id,
+        "userId": user_id,
+        "status": document.status,
+        "title": document.title,
+        "createdAt": document.created_at,
+        "lastMessageAt": document.last_message_at,
+        "closedAt": document.closed_at,
+        "isArchived": document.is_archived,
+        "initiatedBy": initiated_by,
+        "corefsId": document.thread_id,
+        "degradedRanges": [list(value) for value in view.degraded_ranges],
+    }
+
+
+def _raise_corefs_mutation_pending() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "corefs_conversation_mutation_not_enabled",
+            "message": "CoreFS conversation mutation requires the PCF-008 activation adapter.",
+        },
+    )
+
+
 def _thread_has_messages(runtime_db: Session, thread_id: int) -> bool:
     return runtime_db.scalar(
         select(RuntimeMessage.id)
@@ -68,6 +109,13 @@ async def list_user_threads(
 ) -> dict[str, object]:
     """List all threads for the authenticated user, newest first."""
     unlock_session = await require_unlocked_session_async(request)
+    if conversation_corefs_authority_active(unlock_session):
+        return {
+            "threads": [
+                _canonical_thread_to_dict(view, user_id=unlock_session.user_id)
+                for view in list_canonical_threads(session=unlock_session)
+            ]
+        }
     rows = list_threads(runtime_db, user_id=unlock_session.user_id)
     return {
         "threads": [_thread_to_dict(t, first_role) for t, first_role in rows]
@@ -83,6 +131,8 @@ async def create_new_thread(
     """Create a new conversation thread, closing the existing active one."""
     unlock_session = await require_unlocked_session_async(request)
     user_id = unlock_session.user_id
+    if conversation_corefs_authority_active(unlock_session):
+        _raise_corefs_mutation_pending()
 
     # Reuse the current active thread when it's still completely empty.
     active_thread = runtime_db.scalar(
@@ -124,6 +174,18 @@ async def get_thread_messages(
 ) -> dict[str, object]:
     """Return all messages for a thread (active from PG, archived from JSONL)."""
     unlock_session = await require_unlocked_session_async(request)
+    if conversation_corefs_authority_active(unlock_session):
+        view = get_canonical_thread(session=unlock_session, thread_id=thread_id)
+        if view is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Thread not found",
+            )
+        return {
+            "threadId": view.document.legacy_thread_id or view.document.thread_id,
+            "messages": canonical_messages_for_display(view),
+            "degradedRanges": [list(value) for value in view.degraded_ranges],
+        }
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(
@@ -149,6 +211,8 @@ async def close_thread_endpoint(
 ) -> dict[str, object]:
     """Close a thread and trigger background consolidation."""
     unlock_session = await require_unlocked_session_async(request)
+    if conversation_corefs_authority_active(unlock_session):
+        _raise_corefs_mutation_pending()
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(
@@ -181,6 +245,33 @@ async def get_thread_context_stats(
 ) -> dict[str, object]:
     """Return context window usage stats for a thread."""
     unlock_session = await require_unlocked_session_async(request)
+    if conversation_corefs_authority_active(unlock_session):
+        view = get_canonical_thread(session=unlock_session, thread_id=thread_id)
+        if view is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Thread not found",
+            )
+        used_tokens = sum(
+            estimate_message_tokens(
+                content_text=message.content,
+                content_json=None,
+                tool_name=None,
+            )
+            for message in view.messages
+        )
+        budget = settings.agent_context_window_tokens
+        return {
+            "threadId": view.document.legacy_thread_id or view.document.thread_id,
+            "usedTokens": used_tokens,
+            "budgetTokens": budget,
+            "triggerAtTokens": round(budget * settings.agent_compaction_trigger_ratio)
+            if budget
+            else None,
+            "pct": round(used_tokens / budget * 100, 1) if budget else None,
+            "compactionCount": 0,
+            "messageCount": len(view.messages),
+        }
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Thread not found")
@@ -233,6 +324,8 @@ async def delete_thread_endpoint(
 ) -> dict[str, object]:
     """Permanently delete a thread and all its messages."""
     unlock_session = await require_unlocked_session_async(request)
+    if conversation_corefs_authority_active(unlock_session):
+        _raise_corefs_mutation_pending()
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(

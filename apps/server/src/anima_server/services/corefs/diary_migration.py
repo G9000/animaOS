@@ -1064,6 +1064,14 @@ def _write_checkpoint(
         if completion_token is not None:
             checkpoint["completionToken"] = completion_token
         checkpoints[f"pcf004:{user_id}"] = checkpoint
+        if source_counts.get("conversationRoot") == 1:
+            checkpoints[f"pcf005:{user_id}"] = {
+                **checkpoint,
+                "sourceCounts": {
+                    "threads": source_counts.get("threads", 0),
+                    "messageSegments": source_counts.get("messageSegments", 0),
+                },
+            }
 
     update_core_manifest(update)
 

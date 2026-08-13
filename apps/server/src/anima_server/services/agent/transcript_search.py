@@ -275,6 +275,45 @@ def search_transcripts(
     ``days_back`` values less than or equal to zero search all archived
     transcripts.
     """
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        list_canonical_threads,
+    )
+
+    authority_session = active_conversation_authority_session(user_id)
+    if authority_session is not None:
+        cutoff = _cutoff_for_days_back(days_back)
+        candidates: list[tuple[float, TranscriptSnippet]] = []
+        for view in list_canonical_threads(session=authority_session):
+            legacy_id = view.document.legacy_thread_id
+            thread_id = legacy_id if isinstance(legacy_id, int) else 0
+            for message in view.messages:
+                created_at = datetime.fromisoformat(message.created_at)
+                if cutoff is not None and created_at < cutoff:
+                    continue
+                score = 0.5 if not query.strip() else _text_overlap_score(query, message.content)
+                if score <= 0:
+                    continue
+                candidates.append(
+                    (
+                        score,
+                        TranscriptSnippet(
+                            date=created_at.date().isoformat(),
+                            thread_id=thread_id,
+                            text=f"{message.role.capitalize()}: {message.content}",
+                        ),
+                    )
+                )
+        candidates.sort(key=lambda item: (item[0], item[1].date), reverse=True)
+        snippets: list[TranscriptSnippet] = []
+        chars = 0
+        for _score, snippet in candidates:
+            if len(snippets) >= max_snippets or chars + len(snippet.text) > budget_chars:
+                continue
+            snippets.append(snippet)
+            chars += len(snippet.text)
+        return TranscriptSearchResults(snippets, total_matches=len(candidates))
+
     if not transcripts_dir.exists():
         return TranscriptSearchResults()
 

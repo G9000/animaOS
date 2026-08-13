@@ -65,6 +65,12 @@ async def on_thread_close(
     soul_db_factory: Callable[..., object] | None = None,
 ) -> None:
     """Run consolidation and archival after a thread is closed."""
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user_id) is not None:
+        return
     resolved_runtime_db_factory = runtime_db_factory or _get_runtime_db_factory()
     resolved_soul_db_factory = soul_db_factory or _get_soul_db_factory(user_id)
 
@@ -388,6 +394,12 @@ async def prune_old_background_task_runs(
 
 async def prune_expired_transcripts() -> int:
     """Delete transcript artifacts older than the configured retention window."""
+    from anima_server.services.corefs.conversation_authority import (
+        any_conversation_corefs_authority_active,
+    )
+
+    if any_conversation_corefs_authority_active():
+        return 0
     if settings.transcript_retention_days < 0:
         return 0
 

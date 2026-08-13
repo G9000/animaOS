@@ -29,7 +29,10 @@ use crate::policy::{AnimaAccess, LocalAnimaAccess, LocalFolderPolicy};
 const DIARY_CONTENT_TYPE: &str = "application/vnd.anima.diary+json;version=1";
 const DRAFT_CONTENT_TYPE: &str = "application/vnd.anima.draft+json;version=1";
 const NOTE_CONTENT_TYPE: &str = "application/vnd.anima.note+json;version=1";
-const ALLOWED_ROLES: [&str; 2] = ["core.journal", "core.notes"];
+const THREAD_CONTENT_TYPE: &str = "application/vnd.anima.thread+json;version=1";
+const MESSAGE_SEGMENT_CONTENT_TYPE: &str = "application/vnd.anima.message-segment+jsonl;version=1";
+const REQUIRED_WRITING_ROLES: [&str; 2] = ["core.journal", "core.notes"];
+const ALLOWED_ROLES: [&str; 3] = ["core.journal", "core.notes", "core.conversations"];
 pub const MAX_WRITING_BODY_CHARS: usize = 20_000_000;
 // Canonical HTML and JSON can expand one public source scalar to six ASCII
 // bytes (for example an apostrophe becomes `&#x27;` or a control becomes a
@@ -38,6 +41,8 @@ pub const MAX_WRITING_CANONICAL_EXPANSION: usize = 6;
 pub const MAX_WRITING_DOCUMENT_BYTES: usize =
     MAX_WRITING_BODY_CHARS * MAX_WRITING_CANONICAL_EXPANSION + 1024 * 1024;
 pub const MAX_WRITING_ATTACHMENT_BYTES: usize = 100 * 1024 * 1024;
+pub const MAX_THREAD_DOCUMENT_BYTES: usize = 1024 * 1024;
+pub const MAX_MESSAGE_SEGMENT_BYTES: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ValidationBatchMode {
@@ -51,6 +56,7 @@ pub enum ValidationBatchMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValidationBatchPolicy {
     UserWrite,
+    SharedManage,
     Inherit,
     Deny,
 }
@@ -584,9 +590,10 @@ fn validate_batch(
         }
         folder_inputs.insert(id.as_str().to_owned(), folder);
     }
-    if ALLOWED_ROLES
+    if REQUIRED_WRITING_ROLES
         .iter()
         .any(|role| role_counts.get(role).copied() != Some(1))
+        || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -618,11 +625,7 @@ fn validate_batch(
     let mut folders = Vec::with_capacity(batch.folders.len());
     for folder in &batch.folders {
         let (owner, access) = effective[folder.stable_id.as_str()];
-        if folder.role.is_some() && folder.policy != ValidationBatchPolicy::UserWrite {
-            return Err(ValidationBatchError::Invalid(
-                "stable writing roots require explicit user/write policy",
-            ));
-        }
+        validate_stable_root_policy(folder.role.as_deref(), folder.policy)?;
         folders.push(ValidatedFolder {
             id: OpaqueId::parse(&folder.stable_id).expect("validated ID"),
             parent_id: folder
@@ -647,7 +650,10 @@ fn validate_batch(
     }
     let mut objects = Vec::with_capacity(batch.objects.len());
     for object in &batch.objects {
-        if object.policy == ValidationBatchPolicy::UserWrite {
+        if matches!(
+            object.policy,
+            ValidationBatchPolicy::UserWrite | ValidationBatchPolicy::SharedManage
+        ) {
             return Err(ValidationBatchError::Invalid(
                 "descendant objects must inherit or deny policy",
             ));
@@ -704,9 +710,10 @@ pub(super) fn build_prepared_validation_catalog(
         }
         folders_by_id.insert(id.as_str().to_owned(), folder);
     }
-    if ALLOWED_ROLES
+    if REQUIRED_WRITING_ROLES
         .iter()
         .any(|role| role_counts.get(role).copied() != Some(1))
+        || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -735,11 +742,7 @@ pub(super) fn build_prepared_validation_catalog(
 
     let mut entries = Vec::with_capacity(folder_inputs.len() + object_inputs.len());
     for folder in folder_inputs {
-        if folder.role.is_some() && folder.policy != ValidationBatchPolicy::UserWrite {
-            return Err(ValidationBatchError::Invalid(
-                "stable writing roots require explicit user/write policy",
-            ));
-        }
+        validate_stable_root_policy(folder.role.as_deref(), folder.policy)?;
         let (owner, access) = effective[folder.stable_id.as_str()];
         let mut common = CatalogEntryCommon::new(
             OpaqueId::parse(&folder.stable_id).expect("validated folder ID"),
@@ -766,7 +769,10 @@ pub(super) fn build_prepared_validation_catalog(
     }
 
     for object in object_inputs {
-        if object.policy == ValidationBatchPolicy::UserWrite {
+        if matches!(
+            object.policy,
+            ValidationBatchPolicy::UserWrite | ValidationBatchPolicy::SharedManage
+        ) {
             return Err(ValidationBatchError::Invalid(
                 "descendant objects must inherit or deny policy",
             ));
@@ -839,6 +845,17 @@ fn resolve_folder_policy<'a>(
             }
             (FolderOwner::User, AnimaAccess::Write)
         }
+        (Some(parent), ValidationBatchPolicy::SharedManage) => {
+            if folder.role.as_deref() != Some("core.conversations") {
+                return Err(ValidationBatchError::Invalid(
+                    "only the conversations root may override shared/manage",
+                ));
+            }
+            if !folders.contains_key(parent) {
+                return Err(ValidationBatchError::Invalid("folder parent is missing"));
+            }
+            (FolderOwner::Shared, AnimaAccess::Manage)
+        }
         (Some(parent), policy) => {
             let (owner, access) = resolve_folder_policy(parent, folders, effective, visiting)?;
             (
@@ -854,6 +871,20 @@ fn resolve_folder_policy<'a>(
     visiting.remove(id);
     effective.insert(id, value);
     Ok(value)
+}
+
+fn validate_stable_root_policy(
+    role: Option<&str>,
+    policy: ValidationBatchPolicy,
+) -> Result<(), ValidationBatchError> {
+    match (role, policy) {
+        (None, _) => Ok(()),
+        (Some("core.journal" | "core.notes"), ValidationBatchPolicy::UserWrite)
+        | (Some("core.conversations"), ValidationBatchPolicy::SharedManage) => Ok(()),
+        _ => Err(ValidationBatchError::Invalid(
+            "stable roots require their explicit default policy",
+        )),
+    }
 }
 
 fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), ValidationBatchError> {
@@ -910,7 +941,7 @@ fn validate_kind_and_content(object: &ValidationBatchObject) -> Result<(), Valid
         )?;
     } else if object.source_character_count.is_some() {
         return Err(ValidationBatchError::Invalid(
-            "binary attachment cannot declare a source character count",
+            "non-writing object cannot declare a source character count",
         ));
     }
     Ok(())
@@ -933,6 +964,8 @@ pub(super) fn validate_converter_object_metadata(
     let kind_limit = u64::try_from(match object.kind {
         ObjectKind::Diary | ObjectKind::Draft | ObjectKind::Note => MAX_WRITING_DOCUMENT_BYTES,
         ObjectKind::Attachment => MAX_WRITING_ATTACHMENT_BYTES,
+        ObjectKind::Thread => MAX_THREAD_DOCUMENT_BYTES,
+        ObjectKind::MessageSegment => MAX_MESSAGE_SEGMENT_BYTES,
         _ => 0,
     })
     .map_err(|_| ValidationBatchError::Invalid("object body limit overflow"))?;
@@ -961,6 +994,13 @@ pub(super) fn validate_converter_object_metadata(
         }
         ObjectKind::Attachment => {
             !object.content_type.is_empty() && object.body_encoding == BodyEncoding::Binary
+        }
+        ObjectKind::Thread => {
+            object.content_type == THREAD_CONTENT_TYPE && object.body_encoding == BodyEncoding::Utf8
+        }
+        ObjectKind::MessageSegment => {
+            object.content_type == MESSAGE_SEGMENT_CONTENT_TYPE
+                && object.body_encoding == BodyEncoding::Utf8
         }
         _ => false,
     };
@@ -992,7 +1032,10 @@ pub(super) fn validate_converter_object_metadata(
         OpaqueId::parse(reference)
             .map_err(|_| ValidationBatchError::Invalid("invalid object reference ID"))?;
     }
-    if object.policy == ValidationBatchPolicy::UserWrite {
+    if matches!(
+        object.policy,
+        ValidationBatchPolicy::UserWrite | ValidationBatchPolicy::SharedManage
+    ) {
         return Err(ValidationBatchError::Invalid(
             "descendant objects must inherit or deny policy",
         ));
@@ -1149,6 +1192,10 @@ fn local_policy(value: ValidationBatchPolicy) -> LocalFolderPolicy {
         ValidationBatchPolicy::UserWrite => LocalFolderPolicy::new(
             Some(FolderOwner::User),
             LocalAnimaAccess::Allow(AnimaAccess::Write),
+        ),
+        ValidationBatchPolicy::SharedManage => LocalFolderPolicy::new(
+            Some(FolderOwner::Shared),
+            LocalAnimaAccess::Allow(AnimaAccess::Manage),
         ),
         ValidationBatchPolicy::Inherit => LocalFolderPolicy::inherit(),
         ValidationBatchPolicy::Deny => LocalFolderPolicy::new(None, LocalAnimaAccess::Deny),

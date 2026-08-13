@@ -1848,6 +1848,7 @@ impl super::CoreCommitCoordinator {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_object_inner<R, F>(
         &self,
         keys: &FrkSubkeys,
@@ -4141,6 +4142,7 @@ fn parse_body_encoding(value: &str) -> Result<BodyEncoding, PreparationError> {
 fn policy_name(value: super::converter::ValidationBatchPolicy) -> &'static str {
     match value {
         super::converter::ValidationBatchPolicy::UserWrite => "user_write",
+        super::converter::ValidationBatchPolicy::SharedManage => "shared_manage",
         super::converter::ValidationBatchPolicy::Inherit => "inherit",
         super::converter::ValidationBatchPolicy::Deny => "deny",
     }
@@ -4149,6 +4151,7 @@ fn policy_name(value: super::converter::ValidationBatchPolicy) -> &'static str {
 fn parse_policy(value: &str) -> Result<super::converter::ValidationBatchPolicy, PreparationError> {
     match value {
         "user_write" => Ok(super::converter::ValidationBatchPolicy::UserWrite),
+        "shared_manage" => Ok(super::converter::ValidationBatchPolicy::SharedManage),
         "inherit" => Ok(super::converter::ValidationBatchPolicy::Inherit),
         "deny" => Ok(super::converter::ValidationBatchPolicy::Deny),
         _ => Err(PreparationError::InvalidFormat("policy")),

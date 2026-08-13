@@ -39,6 +39,8 @@ BodySource = Literal[
     "staged_draft",
     "staged_draft_inline",
     "staged_note",
+    "supplemental",
+    "supplemental_path",
 ]
 
 
@@ -146,7 +148,7 @@ class WritingSourceInventory:
 @dataclass(frozen=True, slots=True)
 class WritingSourceBody:
     descriptor: WritingSourceObjectDescriptor
-    body: bytes
+    body: bytes | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +208,8 @@ def build_writing_source_inventory(
     db: Session,
     staged_drafts: Iterable[Any] = (),
     staged_notes: Iterable[Any] = (),
+    supplemental_folders: Iterable[Any] = (),
+    supplemental_objects: Iterable[WritingSourceBody] = (),
 ) -> WritingSourceInventory:
     from anima_server.models import DiaryAttachment, DiaryEntry, DiaryFolder
     from anima_server.services.corefs.diary_migration import (
@@ -221,6 +225,8 @@ def build_writing_source_inventory(
 
     staged_drafts = tuple(staged_drafts)
     staged_notes = tuple(staged_notes)
+    supplemental_folders = tuple(supplemental_folders)
+    supplemental_objects = tuple(supplemental_objects)
     if len(staged_drafts) > 1 or len(staged_notes) > 1:
         raise DiaryMigrationError("Writing preparation accepts at most one staged draft and note.")
 
@@ -238,7 +244,14 @@ def build_writing_source_inventory(
         current_folders = current.folders
         current_objects = current.objects
 
-    allowed_kinds = {"diary", "attachment", "draft", "note"}
+    allowed_kinds = {
+        "diary",
+        "attachment",
+        "draft",
+        "note",
+        "thread",
+        "message-segment",
+    }
     unknown = sorted({item.kind for item in current_objects if item.kind not in allowed_kinds})
     if unknown:
         raise DiaryMigrationError(
@@ -254,6 +267,18 @@ def build_writing_source_inventory(
     root = next((item for item in current_folders if item.parent_id is None), None)
     journal = preserved_roles.get("core.journal")
     notes = preserved_roles.get("core.notes")
+    supplemental_roles = {
+        item.role: item for item in supplemental_folders if item.role is not None
+    }
+    if len(supplemental_roles) != sum(
+        item.role is not None for item in supplemental_folders
+    ):
+        raise DiaryMigrationError("Supplemental source contains duplicate stable roles.")
+    if set(supplemental_roles) - {"core.conversations"}:
+        raise DiaryMigrationError("Supplemental source contains an unsupported stable role.")
+    conversations = supplemental_roles.get("core.conversations") or preserved_roles.get(
+        "core.conversations"
+    )
     root_id = root.stable_id if root is not None else migration_opaque_id("core-folder", "root")
     journal_id = (
         journal.stable_id
@@ -264,6 +289,11 @@ def build_writing_source_inventory(
         notes.stable_id
         if notes is not None
         else migration_opaque_id("core-folder-role", "core.notes")
+    )
+    conversations_id = (
+        conversations.stable_id
+        if conversations is not None
+        else migration_opaque_id("core-folder-role", "core.conversations")
     )
     folders: list[Any] = [
         InactiveFolder(
@@ -297,6 +327,20 @@ def build_writing_source_inventory(
             policy="user-write",
         ),
     ]
+    if conversations is not None:
+        folders.append(
+            InactiveFolder(
+                stable_id=conversations_id,
+                parent_id=root_id,
+                name=conversations.name,
+                order=2,
+                role="core.conversations",
+                owner="shared",
+                agent_access="manage",
+                policy="shared-manage",
+                metadata=getattr(conversations, "metadata", {}),
+            )
+        )
 
     folder_rows = db.scalars(
         select(DiaryFolder)
@@ -392,6 +436,7 @@ def build_writing_source_inventory(
     # Preserve CoreFS-native drafts and notes body-at-a-time. Their referenced
     # attachments are admitted only after their authenticated body is decoded.
     referenced_current_attachments: set[str] = set()
+    conversation_references: set[str] = set()
     for item in sorted(current_objects, key=lambda value: value.stable_id):
         if item.kind not in {"draft", "note"}:
             continue
@@ -426,6 +471,52 @@ def build_writing_source_inventory(
             del decoded_note
         del body
 
+    supplemental_ids = {
+        item.descriptor.stable_id for item in supplemental_objects
+    }
+    for item in sorted(current_objects, key=lambda value: value.stable_id):
+        if item.kind not in {"thread", "message-segment"}:
+            continue
+        if item.stable_id in supplemental_ids:
+            continue
+        body = read_prepared_writing_body(session=session, item=item)
+        if item.kind == "thread":
+            from anima_server.services.corefs.messages import decode_thread_document
+
+            references = decode_thread_document(body).segment_ids
+        else:
+            from anima_server.services.corefs.messages import (
+                decode_message_segment,
+                message_segment_references,
+            )
+
+            previous = item.metadata.get("previousSegmentSha256")
+            previous_id = item.metadata.get("previousSegmentId")
+            if previous is not None and not isinstance(previous, str):
+                raise DiaryMigrationError("Prepared message segment chain metadata is invalid.")
+            if previous_id is not None and not isinstance(previous_id, str):
+                raise DiaryMigrationError("Prepared message segment chain metadata is invalid.")
+            decoded_segment = decode_message_segment(
+                body,
+                expected_previous_segment_id=previous_id,
+                expected_previous_sha256=previous,
+            )
+            references = message_segment_references(decoded_segment)
+            conversation_references.update(references)
+        add(
+            _prepared_descriptor(
+                item,
+                revision=current_revisions[item.stable_id] + 1,
+                references=references,
+            )
+        )
+        del body
+
+    referenced_current_attachments.update(
+        reference
+        for reference in conversation_references
+        if reference in current_attachments
+    )
     for attachment_id in sorted(referenced_current_attachments):
         item = current_attachments.get(attachment_id)
         if item is None:
@@ -728,6 +819,28 @@ def build_writing_source_inventory(
         )
         del note_body
 
+    for supplemental in supplemental_objects:
+        descriptor = supplemental.descriptor
+        body = supplemental.body
+        if descriptor.kind not in {"thread", "message-segment", "attachment"}:
+            raise DiaryMigrationError("Supplemental source contains an unsupported object kind.")
+        if descriptor.parent_id != conversations_id:
+            raise DiaryMigrationError("Supplemental conversation object has the wrong parent.")
+        if descriptor.body_source not in {"supplemental", "supplemental_path"}:
+            descriptor = replace(descriptor, body_source="supplemental")
+        descriptor = replace(
+            descriptor,
+            revision=current_revisions.get(descriptor.stable_id, 0) + 1,
+        )
+        if descriptor.body_source == "supplemental":
+            if body is None or len(body) != descriptor.body_length or hashlib.sha256(
+                body
+            ).hexdigest() != descriptor.content_sha256:
+                raise DiaryMigrationError("Supplemental conversation body identity is invalid.")
+        elif body is not None or not descriptor.source_key:
+            raise DiaryMigrationError("Supplemental path source identity is invalid.")
+        add(descriptor, replace_existing=True)
+
     folders, normalized_objects = _portable_catalog_names(
         folders,
         list(descriptors.values()),
@@ -738,9 +851,12 @@ def build_writing_source_inventory(
     counts = {
         "folders": len(folder_rows),
         "entries": len(entry_ids),
-        "attachments": len(attachment_rows),
+        "attachments": sum(item.kind == "attachment" for item in objects),
         "drafts": sum(item.kind == "draft" for item in objects),
         "notes": sum(item.kind == "note" for item in objects),
+        "threads": sum(item.kind == "thread" for item in objects),
+        "messageSegments": sum(item.kind == "message-segment" for item in objects),
+        "conversationRoot": int(conversations is not None),
     }
     source_digest = _source_inventory_hash(
         user_id=session.user_id,
@@ -766,6 +882,7 @@ def iter_writing_source_objects(
     inventory: WritingSourceInventory,
     staged_drafts: Iterable[Any] = (),
     staged_notes: Iterable[Any] = (),
+    supplemental_objects: Iterable[WritingSourceBody] = (),
 ) -> Iterator[WritingSourceBody]:
     from anima_server.models import DiaryAttachment, DiaryEntry
     from anima_server.services.corefs.diary_migration import (
@@ -777,6 +894,7 @@ def iter_writing_source_objects(
 
     drafts = {item.id: item for item in staged_drafts}
     notes = {item.id: item for item in staged_notes}
+    supplemental = {item.descriptor.stable_id: item for item in supplemental_objects}
     prepared = None
     attachments_by_entry = _attachment_metadata_by_entry(db, user_id=session.user_id)
 
@@ -889,6 +1007,21 @@ def iter_writing_source_objects(
                 content_type=note.content_type,
                 body=note.body,
             )
+        elif descriptor.body_source == "supplemental":
+            source = supplemental.get(descriptor.stable_id)
+            if source is None or source.body is None:
+                raise DiaryMigrationError("Supplemental conversation body is unavailable.")
+            body = source.body
+        elif descriptor.body_source == "supplemental_path":
+            from pathlib import Path
+
+            source = supplemental.get(descriptor.stable_id)
+            if source is None or source.body is not None:
+                raise DiaryMigrationError("Supplemental attachment source is unavailable.")
+            try:
+                body = Path(source.descriptor.source_key).read_bytes()
+            except OSError as exc:
+                raise DiaryMigrationError("Supplemental attachment source is unreadable.") from exc
         else:  # pragma: no cover - closed Literal plus defensive corruption guard
             raise DiaryMigrationError("Unknown writing body source.")
 
@@ -916,6 +1049,8 @@ def prepare_writing_source_catalog(
     db: Session,
     staged_drafts: Iterable[Any] = (),
     staged_notes: Iterable[Any] = (),
+    supplemental_folders: Iterable[Any] = (),
+    supplemental_objects: Iterable[WritingSourceBody] = (),
 ) -> Any:
     from anima_server.services.corefs.diary_migration import (
         DiaryMigrationError,
@@ -927,6 +1062,8 @@ def prepare_writing_source_catalog(
 
     staged_drafts = tuple(staged_drafts)
     staged_notes = tuple(staged_notes)
+    supplemental_folders = tuple(supplemental_folders)
+    supplemental_objects = tuple(supplemental_objects)
     native = session.corefs_session
     keys = session.corefs_keys
     if native is None or keys is None:
@@ -938,6 +1075,8 @@ def prepare_writing_source_catalog(
             db=db,
             staged_drafts=staged_drafts,
             staged_notes=staged_notes,
+            supplemental_folders=supplemental_folders,
+            supplemental_objects=supplemental_objects,
         )
         active = _preparation_status_or_none(native, keys)
         if active is None and _inventory_matches_current(session=session, inventory=inventory):
@@ -980,6 +1119,8 @@ def prepare_writing_source_catalog(
                 status=active,
                 staged_drafts=staged_drafts,
                 staged_notes=staged_notes,
+                supplemental_folders=supplemental_folders,
+                supplemental_objects=supplemental_objects,
                 recovery=True,
             )
             return _result_from_receipt(
@@ -1044,6 +1185,7 @@ def prepare_writing_source_catalog(
             inventory=pending_inventory,
             staged_drafts=staged_drafts,
             staged_notes=staged_notes,
+            supplemental_objects=supplemental_objects,
         )
         while True:
             try:
@@ -1072,6 +1214,8 @@ def prepare_writing_source_catalog(
             db=db,
             staged_drafts=staged_drafts,
             staged_notes=staged_notes,
+            supplemental_folders=supplemental_folders,
+            supplemental_objects=supplemental_objects,
         )
         if not _same_source(inventory, refreshed):
             _abandon(native, keys, status)
@@ -1100,6 +1244,8 @@ def prepare_writing_source_catalog(
             status=status,
             staged_drafts=staged_drafts,
             staged_notes=staged_notes,
+            supplemental_folders=supplemental_folders,
+            supplemental_objects=supplemental_objects,
             recovery=False,
         )
         return _result_from_receipt(
@@ -1121,6 +1267,8 @@ def _finalize_under_fence(
     status: dict[str, object],
     staged_drafts: tuple[Any, ...],
     staged_notes: tuple[Any, ...],
+    supplemental_folders: tuple[Any, ...],
+    supplemental_objects: tuple[WritingSourceBody, ...],
     recovery: bool,
 ) -> dict[str, object]:
     from anima_server.services.corefs.diary_migration import DiaryMigrationError
@@ -1131,6 +1279,8 @@ def _finalize_under_fence(
             db=fenced,
             staged_drafts=staged_drafts,
             staged_notes=staged_notes,
+            supplemental_folders=supplemental_folders,
+            supplemental_objects=supplemental_objects,
         )
         if not _same_source(inventory, fenced_inventory):
             raise DiaryMigrationError("Writing source changed before final publication.")

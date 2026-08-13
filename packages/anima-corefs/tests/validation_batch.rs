@@ -193,6 +193,90 @@ fn initial_batch() -> ValidationBatch {
 }
 
 #[test]
+fn conversation_root_and_canonical_objects_use_shared_manage_validation_policy() {
+    let (root, coordinator) = fixture("conversations");
+    let keys = keys();
+    let mut batch = initial_batch();
+    let conversation_folder = native_id("folder", "conversations");
+    batch.folders.push(ValidationBatchFolder {
+        stable_id: conversation_folder.clone(),
+        parent_id: Some(native_id("folder", "root")),
+        name: "Conversations".into(),
+        role: Some("core.conversations".into()),
+        policy: ValidationBatchPolicy::SharedManage,
+        metadata: Default::default(),
+    });
+    let segment = native_id("message-segment", "1");
+    batch.objects.push(ValidationBatchObject {
+        stable_id: segment.clone(),
+        parent_id: conversation_folder.clone(),
+        name: "segment-000001.messages.jsonl".into(),
+        kind: ObjectKind::MessageSegment,
+        content_type: "application/vnd.anima.message-segment+jsonl;version=1".into(),
+        body_encoding: BodyEncoding::Utf8,
+        content: b"{\"format\":\"anima.message-segment\",\"version\":1}\n".to_vec(),
+        created_at: "2026-08-13T00:00:00Z".into(),
+        updated_at: "2026-08-13T00:00:00Z".into(),
+        source_character_count: None,
+        expected_revision: None,
+        references: vec![],
+        policy: ValidationBatchPolicy::Inherit,
+        metadata: Default::default(),
+    });
+    batch.objects.push(ValidationBatchObject {
+        stable_id: native_id("thread", "1"),
+        parent_id: conversation_folder,
+        name: "thread-1.thread.json".into(),
+        kind: ObjectKind::Thread,
+        content_type: "application/vnd.anima.thread+json;version=1".into(),
+        body_encoding: BodyEncoding::Utf8,
+        content: b"{\"format\":\"anima.thread\",\"version\":1}".to_vec(),
+        created_at: "2026-08-13T00:00:00Z".into(),
+        updated_at: "2026-08-13T00:00:00Z".into(),
+        source_character_count: None,
+        expected_revision: None,
+        references: vec![segment],
+        policy: ValidationBatchPolicy::Inherit,
+        metadata: Default::default(),
+    });
+
+    let outcome = coordinator
+        .apply_validation_batch(&keys, batch.clone())
+        .unwrap();
+    assert!(outcome.published());
+    let first_head = outcome.snapshot().head().clone();
+    batch.mode = ValidationBatchMode::Expect {
+        generation: first_head.generation(),
+        catalog_hash: first_head.catalog_hash().to_owned(),
+    };
+    for object in &mut batch.objects {
+        object.expected_revision = Some(1);
+    }
+    let conversations = batch
+        .folders
+        .iter_mut()
+        .find(|folder| folder.role.as_deref() == Some("core.conversations"))
+        .unwrap();
+    conversations.name = "Renamed Conversations".into();
+    conversations.parent_id = Some(native_id("folder", "notes"));
+    let moved = coordinator.apply_validation_batch(&keys, batch).unwrap();
+    assert!(moved.published());
+    assert_eq!(moved.snapshot().head().generation(), 2);
+    drop(coordinator);
+
+    let reopened = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let conversations = reopened
+        .resolve_validation_role(&keys, "core.conversations")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        conversations.stable_id,
+        native_id("folder", "conversations")
+    );
+    assert_eq!(conversations.generation, 2);
+}
+
+#[test]
 fn malformed_or_wrong_head_batches_never_change_validation_head() {
     let (root, coordinator) = fixture("atomic");
     let keys = keys();

@@ -1034,6 +1034,12 @@ async def _prepare_turn_context(
         maybe_set_thread_title,
         reactivate_thread_if_needed,
     )
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user_id) is not None:
+        raise RuntimeError("Legacy agent message persistence is disabled after CoreFS cutover.")
 
     _validate_image_attachment_inputs(attachments)
     companion = _get_companion(user_id)

@@ -441,10 +441,11 @@ mod python {
     ) -> PyResult<anima_corefs::transaction::ValidationBatchPolicy> {
         match value {
             "user-write" => Ok(anima_corefs::transaction::ValidationBatchPolicy::UserWrite),
+            "shared-manage" => Ok(anima_corefs::transaction::ValidationBatchPolicy::SharedManage),
             "inherit" => Ok(anima_corefs::transaction::ValidationBatchPolicy::Inherit),
             "deny" => Ok(anima_corefs::transaction::ValidationBatchPolicy::Deny),
             _ => Err(pyo3::exceptions::PyValueError::new_err(
-                "validation batch policy must be user-write, inherit, or deny",
+                "validation batch policy must be user-write, shared-manage, inherit, or deny",
             )),
         }
     }
@@ -547,6 +548,12 @@ mod python {
             }
             anima_corefs::crypto::ObjectKind::Attachment => {
                 anima_corefs::transaction::MAX_WRITING_ATTACHMENT_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Thread => {
+                anima_corefs::transaction::MAX_THREAD_DOCUMENT_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::MessageSegment => {
+                anima_corefs::transaction::MAX_MESSAGE_SEGMENT_BYTES
             }
             _ => 0,
         };

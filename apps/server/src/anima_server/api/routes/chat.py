@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator
+from datetime import datetime
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -62,6 +63,11 @@ from anima_server.services.agent.state import (
 )
 from anima_server.services.agent.streaming import summarize_usage
 from anima_server.services.agent.system_prompt import PromptTemplateError
+from anima_server.services.corefs.conversation_authority import (
+    canonical_message_api_id,
+    conversation_corefs_authority_active,
+    list_canonical_threads,
+)
 from anima_server.services.corefs.runtime_sealing import RuntimeSealingLocked
 from anima_server.services.corefs.sealed_runtime import runtime_index_for_sensitive_write
 
@@ -122,7 +128,12 @@ async def send_message(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResponse | StreamingResponse:
-    await require_unlocked_user_async(request, payload.userId)
+    unlock_session = await require_unlocked_user_async(request, payload.userId)
+    if conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_conversation_mutation_not_enabled"},
+        )
     try:
         runtime_index_for_sensitive_write(runtime_db, user_id=payload.userId)
     except RuntimeSealingLocked as exc:
@@ -226,7 +237,26 @@ async def get_chat_history(
     limit: int = Query(default=50, ge=1, le=200),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> list[ChatHistoryMessage]:
-    await require_unlocked_user_async(request, userId)
+    unlock_session = await require_unlocked_user_async(request, userId)
+    if conversation_corefs_authority_active(unlock_session):
+        canonical = [
+            message
+            for view in list_canonical_threads(session=unlock_session)
+            for message in view.messages
+        ]
+        canonical.sort(key=lambda message: (message.created_at, message.sequence))
+        return [
+            ChatHistoryMessage(
+                id=canonical_message_api_id(message),
+                userId=userId,
+                role=message.role,
+                content=message.content,
+                createdAt=datetime.fromisoformat(message.created_at),
+                attachments=[],
+                pills=[],
+            )
+            for message in canonical[-limit:]
+        ]
     rows = list_agent_history(userId, runtime_db, limit=limit)
     return [
         ChatHistoryMessage(
@@ -257,6 +287,11 @@ async def get_message_attachment(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> FileResponse:
     unlock_session = await require_unlocked_session_async(request)
+    if conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_attachment_route_required"},
+        )
     message = runtime_db.get(RuntimeMessage, message_id)
     if (
         message is None
@@ -287,7 +322,12 @@ async def clear_chat_history(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatHistoryClearResponse:
-    await require_unlocked_user_async(request, payload.userId)
+    unlock_session = await require_unlocked_user_async(request, payload.userId)
+    if conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_conversation_mutation_not_enabled"},
+        )
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatHistoryClearResponse(status="cleared")
 
@@ -299,7 +339,12 @@ async def reset_chat_thread(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResetResponse:
-    await require_unlocked_user_async(request, payload.userId)
+    unlock_session = await require_unlocked_user_async(request, payload.userId)
+    if conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_conversation_mutation_not_enabled"},
+        )
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatResetResponse(status="reset")
 
