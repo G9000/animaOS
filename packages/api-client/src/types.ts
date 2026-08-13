@@ -259,11 +259,30 @@ export interface CoreImportOperation {
   progressPercent: number;
   payloadKind: CoreArchivePayloadKind | null;
   recoveryState: "complete" | "filesystem_missing" | "recovery_only" | null;
-  stagingPath: string | null;
   archiveId: string | null;
   activationId: string | null;
   restartRequired: boolean;
   errorCode: string | null;
+}
+
+export interface CoreFsRecoveryBrowseRequest {
+  operation: "stat" | "list" | "read";
+  credentialKind: "password" | "recovery";
+  credential: string;
+  path?: string;
+  cursorAfter?: string;
+  cursorGeneration?: number;
+  limit?: number;
+  offset?: number;
+  maxBytes?: number;
+  responseBytes?: number;
+}
+
+export interface CoreFsRecoveryBrowseResponse {
+  operation: "stat" | "list" | "read";
+  generation: number;
+  catalogHash: string;
+  result: Record<string, unknown> | null;
 }
 
 export interface CoreActiveStatus {

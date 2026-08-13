@@ -4,6 +4,7 @@ import type {
   CoreArchivePayloadKind,
   CoreImportOperation,
   CoreImportProbe,
+  CoreFsRecoveryBrowseResponse,
   CoreTransferDestinationProbe,
   CoreTransferEstimate,
   CoreTransferOperation,
@@ -69,6 +70,13 @@ export default function CoreTransferSettings() {
   const [rollbackConfirmed, setRollbackConfirmed] = useState(false);
   const [rollbackBusy, setRollbackBusy] = useState(false);
   const [rollbackStatus, setRollbackStatus] = useState("");
+  const [recoveryCredentialKind, setRecoveryCredentialKind] = useState<"password" | "recovery">("recovery");
+  const [recoveryCredential, setRecoveryCredential] = useState("");
+  const [recoveryBrowseOperation, setRecoveryBrowseOperation] = useState<"stat" | "list" | "read">("list");
+  const [recoveryBrowsePath, setRecoveryBrowsePath] = useState("");
+  const [recoveryBrowseResult, setRecoveryBrowseResult] = useState<CoreFsRecoveryBrowseResponse | null>(null);
+  const [recoveryBrowseBusy, setRecoveryBrowseBusy] = useState(false);
+  const [recoveryBrowseStatus, setRecoveryBrowseStatus] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -308,6 +316,45 @@ export default function CoreTransferSettings() {
     }
   };
 
+  const handleRecoveryBrowse = async () => {
+    if (
+      !importOperation ||
+      importOperation.state !== "completed" ||
+      importOperation.recoveryState !== "recovery_only"
+    ) {
+      return;
+    }
+    if (!recoveryCredential) {
+      setRecoveryBrowseStatus("Enter the CoreFS password or recovery phrase for this staged archive.");
+      return;
+    }
+    setRecoveryBrowseBusy(true);
+    setRecoveryBrowseStatus("");
+    try {
+      const result = await api.corefs.transfer.browseCoreFsRecovery(
+        importOperation.operationId,
+        {
+          operation: recoveryBrowseOperation,
+          credentialKind: recoveryCredentialKind,
+          credential: recoveryCredential,
+          path: recoveryBrowsePath.trim(),
+        },
+      );
+      setRecoveryBrowseResult(result);
+      setRecoveryBrowseStatus(
+        `Authenticated read-only CoreFS snapshot ${result.generation}. The staged Core was not attached or activated.`,
+      );
+    } catch (error) {
+      setRecoveryBrowseResult(null);
+      setRecoveryBrowseStatus(
+        error instanceof Error ? error.message : "CoreFS recovery browse failed closed.",
+      );
+    } finally {
+      setRecoveryCredential("");
+      setRecoveryBrowseBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className={`${glass} p-6 space-y-5`}>
@@ -522,6 +569,71 @@ export default function CoreTransferSettings() {
         {importStatus && (
           <p className="font-mono text-caption text-foreground/45 leading-relaxed">{importStatus}</p>
         )}
+
+        {importOperation?.state === "completed" &&
+          importOperation.recoveryState === "recovery_only" && (
+            <div className="border-t border-hairline pt-5 space-y-4">
+              <div>
+                <h3 className="font-mono text-label tracking-caps-3 uppercase text-foreground/45">
+                  Browse recovered CoreFS
+                </h3>
+                <p className="mt-1 font-mono text-micro text-foreground/30 leading-relaxed">
+                  Authenticate one bounded read against the staged recovery Core. Credentials stay
+                  in memory for this request only; browsing never attaches the filesystem to a Soul.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <select
+                  value={recoveryCredentialKind}
+                  onChange={(event) => setRecoveryCredentialKind(event.target.value as "password" | "recovery")}
+                  className={INPUT_CLASS}
+                >
+                  <option value="recovery">Recovery phrase</option>
+                  <option value="password">CoreFS password</option>
+                </select>
+                <select
+                  value={recoveryBrowseOperation}
+                  onChange={(event) => setRecoveryBrowseOperation(event.target.value as "stat" | "list" | "read")}
+                  className={INPUT_CLASS}
+                >
+                  <option value="list">List folder</option>
+                  <option value="stat">Inspect path</option>
+                  <option value="read">Read bounded chunk</option>
+                </select>
+                <input
+                  value={recoveryBrowsePath}
+                  onChange={(event) => setRecoveryBrowsePath(event.target.value)}
+                  className={INPUT_CLASS}
+                  placeholder="CoreFS path; blank means root"
+                />
+              </div>
+
+              <input
+                type="password"
+                value={recoveryCredential}
+                onChange={(event) => setRecoveryCredential(event.target.value)}
+                className={INPUT_CLASS}
+                placeholder="Used only for this read-only recovery request"
+                autoComplete="off"
+              />
+
+              <ActionButton onClick={handleRecoveryBrowse} disabled={recoveryBrowseBusy}>
+                {recoveryBrowseBusy ? "Authenticating…" : "Browse staged CoreFS"}
+              </ActionButton>
+
+              {recoveryBrowseResult && (
+                <pre className="max-h-64 overflow-auto border border-hairline bg-foreground/[0.03] p-3 font-mono text-micro text-foreground/50 whitespace-pre-wrap break-words">
+                  {JSON.stringify(recoveryBrowseResult.result, null, 2)}
+                </pre>
+              )}
+              {recoveryBrowseStatus && (
+                <p className="font-mono text-caption text-foreground/45 leading-relaxed">
+                  {recoveryBrowseStatus}
+                </p>
+              )}
+            </div>
+          )}
       </section>
 
       {activeCoreStatus?.retainedCoreId && (

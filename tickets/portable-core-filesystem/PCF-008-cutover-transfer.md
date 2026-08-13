@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:42 MYT
+- Updated: 2026-08-13 21:58 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -286,6 +286,24 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   coverage passes `30`. Authenticated browse/export and scoped credential
   replacement for recovery-only mode remain open. No external or irreversible
   action occurred.
+- 2026-08-13 21:58 MYT - Added authenticated read-only CoreFS recovery
+  browsing for a completed FS-only staged import. Each bounded stat/list/read
+  request opens the exact staged Core under a one-request password or recovery
+  phrase, permits only the filtered filesystem compartment while
+  authenticating each retained wrapper under its original source-scope AAD,
+  rechecks the authenticated manifest, keyslot, HEAD, and catalog record hashes
+  before and after use, pins the imported filesystem generation, closes the
+  native session, and retains no credential or derived session. Credential
+  work is precharged/rate-limited. Pre-cutover archives use only a serialized,
+  byte-exact temporary `VALIDATION_HEAD` alias derived from the authenticated
+  `HEAD`, and every success/failure removes it. Failures expose neither
+  credential, machine staging path, nor internals, and
+  import status no longer returns the staging path. The desktop exposes the
+  recovery browser without offering attachment or activation. The broader
+  transfer band passes `76`, API-client/desktop contracts pass `33`, and the
+  desktop production build passes. Recovery-only re-export and scoped
+  credential replacement remain open. No external or irreversible action
+  occurred.
 
 ## Validation
 
@@ -384,6 +402,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after explicit V1 CoreFS reattachment rejection (`9 passed`)
   - `bun test packages/api-client/tests/client.test.ts` after the same client
     boundary (`30 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_recovery_access.py -q`
+    after authenticated CoreFS recovery browsing (`76 passed`)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
+    after recovery browser client/UI wiring (`33 passed`)
+  - `bun run --cwd apps/desktop build` after recovery browser UI wiring
+    (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -413,6 +437,7 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/{main.py,schemas/corefs_transfer.py}`
   - `apps/server/src/anima_server/api/routes/corefs_transfer.py`
   - `apps/server/src/anima_server/services/corefs/transfer_jobs.py`
+  - `apps/server/src/anima_server/services/corefs/recovery_access.py`
   - `apps/server/tests/test_corefs_transfer_api.py`
   - `packages/api-client/src/{client.ts,types.ts}`
   - `packages/api-client/tests/client.test.ts`
@@ -423,6 +448,7 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/{schemas/corefs.py,api/routes/corefs.py}`
   - `apps/server/src/anima_server/services/corefs/{logical.py,cutover.py}`
   - `apps/server/tests/{test_corefs_api.py,test_corefs_logical.py,test_corefs_cutover.py}`
+  - `apps/server/tests/test_corefs_recovery_access.py`
   - `packages/api-client/src/types.ts`
   - `apps/server/src/anima_server/services/corefs/active_core_registry.py`
   - `apps/server/tests/test_corefs_active_core_registry.py`

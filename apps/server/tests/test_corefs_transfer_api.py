@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Generator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,6 +13,10 @@ from anima_server.services.corefs.archive_transfer import (
     CoreArchiveImportResult,
     CoreArchiveInventory,
     CoreArchivePayloadKind,
+)
+from anima_server.services.corefs.recovery_access import (
+    CoreFsRecoveryAccessError,
+    CoreFsRecoveryBrowseResult,
 )
 from anima_server.services.corefs.transfer import (
     DestinationProbe,
@@ -30,6 +35,13 @@ from anima_server.services.corefs.transfer_jobs import (
 )
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _reset_recovery_browse_admission() -> Generator[None, None, None]:
+    corefs_transfer._RECOVERY_BROWSE_ADMISSION.reset()
+    yield
+    corefs_transfer._RECOVERY_BROWSE_ADMISSION.reset()
 
 
 def _app() -> FastAPI:
@@ -280,6 +292,64 @@ def test_corefs_only_recovery_cannot_attach_to_a_soul_in_v1(
         manager.request_corefs_reattachment(operation.operation_id, user_id=7)
 
 
+def test_corefs_recovery_manager_keeps_credentials_ephemeral(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = managed_tmp_path / "corefs-only.anima"
+    archive.write_bytes(b"authenticated-archive")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    staging = staging_parent / ".staged"
+    staging.mkdir()
+    operation = ImportOperation(
+        operation_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+        user_id=7,
+        prepared=PreparedImport(
+            archive_path=archive,
+            archive_bytes=archive.stat().st_size,
+            probe=ImportCapacityProbe(
+                staging_parent=staging_parent,
+                restored_core_bytes=archive.stat().st_size,
+                available_bytes=10**9,
+                required_capacity_bytes=64 * 1024 * 1024 + archive.stat().st_size,
+            ),
+        ),
+        state=TransferOperationState.COMPLETED,
+        phase="staged_credential_required",
+        payload_kind=CoreArchivePayloadKind.FS,
+        core_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+        recovery_state="recovery_only",
+        staging_path=staging,
+        staging_identity=(1, 2),
+        control_records=(("manifest.json", 1, "a" * 64),),
+        filesystem_generation=7,
+    )
+    captured: dict[str, object] = {}
+
+    def browse(**kwargs: object) -> CoreFsRecoveryBrowseResult:
+        captured.update(kwargs)
+        return CoreFsRecoveryBrowseResult("stat", 7, "b" * 64, b"{}")
+
+    monkeypatch.setattr(transfer_jobs, "browse_staged_corefs", browse)
+    manager = CoreImportOperationManager()
+    manager._operations[operation.operation_id] = operation
+
+    result = manager.browse_corefs_recovery(
+        operation.operation_id,
+        user_id=7,
+        credential="one-request-only",
+        wrapping_path=transfer_jobs.WrappingPath.RECOVERY,
+        browse_operation="stat",
+        logical_path="Notes",
+    )
+
+    assert result.generation == 7
+    assert captured["credential"] == "one-request-only"
+    assert captured["staging_path"] == staging
+    assert not hasattr(operation, "credential")
+
+
 def test_corefs_reattachment_api_returns_the_stable_v1_code(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -333,7 +403,6 @@ def test_import_api_probes_and_stages_without_exposing_passphrase(
                 "progressPercent": 0,
                 "payloadKind": None,
                 "recoveryState": None,
-                "stagingPath": None,
                 "archiveId": None,
                 "activationId": None,
                 "restartRequired": False,
@@ -369,6 +438,96 @@ def test_import_api_probes_and_stages_without_exposing_passphrase(
     assert probe.json()["requiredCapacityBytes"] == 64 * 1024 * 1024 + 7
     assert prepare.status_code == 202
     assert "passphrase" not in prepare.text.casefold()
+    assert "stagingPath" not in prepare.text
+
+
+def test_corefs_recovery_browse_uses_one_request_credential_without_path_disclosure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class Manager:
+        def browse_corefs_recovery(self, operation_id: str, **kwargs: object):
+            captured["operation_id"] = operation_id
+            captured.update(kwargs)
+            return CoreFsRecoveryBrowseResult(
+                operation="list",
+                generation=7,
+                catalog_hash="a" * 64,
+                payload=b'{"entries":[],"nextCursor":null}',
+            )
+
+    monkeypatch.setattr(
+        corefs_transfer,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(user_id=7),
+    )
+    monkeypatch.setattr(corefs_transfer, "core_import_operations", Manager())
+
+    with TestClient(_app()) as client:
+        response = client.post(
+            "/api/corefs/transfer/import/operations/import-a/browse-corefs",
+            json={
+                "operation": "list",
+                "credentialKind": "recovery",
+                "credential": "recovery phrase that remains private",
+                "path": "",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "operation": "list",
+        "generation": 7,
+        "catalogHash": "a" * 64,
+        "result": {"entries": [], "nextCursor": None},
+    }
+    assert captured["operation_id"] == "import-a"
+    assert captured["user_id"] == 7
+    assert captured["credential"] == "recovery phrase that remains private"
+    assert captured["wrapping_path"].value == "recovery"
+    assert "credential" not in response.text.casefold()
+    assert "path" not in response.text.casefold()
+
+
+def test_corefs_recovery_browse_precharges_expensive_credential_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Manager:
+        def browse_corefs_recovery(self, *_args: object, **_kwargs: object):
+            raise CoreFsRecoveryAccessError("private credential failure")
+
+    monkeypatch.setattr(
+        corefs_transfer,
+        "require_unlocked_session",
+        lambda _request: SimpleNamespace(user_id=7),
+    )
+    monkeypatch.setattr(corefs_transfer, "core_import_operations", Manager())
+    payload = {
+        "operation": "stat",
+        "credentialKind": "password",
+        "credential": "wrong credential",
+        "path": "Notes",
+    }
+
+    with TestClient(_app()) as client:
+        failures = [
+            client.post(
+                "/api/corefs/transfer/import/operations/import-a/browse-corefs",
+                json=payload,
+            )
+            for _ in range(5)
+        ]
+        limited = client.post(
+            "/api/corefs/transfer/import/operations/import-a/browse-corefs",
+            json=payload,
+        )
+
+    assert all(response.status_code == 409 for response in failures)
+    assert limited.status_code == 429
+    assert limited.json() == {"detail": {"code": "corefs_recovery_browse_rate_limited"}}
+    assert limited.headers["retry-after"]
+    assert "private credential failure" not in limited.text
 
 
 def test_active_core_status_and_confirmed_restart_rollback_expose_no_paths(

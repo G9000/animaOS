@@ -316,9 +316,14 @@ def test_scoped_export_excludes_other_compartment_key_material(
             },
             "active_filesystem_root_generation": 1,
             "keyslots": [
-                {"purpose": "soul", "wrapped": {"wrapped_key": "soul-root"}},
+                {
+                    "purpose": "soul",
+                    "scope": "full",
+                    "wrapped": {"wrapped_key": "soul-root"},
+                },
                 {
                     "purpose": "filesystem-root",
+                    "scope": "full",
                     "wrapped": {"wrapped_key": "filesystem-root"},
                 },
             ],
@@ -342,6 +347,7 @@ def test_scoped_export_excludes_other_compartment_key_material(
         assert archived_manifest["archive_payload_scope"] == payload_kind.value
         assert archived_manifest["degraded_state"] == degraded_state
         assert {slot["purpose"] for slot in archived_manifest["keyslots"]} == {included_purpose}
+        assert {slot["scope"] for slot in archived_manifest["keyslots"]} == {"full"}
         assert archived_keyslots["keyslots"] == archived_manifest["keyslots"]
         assert excluded_purpose not in json.dumps(archived_manifest["keyslots"])
         if payload_kind is CoreArchivePayloadKind.SOUL:
@@ -468,20 +474,32 @@ def _staged_archive_summary(
     tamper_keyslots: bool = False,
 ) -> dict[str, object]:
     slots = (
-        [{"purpose": "soul", "wrapped": {"wrapped_key": "soul-root"}}]
+        [
+            {
+                "purpose": "soul",
+                "scope": "full",
+                "wrapped": {"wrapped_key": "soul-root"},
+            }
+        ]
         if payload_kind is CoreArchivePayloadKind.SOUL
         else [
             {
                 "purpose": "filesystem-root",
+                "scope": "full",
                 "wrapped": {"wrapped_key": "filesystem-root"},
             }
         ]
     )
     if payload_kind is CoreArchivePayloadKind.FULL:
         slots = [
-            {"purpose": "soul", "wrapped": {"wrapped_key": "soul-root"}},
+            {
+                "purpose": "soul",
+                "scope": "full",
+                "wrapped": {"wrapped_key": "soul-root"},
+            },
             {
                 "purpose": "filesystem-root",
+                "scope": "full",
                 "wrapped": {"wrapped_key": "filesystem-root"},
             },
         ]
@@ -508,7 +526,13 @@ def _staged_archive_summary(
                 "version": 1,
                 "keyslotsVersion": 1,
                 "keyslots": (
-                    [{"purpose": "soul", "wrapped": {"wrapped_key": "tampered"}}]
+                    [
+                        {
+                            "purpose": "soul",
+                            "scope": "full",
+                            "wrapped": {"wrapped_key": "tampered"},
+                        }
+                    ]
                     if tamper_keyslots
                     else slots
                 ),
@@ -596,6 +620,15 @@ def test_stage_archive_authenticates_exact_tree_without_activating(
     assert result.inventory.payload_kind is payload_kind
     assert result.staging_path == staging
     assert staging.is_dir()
+    assert {path for path, _length, _digest in result.control_records} == {
+        "manifest.json",
+        "keyslots/root-keyslots.json",
+        *(
+            {"fs/HEAD", "fs/catalogs/catalog.acore"}
+            if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.FS}
+            else set()
+        ),
+    }
 
 
 @pytest.mark.parametrize("tamper", ["keyslots", "extra_file"])

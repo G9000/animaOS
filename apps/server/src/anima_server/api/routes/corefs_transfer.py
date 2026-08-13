@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -7,6 +8,8 @@ from fastapi import APIRouter, HTTPException, Request, status
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.schemas.corefs_transfer import (
     CoreActiveStatusResponse,
+    CoreFsRecoveryBrowseRequest,
+    CoreFsRecoveryBrowseResponse,
     CoreImportOperationResponse,
     CoreImportPrepareRequest,
     CoreImportProbeRequest,
@@ -23,10 +26,15 @@ from anima_server.services.corefs.active_core_registry import (
     read_active_core_status,
     schedule_active_core_rollback,
 )
+from anima_server.services.corefs.admission import (
+    FsCredentialAdmission,
+    FsCredentialAdmissionRejected,
+)
 from anima_server.services.corefs.archive_transfer import (
     CoreArchivePayloadKind,
     CoreArchiveTransferError,
 )
+from anima_server.services.corefs.recovery_access import CoreFsRecoveryAccessError
 from anima_server.services.corefs.transfer import TransferError
 from anima_server.services.corefs.transfer_jobs import (
     CorefsReattachmentNotSupported,
@@ -34,8 +42,10 @@ from anima_server.services.corefs.transfer_jobs import (
     core_import_operations,
     core_transfer_operations,
 )
+from anima_server.services.corefs.types import WrappingPath
 
 router = APIRouter(prefix="/api/corefs/transfer", tags=["corefs-transfer"])
+_RECOVERY_BROWSE_ADMISSION = FsCredentialAdmission()
 
 
 @router.post("/estimate", response_model=CoreTransferEstimateResponse)
@@ -291,6 +301,76 @@ def reject_v1_corefs_reattachment(
     except TransferError as exc:
         raise _transfer_conflict() from exc
     return CoreImportOperationResponse(**operation.public())
+
+
+@router.post(
+    "/import/operations/{operation_id}/browse-corefs",
+    response_model=CoreFsRecoveryBrowseResponse,
+)
+def browse_corefs_recovery(
+    operation_id: str,
+    payload: CoreFsRecoveryBrowseRequest,
+    request: Request,
+) -> CoreFsRecoveryBrowseResponse:
+    session = require_unlocked_session(request)
+    try:
+        client_host = request.client.host if request.client is not None else "unknown"
+        admission_key = f"{client_host}:{session.user_id}:{operation_id}"
+        credential = payload.credential.get_secret_value()
+        if payload.credentialKind == "recovery":
+            credential = credential.strip().lower()
+        with _RECOVERY_BROWSE_ADMISSION.admit(admission_key):
+            result = core_import_operations.browse_corefs_recovery(
+                operation_id,
+                user_id=session.user_id,
+                credential=credential,
+                wrapping_path=WrappingPath(payload.credentialKind),
+                browse_operation=payload.operation,
+                logical_path=payload.path,
+                cursor_after=payload.cursorAfter,
+                cursor_generation=payload.cursorGeneration,
+                limit=payload.limit,
+                offset=payload.offset,
+                max_bytes=payload.maxBytes,
+                response_bytes=payload.responseBytes,
+            )
+    except FsCredentialAdmissionRejected as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": "corefs_recovery_browse_rate_limited"},
+            headers={"Retry-After": str(exc.retry_after)},
+        ) from None
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "core_import_operation_not_found"},
+        ) from exc
+    except (CoreFsRecoveryAccessError, TransferError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_recovery_browse_failed"},
+        ) from exc
+    decoded: dict[str, object] | None = None
+    if result.payload is not None:
+        try:
+            value = json.loads(result.payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "corefs_invalid_native_response"},
+            ) from exc
+        if not isinstance(value, dict):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "corefs_invalid_native_response"},
+            )
+        decoded = value
+    return CoreFsRecoveryBrowseResponse(
+        operation=result.operation,
+        generation=result.generation,
+        catalogHash=result.catalog_hash,
+        result=decoded,
+    )
 
 
 @router.get("/active-core", response_model=CoreActiveStatusResponse)

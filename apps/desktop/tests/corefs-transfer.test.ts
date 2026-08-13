@@ -47,6 +47,10 @@ describe("ANIMA CORE transfer settings", () => {
       "rollbackConfirmed",
       "activeCoreId",
       "retainedCoreId",
+      "Browse recovered CoreFS",
+      "browseCoreFsRecovery",
+      "Credentials stay",
+      "never attaches the filesystem to a Soul",
     ]) {
       expect(page).toContain(contract);
     }

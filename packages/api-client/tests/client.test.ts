@@ -221,7 +221,6 @@ describe("createApiClient error handling", () => {
             progressPercent: 0,
             payloadKind: null,
             recoveryState: null,
-            stagingPath: null,
             archiveId: null,
             activationId: null,
             restartRequired: false,
@@ -241,6 +240,12 @@ describe("createApiClient error handling", () => {
     await api.corefs.transfer.cancelImport("import-a");
     await api.corefs.transfer.activateImportOnRestart("import-a");
     await api.corefs.transfer.attachCoreFsRecovery("import-a");
+    await api.corefs.transfer.browseCoreFsRecovery("import-a", {
+      operation: "list",
+      credentialKind: "recovery",
+      credential: "one request phrase",
+      path: "",
+    });
 
     expect(requests.map((request) => request.url)).toEqual([
       "https://api.test/api/corefs/transfer/import/probe",
@@ -249,7 +254,14 @@ describe("createApiClient error handling", () => {
       "https://api.test/api/corefs/transfer/import/operations/import-a/cancel",
       "https://api.test/api/corefs/transfer/import/operations/import-a/activate-on-restart",
       "https://api.test/api/corefs/transfer/import/operations/import-a/attach-corefs",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/browse-corefs",
     ]);
+    expect(requests.at(-1)?.body).toEqual({
+      operation: "list",
+      credentialKind: "recovery",
+      credential: "one request phrase",
+      path: "",
+    });
   });
 
   test("requires explicit confirmation for restart-only retained Core rollback", async () => {

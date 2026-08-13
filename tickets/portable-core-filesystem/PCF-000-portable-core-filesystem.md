@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:42 MYT
+- Updated: 2026-08-13 21:58 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -399,6 +399,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 21:21 MYT - PCF-008 restart lifecycle now prepares/re-verifies legacy Runtime recovery before a forward-only embedded startup selects the fresh PostgreSQL directory, and retires plaintext only after the fresh database claims the exact Core/instance identity, completes schema setup, and initializes indexes. Explicit external Runtime follows the same post-binding gate; a live/ambiguous legacy postmaster fails closed. The expanded Runtime/cutover band passes `96` and focused final rerun `55`. First-mutation restart coordination remains open; no real source deletion, external action, or irreversible cutover occurred.
 - 2026-08-13 21:34 MYT - PCF-008 live transfer now captures Soul through a WAL-checkpointed, pinned SQLite/SQLCipher online backup that is independently integrity/inventory verified and remains encrypted at rest. Full/CoreFS capture freezes `fs/HEAD`, rechecks the authenticated native inventory after Soul capture, and binds streaming to the exact generation/catalog hash while retaining the object lease; temporary snapshots are removed on all paths and private inventory hashes stay out of the API. The combined transfer/Soul band passes `70`, native archive tests `6`, the Python binding compile-check, and a real SQLCipher regression. Multipart/V1 and later cutover gates remain open; the paid workflow stays disabled and no external or irreversible action occurred.
 - 2026-08-13 21:42 MYT - PCF-008 now exposes the required closed V1 CoreFS-to-Soul attachment operation: an authenticated owner may address only a completed CoreFS-only staged recovery, which deterministically returns HTTP 409 `corefs_reattachment_not_supported` without paths or internals. Backend coverage passes `9` and API-client coverage `30`; recovery-only browse/export and scoped credential controls remain open. No external or irreversible action occurred.
+- 2026-08-13 21:58 MYT - PCF-008 CoreFS-only staged recovery now supports authenticated bounded stat/list/read without attachment or activation. Each request uses an ephemeral compartment-limited unlock, authenticates filtered filesystem wrappers under their original source-scope AAD, rejects foreign root material, rechecks the archive-authenticated control records and imported generation before and after native access, rate-limits expensive unwrap attempts, closes the native session, and exposes no staging path or private error. Pre-cutover archives use a serialized byte-exact temporary validation-pointer alias derived from authenticated HEAD and remove it on every exit. The broader transfer band passes `76`, API-client/desktop contracts `33`, and the desktop production build passes. Re-export and scoped recovery-credential replacement remain open; no external or irreversible action occurred.
 
 ## Validation
 

@@ -21,6 +21,14 @@ from anima_server.services.corefs.archive_transfer import (
     verify_core_archive_v2,
 )
 from anima_server.services.corefs.cutover import CutoverState, read_cutover_record
+from anima_server.services.corefs.recovery_access import (
+    ControlRecord,
+    CoreFsRecoveryBrowseResult,
+    RecoveryBrowseOperation,
+    StageIdentity,
+    browse_staged_corefs,
+    staged_core_identity,
+)
 from anima_server.services.corefs.transfer import (
     DestinationProbe,
     ImportCapacityProbe,
@@ -33,6 +41,7 @@ from anima_server.services.corefs.transfer import (
     probe_local_destination,
     publish_single_file,
 )
+from anima_server.services.corefs.types import WrappingPath
 
 _MAX_OPERATIONS = 32
 
@@ -108,11 +117,15 @@ class ImportOperation:
     core_id: str | None = field(default=None, repr=False)
     recovery_state: str | None = None
     staging_path: Path | None = None
+    staging_identity: StageIdentity | None = field(default=None, repr=False)
+    control_records: tuple[ControlRecord, ...] = field(default=(), repr=False)
+    filesystem_generation: int | None = field(default=None, repr=False)
     archive_id: str | None = None
     activation_id: str | None = None
     restart_required: bool = False
     error_code: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event, repr=False)
+    recovery_access_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def public(self) -> dict[str, object]:
         return {
@@ -124,7 +137,6 @@ class ImportOperation:
             "progressPercent": self.progress_percent,
             "payloadKind": self.payload_kind.value if self.payload_kind is not None else None,
             "recoveryState": self.recovery_state,
-            "stagingPath": str(self.staging_path) if self.staging_path is not None else None,
             "archiveId": self.archive_id,
             "activationId": self.activation_id,
             "restartRequired": self.restart_required,
@@ -401,6 +413,60 @@ class CoreImportOperationManager:
                 raise TransferError("CoreFS recovery operation is not attachable")
         raise CorefsReattachmentNotSupported("CoreFS-to-Soul reattachment is not supported in V1")
 
+    def browse_corefs_recovery(
+        self,
+        operation_id: str,
+        *,
+        user_id: int,
+        credential: str,
+        wrapping_path: WrappingPath,
+        browse_operation: RecoveryBrowseOperation,
+        logical_path: str,
+        cursor_after: str | None = None,
+        cursor_generation: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        max_bytes: int = 65_536,
+        response_bytes: int | None = None,
+    ) -> CoreFsRecoveryBrowseResult:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FS
+                or operation.recovery_state != "recovery_only"
+                or operation.staging_path is None
+                or operation.staging_identity is None
+                or operation.filesystem_generation is None
+                or operation.core_id is None
+                or not operation.control_records
+            ):
+                raise TransferError("CoreFS recovery operation is not available for browsing")
+            staging_path = operation.staging_path
+            identity = operation.staging_identity
+            control_records = operation.control_records
+            filesystem_generation = operation.filesystem_generation
+            core_id = operation.core_id
+            access_lock = operation.recovery_access_lock
+        with access_lock:
+            return browse_staged_corefs(
+                staging_path=staging_path,
+                expected_core_id=core_id,
+                expected_generation=filesystem_generation,
+                expected_stage_identity=identity,
+                control_records=control_records,
+                credential=credential,
+                wrapping_path=wrapping_path,
+                operation=browse_operation,
+                logical_path=logical_path,
+                cursor_after=cursor_after,
+                cursor_generation=cursor_generation,
+                limit=limit,
+                offset=offset,
+                max_bytes=max_bytes,
+                response_bytes=response_bytes,
+            )
+
     def schedule_activation(self, operation_id: str, *, user_id: int) -> ImportOperation:
         operation = self.get(operation_id, user_id=user_id)
         with self._lock:
@@ -478,6 +544,9 @@ class CoreImportOperationManager:
                 operation.core_id = result.inventory.core_id
                 operation.recovery_state = recovery_state
                 operation.staging_path = result.staging_path
+                operation.staging_identity = staged_core_identity(result.staging_path)
+                operation.control_records = result.control_records
+                operation.filesystem_generation = result.inventory.filesystem_generation
                 operation.archive_id = result.archive_id
         except TransferCancelled:
             shutil.rmtree(staging, ignore_errors=True)

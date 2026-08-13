@@ -12,6 +12,8 @@ import type {
   CoreActiveStatus,
   CoreImportOperation,
   CoreImportProbe,
+  CoreFsRecoveryBrowseRequest,
+  CoreFsRecoveryBrowseResponse,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
   CoreArchivePayloadKind,
@@ -815,6 +817,14 @@ export function createApiClient(options: ApiClientOptions) {
           request<CoreImportOperation>(
             `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/attach-corefs`,
             { method: "POST" },
+          ),
+        browseCoreFsRecovery: (
+          operationId: string,
+          options: CoreFsRecoveryBrowseRequest,
+        ) =>
+          request<CoreFsRecoveryBrowseResponse>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/browse-corefs`,
+            { method: "POST", body: options },
           ),
         activeCore: () =>
           request<CoreActiveStatus>("/corefs/transfer/active-core"),

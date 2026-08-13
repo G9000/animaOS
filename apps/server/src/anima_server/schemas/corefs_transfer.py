@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+
+from anima_server.schemas.corefs import normalize_logical_path
 
 CoreArchivePayloadKindValue = Literal["full", "soul", "fs"]
 CoreTransferOperationState = Literal[
@@ -96,11 +98,47 @@ class CoreImportOperationResponse(BaseModel):
     progressPercent: int = Field(ge=0, le=100)
     payloadKind: CoreArchivePayloadKindValue | None
     recoveryState: Literal["complete", "filesystem_missing", "recovery_only"] | None
-    stagingPath: str | None
     archiveId: str | None
     activationId: str | None
     restartRequired: bool
     errorCode: str | None
+
+
+class CoreFsRecoveryBrowseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["stat", "list", "read"]
+    credentialKind: Literal["password", "recovery"]
+    credential: SecretStr = Field(min_length=1, max_length=1024)
+    path: str = ""
+    cursorAfter: str | None = None
+    cursorGeneration: int | None = Field(default=None, ge=1)
+    limit: int = Field(default=100, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0, le=(1 << 64) - 1)
+    maxBytes: int = Field(default=65_536, ge=1, le=1_048_576)
+    responseBytes: int | None = Field(default=None, ge=1024, le=10_485_760)
+
+    @field_validator("path", "cursorAfter")
+    @classmethod
+    def validate_logical_paths(cls, value: str | None, info: Any) -> str | None:
+        return normalize_logical_path(value, field_name=str(info.field_name))
+
+    @model_validator(mode="after")
+    def validate_cursor(self) -> CoreFsRecoveryBrowseRequest:
+        if self.operation != "list" and self.cursorAfter is not None:
+            raise ValueError("cursorAfter is available only for list recovery browsing.")
+        if self.cursorAfter is not None and self.cursorGeneration is None:
+            raise ValueError("cursorGeneration is required with cursorAfter.")
+        if self.cursorGeneration is not None and self.cursorAfter is None:
+            raise ValueError("cursorGeneration requires cursorAfter.")
+        return self
+
+
+class CoreFsRecoveryBrowseResponse(BaseModel):
+    operation: Literal["stat", "list", "read"]
+    generation: int
+    catalogHash: str
+    result: dict[str, Any] | None
 
 
 class CoreRollbackRequest(BaseModel):

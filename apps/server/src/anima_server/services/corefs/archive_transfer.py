@@ -17,6 +17,7 @@ from anima_server.services.corefs.soul_relocation import (
     SoulRelocationError,
     create_verified_soul_snapshot,
 )
+from anima_server.services.corefs.types import PayloadScope
 
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_RECOVERY_RECORDS = 10_000
@@ -61,6 +62,7 @@ class CoreArchiveImportResult:
     staging_path: Path
     chunk_count: int
     max_buffer_bytes: int
+    control_records: tuple[tuple[str, int, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,6 +325,7 @@ def stage_core_archive_v2(
             staging_path=staging,
             chunk_count=int(summary["chunkCount"]),
             max_buffer_bytes=int(summary["maxBufferBytes"]),
+            control_records=_authenticated_control_records(summary),
         )
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)
@@ -753,6 +756,43 @@ def _validate_staged_core(
     )
 
 
+def _authenticated_control_records(
+    summary: dict[str, object],
+) -> tuple[tuple[str, int, str], ...]:
+    """Retain the authenticated non-object records that select a staged Core."""
+    raw_records = summary.get("records")
+    if not isinstance(raw_records, list):
+        raise CoreArchiveTransferError("native archive control inventory is invalid")
+    retained: list[tuple[str, int, str]] = []
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            raise CoreArchiveTransferError("native archive control inventory is invalid")
+        if raw.get("recordType") not in {"manifest", "keyslots", "catalog"}:
+            continue
+        path = raw.get("recordPath")
+        length = raw.get("plaintextLength")
+        digest = raw.get("recordHash")
+        if (
+            not isinstance(path, str)
+            or isinstance(length, bool)
+            or not isinstance(length, int)
+            or length < 0
+            or not _is_sha256(digest)
+        ):
+            raise CoreArchiveTransferError("native archive control inventory is invalid")
+        retained.append((path, length, str(digest)))
+    required = {"manifest.json", "keyslots/root-keyslots.json"}
+    paths = {path for path, _length, _digest in retained}
+    payload_kind = CoreArchivePayloadKind(str(summary.get("payloadKind")))
+    if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.FS}:
+        required.add("fs/HEAD")
+        if not any(path.startswith("fs/catalogs/") for path in paths):
+            raise CoreArchiveTransferError("native archive control inventory is incomplete")
+    if not required.issubset(paths):
+        raise CoreArchiveTransferError("native archive control inventory is incomplete")
+    return tuple(retained)
+
+
 def _validate_imported_keyslot_scope(
     manifest: dict[str, object],
     payload_kind: CoreArchivePayloadKind,
@@ -761,6 +801,7 @@ def _validate_imported_keyslot_scope(
     if not isinstance(raw_slots, list) or not raw_slots:
         raise CoreArchiveTransferError("staged Core keyslot set is incomplete")
     purposes: set[str] = set()
+    scopes: set[str] = set()
     for slot in raw_slots:
         if not isinstance(slot, dict) or slot.get("purpose") not in {
             "soul",
@@ -768,12 +809,23 @@ def _validate_imported_keyslot_scope(
         }:
             raise CoreArchiveTransferError("staged Core keyslot set is invalid")
         purposes.add(str(slot["purpose"]))
+        scope = slot.get("scope")
+        if not isinstance(scope, str):
+            raise CoreArchiveTransferError("staged Core keyslot scope is invalid")
+        scopes.add(scope)
     expected = {
         CoreArchivePayloadKind.FULL: {"soul", "filesystem-root"},
         CoreArchivePayloadKind.SOUL: {"soul"},
         CoreArchivePayloadKind.FS: {"filesystem-root"},
     }[payload_kind]
     if purposes != expected:
+        raise CoreArchiveTransferError("staged Core keyslot scope is invalid")
+    allowed_scopes = (
+        {PayloadScope.FULL.value}
+        if payload_kind is CoreArchivePayloadKind.FULL
+        else {PayloadScope.FULL.value, payload_kind.value}
+    )
+    if not scopes.issubset(allowed_scopes):
         raise CoreArchiveTransferError("staged Core keyslot scope is invalid")
 
 
