@@ -403,6 +403,7 @@ fn shared_patch_plan_commits_all_files_once_and_deletes_to_recoverable_trash() {
     add_formats.insert(
         "Notes/new.md".to_string(),
         PatchAddFormat {
+            stable_id: Some("01J1000000000000000000000A".to_string()),
             kind: ObjectKind::Note,
             content_type: "text/markdown".to_string(),
         },
@@ -425,6 +426,10 @@ fn shared_patch_plan_commits_all_files_once_and_deletes_to_recoverable_trash() {
     assert!(result.atomic);
     assert_eq!(result.generation, 2);
     assert_eq!(result.changes.len(), 2);
+    assert!(result
+        .changes
+        .iter()
+        .any(|change| change.stable_id == "01J1000000000000000000000A"));
     assert_eq!(
         result
             .changes

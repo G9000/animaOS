@@ -527,6 +527,8 @@ mod python {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct LogicalPatchAddFormatWire {
+        #[serde(default)]
+        stable_id: Option<String>,
         kind: String,
         content_type: String,
     }
@@ -1258,6 +1260,7 @@ mod python {
                             Ok((
                                 path,
                                 anima_corefs::logical::PatchAddFormat {
+                                    stable_id: format.stable_id,
                                     kind: anima_corefs::crypto::ObjectKind::parse(&format.kind)
                                         .map_err(corefs_value_error)?,
                                     content_type: format.content_type,

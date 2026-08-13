@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Never
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import func, select
@@ -25,6 +26,14 @@ from anima_server.services.corefs.conversation_authority import (
     get_canonical_thread,
     list_canonical_threads,
 )
+from anima_server.services.corefs.conversation_mutations import (
+    ConversationMutationError,
+    close_canonical_thread,
+    create_canonical_thread,
+    delete_canonical_thread,
+)
+from anima_server.services.corefs.logical import CoreFsMutationUnavailable
+from anima_server.services.corefs.messages import ConversationFormatError
 from anima_server.services.images.deletion import delete_thread_with_image_cleanup
 from anima_server.services.sessions import get_active_dek_async
 
@@ -84,14 +93,35 @@ def _canonical_thread_to_dict(
     }
 
 
-def _raise_corefs_mutation_pending() -> None:
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={
-            "code": "corefs_conversation_mutation_not_enabled",
-            "message": "CoreFS conversation mutation requires the PCF-008 activation adapter.",
-        },
+def _raise_corefs_mutation_error(exc: Exception) -> Never:
+    code = str(exc)
+    status_code = (
+        status.HTTP_503_SERVICE_UNAVAILABLE
+        if code
+        in {
+            "corefs_native_mutation_unavailable",
+            "corefs_native_mutation_result_invalid",
+            "Native CoreFS conversation mutation result is invalid.",
+        }
+        else status.HTTP_409_CONFLICT
     )
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": code or "corefs_conversation_mutation_failed"},
+    ) from exc
+
+
+def _create_canonical_thread_response(
+    view: CanonicalThreadView,
+    *,
+    user_id: int,
+) -> dict[str, object]:
+    thread = _canonical_thread_to_dict(view, user_id=user_id)
+    return {
+        "threadId": thread["id"],
+        "status": thread["status"],
+        "thread": thread,
+    }
 
 
 def _thread_has_messages(runtime_db: Session, thread_id: int) -> bool:
@@ -132,7 +162,17 @@ async def create_new_thread(
     unlock_session = await require_unlocked_session_async(request)
     user_id = unlock_session.user_id
     if conversation_corefs_authority_active(unlock_session):
-        _raise_corefs_mutation_pending()
+        try:
+            thread = create_canonical_thread(session=unlock_session)
+        except (
+            ConversationFormatError,
+            ConversationMutationError,
+            CoreFsMutationUnavailable,
+            PermissionError,
+            ValueError,
+        ) as exc:
+            _raise_corefs_mutation_error(exc)
+        return _create_canonical_thread_response(thread, user_id=user_id)
 
     # Reuse the current active thread when it's still completely empty.
     active_thread = runtime_db.scalar(
@@ -212,7 +252,28 @@ async def close_thread_endpoint(
     """Close a thread and trigger background consolidation."""
     unlock_session = await require_unlocked_session_async(request)
     if conversation_corefs_authority_active(unlock_session):
-        _raise_corefs_mutation_pending()
+        try:
+            thread, changed = close_canonical_thread(
+                session=unlock_session,
+                thread_id=thread_id,
+            )
+        except (
+            ConversationFormatError,
+            ConversationMutationError,
+            CoreFsMutationUnavailable,
+            PermissionError,
+            ValueError,
+        ) as exc:
+            _raise_corefs_mutation_error(exc)
+        if thread is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Thread not found",
+            )
+        return {
+            "status": "closed" if changed else "already_closed",
+            "threadId": thread.document.legacy_thread_id or thread.document.thread_id,
+        }
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(
@@ -325,7 +386,30 @@ async def delete_thread_endpoint(
     """Permanently delete a thread and all its messages."""
     unlock_session = await require_unlocked_session_async(request)
     if conversation_corefs_authority_active(unlock_session):
-        _raise_corefs_mutation_pending()
+        try:
+            deleted = delete_canonical_thread(
+                session=unlock_session,
+                thread_id=thread_id,
+            )
+        except (
+            ConversationFormatError,
+            ConversationMutationError,
+            CoreFsMutationUnavailable,
+            PermissionError,
+            ValueError,
+        ) as exc:
+            _raise_corefs_mutation_error(exc)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Thread not found",
+            )
+        return {
+            "status": "deleted",
+            "threadId": thread_id,
+            "assetsDeleted": 0,
+            "filesDeleted": 0,
+        }
     thread = runtime_db.get(RuntimeThread, thread_id)
     if thread is None or thread.user_id != unlock_session.user_id:
         raise HTTPException(

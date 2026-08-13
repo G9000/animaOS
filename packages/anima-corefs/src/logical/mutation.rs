@@ -26,6 +26,7 @@ pub enum MutationTarget {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PatchAddFormat {
+    pub stable_id: Option<String>,
     pub kind: ObjectKind,
     pub content_type: String,
 }

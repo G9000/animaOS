@@ -68,6 +68,12 @@ from anima_server.services.corefs.conversation_authority import (
     conversation_corefs_authority_active,
     list_canonical_threads,
 )
+from anima_server.services.corefs.conversation_mutations import (
+    ConversationMutationError,
+    create_canonical_thread,
+)
+from anima_server.services.corefs.logical import CoreFsMutationUnavailable
+from anima_server.services.corefs.messages import ConversationFormatError
 from anima_server.services.corefs.runtime_sealing import RuntimeSealingLocked
 from anima_server.services.corefs.sealed_runtime import runtime_index_for_sensitive_write
 
@@ -324,10 +330,20 @@ async def clear_chat_history(
 ) -> ChatHistoryClearResponse:
     unlock_session = await require_unlocked_user_async(request, payload.userId)
     if conversation_corefs_authority_active(unlock_session):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "corefs_conversation_mutation_not_enabled"},
-        )
+        try:
+            create_canonical_thread(session=unlock_session, force_new=True)
+        except (
+            ConversationFormatError,
+            ConversationMutationError,
+            CoreFsMutationUnavailable,
+            PermissionError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
+            ) from exc
+        return ChatHistoryClearResponse(status="cleared")
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatHistoryClearResponse(status="cleared")
 
@@ -341,10 +357,20 @@ async def reset_chat_thread(
 ) -> ChatResetResponse:
     unlock_session = await require_unlocked_user_async(request, payload.userId)
     if conversation_corefs_authority_active(unlock_session):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"code": "corefs_conversation_mutation_not_enabled"},
-        )
+        try:
+            create_canonical_thread(session=unlock_session, force_new=True)
+        except (
+            ConversationFormatError,
+            ConversationMutationError,
+            CoreFsMutationUnavailable,
+            PermissionError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
+            ) from exc
+        return ChatResetResponse(status="reset")
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatResetResponse(status="reset")
 

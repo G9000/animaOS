@@ -328,6 +328,11 @@ def test_native_shadow_publication_and_diary_only_rerun_preserve_conversations(
     assert decode_thread_document(
         read_prepared_writing_body(session=session, item=prepared_thread)
     ).title == "Portable"
+    monkeypatch.setattr(
+        conversation_authority,
+        "authenticated_content_authority",
+        lambda candidate, *, family: candidate.content_authority,
+    )
     canonical_views = list_canonical_threads(
         session=SimpleNamespace(
             user_id=7,
@@ -376,6 +381,7 @@ def test_missing_segment_reports_exact_gap_and_keeps_later_valid_messages(
         for item in shadow.objects
         if item.descriptor.kind == "thread"
     )
+    thread_document = decode_thread_document(thread_body)
     segments = sorted(
         (
             item
@@ -393,6 +399,7 @@ def test_missing_segment_reports_exact_gap_and_keeps_later_valid_messages(
             {
                 "stableId": later.descriptor.stable_id,
                 "path": "/Conversations/later.jsonl",
+                "revision": 1,
             }
         ],
     )
@@ -409,7 +416,11 @@ def test_missing_segment_reports_exact_gap_and_keeps_later_valid_messages(
     view = conversation_authority._read_thread_view(
         session=object(),
         selection=ConversationAuthoritySelection(1, "a" * 64),
-        entry={"path": "/Conversations/thread.json"},
+        entry={
+            "path": "/Conversations/thread.json",
+            "stableId": thread_document.thread_id,
+            "revision": 1,
+        },
     )
 
     assert [message.sequence for message in view.messages] == [257]

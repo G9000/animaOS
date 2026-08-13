@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:17 MYT
+- Updated: 2026-08-13 23:32 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -372,6 +372,18 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   hygiene green. Restart-safe account deletion, conversation/diary/assets/
   documents and raw scans keep Step 8 open. No external or irreversible action
   occurred.
+- 2026-08-13 23:32 MYT - Added the canonical thread-lifecycle authority
+  adapter. After cutover, thread create/reuse, reset/clear, close, list/read,
+  and delete use authenticated bounded CoreFS snapshots and one native
+  optimistic commit; retained Runtime thread/message rows remain unchanged.
+  Atomic close-plus-create and thread-plus-segment trash use caller-bound
+  opaque IDs, and the shared patch format now preserves exact canonical JSON
+  bytes for added files without a final newline. The end-to-end regression
+  proves migrated visible content remains readable while post-cutover
+  lifecycle operations avoid legacy writes. Conversation/chat coverage passes
+  `36`, native patch/CoreFS coverage passes `22`, and scoped lint/diff hygiene
+  passes. Visible message append/edit/delete and the remaining writer families
+  keep Step 8 open. No external or irreversible action occurred.
 
 ## Validation
 
@@ -508,6 +520,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after canonical account/onboarding routing (`50 passed`)
   - scoped Ruff check and `git diff --check` after the account authority
     adapter (passed)
+  - `uv run pytest -q apps/server/tests/test_threads_api.py apps/server/tests/test_corefs_conversation_migration.py apps/server/tests/test_chat.py`
+    after the canonical thread lifecycle adapter (`36 passed`)
+  - `cargo test -p anima-file-tools --test patch` (`15 passed`)
+  - `cargo test -p anima-corefs logical::mutation::tests --lib` (`7 passed`)
+  - scoped Ruff check and `git diff --check` after the thread lifecycle
+    adapter (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -563,6 +581,13 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/services/corefs/account_profile.py`
   - `apps/server/src/anima_server/api/routes/{users.py,consciousness.py}`
   - `apps/server/tests/test_users.py`
+  - `apps/server/src/anima_server/services/corefs/{conversation_authority.py,conversation_mutations.py}`
+  - `apps/server/src/anima_server/api/routes/{chat.py,threads.py}`
+  - `apps/server/tests/{test_corefs_conversation_migration.py,test_threads_api.py}`
+  - `packages/anima-file-tools/src/patch/parser.rs`
+  - `packages/anima-file-tools/tests/patch.rs`
+  - `packages/anima-corefs/src/logical/{mutation.rs,mutation/patch.rs,mutation/tests.rs}`
+  - `packages/anima-core/src/ffi.rs`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

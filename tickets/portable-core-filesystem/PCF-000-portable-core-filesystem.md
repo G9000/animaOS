@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:17 MYT
+- Updated: 2026-08-13 23:32 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -420,6 +420,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   band passes `50` and scoped hygiene passes. Remaining writer families and
   raw scans keep PCF-008 in progress; no external or irreversible action
   occurred.
+- 2026-08-13 23:32 MYT - PCF-008 canonical thread lifecycle now routes
+  list/read, create/reuse, reset/clear, close, and delete through authenticated
+  bounded CoreFS snapshots and native optimistic commits only. Atomic
+  close-plus-create and thread-plus-segment trash preserve retained Runtime
+  rows as recovery state; migrated visible content remains readable. Focused
+  conversation/chat coverage passes `36` and native patch/CoreFS coverage
+  passes `22`. Visible message persistence and remaining writer families keep
+  PCF-008 in progress; no external or irreversible action occurred.
 
 ## Validation
 
