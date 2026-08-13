@@ -26,6 +26,7 @@ FAT16_MAX_FILE_BYTES = (2 * 1024 * 1024 * 1024) - 1
 REGISTRY_AUTH_DOMAIN = b"anima-active-core-registry-v1\x00"
 ACTIVATION_AUTH_DOMAIN = b"anima-active-core-activation-v1\x00"
 COMPLETION_AUTH_DOMAIN = b"anima-active-core-completion-v1\x00"
+ACTIVATION_REQUEST_AUTH_DOMAIN = b"anima-active-core-request-v1\x00"
 _ACTIVATION_LOCK = threading.RLock()
 
 
@@ -98,6 +99,15 @@ class ActiveCorePointer:
 class ActivationResult:
     pointer: ActiveCorePointer
     completion_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledActivation:
+    activation_id: str
+    core_id: str
+    staging_core_path: Path
+    final_core_path: Path
+    request_path: Path
 
 
 BoundaryHook = Callable[[str], None]
@@ -497,6 +507,132 @@ def rollback_to_retained_core(
             boundary_hook=boundary_hook,
             boundary_name="rollback:after_completion",
         )
+
+
+def schedule_staged_core_activation(
+    staging_core_path: Path,
+    final_core_path: Path,
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    core_id: str,
+    activation_id: str,
+    verifier: CoreVerifier,
+) -> ScheduledActivation:
+    """Durably schedule activation for consumption by the next startup."""
+    _validate_authentication_key(authentication_key)
+    _validate_core_identity(core_id)
+    try:
+        normalized_activation_id = str(UUID(activation_id))
+    except (ValueError, AttributeError) as exc:
+        raise TransferError("activation ID is invalid") from exc
+    staging_input = staging_core_path.expanduser()
+    if staging_input.is_symlink():
+        raise TransferError("scheduled activation staging path is invalid")
+    staging = staging_input.resolve(strict=True)
+    final = final_core_path.expanduser().resolve(strict=False)
+    registry = registry_path.expanduser().resolve(strict=True)
+    if staging.parent != final.parent or staging == final or final.exists():
+        raise TransferError("scheduled activation paths are invalid")
+    request = registry.with_name(f"{registry.name}.request")
+    body = {
+        "version": 1,
+        "activationId": normalized_activation_id,
+        "coreId": core_id,
+        "stagingCorePath": os.fspath(staging),
+        "finalCorePath": os.fspath(final),
+    }
+    with _ACTIVATION_LOCK, _exclusive_activation_lock(registry):
+        pointer = _pointer_from_body(
+            _read_authenticated_record(
+                registry,
+                authentication_key,
+                REGISTRY_AUTH_DOMAIN,
+                expected_keys={
+                    "version",
+                    "generation",
+                    "coreId",
+                    "activeCorePath",
+                    "retainedCorePath",
+                    "retainedCoreId",
+                    "activationId",
+                },
+            )
+        )
+        if pointer.retained_core_path is not None:
+            raise TransferError("a retained rollback Core must be resolved before activation")
+        _verify_manifest_core_id(staging, core_id)
+        verifier(staging)
+        if request.exists():
+            existing = _read_authenticated_record(
+                request,
+                authentication_key,
+                ACTIVATION_REQUEST_AUTH_DOMAIN,
+                expected_keys=set(body),
+            )
+            if existing != body:
+                raise TransferError("another Core activation is already scheduled")
+        else:
+            _write_authenticated_record(
+                request,
+                body,
+                authentication_key,
+                ACTIVATION_REQUEST_AUTH_DOMAIN,
+            )
+    return ScheduledActivation(
+        activation_id=normalized_activation_id,
+        core_id=core_id,
+        staging_core_path=staging,
+        final_core_path=final,
+        request_path=request,
+    )
+
+
+def consume_scheduled_core_activation(
+    registry_path: Path,
+    *,
+    authentication_key: bytes,
+    verifier: CoreVerifier,
+    boundary_hook: BoundaryHook | None = None,
+) -> ActivationResult | None:
+    """Consume an authenticated pending request during pre-resource startup."""
+    _validate_authentication_key(authentication_key)
+    registry = registry_path.expanduser().resolve(strict=True)
+    request = registry.with_name(f"{registry.name}.request")
+    if not request.exists():
+        return None
+    body = _read_authenticated_record(
+        request,
+        authentication_key,
+        ACTIVATION_REQUEST_AUTH_DOMAIN,
+        expected_keys={
+            "version",
+            "activationId",
+            "coreId",
+            "stagingCorePath",
+            "finalCorePath",
+        },
+    )
+    if body.get("version") != 1 or any(
+        not isinstance(body.get(field), str) or not body[field]
+        for field in ("activationId", "coreId", "stagingCorePath", "finalCorePath")
+    ):
+        raise TransferError("scheduled Core activation is invalid")
+    result = activate_staged_core(
+        Path(cast(str, body["stagingCorePath"])),
+        Path(cast(str, body["finalCorePath"])),
+        registry,
+        authentication_key=authentication_key,
+        core_id=cast(str, body["coreId"]),
+        activation_id=cast(str, body["activationId"]),
+        verifier=verifier,
+        boundary_hook=boundary_hook,
+    )
+    _boundary(boundary_hook, "activation-request:after_activation")
+    request.unlink(missing_ok=True)
+    _fsync_directory(request.parent)
+    _boundary(boundary_hook, "activation-request:after_delete")
+    return result
 
 
 def _pointer_body(

@@ -9,6 +9,7 @@ from anima_server.config import settings
 from anima_server.services.corefs.active_core_registry import (
     initialize_active_core_after_manifest,
     resolve_active_core_for_startup,
+    schedule_full_restore_activation,
     verify_full_core_candidate,
 )
 from anima_server.services.corefs.transfer import (
@@ -137,6 +138,39 @@ def test_startup_recovers_interrupted_full_core_activation(
     assert recovered.pointer.active_core_path == final
     assert settings.data_dir == final
     assert not startup.registry_path.with_name("active-core.json.activation").exists()
+
+
+def test_scheduled_activation_does_not_swap_running_core_until_restart(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = managed_tmp_path / ".anima"
+    _manifest_core(configured, str(uuid4()))
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", configured)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(managed_tmp_path / "app-data"))
+    startup = resolve_active_core_for_startup(store=store)
+    initialize_active_core_after_manifest(startup)
+    restored_id = str(uuid4())
+    staging = managed_tmp_path / ".restore.partial"
+    _manifest_core(staging, restored_id, complete=True)
+
+    scheduled = schedule_full_restore_activation(
+        staging,
+        core_id=restored_id,
+        store=store,
+    )
+    assert settings.data_dir == configured
+    assert scheduled.request_path.is_file()
+    assert staging.is_dir()
+    assert not scheduled.final_core_path.exists()
+
+    resumed = resolve_active_core_for_startup(store=store)
+    assert resumed.pointer is not None
+    assert resumed.pointer.active_core_path == scheduled.final_core_path
+    assert resumed.pointer.retained_core_path == configured
+    assert settings.data_dir == scheduled.final_core_path
+    assert not scheduled.request_path.exists()
 
 
 @pytest.mark.parametrize("degraded_state", ["filesystem_missing", "recovery_only"])

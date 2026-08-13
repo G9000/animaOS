@@ -246,6 +246,30 @@ export default function CoreTransferSettings() {
     }
   };
 
+  const handleScheduleActivation = async () => {
+    if (
+      !importOperation ||
+      importOperation.state !== "completed" ||
+      importOperation.payloadKind !== "full"
+    ) {
+      return;
+    }
+    setImportBusy(true);
+    try {
+      const scheduled = await api.corefs.transfer.activateImportOnRestart(
+        importOperation.operationId,
+      );
+      setImportOperation(scheduled);
+      setImportStatus(
+        "Activation is authenticated and scheduled. Restart animaOS to switch Cores; the current Core remains active until shutdown.",
+      );
+    } catch (error) {
+      setImportStatus(error instanceof Error ? error.message : "Activation scheduling failed.");
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section className={`${glass} p-6 space-y-5`}>
@@ -434,6 +458,13 @@ export default function CoreTransferSettings() {
           {importOperation && !["completed", "cancelled", "failed"].includes(importOperation.state) && (
             <ActionButton onClick={handleImportCancel}>Cancel staging</ActionButton>
           )}
+          {importOperation?.state === "completed" &&
+            importOperation.payloadKind === "full" &&
+            !importOperation.restartRequired && (
+              <ActionButton onClick={handleScheduleActivation} disabled={importBusy}>
+                Activate on restart
+              </ActionButton>
+            )}
         </div>
 
         {importOperation && (

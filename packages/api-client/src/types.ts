@@ -261,6 +261,8 @@ export interface CoreImportOperation {
   recoveryState: "complete" | "filesystem_missing" | "recovery_only" | null;
   stagingPath: string | null;
   archiveId: string | null;
+  activationId: string | null;
+  restartRequired: boolean;
   errorCode: string | null;
 }
 

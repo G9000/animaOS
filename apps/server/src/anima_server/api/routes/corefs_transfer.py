@@ -233,6 +233,30 @@ def cancel_core_import_operation(
     return CoreImportOperationResponse(**operation.public())
 
 
+@router.post(
+    "/import/operations/{operation_id}/activate-on-restart",
+    response_model=CoreImportOperationResponse,
+)
+def schedule_core_import_activation(
+    operation_id: str,
+    request: Request,
+) -> CoreImportOperationResponse:
+    session = require_unlocked_session(request)
+    try:
+        operation = core_import_operations.schedule_activation(
+            operation_id,
+            user_id=session.user_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "core_import_operation_not_found"},
+        ) from exc
+    except (CoreArchiveTransferError, TransferError, OSError, ValueError) as exc:
+        raise _transfer_conflict() from exc
+    return CoreImportOperationResponse(**operation.public())
+
+
 def _transfer_conflict() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,

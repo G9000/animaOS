@@ -98,4 +98,6 @@ class CoreImportOperationResponse(BaseModel):
     recoveryState: Literal["complete", "filesystem_missing", "recovery_only"] | None
     stagingPath: str | None
     archiveId: str | None
+    activationId: str | None
+    restartRequired: bool
     errorCode: str | None

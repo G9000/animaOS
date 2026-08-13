@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from anima_server.api.routes import corefs_transfer
-from anima_server.services.corefs import transfer_jobs
+from anima_server.services.corefs import active_core_registry, transfer_jobs
 from anima_server.services.corefs.archive_transfer import (
     CoreArchiveExportResult,
     CoreArchiveImportResult,
@@ -231,6 +231,16 @@ def test_import_manager_stages_verified_core_without_activation_or_passphrase_re
     assert operation.staging_path.is_dir()
     assert not hasattr(operation, "passphrase")
 
+    monkeypatch.setattr(
+        active_core_registry,
+        "schedule_full_restore_activation",
+        lambda *_args, **_kwargs: SimpleNamespace(activation_id="activation-a"),
+    )
+    scheduled = manager.schedule_activation(operation.operation_id, user_id=7)
+    assert scheduled.activation_id == "activation-a"
+    assert scheduled.restart_required is True
+    assert scheduled.phase == "activation_scheduled"
+
 
 def test_import_api_probes_and_stages_without_exposing_passphrase(
     managed_tmp_path: Path,
@@ -265,6 +275,8 @@ def test_import_api_probes_and_stages_without_exposing_passphrase(
                 "recoveryState": None,
                 "stagingPath": None,
                 "archiveId": None,
+                "activationId": None,
+                "restartRequired": False,
                 "errorCode": None,
             }
 

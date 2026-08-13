@@ -805,6 +805,11 @@ export function createApiClient(options: ApiClientOptions) {
             `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/cancel`,
             { method: "POST" },
           ),
+        activateImportOnRestart: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/activate-on-restart`,
+            { method: "POST" },
+          ),
       },
     },
     chat: {

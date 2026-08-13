@@ -40,6 +40,8 @@ describe("ANIMA CORE transfer settings", () => {
       "Required staging",
       "running Core was not changed",
       "partial extraction was removed",
+      "Activate on restart",
+      "current Core remains active until shutdown",
     ]) {
       expect(page).toContain(contract);
     }

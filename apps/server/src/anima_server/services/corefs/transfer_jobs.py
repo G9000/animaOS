@@ -101,9 +101,12 @@ class ImportOperation:
     bytes_processed: int = 0
     progress_percent: int = 0
     payload_kind: CoreArchivePayloadKind | None = None
+    core_id: str | None = field(default=None, repr=False)
     recovery_state: str | None = None
     staging_path: Path | None = None
     archive_id: str | None = None
+    activation_id: str | None = None
+    restart_required: bool = False
     error_code: str | None = None
     cancel: threading.Event = field(default_factory=threading.Event, repr=False)
 
@@ -119,6 +122,8 @@ class ImportOperation:
             "recoveryState": self.recovery_state,
             "stagingPath": str(self.staging_path) if self.staging_path is not None else None,
             "archiveId": self.archive_id,
+            "activationId": self.activation_id,
+            "restartRequired": self.restart_required,
             "errorCode": self.error_code,
         }
 
@@ -376,6 +381,32 @@ class CoreImportOperationManager:
         operation.cancel.set()
         return operation
 
+    def schedule_activation(self, operation_id: str, *, user_id: int) -> ImportOperation:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FULL
+                or operation.staging_path is None
+                or operation.core_id is None
+            ):
+                raise TransferError("only a completed full restore can schedule activation")
+            if operation.activation_id is not None:
+                return operation
+        from anima_server.services.corefs.active_core_registry import (
+            schedule_full_restore_activation,
+        )
+
+        scheduled = schedule_full_restore_activation(
+            operation.staging_path,
+            core_id=operation.core_id,
+        )
+        with self._lock:
+            operation.phase = "activation_scheduled"
+            operation.activation_id = scheduled.activation_id
+            operation.restart_required = True
+        return operation
+
     def _run_import(self, *, operation: ImportOperation, passphrase: str) -> None:
         staging = (
             operation.prepared.probe.staging_parent
@@ -424,6 +455,7 @@ class CoreImportOperationManager:
                 operation.bytes_processed = operation.prepared.archive_bytes
                 operation.progress_percent = 100
                 operation.payload_kind = result.inventory.payload_kind
+                operation.core_id = result.inventory.core_id
                 operation.recovery_state = recovery_state
                 operation.staging_path = result.staging_path
                 operation.archive_id = result.archive_id

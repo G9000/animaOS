@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 20:52 MYT
+- Updated: 2026-08-13 20:56 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -205,6 +205,19 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   registry files accidentally created by the earlier diagnostic run were
   removed. No product activation endpoint, paid workflow, push, or irreversible
   cutover action occurred.
+- 2026-08-13 20:56 MYT - Added restart-safe full-restore activation
+  scheduling. The authenticated API can promote only a completed full staging
+  operation into a machine-local HMAC-authenticated pending request; it cannot
+  change the live pointer. The next startup consumes the exact request before
+  Core resources open, re-verifies the full candidate, performs the existing
+  journaled directory/pointer/completion transaction, retains the prior Core,
+  and durably deletes the request. Request replay and post-activation/pre-delete
+  crashes are idempotent; partial recovery modes cannot schedule. The desktop
+  exposes **Activate on restart** only for verified full restores and states
+  that the current Core remains active until shutdown. Combined native/server
+  transfer/startup coverage passes `67`, API/desktop contracts pass `32`, and
+  the desktop production build passes. No live pointer swap, paid workflow,
+  push, or irreversible cutover action occurred.
 
 ## Validation
 
@@ -269,6 +282,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     (`17 passed`, `4 skipped`)
   - scoped Ruff check/format and `git diff --check` for active-Core startup
     integration (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_active_core_registry.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py -q`
+    after restart-safe activation scheduling (`67 passed`)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
+    after activation scheduling UI/client wiring (`32 passed`)
+  - `bun run --cwd apps/desktop build` after activation scheduling UI wiring
+    (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in

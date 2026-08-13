@@ -223,6 +223,8 @@ describe("createApiClient error handling", () => {
             recoveryState: null,
             stagingPath: null,
             archiveId: null,
+            activationId: null,
+            restartRequired: false,
             errorCode: null,
           }),
         );
@@ -237,12 +239,14 @@ describe("createApiClient error handling", () => {
     });
     await api.corefs.transfer.importOperation("import-a");
     await api.corefs.transfer.cancelImport("import-a");
+    await api.corefs.transfer.activateImportOnRestart("import-a");
 
     expect(requests.map((request) => request.url)).toEqual([
       "https://api.test/api/corefs/transfer/import/probe",
       "https://api.test/api/corefs/transfer/import/prepare",
       "https://api.test/api/corefs/transfer/import/operations/import-a",
       "https://api.test/api/corefs/transfer/import/operations/import-a/cancel",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/activate-on-restart",
     ]);
   });
 

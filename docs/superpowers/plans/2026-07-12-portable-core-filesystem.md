@@ -933,6 +933,12 @@ swap while retaining the prior Core. Partial recovery artifacts are
 structurally ineligible for activation. Product activation/rollback commands
 remain open and deliberately absent.
 
+Activation progress (2026-08-13): verified full restores can now create a
+machine-local authenticated activation intent while the running pointer remains
+unchanged. The next pre-resource startup consumes that intent through the
+journaled rename/pointer/completion protocol and retains the old Core. Partial
+artifacts remain ineligible. Retained-Core rollback controls are still open.
+
 Implement `anima_core_v2` in Rust as one streaming container with authenticated payload kind `full`, `soul`, or `fs`; keep `capsule.rs` only for backward V1 `anima_capsule` import. A full artifact includes manifest, active Soul, committed content catalogs/objects, required keyslots/recovery material, and the coherent `(soulGeneration, filesystemGeneration)` pair. Soul-only and CoreFS-only artifacts enforce compartment-specific record/key allowlists and restore respectively to `filesystem_missing` and restricted recovery/export mode. Every kind excludes Runtime, device config, and OS credentials.
 
 Write a small typed encrypted manifest followed by a 64-bit-length, chunked sequence of selected encrypted records and an authenticated complete-inventory footer. Every implementation uses this exact derivation:

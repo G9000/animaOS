@@ -7,16 +7,19 @@ import os
 import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from anima_server.config import default_runtime_app_data_root, settings
 from anima_server.services.core import get_core_id
 from anima_server.services.corefs.transfer import (
     ActiveCorePointer,
+    ScheduledActivation,
     TransferError,
+    consume_scheduled_core_activation,
     initialize_active_core_pointer,
     read_active_core_pointer,
     recover_active_core_activation,
+    schedule_staged_core_activation,
 )
 from anima_server.services.credentials import (
     CredentialStore,
@@ -49,6 +52,11 @@ def resolve_active_core_for_startup(
     if not registry.exists():
         return ActiveCoreStartup(registry, authentication_key, None, store or credential_store())
 
+    consume_scheduled_core_activation(
+        registry,
+        authentication_key=authentication_key,
+        verifier=verify_full_core_candidate,
+    )
     recover_active_core_activation(
         registry,
         authentication_key=authentication_key,
@@ -82,6 +90,34 @@ def initialize_active_core_after_manifest(startup: ActiveCoreStartup) -> ActiveC
         if pointer.active_core_path != active or pointer.core_id != core_id:
             raise TransferError("startup active-Core selection changed before initialization")
     return pointer
+
+
+def schedule_full_restore_activation(
+    staging_path: Path,
+    *,
+    core_id: str,
+    store: CredentialStore | None = None,
+) -> ScheduledActivation:
+    """Schedule a verified full restore for the next pre-resource startup."""
+    current_core = settings.data_dir.expanduser().resolve(strict=True)
+    registry = _registry_path(current_core)
+    authentication_key = _load_or_create_authentication_key(store or credential_store())
+    pointer = read_active_core_pointer(registry, authentication_key=authentication_key)
+    if pointer.active_core_path != current_core:
+        raise TransferError("running Core does not match the active-Core registry")
+    activation_id = str(uuid4())
+    final_path = staging_path.parent / (
+        f".anima-restored-{core_id.split('-')[0]}-{activation_id.split('-')[0]}"
+    )
+    return schedule_staged_core_activation(
+        staging_path,
+        final_path,
+        registry,
+        authentication_key=authentication_key,
+        core_id=core_id,
+        activation_id=activation_id,
+        verifier=verify_full_core_candidate,
+    )
 
 
 def verify_full_core_candidate(path: Path) -> None:
