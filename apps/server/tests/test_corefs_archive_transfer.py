@@ -45,7 +45,12 @@ def _core(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _session(root: Path, *, source_override: Path | None = None) -> SimpleNamespace:
+def _session(
+    root: Path,
+    *,
+    source_override: Path | None = None,
+    writer: object | None = None,
+) -> SimpleNamespace:
     catalog = "catalog-00000000000000000007-" + ("a" * 64) + ".acore"
 
     class Native:
@@ -74,6 +79,17 @@ def _session(root: Path, *, source_override: Path | None = None) -> SimpleNamesp
                 ],
             }
 
+        def archive_write_v2(
+            self,
+            _keys: object,
+            path: str,
+            passphrase: bytes,
+            request_json: str,
+        ) -> dict[str, object]:
+            if not callable(writer):
+                raise AssertionError("archive writer was not installed")
+            return writer(path, passphrase, request_json)
+
     return SimpleNamespace(corefs_session=Native(), corefs_keys=object())
 
 
@@ -93,9 +109,9 @@ def test_full_export_uses_only_native_reachable_inventory_and_wrapped_keyslots(
         assert Path(path) == output
         assert all(Path(item["sourcePath"]).is_file() for item in sources)
         keyslot = next(item for item in sources if item["recordType"] == "keyslots")
-        assert json.loads(Path(keyslot["sourcePath"]).read_text(encoding="utf-8"))[
-            "keyslots"
-        ] == [{"kind": "wrapped-test-key"}]
+        assert json.loads(Path(keyslot["sourcePath"]).read_text(encoding="utf-8"))["keyslots"] == [
+            {"kind": "wrapped-test-key"}
+        ]
         selected_bytes = sum(Path(item["sourcePath"]).stat().st_size for item in sources)
         output.write_bytes(b"archive")
         return {
@@ -113,14 +129,8 @@ def test_full_export_uses_only_native_reachable_inventory_and_wrapped_keyslots(
             "maxBufferBytes": 2 * 1024 * 1024,
         }
 
-    monkeypatch.setattr(
-        anima_core_bindings,
-        "require_binding",
-        lambda name: writer if name == "core_archive_write_v2" else None,
-    )
-
     result = export_core_archive_v2(
-        session=_session(root),
+        session=_session(root, writer=writer),
         output_path=output,
         passphrase="correct horse battery staple",
         payload_kind=CoreArchivePayloadKind.FULL,

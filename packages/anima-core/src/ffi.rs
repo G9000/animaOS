@@ -1776,6 +1776,32 @@ mod python {
             )
         }
 
+        /// Streams a previously inspected V2 archive while retaining a live
+        /// session operation and authenticated committed-catalog lease for the
+        /// complete native write. Session close/release therefore drains this
+        /// export instead of invalidating its object set mid-stream.
+        fn archive_write_v2(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            output_path: &str,
+            passphrase: &[u8],
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let request: CoreArchiveWriteWire = decode_preparation_json(request_json)?;
+            if request.payload_kind != "soul" {
+                py.allow_threads(|| self.coordinator.load_committed(&keys.inner))
+                    .map_err(corefs_commit_error)?
+                    .ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "ANIMA CORE has no committed filesystem snapshot",
+                        )
+                    })?;
+            }
+            core_archive_write_v2(py, output_path, passphrase, request_json)
+        }
+
         fn validation_batch_v1(
             &self,
             py: Python<'_>,

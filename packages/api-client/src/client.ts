@@ -11,8 +11,12 @@ import type {
   CorefsCredentialResponse,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
+  CoreArchivePayloadKind,
   CoreFsClientAccessState,
   CoreFsClientScope,
+  CoreTransferDestinationProbe,
+  CoreTransferEstimate,
+  CoreTransferOperation,
   CoreFSRotationResponse,
   CoreFSSecurityStatus,
   ConfirmRecoveryCredentialResponse,
@@ -741,6 +745,42 @@ export function createApiClient(options: ApiClientOptions) {
           `/corefs/access/installations/${encodeURIComponent(installationId)}`,
           { method: "DELETE" },
         ),
+      transfer: {
+        estimate: (payloadKind: CoreArchivePayloadKind = "full") =>
+          request<CoreTransferEstimate>("/corefs/transfer/estimate", {
+            method: "POST",
+            body: { payloadKind },
+          }),
+        probe: (destination: string, payloadKind: CoreArchivePayloadKind = "full") =>
+          request<CoreTransferDestinationProbe>("/corefs/transfer/probe", {
+            method: "POST",
+            body: { destination, payloadKind },
+          }),
+        prepare: (options: {
+          destination: string;
+          passphrase: string;
+          payloadKind?: CoreArchivePayloadKind;
+          finalName?: string;
+        }) =>
+          request<CoreTransferOperation>("/corefs/transfer/prepare", {
+            method: "POST",
+            body: {
+              destination: options.destination,
+              passphrase: options.passphrase,
+              payloadKind: options.payloadKind ?? "full",
+              finalName: options.finalName,
+            },
+          }),
+        operation: (operationId: string) =>
+          request<CoreTransferOperation>(
+            `/corefs/transfer/operations/${encodeURIComponent(operationId)}`,
+          ),
+        cancel: (operationId: string) =>
+          request<CoreTransferOperation>(
+            `/corefs/transfer/operations/${encodeURIComponent(operationId)}/cancel`,
+            { method: "POST" },
+          ),
+      },
     },
     chat: {
       send: (

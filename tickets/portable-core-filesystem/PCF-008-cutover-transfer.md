@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 19:56 MYT
+- Updated: 2026-08-13 20:07 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -135,6 +135,20 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   remain open for coherent Soul generation/checkpoint capture and one
   authenticated nonce sequence across a multipart volume set; no paid workflow
   or irreversible cutover action occurred.
+- 2026-08-13 20:07 MYT - Added the first Step 6 product-facing transfer slice.
+  Authenticated users can obtain an authoritative full/Soul/CoreFS estimate,
+  probe an exact local destination for capacity and atomic publication, start a
+  bounded background single-file export, poll progress/completion, and request
+  safe cancellation without persisting the passphrase or exposing physical
+  Core source paths. The desktop now presents **Export ANIMA CORE** as the
+  primary flow, labels advanced recovery modes and degraded states, displays
+  checkpoint/capacity/file-limit/publication/progress/verification state, and
+  redirects the legacy Vault page. Backend transfer coverage passes `48`, API
+  client and desktop contracts pass `31`, the desktop production build passes,
+  and PyO3/Ruff/diff checks pass. Step 6 remains open for authenticated import
+  activation/rollback in the UI; multipart remains visibly gated until Step 7
+  provides one globally authenticated volume set. No paid workflow or
+  irreversible cutover action occurred.
 
 ## Validation
 
@@ -169,6 +183,11 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `cargo test -p anima-core core_archive --lib` after binding the committed
     inventory (`6 passed`)
   - scoped Ruff and `git diff --check` for the archive bridge (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py -q`
+    (`48 passed`)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
+    (`31 passed`)
+  - `bun run --cwd apps/desktop build` (passed)
 - Changed paths:
   - `apps/server/src/anima_server/services/corefs/cutover.py`
   - `apps/server/src/anima_server/services/sessions.py`
@@ -190,6 +209,14 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/test_corefs_orchestration.py`
   - `apps/server/src/anima_server/services/corefs/archive_transfer.py`
   - `apps/server/tests/test_corefs_archive_transfer.py`
+  - `apps/server/src/anima_server/{main.py,schemas/corefs_transfer.py}`
+  - `apps/server/src/anima_server/api/routes/corefs_transfer.py`
+  - `apps/server/src/anima_server/services/corefs/transfer_jobs.py`
+  - `apps/server/tests/test_corefs_transfer_api.py`
+  - `packages/api-client/src/{client.ts,types.ts}`
+  - `packages/api-client/tests/client.test.ts`
+  - `apps/desktop/src/{App.tsx,pages/settings/Settings.tsx,pages/settings/CoreTransferSettings.tsx}`
+  - `apps/desktop/tests/corefs-transfer.test.ts`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

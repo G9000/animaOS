@@ -1,0 +1,318 @@
+import { useEffect, useState } from "react";
+import type {
+  CoreArchivePayloadKind,
+  CoreTransferDestinationProbe,
+  CoreTransferEstimate,
+  CoreTransferOperation,
+} from "@anima/api-client";
+import { glass } from "@anima/standard-templates";
+import { api } from "../../lib/api";
+
+const INPUT_CLASS =
+  "w-full bg-foreground/[0.04] border border-hairline px-3 py-2 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-hairline-strong transition-colors font-mono";
+
+const PAYLOADS: Array<{
+  kind: CoreArchivePayloadKind;
+  label: string;
+  description: string;
+}> = [
+  {
+    kind: "full",
+    label: "Full ANIMA CORE",
+    description: "Soul, CoreFS, wrapped keyslots, and recovery material. Runtime is excluded.",
+  },
+  {
+    kind: "soul",
+    label: "Soul only",
+    description: "Advanced recovery. Restores in filesystem-missing degraded mode.",
+  },
+  {
+    kind: "fs",
+    label: "CoreFS only",
+    description: "Advanced recovery/export mode. V1 reattachment is not supported.",
+  },
+];
+
+function formatBytes(value: number | null | undefined): string {
+  if (value === null || value === undefined) return "Unknown";
+  if (value < 1024) return `${value} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = value / 1024;
+  let unit = units[0];
+  for (let index = 1; index < units.length && amount >= 1024; index += 1) {
+    amount /= 1024;
+    unit = units[index];
+  }
+  return `${amount.toFixed(amount >= 10 ? 1 : 2)} ${unit}`;
+}
+
+export default function CoreTransferSettings() {
+  const [payloadKind, setPayloadKind] = useState<CoreArchivePayloadKind>("full");
+  const [destination, setDestination] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [estimate, setEstimate] = useState<CoreTransferEstimate | null>(null);
+  const [probe, setProbe] = useState<CoreTransferDestinationProbe | null>(null);
+  const [operation, setOperation] = useState<CoreTransferOperation | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setEstimate(null);
+    setProbe(null);
+    void api.corefs.transfer
+      .estimate(payloadKind)
+      .then((value) => {
+        if (active) setEstimate(value);
+      })
+      .catch((error: unknown) => {
+        if (active) setStatus(error instanceof Error ? error.message : "Transfer estimate unavailable.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [payloadKind]);
+
+  const handleProbe = async () => {
+    if (!destination.trim()) {
+      setStatus("Choose an existing local destination folder.");
+      return;
+    }
+    setBusy(true);
+    setStatus("");
+    try {
+      const value = await api.corefs.transfer.probe(destination.trim(), payloadKind);
+      setProbe(value);
+      setEstimate(value);
+      if (value.publicationMode === "multipart") {
+        setStatus(
+          `This volume needs ${value.declaredVolumeCount} authenticated parts. Multipart export remains disabled until its native volume-set gate is complete.`,
+        );
+      } else {
+        setStatus("Destination passed capacity, writable-file, directory, and atomic-rename probes.");
+      }
+    } catch (error) {
+      setProbe(null);
+      setStatus(error instanceof Error ? error.message : "Destination probe failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const pollOperation = async (operationId: string) => {
+    for (;;) {
+      const current = await api.corefs.transfer.operation(operationId);
+      setOperation(current);
+      if (["completed", "cancelled", "failed"].includes(current.state)) return current;
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+  };
+
+  const handleExport = async () => {
+    if (!probe || probe.destination !== destination.trim()) {
+      setStatus("Probe this exact destination before export.");
+      return;
+    }
+    if (probe.publicationMode !== "single_file") {
+      setStatus("This destination requires multipart export, which is still gated.");
+      return;
+    }
+    if (passphrase.length < 8) {
+      setStatus("Archive passphrase must be at least 8 characters.");
+      return;
+    }
+    setBusy(true);
+    setStatus("");
+    try {
+      const started = await api.corefs.transfer.prepare({
+        destination: probe.destination,
+        passphrase,
+        payloadKind,
+      });
+      setOperation(started);
+      const completed = await pollOperation(started.operationId);
+      if (completed.state === "completed") {
+        setStatus(`Verified ANIMA CORE published safely to ${completed.resultPath}.`);
+      } else if (completed.state === "cancelled") {
+        setStatus("Export cancelled; unpublished partial output was removed.");
+      } else {
+        setStatus("Export failed closed; no unverified final artifact was published.");
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "ANIMA CORE export failed.");
+    } finally {
+      setBusy(false);
+      setPassphrase("");
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!operation || ["completed", "cancelled", "failed"].includes(operation.state)) return;
+    try {
+      setOperation(await api.corefs.transfer.cancel(operation.operationId));
+      setStatus("Cancellation requested. The current bounded native chunk will finish safely.");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Cancellation request failed.");
+    }
+  };
+
+  return (
+    <div className="space-y-5">
+      <section className={`${glass} p-6 space-y-5`}>
+        <div>
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
+            Export ANIMA CORE
+          </h2>
+          <p className="mt-2 font-mono text-caption text-foreground/35 leading-relaxed">
+            Create a verified local encrypted transfer artifact. Runtime databases, device configuration,
+            logs, caches, and OS credentials are never included.
+          </p>
+        </div>
+
+        <div className="grid gap-2 md:grid-cols-3">
+          {PAYLOADS.map((payload) => (
+            <button
+              key={payload.kind}
+              type="button"
+              onClick={() => setPayloadKind(payload.kind)}
+              className={`border p-3 text-left transition-colors ${
+                payloadKind === payload.kind
+                  ? "border-foreground/45 bg-foreground/[0.08]"
+                  : "border-hairline hover:border-hairline-strong"
+              }`}
+            >
+              <span className="block font-mono text-label uppercase tracking-caps-2 text-foreground/65">
+                {payload.label}
+              </span>
+              <span className="mt-1 block font-mono text-micro leading-relaxed text-foreground/30">
+                {payload.description}
+              </span>
+            </button>
+          ))}
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <Metric label="Selected" value={formatBytes(estimate?.selectedBytes)} />
+          <Metric label="Required free space" value={formatBytes(estimate?.requiredCapacityBytes)} />
+          <Metric label="Soul checkpoint" value={estimate?.soulGeneration?.toString() ?? "Not included"} />
+          <Metric
+            label="Filesystem checkpoint"
+            value={estimate?.filesystemGeneration?.toString() ?? "Not included"}
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="font-mono text-label tracking-caps-3 uppercase text-foreground/35">
+            Local destination folder
+          </label>
+          <div className="flex gap-2">
+            <input
+              value={destination}
+              onChange={(event) => {
+                setDestination(event.target.value);
+                setProbe(null);
+              }}
+              className={INPUT_CLASS}
+              placeholder="Existing local or removable-media folder"
+            />
+            <ActionButton onClick={handleProbe} disabled={busy}>Probe</ActionButton>
+          </div>
+        </div>
+
+        {probe && (
+          <div className="grid gap-3 md:grid-cols-3">
+            <Metric label="Available" value={formatBytes(probe.availableBytes)} />
+            <Metric label="Single-file limit" value={formatBytes(probe.maximumSingleFileBytes)} />
+            <Metric
+              label="Publication"
+              value={
+                probe.publicationMode === "single_file"
+                  ? "Single verified file"
+                  : `${probe.declaredVolumeCount} authenticated parts`
+              }
+            />
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          <label className="font-mono text-label tracking-caps-3 uppercase text-foreground/35">
+            Archive passphrase
+          </label>
+          <input
+            type="password"
+            value={passphrase}
+            onChange={(event) => setPassphrase(event.target.value)}
+            className={INPUT_CLASS}
+            placeholder="Used only in memory for this export"
+            autoComplete="new-password"
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <ActionButton onClick={handleExport} disabled={busy || !probe}>
+            {busy ? "Working…" : "Export ANIMA CORE"}
+          </ActionButton>
+          {operation && !["completed", "cancelled", "failed"].includes(operation.state) && (
+            <ActionButton onClick={handleCancel}>Cancel safely</ActionButton>
+          )}
+        </div>
+
+        {operation && (
+          <div className="space-y-2">
+            <div className="h-1.5 bg-foreground/[0.08] overflow-hidden">
+              <div
+                className="h-full bg-foreground/55 transition-[width]"
+                style={{ width: `${operation.progressPercent}%` }}
+              />
+            </div>
+            <p className="font-mono text-micro uppercase tracking-caps-2 text-foreground/35">
+              {operation.phase} · {operation.progressPercent}% · {formatBytes(operation.bytesPublished)} published
+            </p>
+          </div>
+        )}
+
+        {status && <p className="font-mono text-caption text-foreground/45 leading-relaxed">{status}</p>}
+      </section>
+
+      <section className={`${glass} p-6 space-y-3`}>
+        <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
+          Restore ANIMA CORE
+        </h2>
+        <p className="font-mono text-caption text-foreground/35 leading-relaxed">
+          Restore remains unavailable until authenticated import activation and retained-Core rollback are wired to
+          this screen. Existing archives are not opened in place and a live Core is never run from removable media.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="border border-hairline px-3 py-2.5">
+      <span className="block font-mono text-micro uppercase tracking-caps-2 text-foreground/25">{label}</span>
+      <span className="mt-1 block font-mono text-caption text-foreground/55">{value}</span>
+    </div>
+  );
+}
+
+function ActionButton({
+  onClick,
+  disabled,
+  children,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="shrink-0 border border-hairline px-4 py-2 font-mono text-label uppercase tracking-caps-3 text-foreground/50 transition-colors hover:border-hairline-strong hover:text-foreground/75 disabled:opacity-30"
+    >
+      {children}
+    </button>
+  );
+}

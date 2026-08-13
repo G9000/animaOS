@@ -140,6 +140,67 @@ describe("createApiClient error handling", () => {
     expect((caught as Error & { detail?: unknown }).detail).toEqual(detail);
   });
 
+  test("serializes local ANIMA CORE transfer operations without archive bytes", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            operationId: "operation-a",
+            payloadKind: "full",
+            state: "prepared",
+            phase: "prepared",
+            selectedBytes: 10,
+            bytesPublished: 0,
+            progressPercent: 0,
+            publicationMode: "single_file",
+            declaredVolumeCount: 1,
+            resultPath: null,
+            archiveId: null,
+            errorCode: null,
+          }),
+        );
+      },
+    });
+
+    await api.corefs.transfer.prepare({
+      destination: "/Volumes/Backup",
+      passphrase: "correct horse battery staple",
+      payloadKind: "full",
+    });
+    await api.corefs.transfer.operation("operation-a");
+    await api.corefs.transfer.cancel("operation-a");
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/corefs/transfer/prepare",
+        method: "POST",
+        body: {
+          destination: "/Volumes/Backup",
+          passphrase: "correct horse battery staple",
+          payloadKind: "full",
+        },
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/operations/operation-a",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/operations/operation-a/cancel",
+        method: "POST",
+        body: undefined,
+      },
+    ]);
+    expect(JSON.stringify(requests)).not.toContain("vault");
+  });
+
   test("surfaces normalized validation details arrays", async () => {
     const api = createApiClient({
       baseUrl: "https://api.test/api",

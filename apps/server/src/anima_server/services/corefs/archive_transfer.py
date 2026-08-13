@@ -47,6 +47,27 @@ class CoreArchiveExportResult:
     max_buffer_bytes: int
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedCoreArchive:
+    inventory: CoreArchiveInventory
+    sources: tuple[dict[str, str], ...]
+    keyslot_snapshot: bytes
+
+
+def inspect_core_archive_v2(
+    *,
+    session: Any,
+    payload_kind: CoreArchivePayloadKind,
+    soul_generation: int | None,
+) -> CoreArchiveInventory:
+    """Return the exact current archive selection without exposing its paths."""
+    return _prepare_core_archive(
+        session=session,
+        payload_kind=payload_kind,
+        soul_generation=soul_generation,
+    ).inventory
+
+
 def export_core_archive_v2(
     *,
     session: Any,
@@ -63,6 +84,65 @@ def export_core_archive_v2(
     """
     if len(passphrase) < 8:
         raise CoreArchiveTransferError("archive passphrase must be at least 8 characters")
+    prepared = _prepare_core_archive(
+        session=session,
+        payload_kind=payload_kind,
+        soul_generation=soul_generation,
+    )
+    inventory = prepared.inventory
+    sources = list(prepared.sources)
+
+    with tempfile.TemporaryDirectory(prefix="anima-core-keyslots-") as temporary_name:
+        temporary_root = Path(temporary_name)
+        keyslots_path = temporary_root / "root-keyslots.json"
+        _write_private_file(keyslots_path, prepared.keyslot_snapshot)
+        sources.append(_source("keyslots", "keyslots/root-keyslots.json", keyslots_path))
+        request = {
+            "payloadKind": payload_kind.value,
+            "coreId": inventory.core_id,
+            "ownerId": inventory.owner_id,
+            "soulGeneration": inventory.soul_generation,
+            "filesystemGeneration": inventory.filesystem_generation,
+            "volumeMode": "single",
+            "declaredVolumeCount": 1,
+            "volumeOrdinal": 0,
+            "sources": sources,
+        }
+        try:
+            raw_summary = session.corefs_session.archive_write_v2(
+                session.corefs_keys,
+                os.fspath(output_path),
+                passphrase.encode("utf-8"),
+                json.dumps(request, sort_keys=True, separators=(",", ":")),
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise CoreArchiveTransferError("native ANIMA CORE archive export failed") from exc
+
+    summary = _validate_summary(
+        raw_summary,
+        payload_kind=payload_kind,
+        core_id=inventory.core_id,
+        owner_id=inventory.owner_id,
+        soul_generation=inventory.soul_generation,
+        filesystem_generation=inventory.filesystem_generation,
+        record_count=inventory.record_count,
+        selected_bytes=inventory.selected_bytes,
+    )
+    return CoreArchiveExportResult(
+        inventory=inventory,
+        archive_id=str(summary["archiveId"]),
+        plaintext_bytes=int(summary["plaintextBytes"]),
+        chunk_count=int(summary["chunkCount"]),
+        max_buffer_bytes=int(summary["maxBufferBytes"]),
+    )
+
+
+def _prepare_core_archive(
+    *,
+    session: Any,
+    payload_kind: CoreArchivePayloadKind,
+    soul_generation: int | None,
+) -> _PreparedCoreArchive:
     if session.corefs_session is None or session.corefs_keys is None:
         raise CoreArchiveTransferError("ANIMA CORE archive requires an unlocked Core")
     manifest_path = get_manifest_path().expanduser().resolve(strict=True)
@@ -88,50 +168,15 @@ def export_core_archive_v2(
         if not soul_path.is_file() or soul_path.is_symlink():
             raise CoreArchiveTransferError("canonical Soul database is unavailable")
         sources.append(_source("soul_database", "soul/soul.db", soul_path))
-
-    with tempfile.TemporaryDirectory(prefix="anima-core-keyslots-") as temporary_name:
-        temporary_root = Path(temporary_name)
-        keyslots_path = temporary_root / "root-keyslots.json"
-        _write_keyslot_snapshot(keyslots_path, manifest)
-        sources.append(_source("keyslots", "keyslots/root-keyslots.json", keyslots_path))
-        if filesystem_inventory is not None:
-            sources.extend(_native_filesystem_sources(filesystem_inventory, core_root=core_root))
-        if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}:
-            sources.extend(_recovery_sources(core_root))
-
-        selected_bytes = sum(Path(item["sourcePath"]).stat().st_size for item in sources)
-        request = {
-            "payloadKind": payload_kind.value,
-            "coreId": core_id,
-            "ownerId": owner_id,
-            "soulGeneration": normalized_soul_generation,
-            "filesystemGeneration": filesystem_generation,
-            "volumeMode": "single",
-            "declaredVolumeCount": 1,
-            "volumeOrdinal": 0,
-            "sources": sources,
-        }
-        writer = anima_core_bindings.require_binding("core_archive_write_v2")
-        try:
-            raw_summary = writer(
-                os.fspath(output_path),
-                passphrase.encode("utf-8"),
-                json.dumps(request, sort_keys=True, separators=(",", ":")),
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise CoreArchiveTransferError("native ANIMA CORE archive export failed") from exc
-
-    summary = _validate_summary(
-        raw_summary,
-        payload_kind=payload_kind,
-        core_id=core_id,
-        owner_id=owner_id,
-        soul_generation=normalized_soul_generation,
-        filesystem_generation=filesystem_generation,
-        record_count=len(sources),
-        selected_bytes=selected_bytes,
+    if filesystem_inventory is not None:
+        sources.extend(_native_filesystem_sources(filesystem_inventory, core_root=core_root))
+    if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}:
+        sources.extend(_recovery_sources(core_root))
+    keyslot_snapshot = _keyslot_snapshot_bytes(manifest)
+    selected_bytes = sum(Path(item["sourcePath"]).stat().st_size for item in sources) + len(
+        keyslot_snapshot
     )
-    return CoreArchiveExportResult(
+    return _PreparedCoreArchive(
         inventory=CoreArchiveInventory(
             payload_kind=payload_kind,
             core_id=core_id,
@@ -139,12 +184,10 @@ def export_core_archive_v2(
             soul_generation=normalized_soul_generation,
             filesystem_generation=filesystem_generation,
             selected_bytes=selected_bytes,
-            record_count=len(sources),
+            record_count=len(sources) + 1,
         ),
-        archive_id=str(summary["archiveId"]),
-        plaintext_bytes=int(summary["plaintextBytes"]),
-        chunk_count=int(summary["chunkCount"]),
-        max_buffer_bytes=int(summary["maxBufferBytes"]),
+        sources=tuple(sources),
+        keyslot_snapshot=keyslot_snapshot,
     )
 
 
@@ -237,17 +280,18 @@ def _source(record_type: str, record_path: str, source_path: Path) -> dict[str, 
     }
 
 
-def _write_keyslot_snapshot(path: Path, manifest: dict[str, object]) -> None:
+def _keyslot_snapshot_bytes(manifest: dict[str, object]) -> bytes:
     payload = {
         "version": 1,
         "keyslotsVersion": manifest.get("keyslots_version"),
         "keyslots": manifest.get("keyslots"),
         "activeFilesystemRootGeneration": manifest.get("active_filesystem_root_generation"),
-        "activeRecoveryCredentialGeneration": manifest.get(
-            "active_recovery_credential_generation"
-        ),
+        "activeRecoveryCredentialGeneration": manifest.get("active_recovery_credential_generation"),
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _write_private_file(path: Path, encoded: bytes) -> None:
     descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     with os.fdopen(descriptor, "wb") as handle:
         handle.write(encoded)
@@ -366,9 +410,7 @@ def _validate_extracted_summary(raw: object) -> dict[str, object]:
     return summary
 
 
-def _match_expected_summary(
-    summary: dict[str, object], expected: CoreArchiveInventory
-) -> None:
+def _match_expected_summary(summary: dict[str, object], expected: CoreArchiveInventory) -> None:
     expected_values = {
         "payloadKind": expected.payload_kind.value,
         "coreId": expected.core_id,

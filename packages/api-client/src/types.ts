@@ -169,6 +169,50 @@ export interface CoreFSRotationResponse {
   resumed: boolean;
 }
 
+export type CoreArchivePayloadKind = "full" | "soul" | "fs";
+export type CoreTransferPublicationMode = "single_file" | "multipart";
+export type CoreTransferOperationState =
+  | "prepared"
+  | "running"
+  | "verifying"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface CoreTransferEstimate {
+  payloadKind: CoreArchivePayloadKind;
+  selectedBytes: number;
+  recordCount: number;
+  archiveBytes: number;
+  requiredCapacityBytes: number;
+  soulGeneration: number | null;
+  filesystemGeneration: number | null;
+}
+
+export interface CoreTransferDestinationProbe extends CoreTransferEstimate {
+  destination: string;
+  availableBytes: number;
+  maximumSingleFileBytes: number | null;
+  publicationMode: CoreTransferPublicationMode;
+  partLimitBytes: number | null;
+  declaredVolumeCount: number;
+}
+
+export interface CoreTransferOperation {
+  operationId: string;
+  payloadKind: CoreArchivePayloadKind;
+  state: CoreTransferOperationState;
+  phase: string;
+  selectedBytes: number;
+  bytesPublished: number;
+  progressPercent: number;
+  publicationMode: CoreTransferPublicationMode;
+  declaredVolumeCount: number;
+  resultPath: string | null;
+  archiveId: string | null;
+  errorCode: string | null;
+}
+
 export type CoreFsClientScope = "none" | "read" | "write" | "manage";
 export type CoreFsClientInstallationStatus =
   | "pending"
