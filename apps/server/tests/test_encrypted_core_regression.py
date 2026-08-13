@@ -41,10 +41,13 @@ def _create_app():
 def _test_client(**kwargs: object) -> Generator[TestClient, None, None]:
     app = _create_app()
     main_module = sys.modules["anima_server.main"]
-    with patch.object(main_module, "_start_embedded_pg", return_value=None), TestClient(
-        app,
-        **kwargs,
-    ) as client:
+    with (
+        patch.object(main_module, "_start_embedded_pg", return_value=None),
+        TestClient(
+            app,
+            **kwargs,
+        ) as client,
+    ):
         yield client
 
 
@@ -58,8 +61,10 @@ def isolated_runtime_root(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     original_database_url = settings.database_url
     original_passphrase = settings.core_passphrase
     original_require_encryption = settings.core_require_encryption
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
 
     settings.data_dir = runtime_root
+    settings.runtime_app_data_dir = str(managed_tmp_path / "runtime-app-data")
     settings.database_url = f"sqlite:///{(runtime_root / 'anima.db').as_posix()}"
     settings.core_passphrase = ""
     settings.core_require_encryption = False
@@ -73,6 +78,7 @@ def isolated_runtime_root(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         settings.database_url = original_database_url
         settings.core_passphrase = original_passphrase
         settings.core_require_encryption = original_require_encryption
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
 
 
 @pytest.fixture(scope="module")
@@ -147,7 +153,9 @@ def _reset_fresh_process_state() -> None:
     _bootstrapped_roots.clear()
 
 
-def _register_user(client: TestClient, username: str, password: str, name: str) -> dict[str, object]:
+def _register_user(
+    client: TestClient, username: str, password: str, name: str
+) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
         json={"username": username, "password": password, "name": name},

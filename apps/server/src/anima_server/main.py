@@ -67,6 +67,10 @@ from .services.core import (
     is_provisioned,
     migrate_legacy_manifest_runtime_state,
 )
+from .services.corefs.active_core_registry import (
+    initialize_active_core_after_manifest,
+    resolve_active_core_for_startup,
+)
 from .services.corefs.instance_registry import (
     RuntimeInstanceBinding,
     RuntimeInstanceRegistry,
@@ -431,9 +435,11 @@ def create_app() -> FastAPI:
         raise RuntimeError("Sidecar nonce must be configured when encryption is required.")
     if not settings.sidecar_nonce and settings.app_env != "development":
         logger.warning("Sidecar nonce is not configured in non-development environment")
+    active_core_startup = resolve_active_core_for_startup()
     if not acquire_core_lock():
         raise RuntimeError("Core is already open in another process")
     ensure_core_manifest()
+    initialize_active_core_after_manifest(active_core_startup)
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

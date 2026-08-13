@@ -227,6 +227,7 @@ def initialize_active_core_pointer(
     _validate_core_identity(core_id)
     if not active.is_dir():
         raise TransferError("active Core pointer target must be a directory")
+    _verify_manifest_core_id(active, core_id)
     registry.parent.mkdir(parents=True, exist_ok=True)
     with _ACTIVATION_LOCK, _exclusive_activation_lock(registry):
         if registry.exists():
@@ -552,6 +553,7 @@ def _pointer_from_body(body: dict[str, object]) -> ActiveCorePointer:
     active = Path(active_path).expanduser().resolve(strict=True)
     if not active.is_dir():
         raise TransferError("active Core pointer target is unavailable")
+    _verify_manifest_core_id(active, core_id)
     retained = (
         Path(cast(str, retained_path)).expanduser().resolve(strict=True)
         if retained_path is not None
@@ -559,6 +561,8 @@ def _pointer_from_body(body: dict[str, object]) -> ActiveCorePointer:
     )
     if retained is not None and not retained.is_dir():
         raise TransferError("retained Core pointer target is unavailable")
+    if retained is not None and retained_core_id is not None:
+        _verify_manifest_core_id(retained, retained_core_id)
     return ActiveCorePointer(
         generation=generation,
         core_id=core_id,
@@ -567,6 +571,20 @@ def _pointer_from_body(body: dict[str, object]) -> ActiveCorePointer:
         retained_core_id=retained_core_id,
         activation_id=normalized_activation_id,
     )
+
+
+def _verify_manifest_core_id(core_path: Path, expected_core_id: str) -> None:
+    manifest_path = core_path / "manifest.json"
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise TransferError("active Core pointer target has no regular manifest")
+    try:
+        if manifest_path.stat().st_size > 8 * 1024 * 1024:
+            raise TransferError("active Core pointer manifest exceeds its bound")
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TransferError("active Core pointer manifest is invalid") from exc
+    if not isinstance(payload, dict) or payload.get("core_id") != expected_core_id:
+        raise TransferError("active Core pointer identity does not match its manifest")
 
 
 def _load_activation_journal(

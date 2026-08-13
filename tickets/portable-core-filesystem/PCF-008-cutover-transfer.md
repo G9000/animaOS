@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 20:43 MYT
+- Updated: 2026-08-13 20:52 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -189,6 +189,22 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   remain restart-gated. The combined backend transfer band passes `60`, API
   client/desktop contracts pass `32`, and the desktop production build passes.
   No active-Core pointer, paid workflow, push, or irreversible action occurred.
+- 2026-08-13 20:52 MYT - Wired the authenticated active-Core registry into
+  startup before the Core lock, manifest mutation, or per-user database
+  bootstrap. A 32-byte registry authentication key is generated and
+  round-trip-verified only through the OS credential store; the machine-local
+  registry directory is private on POSIX, pointer paths must match the Core ID
+  in their bounded regular manifests, and key creation is re-read after the
+  Core lock boundary to fail closed on a competing startup. Startup now
+  recovers an authenticated activation journal, selects a completed full
+  restore, and retains the old Core for rollback. Soul-only and CoreFS-only
+  candidates are structurally forbidden from activation. Focused
+  registry/transfer/startup coverage passes `56`, and the broader encrypted
+  startup/auth band passes `17` with `4` environment-dependent skips. A test
+  fixture was isolated from the real app-data root and the exact two temporary
+  registry files accidentally created by the earlier diagnostic run were
+  removed. No product activation endpoint, paid workflow, push, or irreversible
+  cutover action occurred.
 
 ## Validation
 
@@ -247,6 +263,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after restore staging client/UI integration (`32 passed`)
   - `bun run --cwd apps/desktop build` after restore staging UI integration
     (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_active_core_registry.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_health_startup.py apps/server/tests/test_corefs_transfer_api.py -q`
+    after startup registry integration (`56 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_encrypted_core_regression.py apps/server/tests/test_auth.py -q`
+    (`17 passed`, `4 skipped`)
+  - scoped Ruff check/format and `git diff --check` for active-Core startup
+    integration (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -287,6 +309,9 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/services/corefs/{logical.py,cutover.py}`
   - `apps/server/tests/{test_corefs_api.py,test_corefs_logical.py,test_corefs_cutover.py}`
   - `packages/api-client/src/types.ts`
+  - `apps/server/src/anima_server/services/corefs/active_core_registry.py`
+  - `apps/server/tests/test_corefs_active_core_registry.py`
+  - `apps/server/tests/test_encrypted_core_regression.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by
