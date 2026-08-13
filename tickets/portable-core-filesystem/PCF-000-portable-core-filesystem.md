@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:03 MYT
+- Updated: 2026-08-13 21:13 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -395,6 +395,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 20:52 MYT - PCF-008 startup now selects the active Core through a machine-local HMAC-authenticated registry whose 32-byte key exists only in the OS credential store. Pointer Core IDs are bound to bounded regular manifests, interrupted full-restore activation recovers before the Core lock/database bootstrap, the old Core remains the rollback target, and partial recovery modes cannot activate. Focused startup/transfer coverage passes `56` and encrypted startup/auth passes `17` with `4` environment skips. The product activation endpoint and paid workflow remain disabled; no external or irreversible action occurred.
 - 2026-08-13 20:56 MYT - PCF-008 full restore can now be scheduled through an authenticated restart intent without changing the running Core. Startup consumes the intent through the journaled directory/pointer/completion transaction, retains the prior Core, and deletes the request durably; partial modes cannot schedule. Backend startup/transfer coverage passes `67`, API/desktop contracts `32`, and the desktop production build passes. No live pointer swap, paid workflow, push, or irreversible cutover action occurred.
 - 2026-08-13 21:03 MYT - PCF-008 retained-Core rollback is now exposed as an explicitly confirmed authenticated restart intent. It changes no live pointer, exposes no machine path, requires a complete Soul plus committed CoreFS shape for both pointer-selected Cores at the next pre-resource startup, and consumes the existing crash-idempotent pointer/completion transaction before durably deleting the request. Focused backend coverage passes `71`, API/desktop contracts `33`, and the desktop production build passes. No live pointer swap, paid workflow, push, or irreversible cutover action occurred.
+- 2026-08-13 21:13 MYT - PCF-008 now has a bounded authenticated encrypted recovery bundle for the relocated legacy PostgreSQL source. It is create-only and machine-local outside the portable Core, encrypts paths/content under an OS-credential-held key, rejects source drift/tampering/missing credentials, resumes a durable partial, and re-verifies before reporting ready. Plaintext retirement separately requires durable forward-only authority, stopped PostgreSQL, verified recovery, and a fresh Runtime database; only temporary fixtures were deleted. The focused recovery/relocation/orchestration/cutover band passes `46`. Automatic lifecycle wiring remains open, and no external or irreversible action occurred.
 
 ## Validation
 

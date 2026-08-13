@@ -903,6 +903,16 @@ The first accepted mutation writes the authenticated catalog marker and publishe
 
 - [ ] **Step 5: Secure and retire the legacy PostgreSQL source after the marker**
 
+Progress (2026-08-13): a machine-local recovery primitive now inventories the
+stopped relocated legacy PostgreSQL tree twice, encrypts paths and contents in
+bounded chunks under an OS-credential-held random key, authenticates the exact
+inventory/footer with one monotonic nonce sequence, publishes create-only
+outside the portable Core, and re-verifies the final bundle. Durable partial
+publication resumes without overwrite. Plaintext retirement independently
+requires forward-only CoreFS authority, stopped PostgreSQL, the authenticated
+bundle, and a present fresh Runtime database. Automatic stop/switch/retire
+orchestration remains open, so this step is intentionally not checked complete.
+
 Before enabling writes, create and verify an authenticated encrypted recovery bundle of `legacy-runtime-source` outside `.anima/` while retaining plaintext rollback source. After the marked first mutation makes rollback forward-only, stop the legacy server, switch to the fresh runtime, delete the plaintext legacy directory, and retain only the encrypted recovery bundle for the later cleanup release. A moved Core never includes either runtime form.
 
 - [ ] **Step 6: Add exact transfer API and desktop flow**

@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 21:03 MYT
+- Updated: 2026-08-13 21:13 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -230,6 +230,21 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   client/desktop contracts pass `33`, and the desktop production build passes.
   No live pointer swap, paid workflow, push, or irreversible cutover action
   occurred.
+- 2026-08-13 21:13 MYT - Added the first Step 5 legacy Runtime retirement
+  milestone. The stopped relocated PostgreSQL source is inventoried before and
+  during a bounded 1-MiB streaming pass; paths and contents are encrypted under
+  an OS-credential-held random key, and exact identity, chunk coordinates,
+  hashes, inventory, footer, and completion are authenticated with one
+  monotonic nonce sequence. The create-only bundle lives beneath machine-local
+  instance recovery state outside `.anima/`, re-verifies after publication,
+  resumes an authenticated durable partial, and never overwrites a conflicting
+  bundle or replaces a missing credential. The separate plaintext retirement
+  primitive refuses deletion unless forward-only CoreFS authority is durable,
+  PostgreSQL is stopped, the bundle re-verifies, and a fresh Runtime database
+  exists; tests only exercise temporary fixtures. Recovery/relocation/
+  orchestration/cutover coverage passes `46`. Automatic server stop, fresh
+  Runtime switch, and post-marker orchestration remain open. No paid workflow,
+  push, real plaintext deletion, or irreversible cutover action occurred.
 
 ## Validation
 
@@ -306,6 +321,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after rollback confirmation/status wiring (`33 passed`)
   - `bun run --cwd apps/desktop build` after retained-Core rollback UI wiring
     (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_cutover.py -q`
+    after the encrypted legacy Runtime recovery milestone (`46 passed`)
+  - scoped Ruff check/format and `git diff --check` for legacy Runtime recovery
+    (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -349,6 +368,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/services/corefs/active_core_registry.py`
   - `apps/server/tests/test_corefs_active_core_registry.py`
   - `apps/server/tests/test_encrypted_core_regression.py`
+  - `apps/server/src/anima_server/services/corefs/legacy_runtime_recovery.py`
+  - `apps/server/tests/test_corefs_legacy_runtime_recovery.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by
