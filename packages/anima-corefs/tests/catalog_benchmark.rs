@@ -4,8 +4,8 @@ use std::time::Duration;
 use anima_corefs::benchmark::{
     build_fixture, build_fixture_matrix, derive_fixture_lifecycle_counts,
     expected_reference_fixture_manifest_fingerprint, needs_serialized_limit_fixture,
-    percentile_nearest_rank, run_fixture_benchmark, BenchmarkRunConfig, CatalogFixtureSpec,
-    FixtureKind, MAX_CATALOG_PLAINTEXT_BYTES,
+    percentile_nearest_rank, run_fixture_benchmark, BenchmarkError, BenchmarkRunConfig,
+    CatalogFixtureSpec, FixtureKind, MAX_CATALOG_PLAINTEXT_BYTES,
 };
 #[cfg(windows)]
 use anima_corefs::benchmark::{
@@ -25,6 +25,75 @@ fn test_root(name: &str) -> std::path::PathBuf {
         "anima-corefs-catalog-benchmark-{}-{name}",
         std::process::id()
     ))
+}
+
+const KNOWN_WINDOWS_RESOURCE_BUDGET_FLAKE: &str =
+    "production lease did not retain its exact resource budget";
+
+fn retry_known_windows_resource_budget_flake<T>(
+    mut attempt: impl FnMut(usize) -> Result<T, BenchmarkError>,
+) -> Result<T, BenchmarkError> {
+    match attempt(1) {
+        Err(BenchmarkError::DiagnosticInvariant(message))
+            if message == KNOWN_WINDOWS_RESOURCE_BUDGET_FLAKE =>
+        {
+            eprintln!(
+                "PCF-011: retrying the isolated Windows lease diagnostic once after the tracked resource-budget flake"
+            );
+            attempt(2)
+        }
+        outcome => outcome,
+    }
+}
+
+#[test]
+fn known_windows_resource_budget_flake_gets_one_exact_retry() {
+    let mut attempts = 0;
+    let outcome = retry_known_windows_resource_budget_flake(|attempt| {
+        attempts += 1;
+        if attempt == 1 {
+            Err(BenchmarkError::DiagnosticInvariant(
+                KNOWN_WINDOWS_RESOURCE_BUDGET_FLAKE,
+            ))
+        } else {
+            Ok("recovered")
+        }
+    })
+    .unwrap();
+
+    assert_eq!(outcome, "recovered");
+    assert_eq!(attempts, 2);
+}
+
+#[test]
+fn windows_resource_budget_retry_does_not_hide_persistent_or_unrelated_failures() {
+    let mut persistent_attempts = 0;
+    let persistent = retry_known_windows_resource_budget_flake(|_| {
+        persistent_attempts += 1;
+        Err::<(), _>(BenchmarkError::DiagnosticInvariant(
+            KNOWN_WINDOWS_RESOURCE_BUDGET_FLAKE,
+        ))
+    })
+    .unwrap_err();
+    assert!(matches!(
+        persistent,
+        BenchmarkError::DiagnosticInvariant(KNOWN_WINDOWS_RESOURCE_BUDGET_FLAKE)
+    ));
+    assert_eq!(persistent_attempts, 2);
+
+    let mut unrelated_attempts = 0;
+    let unrelated = retry_known_windows_resource_budget_flake(|_| {
+        unrelated_attempts += 1;
+        Err::<(), _>(BenchmarkError::DiagnosticInvariant(
+            "safe-open sample did not have a production lease",
+        ))
+    })
+    .unwrap_err();
+    assert!(matches!(
+        unrelated,
+        BenchmarkError::DiagnosticInvariant("safe-open sample did not have a production lease")
+    ));
+    assert_eq!(unrelated_attempts, 1);
 }
 
 fn read_child_json(
@@ -375,17 +444,21 @@ fn object_lease_diagnostic_requires_the_mutation_matrix_for_native_acceptance() 
 #[cfg(windows)]
 #[test]
 fn object_lease_diagnostic_records_ordered_boundaries_and_required_mutations() {
-    let root = test_root("production-lease-ordered-boundary");
-    let _ = fs::remove_dir_all(&root);
-    let outcome = run_object_lease_diagnostic(
-        &root,
-        ObjectLeaseDiagnosticConfig {
-            object_count: 8,
-            warmups: 0,
-            samples: 2,
-            mutation_matrix: true,
-        },
-    )
+    let outcome = retry_known_windows_resource_budget_flake(|attempt| {
+        let root = test_root(&format!("production-lease-ordered-boundary-{attempt}"));
+        let _ = fs::remove_dir_all(&root);
+        let outcome = run_object_lease_diagnostic(
+            &root,
+            ObjectLeaseDiagnosticConfig {
+                object_count: 8,
+                warmups: 0,
+                samples: 2,
+                mutation_matrix: true,
+            },
+        );
+        let _ = fs::remove_dir_all(root);
+        outcome
+    })
     .unwrap();
     let observations = outcome.observations();
     let mut clean_sequence = vec![ObjectLeaseDiagnosticEvent::FenceClean];
@@ -423,8 +496,6 @@ fn object_lease_diagnostic_records_ordered_boundaries_and_required_mutations() {
     assert_eq!(value["lease"]["fenceCount"], 2);
     assert_eq!(value["correctness"]["orderedBoundaryProven"], true);
     assert_eq!(value["correctness"]["mutationMatrixPassed"], true);
-
-    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

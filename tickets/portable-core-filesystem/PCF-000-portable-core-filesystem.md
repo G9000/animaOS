@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 12:44 MYT
+- Updated: 2026-08-13 12:52 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -33,7 +33,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
-| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | in_progress | none |
+| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | done | none |
 
 ## Deliverables
 
@@ -83,6 +83,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
 - PCF-003 - Machine-local Runtime and progressive indexing (PR #127 second-phase closeout completed 2026-08-01 19:49 MYT).
 - PCF-005 - Canonical threads, messages, and transcript merge (completed locally 2026-08-13 11:36 MYT).
+- PCF-006 - Gallery, attachments, documents, and knowledge sources (completed locally 2026-08-13 12:41 MYT).
+- PCF-011 - Windows lease-diagnostic CI flake (completed locally 2026-08-13 12:52 MYT).
 
 ## Activity Log
 
@@ -364,6 +366,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 11:39 MYT - Claimed PCF-006 as the next dependency-eligible child after PCF-005 completed locally. Synchronized the child and parent row to `in_progress` on local stacked branch `codex/pcf-006-assets-documents` from `d3ab653e`; parent ownership is unchanged, PCF-004 remains independently open on cost-deferred package evidence, and no PCF-006 external action is authorized.
 - 2026-08-13 12:41 MYT - Completed PCF-006 locally and synchronized its child state, parent row, plan checklist, validation, changed paths, and residual activation boundary. Gallery/assets/documents/captured sources publish in the combined inactive preparation with authenticated streaming reads, CoreFS URI reconciliation, stable-role recovery, pathless PDF parsing, and Runtime-deletion rebuild into scrubbed unlock-only image/document/evidence/concept projections. The focused band passed `219`, adjacent regressions `121`, Runtime plaintext/privacy `52`, native validation `9`, strict lint/Clippy/format/PyO3 check, complete workspace build, repository organization, and diff hygiene. PCF-007 remains blocked only by PCF-004's cost-deferred four-platform package evidence; PCF-011 is the next dependency-eligible backlog child. No PCF-006 external action was authorized or performed.
 - 2026-08-13 12:44 MYT - Claimed dependency-free PCF-011 for Codex on local branch `codex/pcf-011-windows-lease-flake` from PCF-006 completion head `290e8c62`; the child and parent row now agree on `in_progress`. PCF-007 remains dependency-ineligible on PCF-004's user-deferred paid four-platform package evidence. Automatic paid workflow triggers remain disabled, and no external action was authorized.
+- 2026-08-13 12:52 MYT - Completed PCF-011 locally with a one-retry, exact-signature, fresh-fixture policy for the tracked Windows resource-budget diagnostic; persistent exact failures and unrelated failures remain fatal. Platform-neutral retry regressions passed on current and Rust 1.75 toolchains, the complete affected catalog target passed `11`, logical-path `4`, validation-batch `9`, strict current/pinned Clippy, format, and diff hygiene passed. The paid workflow remains manual-only and was not dispatched. PCF-004's cost-deferred signed-package evidence is now the sole open prerequisite before PCF-007 can be claimed; no external action was authorized.
 
 ## Validation
 

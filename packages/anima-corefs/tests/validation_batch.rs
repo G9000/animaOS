@@ -264,7 +264,7 @@ fn conversation_root_and_canonical_objects_use_shared_manage_validation_policy()
     assert_eq!(moved.snapshot().head().generation(), 2);
     drop(coordinator);
 
-    let reopened = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let reopened = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let conversations = reopened
         .resolve_validation_role(&keys, "core.conversations")
         .unwrap()
@@ -363,7 +363,7 @@ fn gallery_root_and_original_sources_publish_move_and_reopen() {
     assert_eq!(moved.snapshot().head().generation(), 2);
     drop(coordinator);
 
-    let reopened = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let reopened = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let gallery = reopened
         .resolve_validation_role(&keys, "core.gallery")
         .unwrap()
@@ -444,7 +444,7 @@ fn identical_rerun_is_idempotent_and_roles_survive_reopen() {
     assert_eq!(moved.snapshot().head().generation(), 2);
 
     drop(coordinator);
-    let reopened = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let reopened = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let journal = reopened
         .resolve_validation_role(&keys, "core.journal")
         .unwrap()

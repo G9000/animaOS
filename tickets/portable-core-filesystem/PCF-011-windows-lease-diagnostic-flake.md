@@ -1,6 +1,6 @@
 # PCF-011 - Windows lease-diagnostic CI flake (resource-budget invariant)
 
-- Status: in_progress
+- Status: done
 - Priority: P3
 - Scope: `packages/anima-corefs/tests/catalog_benchmark.rs`, `.github/workflows/corefs-provenance.yml`
 - Parent: `PCF-000`
@@ -10,9 +10,9 @@
 - Spec: none
 - Plan: none
 - Created: 2026-07-30 15:50 MYT
-- Updated: 2026-08-13 12:44 MYT
+- Updated: 2026-08-13 12:52 MYT
 - Started: 2026-08-13 12:44 MYT
-- Completed:
+- Completed: 2026-08-13 12:52 MYT
 
 ## Goal
 
@@ -56,12 +56,33 @@ runner resources, or gating the invariant on a quiescent-environment check.
   PCF-007 remains dependency-ineligible on the user-deferred PCF-004 paid
   package evidence, so PCF-011 is the next dependency-free child. Automatic
   paid workflow triggers remain disabled; no external action was authorized.
+- 2026-08-13 12:52 MYT - Completed the tracked-flake policy locally. The exact
+  resource-budget diagnostic receives one fresh-fixture retry; a second exact
+  failure and every unrelated failure remain fatal. Platform-neutral policy
+  regressions prove both boundaries. The manual-only CoreFS workflow remains
+  cost-disabled and was not dispatched. Rust 1.75 also exposed and verified
+  two inherited strict-Clippy compatibility cleanups in the affected stacked
+  CoreFS code.
 
 ## Validation
 
 - Commands:
-  - `not run yet`
+  - `cargo test -p anima-corefs --test catalog_benchmark windows_resource_budget -- --nocapture` (`2 passed`)
+  - `cargo test -p anima-corefs --test catalog_benchmark -- --nocapture` (`11 passed`)
+  - `cargo clippy -p anima-corefs --all-targets --all-features -- -D warnings`
+  - `cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark windows_resource_budget -- --nocapture` (`2 passed`)
+  - `cargo +1.75.0 test --locked -p anima-corefs --test catalog_benchmark -- --nocapture` (`11 passed`)
+  - `cargo +1.75.0 test --locked -p anima-corefs --test logical_path -- --nocapture` (`4 passed`)
+  - `cargo +1.75.0 test --locked -p anima-corefs --test validation_batch -- --nocapture` (`9 passed`)
+  - `cargo +1.75.0 clippy --locked -p anima-corefs --all-targets --all-features -- -D warnings`
+  - `cargo fmt -p anima-corefs -- --check`
+  - `git diff --check`
 - Changed paths:
-  - none
+  - `packages/anima-corefs/tests/catalog_benchmark.rs`
+  - `packages/anima-corefs/src/logical/path.rs`
+  - `packages/anima-corefs/tests/validation_batch.rs`
+  - `tickets/portable-core-filesystem/PCF-011-windows-lease-diagnostic-flake.md`
+  - `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 - Notes:
-  - none
+  - The retry matches only `DiagnosticInvariant("production lease did not retain its exact resource budget")`, runs at most twice, and uses distinct fixture roots.
+  - The real paid Windows runner was intentionally not invoked. `.github/workflows/corefs-provenance.yml` remains manual-only with its automatic PR trigger commented out.
