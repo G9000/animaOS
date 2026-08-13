@@ -798,7 +798,7 @@ Implement one OS-credential boundary across Python, Tauri/local-runtime-daemon, 
 
 Authenticate by unwrapping manifest keyslots, open SQLCipher, load Soul domain keys, then read the encrypted account-profile object. Remove manifest `user_index`; remembered username remains optional device-local convenience.
 
-- [ ] **Step 5: Rewire task routes to CoreFS behind the cutover gate**
+- [x] **Step 5: Rewire task routes to CoreFS behind the cutover gate**
 
 Preserve task API schemas. Before PCF-008, routes continue legacy-authoritative writes while the converter validates shadow JSON objects; the shared authority switch activates CoreFS writes only with the global cutover marker.
 

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 17:07 MYT
+- Updated: 2026-08-13 17:14 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -68,6 +68,14 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   single-owner locator. SQLCipher fallback remains only for the one pre-PCF-008
   upgrade login where no prepared account-profile exists yet. No external
   action was taken.
+- 2026-08-13 17:14 MYT - Completed Step 5 locally. Legacy task CRUD preserves
+  its public schema and synchronously rebuilds/verifies the encrypted task
+  shadow after each committed mutation. An exact authenticated global marker
+  switches reads to the marker-pinned CoreFS catalog and immediately blocks all
+  further SQL task mutation; the still-frozen public CoreFS mutation facade
+  remains reserved for the PCF-008 first-write activation adapter. Task priority
+  validation now matches the public `1..5` API across Python and Rust. No
+  external action was taken.
 
 ## Validation
 
@@ -85,6 +93,8 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
     keyslot crash and encrypted-profile coverage (`6 passed`), account migration
     (`2 passed`), Ruff, and diff hygiene passed; the two deselected unrelated
     health/LLM tests retain the known native background-index teardown segfault
+  - task CRUD/shadow/cutover plus account migration (`7 passed`), native bounded
+    account/preferences/task validation (`1 passed`), Ruff, and diff hygiene passed
 - Changed paths:
   - `docs/architecture/system/portable-state-inventory.md`
   - `apps/server/src/anima_server/services/corefs/{formats.py,writing_source.py}`
@@ -102,6 +112,8 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - `apps/server/src/anima_server/services/corefs/account_profile.py`
   - `apps/server/src/anima_server/{db/user_store.py,services/core.py,api/routes/auth.py}`
   - `apps/server/src/anima_server/services/vault.py`
+  - `apps/server/src/anima_server/services/corefs/task_authority.py`
+  - `apps/server/src/anima_server/api/routes/tasks.py`
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.

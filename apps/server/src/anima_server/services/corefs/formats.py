@@ -446,7 +446,7 @@ def encode_task_document(
     updated_at: str | None,
 ) -> bytes:
     _validate_stable_id(stable_id)
-    if legacy_id < 0 or not text.strip() or not 1 <= priority <= 3:
+    if legacy_id < 0 or not text.strip() or not 1 <= priority <= 5:
         raise CoreFormatError("Task identity, text, or priority is invalid.")
     if due_date is not None and re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date) is None:
         raise CoreFormatError("Task due date must use YYYY-MM-DD.")
@@ -475,7 +475,7 @@ def decode_task_document(data: bytes) -> TaskDocument:
     priority = _required_int(payload, "priority")
     text = _required_string(payload, "text")
     due_date = _optional_string(payload, "dueDate")
-    if legacy_id < 0 or not 1 <= priority <= 3:
+    if legacy_id < 0 or not 1 <= priority <= 5:
         raise CoreFormatError("Task identity or priority is invalid.")
     if due_date is not None and re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date) is None:
         raise CoreFormatError("Task due date must use YYYY-MM-DD.")

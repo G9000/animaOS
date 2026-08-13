@@ -1171,7 +1171,7 @@ fn validate_portable_state_document(
             if value.get("legacyId").and_then(Value::as_u64).is_none()
                 || !has_nonempty_string(value, "text")
                 || !value.get("done").is_some_and(Value::is_boolean)
-                || !priority.is_some_and(|value| (1..=3).contains(&value))
+                || !priority.is_some_and(|value| (1..=5).contains(&value))
             {
                 return Err(ValidationBatchError::Invalid("task fields are invalid"));
             }
