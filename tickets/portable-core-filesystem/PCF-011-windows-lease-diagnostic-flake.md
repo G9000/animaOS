@@ -1,17 +1,17 @@
 # PCF-011 - Windows lease-diagnostic CI flake (resource-budget invariant)
 
-- Status: backlog
+- Status: in_progress
 - Priority: P3
 - Scope: `packages/anima-corefs/tests/catalog_benchmark.rs`, `.github/workflows/corefs-provenance.yml`
 - Parent: `PCF-000`
 - Depends on: none
-- Owner: unassigned
+- Owner: Codex
 - PRD: none
 - Spec: none
 - Plan: none
 - Created: 2026-07-30 15:50 MYT
-- Updated: 2026-07-30 15:50 MYT
-- Started:
+- Updated: 2026-08-13 12:44 MYT
+- Started: 2026-08-13 12:44 MYT
 - Completed:
 
 ## Goal
@@ -51,6 +51,11 @@ runner resources, or gating the invariant on a quiescent-environment check.
 - 2026-07-30 15:50 MYT - Filed from the PR #128 CI investigation (failure on
   docs-only commit `e336ece`, green on re-run; prior green run 35 minutes
   earlier at identical Rust code).
+- 2026-08-13 12:44 MYT - Claimed by Codex on local branch
+  `codex/pcf-011-windows-lease-flake` from PCF-006 completion head `290e8c62`.
+  PCF-007 remains dependency-ineligible on the user-deferred PCF-004 paid
+  package evidence, so PCF-011 is the next dependency-free child. Automatic
+  paid workflow triggers remain disabled; no external action was authorized.
 
 ## Validation
 

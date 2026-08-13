@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 12:41 MYT
+- Updated: 2026-08-13 12:44 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -33,7 +33,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
-| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | backlog | none |
+| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | in_progress | none |
 
 ## Deliverables
 
@@ -363,6 +363,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 11:36 MYT - Completed PCF-005 locally and synchronized its child state, parent row, completed history, validation, changed paths, and residual follow-ups. Canonical message events/segments, projection privacy, merge quarantine, shared/manage conversations-root validation, stable-role reads, combined inactive preparation, and fail-closed post-cutover routing are implemented; focused `101`, adjacent PCF-004 `50`, native validation `8`, strict lint/Clippy/format/build/check, repository build, and diff hygiene passed. PCF-006 is now dependency-eligible. PCF-004 remains separately `in_progress` on its intentionally cost-deferred four-platform signed-package evidence; no PCF-005 external action was authorized or performed.
 - 2026-08-13 11:39 MYT - Claimed PCF-006 as the next dependency-eligible child after PCF-005 completed locally. Synchronized the child and parent row to `in_progress` on local stacked branch `codex/pcf-006-assets-documents` from `d3ab653e`; parent ownership is unchanged, PCF-004 remains independently open on cost-deferred package evidence, and no PCF-006 external action is authorized.
 - 2026-08-13 12:41 MYT - Completed PCF-006 locally and synchronized its child state, parent row, plan checklist, validation, changed paths, and residual activation boundary. Gallery/assets/documents/captured sources publish in the combined inactive preparation with authenticated streaming reads, CoreFS URI reconciliation, stable-role recovery, pathless PDF parsing, and Runtime-deletion rebuild into scrubbed unlock-only image/document/evidence/concept projections. The focused band passed `219`, adjacent regressions `121`, Runtime plaintext/privacy `52`, native validation `9`, strict lint/Clippy/format/PyO3 check, complete workspace build, repository organization, and diff hygiene. PCF-007 remains blocked only by PCF-004's cost-deferred four-platform package evidence; PCF-011 is the next dependency-eligible backlog child. No PCF-006 external action was authorized or performed.
+- 2026-08-13 12:44 MYT - Claimed dependency-free PCF-011 for Codex on local branch `codex/pcf-011-windows-lease-flake` from PCF-006 completion head `290e8c62`; the child and parent row now agree on `in_progress`. PCF-007 remains dependency-ineligible on PCF-004's user-deferred paid four-platform package evidence. Automatic paid workflow triggers remain disabled, and no external action was authorized.
 
 ## Validation
 
