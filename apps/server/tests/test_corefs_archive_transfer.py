@@ -11,6 +11,7 @@ from anima_server.services.corefs.archive_transfer import (
     CoreArchivePayloadKind,
     CoreArchiveTransferError,
     export_core_archive_v2,
+    stage_core_archive_v2,
     verify_core_archive_v2,
 )
 
@@ -319,3 +320,188 @@ def test_verifier_extracts_to_disposable_sibling_and_matches_prepared_inventory(
     assert summary["payloadKind"] == "fs"
     assert len(observed) == 1
     assert not observed[0].exists()
+
+
+def _staged_archive_summary(
+    staging: Path,
+    *,
+    payload_kind: CoreArchivePayloadKind,
+    tamper_keyslots: bool = False,
+) -> dict[str, object]:
+    slots = (
+        [{"purpose": "soul", "wrapped": {"wrapped_key": "soul-root"}}]
+        if payload_kind is CoreArchivePayloadKind.SOUL
+        else [
+            {
+                "purpose": "filesystem-root",
+                "wrapped": {"wrapped_key": "filesystem-root"},
+            }
+        ]
+    )
+    if payload_kind is CoreArchivePayloadKind.FULL:
+        slots = [
+            {"purpose": "soul", "wrapped": {"wrapped_key": "soul-root"}},
+            {
+                "purpose": "filesystem-root",
+                "wrapped": {"wrapped_key": "filesystem-root"},
+            },
+        ]
+    manifest = {
+        "core_id": CORE_ID,
+        "owner_id": OWNER_ID,
+        "keyslots_version": 1,
+        "keyslots": slots,
+        "active_recovery_credential_generation": 1,
+        "active_filesystem_root_generation": (
+            1 if payload_kind is not CoreArchivePayloadKind.SOUL else None
+        ),
+        "archive_payload_scope": payload_kind.value,
+    }
+    if payload_kind is CoreArchivePayloadKind.SOUL:
+        manifest["degraded_state"] = "filesystem_missing"
+    elif payload_kind is CoreArchivePayloadKind.FS:
+        manifest["degraded_state"] = "recovery_only"
+
+    files: dict[str, bytes] = {
+        "manifest.json": json.dumps(manifest, sort_keys=True).encode(),
+        "keyslots/root-keyslots.json": json.dumps(
+            {
+                "version": 1,
+                "keyslotsVersion": 1,
+                "keyslots": (
+                    [{"purpose": "soul", "wrapped": {"wrapped_key": "tampered"}}]
+                    if tamper_keyslots
+                    else slots
+                ),
+                "activeFilesystemRootGeneration": manifest.get("active_filesystem_root_generation"),
+                "activeRecoveryCredentialGeneration": 1,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode(),
+    }
+    record_types = {
+        "manifest.json": "manifest",
+        "keyslots/root-keyslots.json": "keyslots",
+    }
+    if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}:
+        files["soul/soul.db"] = b"encrypted-soul"
+        record_types["soul/soul.db"] = "soul_database"
+    if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.FS}:
+        files["fs/HEAD"] = b"authenticated-head"
+        files["fs/catalogs/catalog.acore"] = b"encrypted-catalog"
+        record_types["fs/HEAD"] = "catalog"
+        record_types["fs/catalogs/catalog.acore"] = "catalog"
+
+    staging.mkdir()
+    for relative, content in files.items():
+        path = staging / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    records = [
+        {
+            "recordType": record_types[relative],
+            "recordPath": relative,
+            "plaintextLength": len(content),
+            "recordHash": "a" * 64,
+        }
+        for relative, content in files.items()
+    ]
+    return {
+        "version": 2,
+        "archiveId": ARCHIVE_ID,
+        "volumeSetId": ARCHIVE_ID,
+        "payloadKind": payload_kind.value,
+        "coreId": CORE_ID,
+        "ownerId": OWNER_ID,
+        "soulGeneration": (
+            3
+            if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL}
+            else None
+        ),
+        "filesystemGeneration": (
+            7 if payload_kind in {CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.FS} else None
+        ),
+        "recordCount": len(records),
+        "chunkCount": len(records),
+        "plaintextBytes": sum(len(content) for content in files.values()),
+        "maxBufferBytes": 1024,
+        "records": records,
+    }
+
+
+@pytest.mark.parametrize(
+    "payload_kind",
+    [CoreArchivePayloadKind.FULL, CoreArchivePayloadKind.SOUL, CoreArchivePayloadKind.FS],
+)
+def test_stage_archive_authenticates_exact_tree_without_activating(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload_kind: CoreArchivePayloadKind,
+) -> None:
+    archive = managed_tmp_path / f"{payload_kind.value}.anima"
+    archive.write_bytes(b"archive")
+    staging = managed_tmp_path / f".{payload_kind.value}.partial"
+
+    def extractor(_path: str, passphrase: bytes, destination: str) -> dict[str, object]:
+        assert passphrase == b"correct horse battery staple"
+        return _staged_archive_summary(Path(destination), payload_kind=payload_kind)
+
+    monkeypatch.setattr(anima_core_bindings, "require_binding", lambda _name: extractor)
+    result = stage_core_archive_v2(
+        archive,
+        passphrase="correct horse battery staple",
+        staging_path=staging,
+    )
+
+    assert result.inventory.payload_kind is payload_kind
+    assert result.staging_path == staging
+    assert staging.is_dir()
+
+
+@pytest.mark.parametrize("tamper", ["keyslots", "extra_file"])
+def test_stage_archive_failure_removes_all_staging_residue(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper: str,
+) -> None:
+    archive = managed_tmp_path / "soul.anima"
+    archive.write_bytes(b"archive")
+    staging = managed_tmp_path / ".soul.partial"
+
+    def extractor(_path: str, _passphrase: bytes, destination: str) -> dict[str, object]:
+        destination_path = Path(destination)
+        summary = _staged_archive_summary(
+            destination_path,
+            payload_kind=CoreArchivePayloadKind.SOUL,
+            tamper_keyslots=tamper == "keyslots",
+        )
+        if tamper == "extra_file":
+            (destination_path / "unexpected").write_bytes(b"not authenticated")
+        return summary
+
+    monkeypatch.setattr(anima_core_bindings, "require_binding", lambda _name: extractor)
+    with pytest.raises(CoreArchiveTransferError):
+        stage_core_archive_v2(
+            archive,
+            passphrase="correct horse battery staple",
+            staging_path=staging,
+        )
+
+    assert not staging.exists()
+
+
+def test_stage_archive_rejects_symbolic_link_source(
+    managed_tmp_path: Path,
+) -> None:
+    archive = managed_tmp_path / "source.anima"
+    archive.write_bytes(b"archive")
+    alias = managed_tmp_path / "alias.anima"
+    alias.symlink_to(archive)
+
+    with pytest.raises(CoreArchiveTransferError, match="regular file"):
+        stage_core_archive_v2(
+            alias,
+            passphrase="correct horse battery staple",
+            staging_path=managed_tmp_path / ".restore.partial",
+        )

@@ -201,6 +201,51 @@ describe("createApiClient error handling", () => {
     expect(JSON.stringify(requests)).not.toContain("vault");
   });
 
+  test("serializes non-activating restore staging operations", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            operationId: "import-a",
+            state: "prepared",
+            phase: "prepared",
+            archiveBytes: 10,
+            bytesProcessed: 0,
+            progressPercent: 0,
+            payloadKind: null,
+            recoveryState: null,
+            stagingPath: null,
+            archiveId: null,
+            errorCode: null,
+          }),
+        );
+      },
+    });
+
+    await api.corefs.transfer.probeImport("/Volumes/Backup/core.anima", "/Users/alice");
+    await api.corefs.transfer.prepareImport({
+      archivePath: "/Volumes/Backup/core.anima",
+      stagingParent: "/Users/alice",
+      passphrase: "correct horse battery staple",
+    });
+    await api.corefs.transfer.importOperation("import-a");
+    await api.corefs.transfer.cancelImport("import-a");
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api.test/api/corefs/transfer/import/probe",
+      "https://api.test/api/corefs/transfer/import/prepare",
+      "https://api.test/api/corefs/transfer/import/operations/import-a",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/cancel",
+    ]);
+  });
+
   test("surfaces normalized validation details arrays", async () => {
     const api = createApiClient({
       baseUrl: "https://api.test/api",

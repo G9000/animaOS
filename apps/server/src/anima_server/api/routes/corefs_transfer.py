@@ -6,6 +6,10 @@ from fastapi import APIRouter, HTTPException, Request, status
 
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.schemas.corefs_transfer import (
+    CoreImportOperationResponse,
+    CoreImportPrepareRequest,
+    CoreImportProbeRequest,
+    CoreImportProbeResponse,
     CoreTransferDestinationRequest,
     CoreTransferEstimateResponse,
     CoreTransferOperationResponse,
@@ -20,6 +24,7 @@ from anima_server.services.corefs.archive_transfer import (
 from anima_server.services.corefs.transfer import TransferError
 from anima_server.services.corefs.transfer_jobs import (
     PreparedTransfer,
+    core_import_operations,
     core_transfer_operations,
 )
 
@@ -142,6 +147,90 @@ def cancel_core_transfer_operation(
             detail={"code": "core_transfer_operation_not_found"},
         ) from exc
     return CoreTransferOperationResponse(**operation.public())
+
+
+@router.post("/import/probe", response_model=CoreImportProbeResponse)
+def probe_core_import(
+    payload: CoreImportProbeRequest,
+    request: Request,
+) -> CoreImportProbeResponse:
+    require_unlocked_session(request)
+    try:
+        prepared = core_import_operations.inspect(
+            archive_path=Path(payload.archivePath),
+            staging_parent=Path(payload.stagingParent),
+        )
+    except (CoreArchiveTransferError, TransferError, OSError, ValueError) as exc:
+        raise _transfer_conflict() from exc
+    return CoreImportProbeResponse(
+        archiveBytes=prepared.archive_bytes,
+        stagingParent=str(prepared.probe.staging_parent),
+        availableBytes=prepared.probe.available_bytes,
+        requiredCapacityBytes=prepared.probe.required_capacity_bytes,
+    )
+
+
+@router.post(
+    "/import/prepare",
+    response_model=CoreImportOperationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def prepare_core_import(
+    payload: CoreImportPrepareRequest,
+    request: Request,
+) -> CoreImportOperationResponse:
+    session = require_unlocked_session(request)
+    try:
+        operation = core_import_operations.start_import(
+            user_id=session.user_id,
+            archive_path=Path(payload.archivePath),
+            staging_parent=Path(payload.stagingParent),
+            passphrase=payload.passphrase,
+        )
+    except (CoreArchiveTransferError, TransferError, OSError, ValueError) as exc:
+        raise _transfer_conflict() from exc
+    return CoreImportOperationResponse(**operation.public())
+
+
+@router.get(
+    "/import/operations/{operation_id}",
+    response_model=CoreImportOperationResponse,
+)
+def get_core_import_operation(
+    operation_id: str,
+    request: Request,
+) -> CoreImportOperationResponse:
+    session = require_unlocked_session(request)
+    try:
+        operation = core_import_operations.get(operation_id, user_id=session.user_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "core_import_operation_not_found"},
+        ) from exc
+    return CoreImportOperationResponse(**operation.public())
+
+
+@router.post(
+    "/import/operations/{operation_id}/cancel",
+    response_model=CoreImportOperationResponse,
+)
+def cancel_core_import_operation(
+    operation_id: str,
+    request: Request,
+) -> CoreImportOperationResponse:
+    session = require_unlocked_session(request)
+    try:
+        operation = core_import_operations.request_cancel(
+            operation_id,
+            user_id=session.user_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "core_import_operation_not_found"},
+        ) from exc
+    return CoreImportOperationResponse(**operation.public())
 
 
 def _transfer_conflict() -> HTTPException:

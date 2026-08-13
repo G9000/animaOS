@@ -9,6 +9,8 @@ import type {
   CapabilitiesResponse,
   ChangePasswordResponse,
   CorefsCredentialResponse,
+  CoreImportOperation,
+  CoreImportProbe,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
   CoreArchivePayloadKind,
@@ -778,6 +780,29 @@ export function createApiClient(options: ApiClientOptions) {
         cancel: (operationId: string) =>
           request<CoreTransferOperation>(
             `/corefs/transfer/operations/${encodeURIComponent(operationId)}/cancel`,
+            { method: "POST" },
+          ),
+        probeImport: (archivePath: string, stagingParent: string) =>
+          request<CoreImportProbe>("/corefs/transfer/import/probe", {
+            method: "POST",
+            body: { archivePath, stagingParent },
+          }),
+        prepareImport: (options: {
+          archivePath: string;
+          stagingParent: string;
+          passphrase: string;
+        }) =>
+          request<CoreImportOperation>("/corefs/transfer/import/prepare", {
+            method: "POST",
+            body: options,
+          }),
+        importOperation: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}`,
+          ),
+        cancelImport: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/cancel`,
             { method: "POST" },
           ),
       },

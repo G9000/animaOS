@@ -9,16 +9,20 @@ from anima_server.api.routes import corefs_transfer
 from anima_server.services.corefs import transfer_jobs
 from anima_server.services.corefs.archive_transfer import (
     CoreArchiveExportResult,
+    CoreArchiveImportResult,
     CoreArchiveInventory,
     CoreArchivePayloadKind,
 )
 from anima_server.services.corefs.transfer import (
     DestinationProbe,
+    ImportCapacityProbe,
     PublicationMode,
     TransferEstimate,
 )
 from anima_server.services.corefs.transfer_jobs import (
+    CoreImportOperationManager,
     CoreTransferOperationManager,
+    PreparedImport,
     PreparedTransfer,
 )
 from fastapi import FastAPI
@@ -179,3 +183,163 @@ def test_operation_manager_publishes_verified_archive_and_retains_no_passphrase(
     assert (destination / "ANIMA-CORE.anima-core").read_bytes() == b"authenticated-archive"
     assert operation.public()["progressPercent"] == 100
     assert not hasattr(operation, "passphrase")
+
+
+def test_import_manager_stages_verified_core_without_activation_or_passphrase_retention(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = managed_tmp_path / ".anima"
+    active.mkdir()
+    archive = managed_tmp_path / "backup.anima"
+    archive.write_bytes(b"authenticated-archive")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    inventory = _inventory()
+    monkeypatch.setattr(transfer_jobs, "get_core_dir", lambda: active)
+
+    def stage(path: Path, **kwargs) -> CoreArchiveImportResult:
+        assert path == archive
+        assert kwargs["passphrase"] == "correct horse battery staple"
+        staging = kwargs["staging_path"]
+        staging.mkdir()
+        (staging / "manifest.json").write_bytes(b"verified")
+        return CoreArchiveImportResult(
+            inventory=inventory,
+            archive_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+            staging_path=staging,
+            chunk_count=5,
+            max_buffer_bytes=1024,
+        )
+
+    monkeypatch.setattr(transfer_jobs, "stage_core_archive_v2", stage)
+    manager = CoreImportOperationManager()
+    operation = manager.start_import(
+        user_id=7,
+        archive_path=archive,
+        staging_parent=staging_parent,
+        passphrase="correct horse battery staple",
+    )
+    deadline = time.monotonic() + 2
+    while operation.state.value not in {"completed", "failed"} and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert operation.state.value == "completed"
+    assert operation.phase == "staged_restart_required"
+    assert operation.recovery_state == "complete"
+    assert operation.staging_path is not None
+    assert operation.staging_path.is_dir()
+    assert not hasattr(operation, "passphrase")
+
+
+def test_import_api_probes_and_stages_without_exposing_passphrase(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = SimpleNamespace(user_id=7)
+    archive = managed_tmp_path / "backup.anima"
+    archive.write_bytes(b"archive")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    prepared = PreparedImport(
+        archive_path=archive,
+        archive_bytes=7,
+        probe=ImportCapacityProbe(
+            staging_parent=staging_parent,
+            restored_core_bytes=7,
+            available_bytes=10**9,
+            required_capacity_bytes=64 * 1024 * 1024 + 7,
+        ),
+    )
+
+    class Operation:
+        def public(self) -> dict[str, object]:
+            return {
+                "operationId": "018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+                "state": "prepared",
+                "phase": "prepared",
+                "archiveBytes": 7,
+                "bytesProcessed": 0,
+                "progressPercent": 0,
+                "payloadKind": None,
+                "recoveryState": None,
+                "stagingPath": None,
+                "archiveId": None,
+                "errorCode": None,
+            }
+
+    class Manager:
+        def inspect(self, **_kwargs) -> PreparedImport:
+            return prepared
+
+        def start_import(self, **kwargs) -> Operation:
+            assert kwargs["passphrase"] == "correct horse battery staple"
+            return Operation()
+
+    monkeypatch.setattr(corefs_transfer, "require_unlocked_session", lambda _request: session)
+    monkeypatch.setattr(corefs_transfer, "core_import_operations", Manager())
+
+    with TestClient(_app()) as client:
+        probe = client.post(
+            "/api/corefs/transfer/import/probe",
+            json={"archivePath": str(archive), "stagingParent": str(staging_parent)},
+        )
+        prepare = client.post(
+            "/api/corefs/transfer/import/prepare",
+            json={
+                "archivePath": str(archive),
+                "stagingParent": str(staging_parent),
+                "passphrase": "correct horse battery staple",
+            },
+        )
+
+    assert probe.status_code == 200
+    assert probe.json()["requiredCapacityBytes"] == 64 * 1024 * 1024 + 7
+    assert prepare.status_code == 202
+    assert "passphrase" not in prepare.text.casefold()
+
+
+def test_import_manager_rechecks_exact_inputs_before_extraction(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = managed_tmp_path / ".anima"
+    active.mkdir()
+    archive = managed_tmp_path / "backup.anima"
+    archive.write_bytes(b"authenticated-archive")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    monkeypatch.setattr(transfer_jobs, "get_core_dir", lambda: active)
+    real_probe = transfer_jobs.probe_import_staging
+    calls = 0
+
+    def probe(*args, **kwargs) -> ImportCapacityProbe:
+        nonlocal calls
+        calls += 1
+        result = real_probe(*args, **kwargs)
+        if calls == 1:
+            archive.write_bytes(b"changed-after-probe")
+        return result
+
+    stage_called = False
+
+    def stage(*_args, **_kwargs):
+        nonlocal stage_called
+        stage_called = True
+        raise AssertionError("changed archive must fail before extraction")
+
+    monkeypatch.setattr(transfer_jobs, "probe_import_staging", probe)
+    monkeypatch.setattr(transfer_jobs, "stage_core_archive_v2", stage)
+    manager = CoreImportOperationManager()
+    operation = manager.start_import(
+        user_id=7,
+        archive_path=archive,
+        staging_parent=staging_parent,
+        passphrase="correct horse battery staple",
+    )
+    deadline = time.monotonic() + 2
+    while operation.state.value not in {"completed", "failed"} and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert operation.state.value == "failed"
+    assert stage_called is False

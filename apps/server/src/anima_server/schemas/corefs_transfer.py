@@ -35,6 +35,17 @@ class CoreTransferPrepareRequest(CoreTransferDestinationRequest):
     passphrase: str = Field(min_length=8, max_length=1024)
 
 
+class CoreImportProbeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    archivePath: str = Field(min_length=1, max_length=4096)
+    stagingParent: str = Field(min_length=1, max_length=4096)
+
+
+class CoreImportPrepareRequest(CoreImportProbeRequest):
+    passphrase: str = Field(min_length=8, max_length=1024)
+
+
 class CoreTransferEstimateResponse(BaseModel):
     payloadKind: CoreArchivePayloadKindValue
     selectedBytes: int
@@ -65,5 +76,26 @@ class CoreTransferOperationResponse(BaseModel):
     publicationMode: Literal["single_file", "multipart"]
     declaredVolumeCount: int
     resultPath: str | None
+    archiveId: str | None
+    errorCode: str | None
+
+
+class CoreImportProbeResponse(BaseModel):
+    archiveBytes: int
+    stagingParent: str
+    availableBytes: int
+    requiredCapacityBytes: int
+
+
+class CoreImportOperationResponse(BaseModel):
+    operationId: str
+    state: CoreTransferOperationState
+    phase: str
+    archiveBytes: int
+    bytesProcessed: int
+    progressPercent: int = Field(ge=0, le=100)
+    payloadKind: CoreArchivePayloadKindValue | None
+    recoveryState: Literal["complete", "filesystem_missing", "recovery_only"] | None
+    stagingPath: str | None
     archiveId: str | None
     errorCode: str | None

@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 20:33 MYT
+- Updated: 2026-08-13 20:43 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -177,6 +177,18 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   The focused archive tests pass `6` and the combined transfer/API band passes
   `51`, with Ruff, format, and diff hygiene green. Restore activation remains
   gated; no paid workflow, push, or irreversible action occurred.
+- 2026-08-13 20:43 MYT - Added the non-activating restore product slice.
+  Authenticated users can probe an exact archive plus same-volume staging
+  parent, start/poll/cancel a bounded background extraction, and retain only a
+  completely authenticated staged Core. Native record inventory, manifest
+  identity/scope, exact keyslot snapshot, degraded recovery state, symlink and
+  extra-file rejection, capacity, and a consume-time source/destination recheck
+  all fail closed with full staging cleanup. The desktop now exposes **Verify
+  and stage restore** for full, Soul-only, and CoreFS-only archives while
+  clearly stating that the running Core is unchanged and activation/rollback
+  remain restart-gated. The combined backend transfer band passes `60`, API
+  client/desktop contracts pass `32`, and the desktop production build passes.
+  No active-Core pointer, paid workflow, push, or irreversible action occurred.
 
 ## Validation
 
@@ -229,6 +241,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after scoping partial-transfer key material (`51 passed`)
   - scoped Ruff check/format and `git diff --check` after scoping archive
     manifests (passed)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer_api.py -q`
+    after non-activating restore staging/API integration (`60 passed`)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
+    after restore staging client/UI integration (`32 passed`)
+  - `bun run --cwd apps/desktop build` after restore staging UI integration
+    (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in

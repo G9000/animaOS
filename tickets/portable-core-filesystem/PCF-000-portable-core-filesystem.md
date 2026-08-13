@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 20:33 MYT
+- Updated: 2026-08-13 20:43 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -391,6 +391,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 20:07 MYT - PCF-008 now has an authenticated local estimate/probe/background-export/progress/cancel API plus API-client and desktop Core Transfer flow. The UI makes full export primary, labels advanced degraded recovery, displays checkpoint/capacity/file-limit/publication/verification state, and redirects the legacy Vault screen; it explicitly gates restore and multipart until their native authority is complete. Transfer backend tests pass `48`, API/desktop contracts `31`, and the desktop production build plus PyO3/Ruff/diff checks pass. No paid workflow, push, or irreversible cutover action occurred.
 - 2026-08-13 20:26 MYT - PCF-008 now has a tested native first/normal logical mutation transaction, exact PyO3 selected-snapshot binding, manifest-to-authenticated-HEAD crash reconciliation, and a closed-schema HTTP dispatch path. The public mutation readiness constant intentionally remains false until all content-family adapters and the deferred signed-package evidence pass, so this milestone cannot consume the irreversible marker. Native mutation coverage passes `7`, the focused server band `66`, API client `28`, strict CoreFS Clippy, the Python binding compile-check, scoped anima-core Clippy, formatting, and diff hygiene all pass. No paid workflow, push, or irreversible cutover action occurred.
 - 2026-08-13 20:33 MYT - PCF-008 partial transfer manifests now enforce their declared compartment: Soul export retains only Soul root wrappers and removes filesystem authority, while CoreFS-only export retains only FRK wrappers and removes SQLCipher root material. Explicit degraded-state/scope metadata is included, malformed scoped slots fail closed, and the transport passphrase remains separate from normal Core unlock. The focused archive tests pass `6` and the combined transfer/API band passes `51`; restore activation and the paid signed-package gate remain disabled, with no external or irreversible action taken.
+- 2026-08-13 20:43 MYT - PCF-008 now exposes safe restore staging without activation. Exact archive/source/capacity preflight is consumed again immediately before bounded authenticated extraction; native inventory, manifest scope/identity, keyslot snapshot, degraded state, symlink/extra-file rejection, and cancellation all fail closed with residue cleanup. The desktop can verify and stage full/Soul/CoreFS artifacts but explicitly leaves the running Core unchanged and activation restart-gated. Backend transfer coverage passes `60`, API/desktop contracts `32`, and the desktop production build passes; the paid workflow remains disabled and no external or irreversible action occurred.
 
 ## Validation
 

@@ -36,6 +36,10 @@ describe("ANIMA CORE transfer settings", () => {
       "Cancel safely",
       "Verified ANIMA CORE published safely",
       "unpublished partial output was removed",
+      "Verify and stage restore",
+      "Required staging",
+      "running Core was not changed",
+      "partial extraction was removed",
     ]) {
       expect(page).toContain(contract);
     }

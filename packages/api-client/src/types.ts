@@ -243,6 +243,27 @@ export interface CoreTransferOperation {
   errorCode: string | null;
 }
 
+export interface CoreImportProbe {
+  archiveBytes: number;
+  stagingParent: string;
+  availableBytes: number;
+  requiredCapacityBytes: number;
+}
+
+export interface CoreImportOperation {
+  operationId: string;
+  state: CoreTransferOperationState;
+  phase: string;
+  archiveBytes: number;
+  bytesProcessed: number;
+  progressPercent: number;
+  payloadKind: CoreArchivePayloadKind | null;
+  recoveryState: "complete" | "filesystem_missing" | "recovery_only" | null;
+  stagingPath: string | null;
+  archiveId: string | null;
+  errorCode: string | null;
+}
+
 export type CoreFsClientScope = "none" | "read" | "write" | "manage";
 export type CoreFsClientInstallationStatus =
   | "pending"

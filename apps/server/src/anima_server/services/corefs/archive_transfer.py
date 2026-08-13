@@ -49,6 +49,15 @@ class CoreArchiveExportResult:
 
 
 @dataclass(frozen=True, slots=True)
+class CoreArchiveImportResult:
+    inventory: CoreArchiveInventory
+    archive_id: str
+    staging_path: Path
+    chunk_count: int
+    max_buffer_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedCoreArchive:
     inventory: CoreArchiveInventory
     sources: tuple[dict[str, str], ...]
@@ -233,6 +242,55 @@ def verify_core_archive_v2(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def stage_core_archive_v2(
+    archive_path: Path,
+    *,
+    passphrase: str,
+    staging_path: Path,
+) -> CoreArchiveImportResult:
+    """Authenticate and extract one V2 artifact into a non-live staging Core.
+
+    The caller must capacity-check the staging parent before this call. The
+    destination is create-only and is removed on every validation failure; this
+    function never changes the active-Core registry or the running Core.
+    """
+    if len(passphrase) < 8:
+        raise CoreArchiveTransferError("archive passphrase must be at least 8 characters")
+    archive_candidate = archive_path.expanduser()
+    if archive_candidate.is_symlink():
+        raise CoreArchiveTransferError("ANIMA CORE archive must be a regular file")
+    archive = archive_candidate.resolve(strict=True)
+    if not archive.is_file():
+        raise CoreArchiveTransferError("ANIMA CORE archive must be a regular file")
+    staging = staging_path.expanduser().resolve(strict=False)
+    parent = staging.parent.resolve(strict=True)
+    if staging.parent != parent or staging.exists():
+        raise CoreArchiveTransferError("ANIMA CORE import staging path is invalid")
+
+    extractor = anima_core_bindings.require_binding("core_archive_extract_v2")
+    try:
+        try:
+            raw = extractor(
+                os.fspath(archive),
+                passphrase.encode("utf-8"),
+                os.fspath(staging),
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise CoreArchiveTransferError("ANIMA CORE archive extraction failed") from exc
+        summary = _validate_extracted_summary(raw)
+        inventory = _validate_staged_core(staging, summary)
+        return CoreArchiveImportResult(
+            inventory=inventory,
+            archive_id=str(summary["archiveId"]),
+            staging_path=staging,
+            chunk_count=int(summary["chunkCount"]),
+            max_buffer_bytes=int(summary["maxBufferBytes"]),
+        )
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+
+
 def _read_manifest(path: Path) -> dict[str, object]:
     if path.stat().st_size > _MAX_MANIFEST_BYTES:
         raise CoreArchiveTransferError("ANIMA CORE manifest exceeds its archive bound")
@@ -251,7 +309,7 @@ def _required_uuid(manifest: dict[str, object], key: str) -> str:
         raise CoreArchiveTransferError(f"ANIMA CORE manifest {key} is unavailable")
     try:
         return str(UUID(value))
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise CoreArchiveTransferError(f"ANIMA CORE manifest {key} is invalid") from exc
 
 
@@ -470,7 +528,149 @@ def _validate_extracted_summary(raw: object) -> dict[str, object]:
         raise CoreArchiveTransferError("native archive summary is incomplete")
     if summary["maxBufferBytes"] > 32 * 1024 * 1024:
         raise CoreArchiveTransferError("native archive exceeded its memory bound")
+    try:
+        payload_kind = CoreArchivePayloadKind(summary.get("payloadKind"))
+    except (TypeError, ValueError) as exc:
+        raise CoreArchiveTransferError("native archive payload kind is invalid") from exc
+    soul_generation = summary.get("soulGeneration")
+    filesystem_generation = summary.get("filesystemGeneration")
+    if payload_kind is CoreArchivePayloadKind.FULL:
+        _positive_generation(soul_generation, "Soul")
+        _positive_generation(filesystem_generation, "filesystem")
+    elif payload_kind is CoreArchivePayloadKind.SOUL:
+        _positive_generation(soul_generation, "Soul")
+        if filesystem_generation is not None:
+            raise CoreArchiveTransferError("Soul archive declared a filesystem generation")
+    else:
+        if soul_generation is not None:
+            raise CoreArchiveTransferError("CoreFS archive declared a Soul generation")
+        _positive_generation(filesystem_generation, "filesystem")
     return summary
+
+
+def _positive_generation(value: object, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise CoreArchiveTransferError(f"native archive {name} generation is invalid")
+    return value
+
+
+def _validate_staged_core(
+    staging: Path,
+    summary: dict[str, object],
+) -> CoreArchiveInventory:
+    if not staging.is_dir() or staging.is_symlink():
+        raise CoreArchiveTransferError("native archive did not produce a staging Core")
+    raw_records = summary.get("records")
+    if not isinstance(raw_records, list) or len(raw_records) != summary["recordCount"]:
+        raise CoreArchiveTransferError("native archive record inventory is invalid")
+    expected_paths: set[str] = set()
+    for raw_record in raw_records:
+        if not isinstance(raw_record, dict) or set(raw_record) != {
+            "recordType",
+            "recordPath",
+            "plaintextLength",
+            "recordHash",
+        }:
+            raise CoreArchiveTransferError("native archive record inventory is invalid")
+        record_path = raw_record.get("recordPath")
+        record_length = raw_record.get("plaintextLength")
+        record_hash = raw_record.get("recordHash")
+        if (
+            not isinstance(record_path, str)
+            or record_path in expected_paths
+            or isinstance(record_length, bool)
+            or not isinstance(record_length, int)
+            or record_length < 0
+            or not isinstance(record_hash, str)
+            or len(record_hash) != 64
+            or any(character not in "0123456789abcdef" for character in record_hash)
+        ):
+            raise CoreArchiveTransferError("native archive record inventory is invalid")
+        expected_paths.add(record_path)
+
+    actual_paths: set[str] = set()
+    for directory, child_directories, child_files in os.walk(staging, followlinks=False):
+        directory_path = Path(directory)
+        for name in child_directories:
+            if (directory_path / name).is_symlink():
+                raise CoreArchiveTransferError("staged Core contains a symbolic link")
+        for name in child_files:
+            child = directory_path / name
+            if child.is_symlink() or not child.is_file():
+                raise CoreArchiveTransferError("staged Core contains an invalid record")
+            actual_paths.add(child.relative_to(staging).as_posix())
+    if actual_paths != expected_paths:
+        raise CoreArchiveTransferError("staged Core does not match its authenticated inventory")
+
+    manifest = _read_manifest(staging / "manifest.json")
+    payload_kind = CoreArchivePayloadKind(str(summary["payloadKind"]))
+    if (
+        _required_uuid(manifest, "core_id") != summary["coreId"]
+        or _required_uuid(manifest, "owner_id") != summary["ownerId"]
+        or manifest.get("archive_payload_scope") != payload_kind.value
+    ):
+        raise CoreArchiveTransferError("staged Core manifest does not match its archive")
+    expected_state = {
+        CoreArchivePayloadKind.FULL: None,
+        CoreArchivePayloadKind.SOUL: "filesystem_missing",
+        CoreArchivePayloadKind.FS: "recovery_only",
+    }[payload_kind]
+    if payload_kind is CoreArchivePayloadKind.FULL:
+        if manifest.get("degraded_state") in {"filesystem_missing", "recovery_only"}:
+            raise CoreArchiveTransferError("full archive cannot declare a partial recovery state")
+    elif manifest.get("degraded_state") != expected_state:
+        raise CoreArchiveTransferError("partial archive recovery state is invalid")
+
+    keyslot_path = staging / "keyslots" / "root-keyslots.json"
+    try:
+        keyslot_snapshot = json.loads(keyslot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CoreArchiveTransferError("staged Core keyslot snapshot is invalid") from exc
+    if not isinstance(keyslot_snapshot, dict) or keyslot_snapshot != json.loads(
+        _keyslot_snapshot_bytes(manifest)
+    ):
+        raise CoreArchiveTransferError("staged Core keyslot snapshot does not match its manifest")
+    _validate_imported_keyslot_scope(manifest, payload_kind)
+
+    return CoreArchiveInventory(
+        payload_kind=payload_kind,
+        core_id=str(summary["coreId"]),
+        owner_id=str(summary["ownerId"]),
+        soul_generation=(
+            int(summary["soulGeneration"]) if summary["soulGeneration"] is not None else None
+        ),
+        filesystem_generation=(
+            int(summary["filesystemGeneration"])
+            if summary["filesystemGeneration"] is not None
+            else None
+        ),
+        selected_bytes=int(summary["plaintextBytes"]),
+        record_count=int(summary["recordCount"]),
+    )
+
+
+def _validate_imported_keyslot_scope(
+    manifest: dict[str, object],
+    payload_kind: CoreArchivePayloadKind,
+) -> None:
+    raw_slots = manifest.get("keyslots")
+    if not isinstance(raw_slots, list) or not raw_slots:
+        raise CoreArchiveTransferError("staged Core keyslot set is incomplete")
+    purposes: set[str] = set()
+    for slot in raw_slots:
+        if not isinstance(slot, dict) or slot.get("purpose") not in {
+            "soul",
+            "filesystem-root",
+        }:
+            raise CoreArchiveTransferError("staged Core keyslot set is invalid")
+        purposes.add(str(slot["purpose"]))
+    expected = {
+        CoreArchivePayloadKind.FULL: {"soul", "filesystem-root"},
+        CoreArchivePayloadKind.SOUL: {"soul"},
+        CoreArchivePayloadKind.FS: {"filesystem-root"},
+    }[payload_kind]
+    if purposes != expected:
+        raise CoreArchiveTransferError("staged Core keyslot scope is invalid")
 
 
 def _match_expected_summary(summary: dict[str, object], expected: CoreArchiveInventory) -> None:

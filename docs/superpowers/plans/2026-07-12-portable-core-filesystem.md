@@ -907,6 +907,14 @@ Before enabling writes, create and verify an authenticated encrypted recovery bu
 
 - [ ] **Step 6: Add exact transfer API and desktop flow**
 
+Progress (2026-08-13): export plus non-activating restore staging are wired
+through the authenticated API client and desktop UI. Restore rechecks the exact
+archive/capacity/staging inputs at consumption, authenticates the complete
+native inventory into a create-only same-volume sibling, and cleans every
+failed/cancelled partial. Active-Core registry activation, retained-Core
+rollback controls, and multipart UI remain open, so this step is intentionally
+not checked complete.
+
 Implement `corefs_transfer` schemas/routes for local destination probe, estimate, prepare, progress, cancel, verify, import, and completion. Wire `packages/api-client` and `CoreTransferSettings.tsx` to present **Export ANIMA CORE** and **Restore ANIMA CORE** as the primary flow, with **Soul only** and **CoreFS only** under Advanced Recovery. Show write-barrier/checkpoint state, selected artifact kind, required/available export bytes, required/available same-volume import-staging bytes, detected single-file limit, single/multipart decision, bounded streaming progress, verification, and safe destination result. Soul-only recovery clearly labels degraded `filesystem_missing`; CoreFS-only recovery exposes authenticated browse/export and returns `corefs_reattachment_not_supported` for V1 attach attempts. Do not instruct users to drag-copy a live Core or run the live Core from removable media.
 
 - [ ] **Step 7: Implement scalable vault/export/import**

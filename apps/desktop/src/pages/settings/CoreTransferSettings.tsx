@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import type {
   CoreArchivePayloadKind,
+  CoreImportOperation,
+  CoreImportProbe,
   CoreTransferDestinationProbe,
   CoreTransferEstimate,
   CoreTransferOperation,
@@ -55,6 +57,13 @@ export default function CoreTransferSettings() {
   const [operation, setOperation] = useState<CoreTransferOperation | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [archivePath, setArchivePath] = useState("");
+  const [stagingParent, setStagingParent] = useState("");
+  const [importPassphrase, setImportPassphrase] = useState("");
+  const [importProbe, setImportProbe] = useState<CoreImportProbe | null>(null);
+  const [importOperation, setImportOperation] = useState<CoreImportOperation | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importStatus, setImportStatus] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -153,6 +162,87 @@ export default function CoreTransferSettings() {
       setStatus("Cancellation requested. The current bounded native chunk will finish safely.");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Cancellation request failed.");
+    }
+  };
+
+  const handleImportProbe = async () => {
+    if (!archivePath.trim() || !stagingParent.trim()) {
+      setImportStatus("Choose an archive file and an existing same-volume staging folder.");
+      return;
+    }
+    setImportBusy(true);
+    setImportStatus("");
+    try {
+      const value = await api.corefs.transfer.probeImport(
+        archivePath.trim(),
+        stagingParent.trim(),
+      );
+      setImportProbe(value);
+      setImportStatus("Import staging passed source, capacity, and same-volume safety checks.");
+    } catch (error) {
+      setImportProbe(null);
+      setImportStatus(error instanceof Error ? error.message : "Import staging probe failed.");
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const pollImport = async (operationId: string) => {
+    for (;;) {
+      const current = await api.corefs.transfer.importOperation(operationId);
+      setImportOperation(current);
+      if (["completed", "cancelled", "failed"].includes(current.state)) return current;
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+    }
+  };
+
+  const handleImport = async () => {
+    if (!importProbe || importProbe.stagingParent !== stagingParent.trim()) {
+      setImportStatus("Probe this exact archive and staging folder before restore.");
+      return;
+    }
+    if (importPassphrase.length < 8) {
+      setImportStatus("Archive passphrase must be at least 8 characters.");
+      return;
+    }
+    setImportBusy(true);
+    setImportStatus("");
+    try {
+      const started = await api.corefs.transfer.prepareImport({
+        archivePath: archivePath.trim(),
+        stagingParent: importProbe.stagingParent,
+        passphrase: importPassphrase,
+      });
+      setImportOperation(started);
+      const completed = await pollImport(started.operationId);
+      if (completed.state === "completed") {
+        setImportStatus(
+          completed.recoveryState === "complete"
+            ? "Archive authenticated and staged. Activation remains restart-gated; the running Core was not changed."
+            : `Archive authenticated and staged in ${completed.recoveryState} mode. Scoped credential activation is still required.`,
+        );
+      } else if (completed.state === "cancelled") {
+        setImportStatus("Restore staging cancelled; partial extraction was removed.");
+      } else {
+        setImportStatus("Restore staging failed closed; the running Core was not changed.");
+      }
+    } catch (error) {
+      setImportStatus(error instanceof Error ? error.message : "ANIMA CORE restore staging failed.");
+    } finally {
+      setImportBusy(false);
+      setImportPassphrase("");
+    }
+  };
+
+  const handleImportCancel = async () => {
+    if (!importOperation || ["completed", "cancelled", "failed"].includes(importOperation.state)) {
+      return;
+    }
+    try {
+      setImportOperation(await api.corefs.transfer.cancelImport(importOperation.operationId));
+      setImportStatus("Restore cancellation requested; staged residue will be removed safely.");
+    } catch (error) {
+      setImportStatus(error instanceof Error ? error.message : "Restore cancellation failed.");
     }
   };
 
@@ -274,14 +364,95 @@ export default function CoreTransferSettings() {
         {status && <p className="font-mono text-caption text-foreground/45 leading-relaxed">{status}</p>}
       </section>
 
-      <section className={`${glass} p-6 space-y-3`}>
+      <section className={`${glass} p-6 space-y-5`}>
         <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
           Restore ANIMA CORE
         </h2>
         <p className="font-mono text-caption text-foreground/35 leading-relaxed">
-          Restore remains unavailable until authenticated import activation and retained-Core rollback are wired to
-          this screen. Existing archives are not opened in place and a live Core is never run from removable media.
+          Authenticate and extract an archive into a verified same-volume staging Core. This step never changes the
+          running Core or opens an archive in place; activation and retained-Core rollback remain restart-gated.
         </p>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="space-y-1.5">
+            <label className="font-mono text-label tracking-caps-3 uppercase text-foreground/35">
+              Archive file
+            </label>
+            <input
+              value={archivePath}
+              onChange={(event) => {
+                setArchivePath(event.target.value);
+                setImportProbe(null);
+              }}
+              className={INPUT_CLASS}
+              placeholder="Local .anima archive file"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label className="font-mono text-label tracking-caps-3 uppercase text-foreground/35">
+              Same-volume staging folder
+            </label>
+            <input
+              value={stagingParent}
+              onChange={(event) => {
+                setStagingParent(event.target.value);
+                setImportProbe(null);
+              }}
+              className={INPUT_CLASS}
+              placeholder="Existing folder beside the future Core"
+            />
+          </div>
+        </div>
+
+        {importProbe && (
+          <div className="grid gap-3 md:grid-cols-3">
+            <Metric label="Archive" value={formatBytes(importProbe.archiveBytes)} />
+            <Metric label="Available" value={formatBytes(importProbe.availableBytes)} />
+            <Metric label="Required staging" value={formatBytes(importProbe.requiredCapacityBytes)} />
+          </div>
+        )}
+
+        <div className="space-y-1.5">
+          <label className="font-mono text-label tracking-caps-3 uppercase text-foreground/35">
+            Archive passphrase
+          </label>
+          <input
+            type="password"
+            value={importPassphrase}
+            onChange={(event) => setImportPassphrase(event.target.value)}
+            className={INPUT_CLASS}
+            placeholder="Used only in memory while authenticating the archive"
+            autoComplete="new-password"
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <ActionButton onClick={handleImportProbe} disabled={importBusy}>Probe import</ActionButton>
+          <ActionButton onClick={handleImport} disabled={importBusy || !importProbe}>
+            {importBusy ? "Working…" : "Verify and stage restore"}
+          </ActionButton>
+          {importOperation && !["completed", "cancelled", "failed"].includes(importOperation.state) && (
+            <ActionButton onClick={handleImportCancel}>Cancel staging</ActionButton>
+          )}
+        </div>
+
+        {importOperation && (
+          <div className="space-y-2">
+            <div className="h-1.5 bg-foreground/[0.08] overflow-hidden">
+              <div
+                className="h-full bg-foreground/55 transition-[width]"
+                style={{ width: `${importOperation.progressPercent}%` }}
+              />
+            </div>
+            <p className="font-mono text-micro uppercase tracking-caps-2 text-foreground/35">
+              {importOperation.phase} · {importOperation.progressPercent}% · {formatBytes(importOperation.bytesProcessed)} verified
+            </p>
+          </div>
+        )}
+
+        {importStatus && (
+          <p className="font-mono text-caption text-foreground/45 leading-relaxed">{importStatus}</p>
+        )}
       </section>
     </div>
   );
