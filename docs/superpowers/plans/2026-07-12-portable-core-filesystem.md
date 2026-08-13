@@ -806,7 +806,7 @@ Preserve task API schemas. Before PCF-008, routes continue legacy-authoritative 
 
 Use the spec's key-by-key classification. Background media must be explicitly imported as a Core attachment; host paths stay device-local.
 
-- [ ] **Step 7: Move provider/runtime config and secrets to their destinations**
+- [x] **Step 7: Move provider/runtime config and secrets to their destinations**
 
 Move `.anima/runtime-config.json` into platform app data with copy-verify-delete migration. Remove manifest device/runtime fields such as `runtime_database_engine`, requested/previous/target engine, requester, and `runtime_migration_state`; migrate them to the machine-local runtime registry, while portable encryption/layout/cutover state remains in the manifest. Provider/model/URLs remain machine-local config; secrets go to OS credentials; presence preferences and onboarding completion move to Core preference/account objects; regeneration flags move to Runtime work state; Telegram/Discord link identifiers move to the machine-local runtime integration registry and require relinking after transfer. Migrate the daemon token from legacy file/localStorage into the shared OS credential entry and delete both old copies after verification. Convert anima-mod secret config rows and Google OAuth token objects to credential references, then scrub plaintext SQLite/YAML values. Migrate legacy `users/<id>/soul.md` into the canonical Soul `user_directive`/persona section when not already represented, verify content hash, then remove the plaintext file. No sensitive value or reusable token remains in browser storage.
 

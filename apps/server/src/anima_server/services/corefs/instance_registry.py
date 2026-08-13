@@ -20,6 +20,20 @@ _REGISTRY_VERSION = 1
 _LEASE_TTL = timedelta(hours=24)
 _LEGACY_LOCK_TTL = timedelta(minutes=1)
 _REGISTRY_LOCK = threading.RLock()
+LEGACY_RUNTIME_MANIFEST_FIELDS = frozenset(
+    {
+        "runtime_database_engine",
+        "runtime_database_path",
+        "runtime_database_requested_engine",
+        "runtime_database_previous_engine",
+        "runtime_database_target_engine",
+        "runtime_database_requester",
+        "requested_runtime_database_engine",
+        "previous_runtime_database_engine",
+        "target_runtime_database_engine",
+        "runtime_migration_state",
+    }
+)
 
 
 class InstanceBindingCollision(RuntimeError):
@@ -223,6 +237,58 @@ class RuntimeInstanceRegistry:
             ):
                 raise InstanceBindingCollision(
                     "runtime URL is not atomically bound to this Core instance"
+                )
+
+    def record_legacy_manifest_state(
+        self,
+        binding: RuntimeInstanceBinding,
+        values: dict[str, object],
+    ) -> None:
+        """Copy and verify legacy device fields before manifest scrubbing."""
+        if set(values) - LEGACY_RUNTIME_MANIFEST_FIELDS:
+            raise InstanceBindingCollision("legacy manifest Runtime state is invalid")
+        if not values:
+            return
+        with _REGISTRY_LOCK, self._locked_registry():
+            registry = self._load_registry()
+            records = cast(list[dict[str, object]], registry["instances"])
+            record = next(
+                (
+                    item
+                    for item in records
+                    if item.get("local_instance_id") == binding.local_instance_id
+                ),
+                None,
+            )
+            if (
+                record is None
+                or record.get("core_id") != binding.core_id
+                or record.get("filesystem_identity") != binding.filesystem_identity
+            ):
+                raise InstanceBindingCollision(
+                    "legacy manifest Runtime state has no active instance binding"
+                )
+            previous = record.get("legacy_runtime_manifest_state")
+            if previous is not None and previous != values:
+                raise InstanceBindingCollision(
+                    "legacy manifest Runtime state conflicts with the local registry"
+                )
+            record["legacy_runtime_manifest_state"] = values
+            self._write_registry(registry)
+            verified = self._load_registry()
+            verified_record = next(
+                (
+                    item
+                    for item in cast(list[dict[str, object]], verified["instances"])
+                    if item.get("local_instance_id") == binding.local_instance_id
+                ),
+                None,
+            )
+            if verified_record is None or verified_record.get(
+                "legacy_runtime_manifest_state"
+            ) != values:
+                raise InstanceBindingCollision(
+                    "legacy manifest Runtime state failed registry verification"
                 )
 
     def release(self, binding: RuntimeInstanceBinding) -> None:

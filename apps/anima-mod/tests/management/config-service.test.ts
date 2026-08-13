@@ -91,6 +91,13 @@ describe("ConfigService", () => {
     expect([...credentials.values.values()]).toEqual([JSON.stringify("abc123")]);
   });
 
+  test("unresolved secret environment placeholders fail closed", async () => {
+    await expect(
+      service.setConfig("telegram", { token: "${TELEGRAM_TOKEN}" }, telegramSchema),
+    ).rejects.toThrow(/unavailable environment/i);
+    expect(credentials.values.size).toBe(0);
+  });
+
   test("legacy plaintext secret rows migrate copy-verify-scrub on read", async () => {
     sqlite.query(
       "INSERT INTO mod_config (mod_id, key, value, is_secret) VALUES (?, ?, ?, 1)",

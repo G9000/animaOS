@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
@@ -11,9 +12,11 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
+from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/consciousness", tags=["consciousness"])
+logger = logging.getLogger(__name__)
 
 
 def _get_optional_runtime_db():
@@ -859,7 +862,7 @@ async def update_agent_profile(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Update the agent's profile - name, relationship, persona template."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.agent.profile_memory import (
@@ -1002,6 +1005,20 @@ async def update_agent_profile(
         )
 
     db.commit()
+    try:
+        prepare_writing_source_catalog(session=session, db=db)
+    except Exception as exc:
+        logger.exception("Encrypted account profile shadow validation failed")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "corefs_account_shadow_validation_failed",
+                "message": (
+                    "The agent profile was saved, but its encrypted account shadow "
+                    "needs retry."
+                ),
+            },
+        ) from exc
 
     return {
         "agentName": profile.agent_name,

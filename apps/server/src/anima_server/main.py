@@ -34,8 +34,8 @@ from .api.routes.health import router as health_router
 from .api.routes.images import router as images_router
 from .api.routes.knowledge import router as knowledge_router
 from .api.routes.memory import router as memory_router
-from .api.routes.presence import router as presence_router
 from .api.routes.preferences import router as preferences_router
+from .api.routes.presence import router as presence_router
 from .api.routes.soul import router as soul_router
 from .api.routes.tasks import router as tasks_router
 from .api.routes.telegram import router as telegram_router
@@ -59,7 +59,12 @@ from .db.runtime import (
     init_runtime_engine,
 )
 from .db.user_store import ensure_per_user_databases_ready
-from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
+from .services.core import (
+    acquire_core_lock,
+    ensure_core_manifest,
+    is_provisioned,
+    migrate_legacy_manifest_runtime_state,
+)
 from .services.corefs.instance_registry import (
     RuntimeInstanceBinding,
     RuntimeInstanceRegistry,
@@ -127,6 +132,7 @@ def _claim_runtime_instance(
     registry = RuntimeInstanceRegistry(app_data_root)
     binding = registry.resolve(settings.data_dir, runtime_url=runtime_url)
     try:
+        migrate_legacy_manifest_runtime_state(registry, binding)
         relocate_legacy_runtime(
             settings.data_dir,
             binding,

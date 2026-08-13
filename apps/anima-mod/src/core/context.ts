@@ -24,12 +24,28 @@ export async function createModContext(
   // Load core config for anima connection
   const coreConfig = await loadConfig();
   const animaConfig = coreConfig.core?.anima ?? {};
+  const coreCredentials = new CredentialBroker("core");
+  const corePasswordReference = coreCredentials.reference("core-auth", "password");
+  let password = animaConfig.password ?? "";
+  if (!password && animaConfig.passwordRef) {
+    if (animaConfig.passwordRef !== corePasswordReference) {
+      throw new Error("Invalid Core password credential reference");
+    }
+    const stored = await coreCredentials.resolve([corePasswordReference]);
+    const encoded = stored[corePasswordReference];
+    if (!encoded) throw new Error("Core password credential is unavailable");
+    const decoded = JSON.parse(encoded) as unknown;
+    if (typeof decoded !== "string" || !decoded) {
+      throw new Error("Core password credential is invalid");
+    }
+    password = decoded;
+  }
   
   // Create shared services
   const anima = new AnimaApiClient({
     baseUrl: animaConfig.baseUrl ?? "http://127.0.0.1:3031/api",
     username: animaConfig.username ?? "",
-    password: animaConfig.password ?? "",
+    password,
   });
 
   const store = new ModStoreImpl(modId);

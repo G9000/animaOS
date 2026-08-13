@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 16:26 MYT
+- Updated: 2026-08-13 18:04 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -376,6 +376,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-13 17:07 MYT - PCF-007 Step 4 completed locally. Versioned account login now follows manifest keyslot -> opaque owner -> SQLCipher -> Soul keyslots -> CoreFS keys -> authenticated encrypted account-profile, while old manifest username indexes are scrubbed and crash recovery uses the opaque single-owner binding. The stable auth band passed `13`, focused owner/keyslot regressions `6`, account migration `2`, plus Ruff/diff hygiene; the known background-index teardown crash remains isolated to two unrelated auth-file tests. PCF-007 remains `in_progress` on task/preference authority, remaining classified migrations, client grants, and neutral locked UI; no external action was taken.
 - 2026-08-13 17:14 MYT - PCF-007 Step 5 completed locally. Task CRUD now copy-verifies each encrypted shadow after the legacy commit; an authenticated marker-pinned task reader takes over only at global cutover and prevents any further SQL mutation while PCF-008 retains the first-write activation adapter. Python/Rust task priority bounds now match the public `1..5` schema. Task/account regressions passed `7`, native converter validation `1`, plus Ruff/diff hygiene. PCF-007 remains `in_progress` on portable preferences, remaining classified migrations, client grants, and neutral locked UI; no external action was taken.
 - 2026-08-13 17:33 MYT - PCF-007 Step 6 completed locally. The desktop now migrates every classified portable renderer preference into the encrypted CoreFS preference document only after exact response verification, preserves concurrent changes for retry, keeps host/custom media metadata device-local, and refuses browser data-URL persistence. Presence commits synchronously validate the same encrypted shadow, while PCF-004 remains the completed draft-migration authority. Focused server regressions passed `12`, desktop/API-client tests `33`, TypeScript and the production desktop build passed. PCF-007 remains `in_progress` on remaining classified migrations, client grants, and neutral locked UI; no external action was taken.
+- 2026-08-13 18:04 MYT - PCF-007 Step 7 completed locally. Obsolete manifest runtime-engine fields, Telegram/Discord bindings, and regeneration flags now migrate copy-verify-scrub into machine-local instance state; successful unlock imports and hash-verifies legacy plaintext `soul.md`; onboarding publishes the encrypted account-profile shadow; and anima-mod literal YAML plus legacy SQLite secrets migrate into verified OS credential references before source scrubbing. Focused server bands passed `27`, `13`, `44`, `2`, and `1`; anima-mod credential/config/Google tests passed `19`, with Ruff, TypeScript, and diff hygiene green. PCF-007 remains `in_progress` on client grants, neutral locked UI, and final validation; no external action was taken.
 
 ## Validation
 

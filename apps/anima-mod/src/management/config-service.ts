@@ -10,6 +10,7 @@ import {
 } from "../security/credential-broker.js";
 
 const CREDENTIAL_REFERENCE_PATTERN = /^anima-credential:v1:[0-9a-f]{64}$/;
+const ENV_PLACEHOLDER_PATTERN = /^\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}$/;
 
 export class ConfigService {
   constructor(
@@ -85,6 +86,9 @@ export class ConfigService {
   ): Promise<string> {
     if (typeof value !== "string" || !value) {
       throw new Error(`Secret field '${key}' must be a non-empty string`);
+    }
+    if (ENV_PLACEHOLDER_PATTERN.test(value)) {
+      throw new Error(`Secret field '${key}' references an unavailable environment value`);
     }
     const reference = this.credentials.reference("mod-config", `${modId}:${key}`);
     const encoded = JSON.stringify(value);

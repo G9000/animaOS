@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-7-account-profile-tasks-preferences-and-credentials`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 17:33 MYT
+- Updated: 2026-08-13 18:04 MYT
 - Started: 2026-08-13 15:58 MYT
 - Completed:
 
@@ -86,6 +86,17 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   references may enter portable background config. Presence commits rebuild and
   authenticate the same preference shadow. PCF-004 already owns the encrypted
   draft handoff and source-first cleanup protocol. No external action was taken.
+- 2026-08-13 18:04 MYT - Completed Step 7 locally. Startup now copy-verifies
+  obsolete runtime-engine manifest fields into the machine-local instance
+  registry before scrubbing the portable manifest. Successful unlock migrates
+  Telegram/Discord identifiers and disposable regeneration flags into bounded
+  machine-local registries, merges and hash-verifies legacy plaintext
+  `soul.md`, then removes its source. Onboarding commits synchronously publish
+  the encrypted account-profile shadow. anima-mod now copy-verifies literal
+  YAML and legacy SQLite secrets into the OS credential broker, rejects
+  unresolved secret placeholders, and scrubs the plaintext sources. Existing
+  runtime-config, daemon-token, provider-secret, mod-config, and Google OAuth
+  migrations remain the Step 3 authority. No external action was taken.
 
 ## Validation
 
@@ -108,6 +119,16 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - portable preference API/presence shadow plus account/task regressions (`12 passed`),
     desktop migration/storage classification (`6 passed`), API client (`27 passed`),
     focused Ruff, TypeScript, and production desktop build passed
+  - device/runtime registry, unlock migration, integration-link, and manifest
+    regressions (`27 passed`); isolated onboarding-account publication (`1 passed`),
+    stable authentication (`13 passed`, `2 deselected`), regeneration work
+    behavior (`44 passed`), and exact legacy Soul cases (`2 passed`)
+  - anima-mod YAML/config/Google credential regressions (`19 passed`),
+    anima-mod TypeScript build, full server Ruff, and diff hygiene passed
+  - the known native background-index teardown race can still terminate a
+    multi-client encrypted-core aggregate after its first five passing cases;
+    the changed Soul cases and stable authentication band pass in isolated
+    processes, and this Step does not change that background lifecycle
 - Changed paths:
   - `docs/architecture/system/portable-state-inventory.md`
   - `apps/server/src/anima_server/services/corefs/{formats.py,writing_source.py}`
@@ -133,7 +154,16 @@ Move portable account/tasks/preferences to Core objects, machine settings outsid
   - `apps/desktop/src/lib/{portablePreferences,theme,background,preferences}.ts`
   - desktop ASCII/clock/BGM/background/dashboard consumers and focused tests
   - `packages/api-client/src/{client,types}.ts`
+  - `apps/server/src/anima_server/services/corefs/{instance_registry,legacy_soul}.py`
+  - `apps/server/src/anima_server/services/{integration_registry,regeneration_work}.py`
+  - `apps/server/src/anima_server/api/routes/{auth,consciousness,soul,telegram}.py`
+  - `apps/server/src/anima_server/services/agent/{forgetting,pattern_synthesis}.py`
+  - `apps/anima-mod/src/core/{config,context,registry}.ts`
+  - `apps/anima-mod/src/management/config-service.ts`
+  - focused device-state, instance-registry, creation, integration,
+    regeneration, and anima-mod configuration tests
 - Notes:
   - PCF-004 and PCF-006 are done. PCF-008 remains responsible for the deferred
     final signed-package evidence before cutover or release publication.
-  - Steps 7-9 remain open; this checkpoint does not activate CoreFS authority.
+  - Steps 8-9 remain open before the final Step 10 validation; this checkpoint
+    does not activate CoreFS authority.
