@@ -18,6 +18,7 @@ mod python {
     use serde::Deserialize;
     use serde_json::{json, Value};
     use std::collections::{BTreeMap, HashMap};
+    use std::fs::{File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Condvar, Mutex};
@@ -436,6 +437,41 @@ mod python {
         metadata: BTreeMap<String, Value>,
     }
 
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveSourceWire {
+        record_type: String,
+        record_path: String,
+        source_path: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveWriteWire {
+        payload_kind: String,
+        core_id: String,
+        owner_id: String,
+        soul_generation: Option<u64>,
+        filesystem_generation: Option<u64>,
+        archive_id: Option<String>,
+        volume_set_id: Option<String>,
+        #[serde(default = "core_archive_default_volume_mode")]
+        volume_mode: String,
+        #[serde(default = "core_archive_default_volume_count")]
+        declared_volume_count: u32,
+        #[serde(default)]
+        volume_ordinal: u32,
+        sources: Vec<CoreArchiveSourceWire>,
+    }
+
+    fn core_archive_default_volume_mode() -> String {
+        "single".to_owned()
+    }
+
+    const fn core_archive_default_volume_count() -> u32 {
+        1
+    }
+
     fn validation_batch_policy(
         value: &str,
     ) -> PyResult<anima_corefs::transaction::ValidationBatchPolicy> {
@@ -581,6 +617,225 @@ mod python {
     fn preparation_to_py(py: Python<'_>, value: impl serde::Serialize) -> PyResult<PyObject> {
         let value = serde_json::to_value(value)
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        json_value_to_py(py, value)
+    }
+
+    fn core_archive_error(error: crate::core_archive::CoreArchiveError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    fn core_archive_payload_kind(value: &str) -> PyResult<crate::core_archive::PayloadKind> {
+        match value {
+            "full" => Ok(crate::core_archive::PayloadKind::Full),
+            "soul" => Ok(crate::core_archive::PayloadKind::Soul),
+            "fs" => Ok(crate::core_archive::PayloadKind::Fs),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "ANIMA CORE archive payload kind must be full, soul, or fs",
+            )),
+        }
+    }
+
+    fn core_archive_record_type(value: &str) -> PyResult<crate::core_archive::RecordType> {
+        match value {
+            "manifest" => Ok(crate::core_archive::RecordType::Manifest),
+            "soul_database" => Ok(crate::core_archive::RecordType::SoulDatabase),
+            "catalog" => Ok(crate::core_archive::RecordType::Catalog),
+            "object" => Ok(crate::core_archive::RecordType::Object),
+            "keyslots" => Ok(crate::core_archive::RecordType::Keyslots),
+            "recovery" => Ok(crate::core_archive::RecordType::Recovery),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "ANIMA CORE archive record type is invalid",
+            )),
+        }
+    }
+
+    fn core_archive_volume_mode(value: &str) -> PyResult<crate::core_archive::VolumeMode> {
+        match value {
+            "single" => Ok(crate::core_archive::VolumeMode::Single),
+            "multipart" => Ok(crate::core_archive::VolumeMode::Multipart),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "ANIMA CORE archive volume mode must be single or multipart",
+            )),
+        }
+    }
+
+    fn core_archive_uuid(value: &str, label: &'static str) -> PyResult<uuid::Uuid> {
+        uuid::Uuid::parse_str(value).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "ANIMA CORE archive {label} is invalid"
+            ))
+        })
+    }
+
+    fn core_archive_summary_value(
+        summary: &crate::core_archive::ArchiveSummary,
+    ) -> serde_json::Value {
+        let payload_kind = match summary.payload_kind {
+            crate::core_archive::PayloadKind::Full => "full",
+            crate::core_archive::PayloadKind::Soul => "soul",
+            crate::core_archive::PayloadKind::Fs => "fs",
+        };
+        json!({
+            "version": 2,
+            "archiveId": summary.archive_id.to_string(),
+            "volumeSetId": summary.volume_set_id.to_string(),
+            "payloadKind": payload_kind,
+            "coreId": summary.capture.core_id.to_string(),
+            "ownerId": summary.capture.owner_id.to_string(),
+            "soulGeneration": summary.capture.soul_generation,
+            "filesystemGeneration": summary.capture.filesystem_generation,
+            "recordCount": summary.record_count,
+            "chunkCount": summary.chunk_count,
+            "plaintextBytes": summary.plaintext_bytes,
+            "maxBufferBytes": summary.max_buffer_bytes,
+        })
+    }
+
+    #[pyfunction]
+    fn core_archive_write_v2(
+        py: Python<'_>,
+        output_path: &str,
+        passphrase: &[u8],
+        request_json: &str,
+    ) -> PyResult<PyObject> {
+        let wire: CoreArchiveWriteWire = decode_preparation_json(request_json)?;
+        let payload_kind = core_archive_payload_kind(&wire.payload_kind)?;
+        let core_id = core_archive_uuid(&wire.core_id, "Core ID")?;
+        let owner_id = core_archive_uuid(&wire.owner_id, "owner ID")?;
+        let capture = match payload_kind {
+            crate::core_archive::PayloadKind::Full => crate::core_archive::ArchiveCapture::full(
+                core_id,
+                owner_id,
+                wire.soul_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "full ANIMA CORE archive requires a Soul generation",
+                    )
+                })?,
+                wire.filesystem_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "full ANIMA CORE archive requires a filesystem generation",
+                    )
+                })?,
+            ),
+            crate::core_archive::PayloadKind::Soul => crate::core_archive::ArchiveCapture::soul(
+                core_id,
+                owner_id,
+                wire.soul_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "Soul archive requires a Soul generation",
+                    )
+                })?,
+            ),
+            crate::core_archive::PayloadKind::Fs => crate::core_archive::ArchiveCapture::fs(
+                core_id,
+                owner_id,
+                wire.filesystem_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS archive requires a filesystem generation",
+                    )
+                })?,
+            ),
+        };
+        let archive_id = match wire.archive_id.as_deref() {
+            Some(value) => core_archive_uuid(value, "archive ID")?,
+            None => uuid::Uuid::new_v4(),
+        };
+        let volume_mode = core_archive_volume_mode(&wire.volume_mode)?;
+        let volume_set_id = match wire.volume_set_id.as_deref() {
+            Some(value) => core_archive_uuid(value, "volume-set ID")?,
+            None if volume_mode == crate::core_archive::VolumeMode::Single => archive_id,
+            None => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "multipart ANIMA CORE archive requires a volume-set ID",
+                ))
+            }
+        };
+        let options = crate::core_archive::ArchiveWriteOptions {
+            payload_kind,
+            capture,
+            archive_id,
+            volume_set_id,
+            volume_mode,
+            declared_volume_count: wire.declared_volume_count,
+            volume_ordinal: wire.volume_ordinal,
+        };
+        let sources = wire
+            .sources
+            .into_iter()
+            .map(|source| {
+                Ok(crate::core_archive::ArchiveSource {
+                    record_type: core_archive_record_type(&source.record_type)?,
+                    record_path: source.record_path,
+                    source_path: PathBuf::from(source.source_path),
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let output = PathBuf::from(output_path);
+        let result = py.allow_threads(|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)?;
+            let result =
+                crate::core_archive::write_archive(&mut file, passphrase, &options, sources);
+            match result {
+                Ok(summary) => {
+                    file.sync_all()?;
+                    Ok(summary)
+                }
+                Err(error) => {
+                    drop(file);
+                    let _ = std::fs::remove_file(&output);
+                    Err(error)
+                }
+            }
+        });
+        match result {
+            Ok(summary) => json_value_to_py(py, core_archive_summary_value(&summary)),
+            Err(error) => Err(core_archive_error(error)),
+        }
+    }
+
+    #[pyfunction]
+    fn core_archive_extract_v2(
+        py: Python<'_>,
+        input_path: &str,
+        passphrase: &[u8],
+        destination: &str,
+    ) -> PyResult<PyObject> {
+        let input = PathBuf::from(input_path);
+        let destination = PathBuf::from(destination);
+        let extracted = py
+            .allow_threads(|| {
+                let mut file = File::open(input)?;
+                crate::core_archive::extract_archive(&mut file, passphrase, &destination)
+            })
+            .map_err(core_archive_error)?;
+        let records = extracted
+            .records
+            .iter()
+            .map(|record| {
+                let record_type = match record.record_type {
+                    crate::core_archive::RecordType::Manifest => "manifest",
+                    crate::core_archive::RecordType::SoulDatabase => "soul_database",
+                    crate::core_archive::RecordType::Catalog => "catalog",
+                    crate::core_archive::RecordType::Object => "object",
+                    crate::core_archive::RecordType::Keyslots => "keyslots",
+                    crate::core_archive::RecordType::Recovery => "recovery",
+                };
+                json!({
+                    "recordType": record_type,
+                    "recordPath": record.record_path,
+                    "plaintextLength": record.plaintext_length,
+                    "recordHash": record.record_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut value = core_archive_summary_value(&extracted.summary);
+        value
+            .as_object_mut()
+            .expect("archive summary is an object")
+            .insert("records".to_owned(), serde_json::Value::Array(records));
         json_value_to_py(py, value)
     }
 
@@ -1454,6 +1709,71 @@ mod python {
                 None => Value::Null,
             };
             json_value_to_py(py, value)
+        }
+
+        /// Returns a committed, authenticated physical inventory suitable for
+        /// a V2 archive. Loading the committed catalog also establishes the
+        /// session object-validation lease, so unreachable object residue is
+        /// never selected and later substitution invalidates the session.
+        fn archive_inventory_v2(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let committed = py
+                .allow_threads(|| self.coordinator.load_committed(&keys.inner))
+                .map_err(corefs_commit_error)?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "ANIMA CORE has no committed filesystem snapshot",
+                    )
+                })?;
+            let generation = committed.head().generation();
+            let catalog_hash = committed.head().catalog_hash();
+            let catalog_name = format!("catalog-{generation:020}-{catalog_hash}.acore");
+            let mut sources = vec![
+                json!({
+                    "recordType": "catalog",
+                    "recordPath": "fs/HEAD",
+                    "sourcePath": self.canonical_root.join("fs").join("HEAD").to_string_lossy(),
+                }),
+                json!({
+                    "recordType": "catalog",
+                    "recordPath": format!("fs/catalogs/{catalog_name}"),
+                    "sourcePath": self.canonical_root.join("fs").join("catalogs").join(&catalog_name).to_string_lossy(),
+                }),
+            ];
+            for name in ["CUTOVER_RECEIPT", "CUTOVER_COMPLETE"] {
+                let source_path = self.canonical_root.join("fs").join(name);
+                if source_path.is_file() {
+                    sources.push(json!({
+                        "recordType": "catalog",
+                        "recordPath": format!("fs/{name}"),
+                        "sourcePath": source_path.to_string_lossy(),
+                    }));
+                }
+            }
+            for entry in committed.catalog().entries() {
+                let Some(object) = entry.object_payload() else {
+                    continue;
+                };
+                let physical_name = object.physical_name().as_str();
+                sources.push(json!({
+                    "recordType": "object",
+                    "recordPath": format!("objects/{physical_name}"),
+                    "sourcePath": self.canonical_root.join("objects").join(physical_name).to_string_lossy(),
+                }));
+            }
+            json_value_to_py(
+                py,
+                json!({
+                    "version": 1,
+                    "generation": generation,
+                    "catalogHash": catalog_hash,
+                    "sources": sources,
+                }),
+            )
         }
 
         fn validation_batch_v1(
@@ -4513,6 +4833,8 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_encrypt_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_decrypt_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_catalog_physical_name, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_write_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_extract_v2, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_validation_snapshot, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_stat_v1, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_list_v1, m)?)?;

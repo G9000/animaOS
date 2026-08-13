@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 19:45 MYT
+- Updated: 2026-08-13 19:56 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -122,6 +122,19 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   a class-only domain digest rather than private exception text. Step 3 remains
   open for full production API wiring, parity evidence across real fixtures,
   and the fresh outside-Core Runtime transition.
+- 2026-08-13 19:56 MYT - Added the native V2 archive bridge and the first
+  authenticated transfer-source boundary. Python can now invoke bounded Rust
+  file export/import without base64 buffering; the live native session emits
+  only the committed catalog, its authenticated pointer/cutover records, and
+  objects reachable from that catalog under the session object lease. The
+  server wrapper constructs manifest/Soul/recovery inputs itself, materializes
+  only wrapped keyslot metadata in a short-lived private file, rejects any
+  native source outside the active Core, and verifies extraction in disposable
+  same-volume staging. Rust archive tests remain `6 passed`, the Python binding
+  compile-check passes, and the new wrapper tests pass `3`. Step 2 and Step 7
+  remain open for coherent Soul generation/checkpoint capture and one
+  authenticated nonce sequence across a multipart volume set; no paid workflow
+  or irreversible cutover action occurred.
 
 ## Validation
 
@@ -149,6 +162,13 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     (`76 passed`)
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_runtime_privacy.py -q`
     (`52 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_archive_transfer.py -q`
+    (`3 passed`)
+  - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python`
+    after adding the archive bindings (passed)
+  - `cargo test -p anima-core core_archive --lib` after binding the committed
+    inventory (`6 passed`)
+  - scoped Ruff and `git diff --check` for the archive bridge (passed)
 - Changed paths:
   - `apps/server/src/anima_server/services/corefs/cutover.py`
   - `apps/server/src/anima_server/services/sessions.py`
@@ -168,6 +188,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/test_corefs_soul_relocation.py`
   - `apps/server/src/anima_server/services/corefs/orchestration.py`
   - `apps/server/tests/test_corefs_orchestration.py`
+  - `apps/server/src/anima_server/services/corefs/archive_transfer.py`
+  - `apps/server/tests/test_corefs_archive_transfer.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by
