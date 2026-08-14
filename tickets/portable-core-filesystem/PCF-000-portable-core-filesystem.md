@@ -536,6 +536,20 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   real data was deleted, the paid workflow remains disabled, and PCF-008 stays
   in progress for Steps 3-5, documentation, full validation, and separately
   authorized signed-package evidence.
+- 2026-08-14 17:05 MYT - PCF-008 Steps 3 and 5 are locally complete. The
+  product now exposes resumable migration status plus explicit reversible
+  acceptance/rejection, requires a verified relocated Soul before acceptance,
+  restores legacy routing on rejection, and retires the old Soul copy only at
+  forward-only startup. First-write cutover is restart-fenced by an exact
+  encrypted legacy Runtime recovery bundle; stopped-source drift refreshes
+  through a crash-safe authenticated swap, the committing response signals a
+  second restart, and subsequent portable writes stay blocked until fresh
+  Runtime verification and exact plaintext retirement. Runtime migration
+  progress retains no content-derived hashes. Focused server tests pass `67`,
+  Bun contracts pass `37`, and Server Ruff plus the desktop build pass. PCF-008
+  remains active for Step 4's separately authorized signed-artifact/irreversible
+  gate, architecture documentation, and full validation; the paid workflow is
+  still disabled and no real cutover or external action occurred.
 
 ## Validation
 

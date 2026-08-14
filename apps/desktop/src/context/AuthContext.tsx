@@ -9,6 +9,7 @@ import type { User } from "@anima/api-client";
 import {
   api,
   clearUnlockToken,
+  CORE_RUNTIME_RESTART_REQUIRED_EVENT,
   getUnlockToken,
   UNLOCK_SESSION_LOCKED_EVENT,
 } from "../lib/api";
@@ -121,6 +122,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleRuntimeRestartRequired = () => {
+      window.alert(
+        "CoreFS cutover is committed. Restart animaOS now to switch to fresh Runtime and retire the plaintext legacy Runtime source. Further portable writes remain blocked until restart.",
+      );
+    };
+
+    globalThis.addEventListener(
+      CORE_RUNTIME_RESTART_REQUIRED_EVENT,
+      handleRuntimeRestartRequired,
+    );
+    return () => {
+      globalThis.removeEventListener(
+        CORE_RUNTIME_RESTART_REQUIRED_EVENT,
+        handleRuntimeRestartRequired,
+      );
     };
   }, []);
 

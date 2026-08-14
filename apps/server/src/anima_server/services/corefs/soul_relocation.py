@@ -149,6 +149,95 @@ def active_soul_database_path(legacy_user_id: int) -> Path | None:
     return result.active_path
 
 
+def rollback_owner_soul_database(
+    legacy_user_id: int,
+    *,
+    boundary_hook: BoundaryHook | None = None,
+) -> bool:
+    """Restore legacy Soul routing while the reversible write barrier is held."""
+    if legacy_user_id < 0:
+        raise SoulRelocationError("legacy Soul owner ID is invalid")
+    state = read_cutover_record().state
+    if state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+        raise SoulRelocationError("forward-only Soul relocation cannot roll back")
+    existing = _read_active_soul_record()
+    legacy = (settings.data_dir / "users" / str(legacy_user_id) / "anima.db").resolve()
+    if existing is None:
+        if not legacy.is_file():
+            raise SoulRelocationError("legacy Soul rollback database is missing")
+        return False
+    result = _result_from_record(existing)
+    if result.legacy_user_id != legacy_user_id or result.legacy_path != legacy:
+        raise SoulRelocationError("Soul relocation manifest conflicts with this owner")
+    _verify_database_at_path(
+        result.active_path,
+        expected=result.table_hashes,
+        expected_combined_hash=result.inventory_hash,
+    )
+    _verify_database_at_path(
+        result.legacy_path,
+        expected=result.table_hashes,
+        expected_combined_hash=result.inventory_hash,
+    )
+    _boundary(boundary_hook, "soul-rollback:after_verify")
+    db_session.dispose_all_user_engines()
+
+    def deactivate(manifest: dict[str, object]) -> None:
+        current = manifest.get("soul_database")
+        if current is None:
+            return
+        if current != existing:
+            raise SoulRelocationError("Soul relocation manifest changed concurrently")
+        manifest.pop("soul_database")
+
+    update_core_manifest(deactivate)
+    _boundary(boundary_hook, "soul-rollback:after_manifest")
+    return True
+
+
+def retire_legacy_soul_database_after_cutover(
+    *,
+    boundary_hook: BoundaryHook | None = None,
+) -> bool:
+    """Remove only the verified legacy SQLCipher copy after forward-only cutover."""
+    if read_cutover_record().state is not CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+        return False
+    existing = _read_active_soul_record()
+    if existing is None:
+        raise SoulRelocationError("forward-only Core has no active Soul relocation record")
+    result = _result_from_record(existing)
+    _verify_database_at_path(
+        result.active_path,
+        expected=result.table_hashes,
+        expected_combined_hash=result.inventory_hash,
+    )
+    legacy = result.legacy_path
+    db_session.dispose_all_user_engines()
+    if legacy.exists():
+        if legacy.is_symlink() or not legacy.is_file():
+            raise SoulRelocationError("legacy Soul rollback database is invalid")
+        _verify_database_at_path(
+            legacy,
+            expected=result.table_hashes,
+            expected_combined_hash=result.inventory_hash,
+        )
+    for sidecar in (
+        legacy.with_name(f"{legacy.name}-wal"),
+        legacy.with_name(f"{legacy.name}-shm"),
+    ):
+        if sidecar.exists():
+            if sidecar.is_symlink() or not sidecar.is_file():
+                raise SoulRelocationError("legacy Soul rollback sidecar is invalid")
+            sidecar.unlink()
+    _fsync_directory(legacy.parent)
+    _boundary(boundary_hook, "soul-retirement:after_sidecars")
+    if legacy.exists():
+        legacy.unlink()
+        _fsync_directory(legacy.parent)
+    _boundary(boundary_hook, "soul-retirement:after_database")
+    return True
+
+
 def create_verified_soul_snapshot(
     source_path: Path,
     snapshot_path: Path,

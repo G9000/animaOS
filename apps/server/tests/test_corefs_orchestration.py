@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Generator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from anima_server.config import settings
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.corefs_runtime import CoreFSMigrationJournal
-from anima_server.services.core import ensure_core_manifest, get_core_id
+from anima_server.services.core import ensure_core_manifest, get_core_id, set_owner_user_id
+from anima_server.services.corefs import asset_migration, soul_relocation
 from anima_server.services.corefs.cutover import CutoverState, read_cutover_record
 from anima_server.services.corefs.orchestration import (
     MigrationConversionResult,
     MigrationCoordinator,
     MigrationOrchestrationError,
     MigrationState,
+    run_portable_content_migration,
 )
+from anima_server.services.corefs.soul_relocation import active_soul_database_path
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -72,23 +77,39 @@ def _run(coordinator: MigrationCoordinator, **kwargs):
 
 def test_orchestration_persists_verified_acceptance_without_private_runtime_data(
     runtime_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(soul_relocation, "active_soul_database_path", lambda _user_id: Path("soul.db"))
     coordinator = _coordinator(runtime_db)
     status = _run(coordinator)
 
     assert status.state is MigrationState.AWAITING_ACCEPTANCE
     assert status.generation == 9
     assert status.catalog_hash == _CATALOG_HASH
-    assert status.source_hash == _SOURCE_HASH
+    assert status.source_hash is None
     assert status.migrated_count == 41
     assert read_cutover_record().state is CutoverState.CORE_FS_VALIDATION_READONLY
 
     journal = runtime_db.scalar(select(CoreFSMigrationJournal))
     assert journal is not None
     assert journal.status == "awaiting_acceptance"
+    assert journal.source_checksum is None
+    assert journal.target_checksum is None
     assert journal.error_code is None
     assert journal.error_digest is None
     assert "retained memory" not in repr(journal.__dict__)
+
+    # Older local builds wrote content-derived digests into these nullable
+    # Runtime fields. Any resumed coordinator scrubs them before returning.
+    journal.source_checksum = _SOURCE_HASH
+    journal.target_checksum = _CATALOG_HASH
+    runtime_db.commit()
+    resumed = coordinator.status()
+    assert resumed is not None
+    assert resumed.catalog_hash == _CATALOG_HASH
+    assert resumed.source_hash is None
+    assert journal.source_checksum is None
+    assert journal.target_checksum is None
 
     accepted = coordinator.accept()
     assert accepted.state is MigrationState.ACCEPTED
@@ -156,7 +177,11 @@ def test_failed_migration_records_only_error_class_and_requires_explicit_retry(
     assert _run(coordinator, retry_failed=True).state is MigrationState.AWAITING_ACCEPTANCE
 
 
-def test_accept_and_reject_recover_crash_after_manifest_transition(runtime_db: Session) -> None:
+def test_accept_and_reject_recover_crash_after_manifest_transition(
+    runtime_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(soul_relocation, "active_soul_database_path", lambda _user_id: Path("soul.db"))
     coordinator = _coordinator(runtime_db)
     _run(coordinator)
 
@@ -171,7 +196,28 @@ def test_accept_and_reject_recover_crash_after_manifest_transition(runtime_db: S
     assert coordinator.accept().state is MigrationState.ACCEPTED
 
 
-def test_rejection_is_reversible_and_replayable(runtime_db: Session) -> None:
+def test_acceptance_fails_closed_without_verified_soul_relocation(
+    runtime_db: Session,
+) -> None:
+    coordinator = _coordinator(runtime_db)
+    _run(coordinator)
+
+    with pytest.raises(MigrationOrchestrationError, match="active Soul relocation"):
+        coordinator.accept()
+
+    assert read_cutover_record().state is CutoverState.CORE_FS_VALIDATION_READONLY
+    assert coordinator.status().state is MigrationState.AWAITING_ACCEPTANCE  # type: ignore[union-attr]
+
+
+def test_rejection_is_reversible_and_replayable(
+    runtime_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        soul_relocation,
+        "rollback_owner_soul_database",
+        lambda _user_id: False,
+    )
     coordinator = _coordinator(runtime_db)
     _run(coordinator)
 
@@ -212,3 +258,80 @@ def test_invalid_converter_result_never_publishes_validation(
             verifier=lambda _result: None,
         )
     assert read_cutover_record().state is CutoverState.MIGRATING_WRITE_FROZEN
+
+
+def test_production_orchestration_relocates_and_rejects_soul_atomically(
+    runtime_db: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = 0
+    set_owner_user_id(user_id)
+    legacy = settings.data_dir / "users" / str(user_id) / "anima.db"
+    legacy.parent.mkdir(parents=True)
+    connection = sqlite3.connect(legacy)
+    try:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO alembic_version VALUES ('head')")
+        connection.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)")
+        connection.execute("INSERT INTO users VALUES (?, 'owner')", (user_id,))
+        connection.commit()
+    finally:
+        connection.close()
+
+    class NativeSession:
+        def validation_snapshot(self, _keys: object) -> dict[str, object]:
+            return {"generation": 9, "catalogHash": _CATALOG_HASH}
+
+        def authoritative_cutover_v1(self, _keys: object):
+            return None
+
+    session = SimpleNamespace(
+        user_id=user_id,
+        corefs_session=NativeSession(),
+        corefs_keys=object(),
+        runtime_index=SimpleNamespace(
+            core_id=get_core_id(),
+            local_instance_id="local-instance",
+        ),
+    )
+    converted = SimpleNamespace(
+        generation=9,
+        catalog_hash=_CATALOG_HASH,
+        source_hash=_SOURCE_HASH,
+        source_counts={"account": 1},
+    )
+    monkeypatch.setattr(
+        asset_migration,
+        "prepare_portable_content_validation_catalog",
+        lambda **_kwargs: (converted, object(), object()),
+    )
+    transcripts = settings.data_dir / "transcripts"
+    transcripts.mkdir()
+    soul_engine = create_engine(f"sqlite:///{legacy.as_posix()}")
+    soul_factory = sessionmaker(bind=soul_engine)
+    try:
+        with soul_factory() as soul_db:
+            status = run_portable_content_migration(
+                session=session,
+                soul_db=soul_db,
+                runtime_db=runtime_db,
+                transcripts_dir=transcripts,
+            )
+        assert status.state is MigrationState.AWAITING_ACCEPTANCE
+        assert active_soul_database_path(user_id) == (settings.data_dir / "soul/soul.db")
+
+        coordinator = MigrationCoordinator(
+            runtime_db,
+            core_id=get_core_id(),
+            local_instance_id="local-instance",
+            legacy_user_id=user_id,
+        )
+        rejected = coordinator.reject(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        assert rejected.state is MigrationState.REJECTED
+        assert active_soul_database_path(user_id) is None
+        assert read_cutover_record().state is CutoverState.LEGACY_AUTHORITATIVE
+    finally:
+        soul_engine.dispose()

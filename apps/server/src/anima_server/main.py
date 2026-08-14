@@ -78,8 +78,10 @@ from .services.corefs.instance_registry import (
 from .services.corefs.legacy_runtime import relocate_legacy_runtime
 from .services.corefs.legacy_runtime_recovery import (
     finalize_runtime_transition_after_startup,
+    runtime_transition_restart_signaled,
     select_runtime_pg_data_dir_for_startup,
 )
+from .services.corefs.soul_relocation import retire_legacy_soul_database_after_cutover
 from .services.health.event_logger import emit as health_emit
 
 
@@ -441,6 +443,8 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
                     content={"error": "Invalid or missing sidecar nonce."},
                 )
         response = await call_next(request)
+        if runtime_transition_restart_signaled():
+            response.headers["x-anima-restart-required"] = "corefs-cutover"
         return response
 
 
@@ -458,6 +462,7 @@ def create_app() -> FastAPI:
         raise RuntimeError("Core is already open in another process")
     ensure_core_manifest()
     initialize_active_core_after_manifest(active_core_startup)
+    retire_legacy_soul_database_after_cutover()
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 

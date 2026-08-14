@@ -11,15 +11,23 @@ import struct
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from threading import Event
 from typing import BinaryIO, cast
 from uuid import UUID, uuid4
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from anima_server.config import default_runtime_app_data_root, settings
+from anima_server.services.core import get_core_id
 from anima_server.services.corefs.cutover import CutoverState, read_cutover_record
-from anima_server.services.corefs.instance_registry import RuntimeInstanceBinding
+from anima_server.services.corefs.instance_registry import (
+    InstanceBindingCollision,
+    RuntimeInstanceBinding,
+    RuntimeInstanceRegistry,
+)
 from anima_server.services.credentials import (
+    CredentialError,
     CredentialStore,
     credential_reference,
     credential_store,
@@ -47,6 +55,10 @@ class LegacyRuntimeRecoveryError(RuntimeError):
     """Raised when legacy Runtime recovery cannot be proven safe."""
 
 
+class LegacyRuntimeRecoverySourceMismatch(LegacyRuntimeRecoveryError):
+    """Raised when an authenticated bundle describes an older stopped source."""
+
+
 @dataclass(frozen=True, slots=True)
 class LegacyRuntimeRecoveryBundle:
     path: Path
@@ -68,6 +80,45 @@ class _SourceRecord:
 
 
 BoundaryHook = Callable[[str], None]
+_RUNTIME_RESTART_REQUIRED = Event()
+
+
+def mark_runtime_transition_restart_required() -> None:
+    _RUNTIME_RESTART_REQUIRED.set()
+
+
+def runtime_transition_restart_signaled() -> bool:
+    return _RUNTIME_RESTART_REQUIRED.is_set()
+
+
+def require_first_write_runtime_recovery() -> None:
+    """Require the restart-prepared bundle before the irreversible mutation."""
+    binding = _current_runtime_binding()
+    if binding is None or not binding.legacy_pg_data_dir.exists():
+        return
+    try:
+        verify_legacy_runtime_recovery_bundle(binding)
+    except LegacyRuntimeRecoveryError as exc:
+        raise LegacyRuntimeRecoveryError(
+            "first CoreFS mutation requires a restart-prepared Runtime recovery bundle"
+        ) from exc
+
+
+def runtime_transition_restart_required() -> bool:
+    """Report whether restart is needed before or after the first mutation."""
+    binding = _current_runtime_binding()
+    if binding is None or not binding.legacy_pg_data_dir.exists():
+        return False
+    state = read_cutover_record().state
+    if state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+        return True
+    if state is not CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE:
+        return False
+    try:
+        verify_legacy_runtime_recovery_bundle(binding)
+    except LegacyRuntimeRecoveryError:
+        return True
+    return False
 
 
 def select_runtime_pg_data_dir_for_startup(
@@ -76,15 +127,76 @@ def select_runtime_pg_data_dir_for_startup(
     store: CredentialStore | None = None,
 ) -> Path:
     """Prepare recovery and choose fresh Runtime only after forward-only cutover."""
-    if read_cutover_record().state is not CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+    state = read_cutover_record().state
+    if state is CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE:
+        if binding.legacy_pg_data_dir.exists():
+            prepare_current_legacy_runtime_recovery_bundle(
+                binding,
+                legacy_postgres_running=False,
+                store=store,
+            )
+        return binding.active_pg_data_dir
+    if state is not CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
         return binding.active_pg_data_dir
     if binding.legacy_pg_data_dir.exists():
-        prepare_legacy_runtime_recovery_bundle(
+        prepare_current_legacy_runtime_recovery_bundle(
             binding,
             legacy_postgres_running=False,
             store=store,
         )
     return binding.pg_data_dir
+
+
+def prepare_current_legacy_runtime_recovery_bundle(
+    binding: RuntimeInstanceBinding,
+    *,
+    legacy_postgres_running: bool,
+    store: CredentialStore | None = None,
+    boundary_hook: BoundaryHook | None = None,
+) -> LegacyRuntimeRecoveryBundle:
+    """Refresh a valid but stale stopped-source bundle without a recovery gap."""
+    target = _bundle_path(binding)
+    previous = target.with_name(f".{target.name}.previous")
+    _require_instance_path(binding, previous)
+    _reject_link_chain(previous, boundary=binding.instance_root)
+    try:
+        current = prepare_legacy_runtime_recovery_bundle(
+            binding,
+            legacy_postgres_running=legacy_postgres_running,
+            store=store,
+        )
+    except LegacyRuntimeRecoverySourceMismatch:
+        selected_store = _recovery_credential_store(store)
+        key = _load_or_create_key(binding, selected_store, allow_create=False)
+        partial = target.with_name(f".{target.name}.partial")
+        stale = target if target.exists() else partial
+        _require_instance_path(binding, stale)
+        _reject_link_chain(stale, boundary=binding.instance_root)
+        _verify_bundle_file(binding, stale, key=key)
+        if previous.exists():
+            _verify_bundle_file(binding, previous, key=key)
+            previous.unlink()
+            _fsync_directory(previous.parent)
+        if stale == target:
+            os.replace(target, previous)
+        else:
+            partial.unlink()
+        _fsync_directory(target.parent)
+        _boundary(boundary_hook, "legacy-runtime-recovery:after_stale_rotation")
+        current = prepare_legacy_runtime_recovery_bundle(
+            binding,
+            legacy_postgres_running=legacy_postgres_running,
+            store=selected_store,
+        )
+        _boundary(boundary_hook, "legacy-runtime-recovery:after_refresh_publish")
+    if previous.exists():
+        selected_store = _recovery_credential_store(store)
+        key = _load_or_create_key(binding, selected_store, allow_create=False)
+        _verify_bundle_file(binding, previous, key=key)
+        previous.unlink()
+        _fsync_directory(previous.parent)
+    _boundary(boundary_hook, "legacy-runtime-recovery:after_refresh_cleanup")
+    return current
 
 
 def finalize_runtime_transition_after_startup(
@@ -132,7 +244,7 @@ def prepare_legacy_runtime_recovery_bundle(
     records, inventory_digest, plaintext_bytes = _inventory(source)
     key = _load_or_create_key(
         binding,
-        store or credential_store(),
+        _recovery_credential_store(store),
         allow_create=not target.exists() and not partial.exists(),
     )
 
@@ -302,7 +414,11 @@ def verify_legacy_runtime_recovery_bundle(
     target = _bundle_path(binding)
     _require_instance_path(binding, target)
     _reject_link_chain(target, boundary=binding.instance_root)
-    key = _load_or_create_key(binding, store or credential_store(), allow_create=False)
+    key = _load_or_create_key(
+        binding,
+        _recovery_credential_store(store),
+        allow_create=False,
+    )
     return _verify_bundle_file(binding, target, key=key)
 
 
@@ -622,12 +738,22 @@ def _load_or_create_key(
     allow_create: bool,
 ) -> bytes:
     reference = _credential_reference(binding)
-    encoded = store.get(reference)
+    try:
+        encoded = store.get(reference)
+    except CredentialError as exc:
+        raise LegacyRuntimeRecoveryError(
+            "legacy Runtime recovery credential is unavailable"
+        ) from exc
     if encoded is None:
         if not allow_create:
             raise LegacyRuntimeRecoveryError("legacy Runtime recovery credential is unavailable")
         encoded = base64.b64encode(secrets.token_bytes(_KEY_BYTES)).decode("ascii")
-        store.put(reference, encoded)
+        try:
+            store.put(reference, encoded)
+        except CredentialError as exc:
+            raise LegacyRuntimeRecoveryError(
+                "legacy Runtime recovery credential is unavailable"
+            ) from exc
     try:
         key = base64.b64decode(encoded, validate=True)
     except (binascii.Error, ValueError) as exc:
@@ -635,6 +761,17 @@ def _load_or_create_key(
     if len(key) != _KEY_BYTES or base64.b64encode(key).decode("ascii") != encoded:
         raise LegacyRuntimeRecoveryError("legacy Runtime recovery credential is invalid")
     return key
+
+
+def _recovery_credential_store(store: CredentialStore | None) -> CredentialStore:
+    if store is not None:
+        return store
+    try:
+        return credential_store()
+    except CredentialError as exc:
+        raise LegacyRuntimeRecoveryError(
+            "legacy Runtime recovery credential is unavailable"
+        ) from exc
 
 
 def _credential_reference(binding: RuntimeInstanceBinding) -> str:
@@ -655,6 +792,25 @@ def _identity_hash(kind: str, value: str) -> str:
     digest.update(len(encoded).to_bytes(4, "big"))
     digest.update(encoded)
     return digest.hexdigest()
+
+
+def _current_runtime_binding() -> RuntimeInstanceBinding | None:
+    if not settings.runtime_instance_data_dir:
+        return None
+    app_root = (
+        Path(settings.runtime_app_data_dir)
+        if settings.runtime_app_data_dir
+        else default_runtime_app_data_root()
+    ).expanduser().resolve(strict=False)
+    try:
+        return RuntimeInstanceRegistry(app_root).current_process_binding(
+            core_id=get_core_id(),
+            instance_root=Path(settings.runtime_instance_data_dir),
+        )
+    except (InstanceBindingCollision, OSError) as exc:
+        raise LegacyRuntimeRecoveryError(
+            "current Runtime instance binding is unavailable"
+        ) from exc
 
 
 def _bundle_path(binding: RuntimeInstanceBinding) -> Path:
@@ -682,7 +838,9 @@ def _require_expected_inventory(
         or bundle.plaintext_bytes != plaintext_bytes
         or bundle.inventory_digest != inventory_digest
     ):
-        raise LegacyRuntimeRecoveryError("legacy Runtime recovery bundle does not match the source")
+        raise LegacyRuntimeRecoverySourceMismatch(
+            "legacy Runtime recovery bundle does not match the source"
+        )
 
 
 def _require_instance_path(binding: RuntimeInstanceBinding, path: Path) -> None:

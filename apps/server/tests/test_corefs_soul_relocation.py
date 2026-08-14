@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from anima_server.config import settings
@@ -15,11 +16,15 @@ from anima_server.services.core import (
     set_owner_user_id,
     update_core_manifest,
 )
-from anima_server.services.corefs.cutover import begin_migration
+from anima_server.services.corefs import soul_relocation
+from anima_server.services.corefs.cutover import CutoverState, begin_migration
 from anima_server.services.corefs.soul_relocation import (
     SOUL_DATABASE_RELATIVE_PATH,
     SoulRelocationError,
+    active_soul_database_path,
     relocate_owner_soul_database,
+    retire_legacy_soul_database_after_cutover,
+    rollback_owner_soul_database,
 )
 
 
@@ -180,3 +185,44 @@ def test_invalid_or_cross_owner_manifest_routing_fails_closed(isolated_soul: Pat
     update_core_manifest(corrupt)
     with pytest.raises(SoulRelocationError, match="manifest record is invalid"):
         get_user_database_path(7)
+
+
+def test_reversible_rejection_restores_legacy_soul_routing(isolated_soul: Path) -> None:
+    begin_migration()
+    relocated = relocate_owner_soul_database(7)
+
+    assert rollback_owner_soul_database(7) is True
+    assert active_soul_database_path(7) is None
+    assert get_user_database_path(7).resolve() == isolated_soul.resolve()
+    assert relocated.active_path.is_file()
+    assert rollback_owner_soul_database(7) is False
+
+
+@pytest.mark.parametrize(
+    "crash_boundary",
+    ["soul-retirement:after_sidecars", "soul-retirement:after_database"],
+)
+def test_forward_only_retirement_resumes_without_recreating_legacy_soul(
+    isolated_soul: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_boundary: str,
+) -> None:
+    begin_migration()
+    relocated = relocate_owner_soul_database(7)
+    monkeypatch.setattr(
+        soul_relocation,
+        "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY),
+    )
+
+    def crash(boundary: str) -> None:
+        if boundary == crash_boundary:
+            raise OSError("simulated retirement crash")
+
+    with pytest.raises(OSError, match="retirement crash"):
+        retire_legacy_soul_database_after_cutover(boundary_hook=crash)
+
+    assert retire_legacy_soul_database_after_cutover() is True
+    assert not isolated_soul.exists()
+    assert relocated.active_path.is_file()
+    assert get_user_database_path(7).resolve() == relocated.active_path

@@ -15,6 +15,17 @@ CoreTransferOperationState = Literal[
     "cancelled",
     "failed",
 ]
+CoreMigrationState = Literal[
+    "not_started",
+    "preflight",
+    "frozen",
+    "converting",
+    "verifying",
+    "awaiting_acceptance",
+    "accepted",
+    "rejected",
+    "failed",
+]
 
 
 class CoreTransferPayloadRequest(BaseModel):
@@ -187,3 +198,25 @@ class CoreActiveStatusResponse(BaseModel):
     retainedCoreId: str | None
     activationId: str
     rollbackScheduled: bool
+
+
+class CoreMigrationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    retryFailed: bool = False
+
+
+class CoreMigrationDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed: Literal[True]
+
+
+class CoreMigrationStatusResponse(BaseModel):
+    state: CoreMigrationState
+    generation: int | None
+    migratedCount: int = Field(ge=0)
+    errorCode: str | None
+    restartRequired: bool
+    firstWriteReady: bool
+    forwardOnly: bool

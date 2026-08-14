@@ -74,11 +74,12 @@ class MigrationCoordinator:
         local_instance_id: str,
         legacy_user_id: int,
     ) -> None:
-        if not core_id or not local_instance_id or legacy_user_id <= 0:
+        if not core_id or not local_instance_id or legacy_user_id < 0:
             raise MigrationOrchestrationError("migration coordinator identity is invalid")
         self.runtime_db = runtime_db
         self.core_id = core_id
         self.local_instance_id = local_instance_id
+        self.legacy_user_id = legacy_user_id
         self.source_id_hash = hashlib.sha256(
             _SOURCE_ID_DOMAIN
             + core_id.encode("utf-8")
@@ -147,8 +148,6 @@ class MigrationCoordinator:
             self._advance(
                 journal,
                 MigrationState.VERIFYING,
-                source_checksum=result.source_hash,
-                target_checksum=result.catalog_hash,
                 migrated_count=result.migrated_count,
             )
             _boundary(boundary_hook, "migration:after_converter")
@@ -162,8 +161,6 @@ class MigrationCoordinator:
             self._advance(
                 journal,
                 MigrationState.AWAITING_ACCEPTANCE,
-                source_checksum=result.source_hash,
-                target_checksum=result.catalog_hash,
                 migrated_count=result.migrated_count,
             )
             _boundary(boundary_hook, "migration:after_awaiting_acceptance")
@@ -179,10 +176,18 @@ class MigrationCoordinator:
 
     def accept(self, *, boundary_hook: BoundaryHook | None = None) -> MigrationStatus:
         journal = self._required_journal(MigrationState.AWAITING_ACCEPTANCE)
-        cutover = read_cutover_record()
-        if cutover.validation_catalog_hash != journal.target_checksum:
+        from anima_server.services.corefs.soul_relocation import (
+            active_soul_database_path,
+        )
+
+        if active_soul_database_path(self.legacy_user_id) is None:
             raise MigrationOrchestrationError(
-                "migration acceptance does not match the verified validation head"
+                "migration acceptance requires a verified active Soul relocation"
+            )
+        cutover = read_cutover_record()
+        if cutover.validation_generation is None or cutover.validation_catalog_hash is None:
+            raise MigrationOrchestrationError(
+                "migration acceptance requires a verified validation head"
             )
         if cutover.state is CutoverState.CORE_FS_VALIDATION_READONLY:
             approve_validation_cutover()
@@ -202,6 +207,11 @@ class MigrationCoordinator:
         boundary_hook: BoundaryHook | None = None,
     ) -> MigrationStatus:
         journal = self._required_journal(MigrationState.AWAITING_ACCEPTANCE)
+        from anima_server.services.corefs.soul_relocation import (
+            rollback_owner_soul_database,
+        )
+
+        rollback_owner_soul_database(self.legacy_user_id)
         if read_cutover_record().state is not CutoverState.LEGACY_AUTHORITATIVE:
             rollback_cutover(corefs_session=corefs_session, keys=keys)
         _boundary(boundary_hook, "migration:after_cutover_rejection")
@@ -215,7 +225,7 @@ class MigrationCoordinator:
         return journal
 
     def _journal(self) -> CoreFSMigrationJournal | None:
-        return self.runtime_db.scalar(
+        journal = self.runtime_db.scalar(
             select(CoreFSMigrationJournal).where(
                 CoreFSMigrationJournal.core_id == self.core_id,
                 CoreFSMigrationJournal.local_instance_id == self.local_instance_id,
@@ -223,21 +233,26 @@ class MigrationCoordinator:
                 CoreFSMigrationJournal.source_id_hash == self.source_id_hash,
             )
         )
+        if journal is not None and (
+            journal.source_checksum is not None or journal.target_checksum is not None
+        ):
+            journal.source_checksum = None
+            journal.target_checksum = None
+            self.runtime_db.commit()
+        return journal
 
     def _advance(
         self,
         journal: CoreFSMigrationJournal,
         state: MigrationState,
         *,
-        source_checksum: str | None = None,
-        target_checksum: str | None = None,
         migrated_count: int | None = None,
     ) -> None:
         journal.status = state.value
-        if source_checksum is not None:
-            journal.source_checksum = source_checksum
-        if target_checksum is not None:
-            journal.target_checksum = target_checksum
+        # Content-derived digests stay inside the encrypted Core and process
+        # memory; plaintext Runtime progress never persists them.
+        journal.source_checksum = None
+        journal.target_checksum = None
         if migrated_count is not None:
             journal.migrated_count = migrated_count
         journal.error_code = None
@@ -246,15 +261,12 @@ class MigrationCoordinator:
 
     def _status(self, journal: CoreFSMigrationJournal) -> MigrationStatus:
         state = _parse_state(journal.status)
-        generation: int | None = None
         cutover = read_cutover_record()
-        if cutover.validation_catalog_hash == journal.target_checksum:
-            generation = cutover.validation_generation
         return MigrationStatus(
             state=state,
-            generation=generation,
-            catalog_hash=journal.target_checksum,
-            source_hash=journal.source_checksum,
+            generation=cutover.validation_generation,
+            catalog_hash=cutover.validation_catalog_hash,
+            source_hash=None,
             migrated_count=journal.migrated_count,
             error_code=journal.error_code,
         )
@@ -301,6 +313,11 @@ def run_portable_content_migration(
             runtime_db=runtime_db,
             transcripts_dir=transcripts_dir,
         )
+        from anima_server.services.corefs.soul_relocation import (
+            relocate_owner_soul_database,
+        )
+
+        relocate_owner_soul_database(session.user_id)
         return MigrationConversionResult(
             generation=result.generation,
             catalog_hash=result.catalog_hash,

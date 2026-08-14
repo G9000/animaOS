@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from anima_server.config import settings
 from anima_server.services.corefs import legacy_runtime_recovery
 from anima_server.services.corefs.cutover import CutoverState
 from anima_server.services.corefs.instance_registry import (
@@ -16,8 +17,11 @@ from anima_server.services.corefs.instance_registry import (
 from anima_server.services.corefs.legacy_runtime_recovery import (
     LegacyRuntimeRecoveryError,
     finalize_runtime_transition_after_startup,
+    prepare_current_legacy_runtime_recovery_bundle,
     prepare_legacy_runtime_recovery_bundle,
+    require_first_write_runtime_recovery,
     retire_legacy_runtime_plaintext,
+    runtime_transition_restart_required,
     select_runtime_pg_data_dir_for_startup,
     verify_legacy_runtime_recovery_bundle,
 )
@@ -154,6 +158,78 @@ def test_existing_bundle_never_gets_overwritten_for_changed_source(
     assert bundle.path.read_bytes() == original
 
 
+def test_pending_restart_refreshes_authenticated_bundle_after_stopped_source_changes(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _core, binding, _private_marker = _fixture(managed_tmp_path)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE),
+    )
+    select_runtime_pg_data_dir_for_startup(binding, store=store)
+    original = verify_legacy_runtime_recovery_bundle(binding, store=store)
+    (binding.legacy_pg_data_dir / "PG_VERSION").write_text("16", encoding="ascii")
+
+    assert select_runtime_pg_data_dir_for_startup(binding, store=store) == (
+        binding.legacy_pg_data_dir
+    )
+    refreshed = verify_legacy_runtime_recovery_bundle(binding, store=store)
+
+    assert refreshed.bundle_id != original.bundle_id
+    assert not refreshed.path.with_name(f".{refreshed.path.name}.previous").exists()
+
+
+@pytest.mark.parametrize(
+    "crash_boundary",
+    [
+        "legacy-runtime-recovery:after_stale_rotation",
+        "legacy-runtime-recovery:after_refresh_publish",
+    ],
+)
+def test_pending_bundle_refresh_resumes_after_every_replacement_boundary(
+    managed_tmp_path: Path,
+    crash_boundary: str,
+) -> None:
+    _core, binding, _private_marker = _fixture(managed_tmp_path)
+    store = CredentialStore(MemoryCredentialBackend())
+    original = prepare_current_legacy_runtime_recovery_bundle(
+        binding,
+        legacy_postgres_running=False,
+        store=store,
+    )
+    (binding.legacy_pg_data_dir / "PG_VERSION").write_text("16", encoding="ascii")
+
+    def crash_during_refresh(boundary: str) -> None:
+        if boundary == crash_boundary:
+            raise RuntimeError("crash")
+
+    with pytest.raises(RuntimeError, match="crash"):
+        prepare_current_legacy_runtime_recovery_bundle(
+            binding,
+            legacy_postgres_running=False,
+            store=store,
+            boundary_hook=crash_during_refresh,
+        )
+
+    previous = original.path.with_name(f".{original.path.name}.previous")
+    assert previous.is_file()
+    if crash_boundary.endswith("stale_rotation"):
+        assert not original.path.exists()
+    else:
+        assert original.path.is_file()
+    resumed = prepare_current_legacy_runtime_recovery_bundle(
+        binding,
+        legacy_postgres_running=False,
+        store=store,
+    )
+    assert resumed.path.is_file()
+    assert resumed.bundle_id != original.bundle_id
+    assert not previous.exists()
+
+
 def test_durable_partial_resumes_create_only_with_same_authenticated_bundle(
     managed_tmp_path: Path,
 ) -> None:
@@ -280,11 +356,23 @@ def test_startup_transition_selects_fresh_runtime_only_after_bundle_and_marker(
     monkeypatch.setattr(
         legacy_runtime_recovery,
         "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE),
+    )
+    assert select_runtime_pg_data_dir_for_startup(binding, store=store) == (
+        binding.legacy_pg_data_dir
+    )
+    pending_bundle = verify_legacy_runtime_recovery_bundle(binding, store=store)
+    (binding.legacy_pg_data_dir / "PG_VERSION").write_text("16", encoding="ascii")
+
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "read_cutover_record",
         lambda: SimpleNamespace(state=CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY),
     )
     assert select_runtime_pg_data_dir_for_startup(binding, store=store) == binding.pg_data_dir
     assert binding.legacy_pg_data_dir.is_dir()
     bundle = verify_legacy_runtime_recovery_bundle(binding, store=store)
+    assert bundle.bundle_id != pending_bundle.bundle_id
 
     binding.pg_data_dir.mkdir(parents=True)
     (binding.pg_data_dir / "PG_VERSION").write_text("17", encoding="ascii")
@@ -295,6 +383,42 @@ def test_startup_transition_selects_fresh_runtime_only_after_bundle_and_marker(
     assert bundle.path.is_file()
     assert select_runtime_pg_data_dir_for_startup(binding, store=store) == binding.pg_data_dir
     assert finalize_runtime_transition_after_startup(binding, store=store) is None
+
+
+def test_first_write_requires_pending_restart_bundle_and_second_restart_after_marker(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    core, binding, _private_marker = _fixture(managed_tmp_path)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", core)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(managed_tmp_path / "app-data"))
+    monkeypatch.setattr(settings, "runtime_instance_data_dir", str(binding.instance_root))
+    monkeypatch.setattr(legacy_runtime_recovery, "credential_store", lambda: store)
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE),
+    )
+
+    assert runtime_transition_restart_required() is True
+    with pytest.raises(LegacyRuntimeRecoveryError, match="restart-prepared"):
+        require_first_write_runtime_recovery()
+
+    prepare_legacy_runtime_recovery_bundle(
+        binding,
+        legacy_postgres_running=False,
+        store=store,
+    )
+    require_first_write_runtime_recovery()
+    assert runtime_transition_restart_required() is False
+
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "read_cutover_record",
+        lambda: SimpleNamespace(state=CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY),
+    )
+    assert runtime_transition_restart_required() is True
 
 
 def test_verified_external_runtime_can_finalize_forward_only_transition(

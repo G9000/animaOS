@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import {
   clearUnlockToken,
+  CORE_RUNTIME_RESTART_REQUIRED_EVENT,
   fetchRuntimeWithNonceRefresh,
   getUnlockToken,
   setUnlockToken,
@@ -69,6 +70,27 @@ describe("runtime auth handling", () => {
       expect(lockedEvents).toBe(1);
     } finally {
       globalThis.removeEventListener(UNLOCK_SESSION_LOCKED_EVENT, onLocked);
+    }
+  });
+
+  test("emits one restart signal when first-write cutover commits", async () => {
+    let restartEvents = 0;
+    const onRestart = () => {
+      restartEvents += 1;
+    };
+    globalThis.addEventListener(CORE_RUNTIME_RESTART_REQUIRED_EVENT, onRestart);
+    globalThis.fetch = (async () =>
+      Response.json(
+        { ok: true },
+        { headers: { "x-anima-restart-required": "corefs-cutover" } },
+      )) as typeof fetch;
+
+    try {
+      await fetchRuntimeWithNonceRefresh("https://api.test/api/diary/1");
+      await fetchRuntimeWithNonceRefresh("https://api.test/api/diary/1");
+      expect(restartEvents).toBe(1);
+    } finally {
+      globalThis.removeEventListener(CORE_RUNTIME_RESTART_REQUIRED_EVENT, onRestart);
     }
   });
 });

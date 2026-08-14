@@ -323,6 +323,27 @@ export interface CoreActiveStatus {
   rollbackScheduled: boolean;
 }
 
+export type CoreMigrationState =
+  | "not_started"
+  | "preflight"
+  | "frozen"
+  | "converting"
+  | "verifying"
+  | "awaiting_acceptance"
+  | "accepted"
+  | "rejected"
+  | "failed";
+
+export interface CoreMigrationStatus {
+  state: CoreMigrationState;
+  generation: number | null;
+  migratedCount: number;
+  errorCode: string | null;
+  restartRequired: boolean;
+  firstWriteReady: boolean;
+  forwardOnly: boolean;
+}
+
 export type CoreFsClientScope = "none" | "read" | "write" | "manage";
 export type CoreFsClientInstallationStatus =
   | "pending"

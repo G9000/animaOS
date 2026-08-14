@@ -4,7 +4,9 @@ import { getRuntimeNonce, refreshDaemonRuntimeNonce } from "./daemon";
 
 const UNLOCK_TOKEN_KEY = "anima_unlock_token";
 export const UNLOCK_SESSION_LOCKED_EVENT = "anima-unlock-session-locked";
+export const CORE_RUNTIME_RESTART_REQUIRED_EVENT = "anima-core-runtime-restart-required";
 let unlockTokenCache: string | null = null;
+let runtimeRestartNoticeEmitted = false;
 
 export function getUnlockToken(): string | null {
   if (unlockTokenCache) return unlockTokenCache;
@@ -88,6 +90,21 @@ function emitUnlockSessionLocked(): void {
   }
 }
 
+function emitRuntimeRestartRequired(response: Response): void {
+  if (
+    runtimeRestartNoticeEmitted ||
+    response.headers.get("x-anima-restart-required") !== "corefs-cutover"
+  ) {
+    return;
+  }
+  runtimeRestartNoticeEmitted = true;
+  try {
+    globalThis.dispatchEvent(new CustomEvent(CORE_RUNTIME_RESTART_REQUIRED_EVENT));
+  } catch {
+    // Ignore event dispatch failures outside browser-like runtimes.
+  }
+}
+
 function setRuntimeNonceHeader(headers: Headers, nonce: string | null): void {
   if (nonce) {
     headers.set("x-anima-nonce", nonce);
@@ -102,6 +119,7 @@ export async function fetchRuntimeWithNonceRefresh(
   allowRetry = true,
 ): Promise<Response> {
   const response = await fetch(input, init);
+  emitRuntimeRestartRequired(response);
   if (response.status === 401) {
     const payload = await readResponsePayload(response);
     if (isLockedSessionResponse(payload)) {
@@ -165,4 +183,3 @@ export const api: ApiClient & {
     return data[0].map((segment) => segment[0]).join("");
   },
 };
-

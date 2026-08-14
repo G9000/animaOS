@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 16:35 MYT
+- Updated: 2026-08-14 17:05 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -534,6 +534,22 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   the desktop production build and full Server Ruff pass, and Step 8 is locally
   complete. No real Core, Runtime, or recovery source was deleted; the paid
   workflow remains disabled and no external or irreversible action occurred.
+- 2026-08-14 17:05 MYT - Completed the local implementation for Steps 3 and 5.
+  The production API/UI now drives the resumable converter, verified Soul
+  relocation, explicit accept/reject, and legacy-routing rollback. Acceptance
+  fails without the active relocated Soul, while forward-only startup verifies
+  the active Soul and crash-resumably removes only its legacy copy. Pending
+  startup prepares or safely refreshes the stopped legacy Runtime recovery
+  bundle; the first mutation cannot commit without it, signals a mandatory
+  second restart, and blocks later portable writes until fresh Runtime startup
+  re-verifies the exact source, refreshes recovery without a gap, and retires
+  plaintext. Content-derived source/catalog digests are no longer stored in
+  Runtime or exposed by the migration API, and old local journal values are
+  scrubbed on resume. The focused server band passes `67`, API-client/desktop
+  contracts pass `37`, full Server Ruff and the desktop production build pass.
+  Step 4 remains deliberately unexecuted behind the mandatory signed-package
+  evidence gate; the paid workflow stays disabled and no real source, marker,
+  external action, or irreversible operation occurred.
 
 ## Validation
 
@@ -562,6 +578,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     (`34 passed`)
   - `bun run --cwd apps/desktop build` (passed)
   - `bun run lint:server` (passed)
+  - `uv run pytest apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_transfer_api.py -q`
+    (`67 passed` after production migration decisions, Soul rollback/retirement,
+    restart-bundle refresh, and first-write restart fencing)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts apps/desktop/tests/api-auth.test.ts`
+    (`37 passed`)
+  - `bun run build:desktop` and `bun run lint:server` (passed)
   - `env PYO3_PYTHON=.venv/bin/python cargo check -p anima-core --features python`
     (passed)
   - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing

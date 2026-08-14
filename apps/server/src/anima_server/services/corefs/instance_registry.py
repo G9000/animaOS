@@ -339,6 +339,27 @@ class RuntimeInstanceRegistry:
                     "Runtime deletion target is still owned by a live process"
                 )
 
+    def current_process_binding(
+        self,
+        *,
+        core_id: str,
+        instance_root: Path,
+    ) -> RuntimeInstanceBinding:
+        """Return the exact Runtime binding owned by the current process."""
+        with _REGISTRY_LOCK, self._locked_registry():
+            record = self._account_deletion_record(
+                self._load_registry(),
+                core_id=core_id,
+                instance_root=instance_root,
+                allow_missing=False,
+            )
+            assert record is not None
+            if not self._record_is_owned_by_current_process(record):
+                raise InstanceBindingCollision(
+                    "Runtime instance binding is not owned by this process"
+                )
+            return self._binding_from_record(record)
+
     def retire_account_deletion_binding(
         self,
         *,

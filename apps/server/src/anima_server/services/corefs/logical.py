@@ -254,6 +254,15 @@ def execute_mutation_v1(
     authority = reconcile_cutover_authority(corefs_session=corefs_session, keys=keys)
     cutover = read_cutover_record()
     if cutover.state is CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE:
+        from anima_server.services.corefs.legacy_runtime_recovery import (
+            LegacyRuntimeRecoveryError,
+            require_first_write_runtime_recovery,
+        )
+
+        try:
+            require_first_write_runtime_recovery()
+        except LegacyRuntimeRecoveryError as exc:
+            raise CoreFsMutationUnavailable("corefs_runtime_restart_required") from exc
         if (
             cutover.cutover_epoch is None
             or cutover.validation_generation != selected.generation
@@ -263,6 +272,12 @@ def execute_mutation_v1(
         commit_mode = "first"
         cutover_epoch: int | None = cutover.cutover_epoch
     elif cutover.state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+        from anima_server.services.corefs.legacy_runtime_recovery import (
+            runtime_transition_restart_required,
+        )
+
+        if runtime_transition_restart_required():
+            raise CoreFsMutationUnavailable("corefs_runtime_restart_required")
         if (
             authority is None
             or authority.get("generation") != selected.generation
@@ -320,6 +335,14 @@ def execute_mutation_v1(
 
     if raw.get("cutoverCommitted") is True or raw.get("recoveryPending") is True:
         reconcile_cutover_authority(corefs_session=corefs_session, keys=keys)
+    if raw.get("cutoverCommitted") is True:
+        from anima_server.services.corefs.legacy_runtime_recovery import (
+            mark_runtime_transition_restart_required,
+            runtime_transition_restart_required,
+        )
+
+        if runtime_transition_restart_required():
+            mark_runtime_transition_restart_required()
     if raw.get("invalidationDelivered") is not True and invalidate is not None:
         invalidate(generation, catalog_hash)
         raw = dict(raw)

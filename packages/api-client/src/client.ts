@@ -12,6 +12,7 @@ import type {
   CoreActiveStatus,
   CoreImportOperation,
   CoreImportProbe,
+  CoreMigrationStatus,
   CoreFsRecoveryBrowseRequest,
   CoreFsRecoveryBrowseResponse,
   CoreFsRecoveryCredentialRequest,
@@ -853,6 +854,23 @@ export function createApiClient(options: ApiClientOptions) {
             "/corefs/transfer/active-core/rollback-on-restart",
             { method: "POST", body: { confirmed: true } },
           ),
+        migrationStatus: () =>
+          request<CoreMigrationStatus>("/corefs/transfer/migration/status"),
+        runMigration: (retryFailed = false) =>
+          request<CoreMigrationStatus>("/corefs/transfer/migration/run", {
+            method: "POST",
+            body: { retryFailed },
+          }),
+        acceptMigration: () =>
+          request<CoreMigrationStatus>("/corefs/transfer/migration/accept", {
+            method: "POST",
+            body: { confirmed: true },
+          }),
+        rejectMigration: () =>
+          request<CoreMigrationStatus>("/corefs/transfer/migration/reject", {
+            method: "POST",
+            body: { confirmed: true },
+          }),
       },
     },
     chat: {

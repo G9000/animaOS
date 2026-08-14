@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
+from anima_server.config import settings
+from anima_server.db import get_db, get_runtime_db
 from anima_server.schemas.corefs_transfer import (
     CoreActiveStatusResponse,
     CoreFsRecoveryBrowseRequest,
@@ -17,6 +20,9 @@ from anima_server.schemas.corefs_transfer import (
     CoreImportPrepareRequest,
     CoreImportProbeRequest,
     CoreImportProbeResponse,
+    CoreMigrationDecisionRequest,
+    CoreMigrationRunRequest,
+    CoreMigrationStatusResponse,
     CoreRollbackRequest,
     CoreTransferDestinationRequest,
     CoreTransferEstimateResponse,
@@ -37,7 +43,19 @@ from anima_server.services.corefs.archive_transfer import (
     CoreArchivePayloadKind,
     CoreArchiveTransferError,
 )
+from anima_server.services.corefs.cutover import CutoverState, read_cutover_record
+from anima_server.services.corefs.legacy_runtime_recovery import (
+    LegacyRuntimeRecoveryError,
+    runtime_transition_restart_required,
+)
+from anima_server.services.corefs.orchestration import (
+    MigrationCoordinator,
+    MigrationOrchestrationError,
+    MigrationStatus,
+    run_portable_content_migration,
+)
 from anima_server.services.corefs.recovery_access import CoreFsRecoveryAccessError
+from anima_server.services.corefs.soul_relocation import SoulRelocationError
 from anima_server.services.corefs.transfer import TransferError
 from anima_server.services.corefs.transfer_jobs import (
     CorefsReattachmentNotSupported,
@@ -49,6 +67,83 @@ from anima_server.services.corefs.types import WrappingPath
 
 router = APIRouter(prefix="/api/corefs/transfer", tags=["corefs-transfer"])
 _RECOVERY_BROWSE_ADMISSION = FsCredentialAdmission()
+
+
+@router.get("/migration/status", response_model=CoreMigrationStatusResponse)
+def get_core_migration_status(
+    request: Request,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> CoreMigrationStatusResponse:
+    session = require_unlocked_session(request)
+    try:
+        migration = _migration_coordinator(session, runtime_db).status()
+        return _migration_response(migration)
+    except (LegacyRuntimeRecoveryError, MigrationOrchestrationError, ValueError) as exc:
+        raise _migration_conflict() from exc
+
+
+@router.post("/migration/run", response_model=CoreMigrationStatusResponse)
+def run_core_migration(
+    payload: CoreMigrationRunRequest,
+    request: Request,
+    soul_db: Session = Depends(get_db),
+    runtime_db: Session = Depends(get_runtime_db),
+) -> CoreMigrationStatusResponse:
+    session = require_unlocked_session(request)
+    try:
+        migration = run_portable_content_migration(
+            session=session,
+            soul_db=soul_db,
+            runtime_db=runtime_db,
+            transcripts_dir=settings.data_dir / "transcripts",
+            retry_failed=payload.retryFailed,
+        )
+        return _migration_response(migration)
+    except (
+        LegacyRuntimeRecoveryError,
+        MigrationOrchestrationError,
+        SoulRelocationError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise _migration_conflict() from exc
+
+
+@router.post("/migration/accept", response_model=CoreMigrationStatusResponse)
+def accept_core_migration(
+    _payload: CoreMigrationDecisionRequest,
+    request: Request,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> CoreMigrationStatusResponse:
+    session = require_unlocked_session(request)
+    try:
+        migration = _migration_coordinator(session, runtime_db).accept()
+        return _migration_response(migration)
+    except (LegacyRuntimeRecoveryError, MigrationOrchestrationError, ValueError) as exc:
+        raise _migration_conflict() from exc
+
+
+@router.post("/migration/reject", response_model=CoreMigrationStatusResponse)
+def reject_core_migration(
+    _payload: CoreMigrationDecisionRequest,
+    request: Request,
+    runtime_db: Session = Depends(get_runtime_db),
+) -> CoreMigrationStatusResponse:
+    session = require_unlocked_session(request)
+    try:
+        migration = _migration_coordinator(session, runtime_db).reject(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        return _migration_response(migration)
+    except (
+        LegacyRuntimeRecoveryError,
+        MigrationOrchestrationError,
+        SoulRelocationError,
+        OSError,
+        ValueError,
+    ) as exc:
+        raise _migration_conflict() from exc
 
 
 @router.post("/estimate", response_model=CoreTransferEstimateResponse)
@@ -519,4 +614,58 @@ def _transfer_conflict() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
         detail={"code": "core_transfer_precondition_failed"},
+    )
+
+
+def _migration_coordinator(session: object, runtime_db: Session) -> MigrationCoordinator:
+    runtime_index = getattr(session, "runtime_index", None)
+    user_id = getattr(session, "user_id", None)
+    if (
+        runtime_index is None
+        or not isinstance(user_id, int)
+        or isinstance(user_id, bool)
+    ):
+        raise MigrationOrchestrationError("portable migration requires an unlocked Core")
+    return MigrationCoordinator(
+        runtime_db,
+        core_id=runtime_index.core_id,
+        local_instance_id=runtime_index.local_instance_id,
+        legacy_user_id=user_id,
+    )
+
+
+def _migration_response(migration: MigrationStatus | None) -> CoreMigrationStatusResponse:
+    cutover = read_cutover_record()
+    restart_required = runtime_transition_restart_required()
+    effective_state = (
+        migration.state.value
+        if migration is not None
+        else (
+            "accepted"
+            if cutover.state
+            in {
+                CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE,
+                CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY,
+            }
+            else "not_started"
+        )
+    )
+    return CoreMigrationStatusResponse(
+        state=effective_state,
+        generation=migration.generation if migration is not None else None,
+        migratedCount=migration.migrated_count if migration is not None else 0,
+        errorCode=migration.error_code if migration is not None else None,
+        restartRequired=restart_required,
+        firstWriteReady=(
+            cutover.state is CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE
+            and not restart_required
+        ),
+        forwardOnly=(cutover.state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY),
+    )
+
+
+def _migration_conflict() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={"code": "corefs_migration_precondition_failed"},
     )

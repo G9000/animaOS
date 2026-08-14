@@ -35,6 +35,59 @@ describe("createApiClient error handling", () => {
     expect(result.deletionId).toBe("d0f7d7e7-9c57-4cd5-9942-f38aa8b1475a");
   });
 
+  test("serializes reversible Core migration decisions", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            state: "awaiting_acceptance",
+            generation: 9,
+            migratedCount: 41,
+            errorCode: null,
+            restartRequired: false,
+            firstWriteReady: false,
+            forwardOnly: false,
+          }),
+        );
+      },
+    });
+
+    await api.corefs.transfer.migrationStatus();
+    await api.corefs.transfer.runMigration(true);
+    await api.corefs.transfer.acceptMigration();
+    await api.corefs.transfer.rejectMigration();
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/corefs/transfer/migration/status",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/migration/run",
+        method: "POST",
+        body: { retryFailed: true },
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/migration/accept",
+        method: "POST",
+        body: { confirmed: true },
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/migration/reject",
+        method: "POST",
+        body: { confirmed: true },
+      },
+    ]);
+  });
+
   test("sends the immutable legacy-draft handoff token", async () => {
     let requestBody: unknown = null;
     const api = createApiClient({

@@ -67,6 +67,12 @@ describe("ANIMA CORE transfer settings", () => {
       "readLegacyVaultFile",
       "Import legacy source",
       "only before CoreFS migration begins",
+      "CoreFS migration cutover",
+      "Prepare migration",
+      "Accept verified migration",
+      "Reject and restore legacy",
+      "stopped-Runtime recovery bundle",
+      "single forward-only cutover event",
     ]) {
       expect(page).toContain(contract);
     }

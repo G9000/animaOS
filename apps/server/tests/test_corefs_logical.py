@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
 from anima_server.config import settings
 from anima_server.services.core import ensure_core_manifest
-from anima_server.services.corefs import logical
+from anima_server.services.corefs import legacy_runtime_recovery, logical
 from anima_server.services.corefs.cutover import (
     CutoverState,
     approve_validation_cutover,
@@ -204,6 +205,17 @@ def test_approved_first_mutation_uses_manifest_epoch_and_reconciles_head(
     publish_validation_readonly(generation=7, catalog_hash=validation_hash)
     pending = approve_validation_cutover()
     calls: list[tuple[dict[str, object], bytes | None]] = []
+    restart_signals: list[bool] = []
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "runtime_transition_restart_required",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "mark_runtime_transition_restart_required",
+        lambda: restart_signals.append(True),
+    )
 
     class NativeSession:
         marker: dict[str, object] | None = None
@@ -260,3 +272,38 @@ def test_approved_first_mutation_uses_manifest_epoch_and_reconciles_head(
     assert cutover.state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY
     assert cutover.authoritative_generation == 8
     assert cutover.authoritative_catalog_hash == committed_hash
+    assert restart_signals == [True]
+
+
+def test_first_mutation_is_blocked_until_runtime_recovery_restart(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    validation_hash = "a" * 64
+    monkeypatch.setattr(settings, "data_dir", tmp_path / ".anima")
+    ensure_core_manifest()
+    begin_migration()
+    publish_validation_readonly(generation=7, catalog_hash=validation_hash)
+    approve_validation_cutover()
+
+    def reject_unprepared_runtime() -> None:
+        raise legacy_runtime_recovery.LegacyRuntimeRecoveryError("restart-prepared")
+
+    monkeypatch.setattr(
+        legacy_runtime_recovery,
+        "require_first_write_runtime_recovery",
+        reject_unprepared_runtime,
+    )
+    native = SimpleNamespace(
+        authoritative_cutover_v1=lambda _keys: None,
+        logical_mutate_v1=lambda *_args: pytest.fail("native mutation must not run"),
+    )
+
+    with pytest.raises(logical.CoreFsMutationUnavailable, match="restart_required"):
+        logical.execute_mutation_v1(
+            corefs_session=native,
+            keys=object(),
+            selected=logical.CoreFsValidationSnapshot(7, validation_hash),
+            principal="user",
+            mutation={"operation": "mkdir", "path": "Notes"},
+        )

@@ -922,7 +922,18 @@ contract, Ruff, and production desktop-build gates pass; this step is complete.
 
 Cover closed cold copy; live write-barrier snapshots; SQLCipher checkpoint; catalog/GC pinning; reachable-object selection; no Runtime inclusion; `full`, `soul`, and `fs` artifact/key allowlists, scoped credential replacement, and recovery states; fixed-header/profile bounds; exact normative AAD tuple; pre-archive record hash; global nonce ordinal; destination capacity/writable/single-file-limit preflight; <=8-MiB buffers and <=32-MiB aggregate transfer working set excluding the fixed Argon2 workspace; `.partial` cleanup; single-file and FAT32-like multipart output; failure at every part/controller/directory publication boundary; disconnect/cancel; missing/reordered/mixed/tampered volumes; same-volume import capacity/staging; final-directory and active-Core registry-pointer activation failures; V1 CoreFS-reattachment rejection; destination hash/decrypt verification; rejection of incoherent live raw copies; same-machine duplicate-Core instance handling; and binary objects larger than the legacy 16-MiB section limit.
 
-- [ ] **Step 3: Implement resumable migration orchestration and physical Soul relocation**
+- [x] **Step 3: Implement resumable migration orchestration and physical Soul relocation**
+
+Completion progress (2026-08-14): the production migration API and desktop
+flow now run the durable coordinator against the unlocked Soul/Runtime pair,
+relocate the owner Soul before verified acceptance, and expose explicit
+prepare/accept/reject decisions. Acceptance fails closed without an
+authenticated active Soul relocation; rejection atomically restores legacy
+Soul routing before rolling back the validation catalog. Startup removes the
+verified legacy Soul copy only after forward-only authority. Zero-based owners,
+real SQLite relocation/routing, retry, every coordinator boundary, rollback,
+and both Soul-retirement crash seams pass. Plaintext Runtime progress no longer
+persists or exposes content-derived source/catalog digests.
 
 Preflight space/keys/schema; freeze writes; run all converters through the durable runtime migration journal; verify counts/hashes/references/API parity; build a separate fresh outside-Core runtime; expose accept/reject state. Close every SQLCipher engine and use copy-verify-flip to relocate the single-owner legacy `users/<legacy-id>/anima.db` (including a clean WAL checkpoint) to `.anima/soul/soul.db`. Atomically publish the new manifest path only after schema, page-integrity, decryptability, and deterministic retained-table hashes pass. Preserve the old encrypted file for rollback until the authenticated first CoreFS mutation; after the forward-only marker, remove the legacy `users/` database copy and prove no service can recreate it.
 
@@ -930,7 +941,7 @@ Preflight space/keys/schema; freeze writes; run all converters through the durab
 
 The first accepted mutation writes the authenticated catalog marker and publishes `fs/HEAD`. Startup finalizes manifest forward-only state if it crashes immediately afterward.
 
-- [ ] **Step 5: Secure and retire the legacy PostgreSQL source after the marker**
+- [x] **Step 5: Secure and retire the legacy PostgreSQL source after the marker**
 
 Progress (2026-08-13): a machine-local recovery primitive now inventories the
 stopped relocated legacy PostgreSQL tree twice, encrypts paths and contents in
@@ -943,9 +954,18 @@ bundle, and a present fresh Runtime database. On the next startup after the
 marker, embedded Runtime recovery runs before PostgreSQL selection, starts the
 fresh data directory instead of the retained source, verifies its instance
 binding and schema, and only then retires plaintext; an explicitly configured
-fresh Runtime follows the same post-binding gate. First-mutation shutdown/
-restart coordination remains open, so this step is intentionally not checked
-complete.
+fresh Runtime follows the same post-binding gate.
+
+Completion progress (2026-08-14): acceptance now requires a restart before the
+first irreversible mutation. Pending startup creates or refreshes the exact
+stopped-source encrypted recovery bundle; the first mutation is blocked until
+that bundle authenticates, and its response signals an immediate second
+restart while all later portable mutations remain blocked. Forward-only
+startup refreshes a stopped source through a crash-safe authenticated
+previous/current swap, starts and verifies the fresh Runtime, then retires only
+the exact plaintext source. Repeated pre-cutover restarts, credential failure,
+source drift, both refresh replacement seams, first-write gating, and the
+post-marker transition pass focused tests.
 
 Before enabling writes, create and verify an authenticated encrypted recovery bundle of `legacy-runtime-source` outside `.anima/` while retaining plaintext rollback source. After the marked first mutation makes rollback forward-only, stop the legacy server, switch to the fresh runtime, delete the plaintext legacy directory, and retain only the encrypted recovery bundle for the later cleanup release. A moved Core never includes either runtime form.
 

@@ -5,6 +5,7 @@ import type {
   CoreImportOperation,
   CoreImportProbe,
   CoreFsRecoveryBrowseResponse,
+  CoreMigrationStatus,
   CoreTransferDestinationProbe,
   CoreTransferEstimate,
   CoreTransferOperation,
@@ -138,6 +139,9 @@ export default function CoreTransferSettings() {
   const [recoveryExportOperation, setRecoveryExportOperation] = useState<CoreTransferOperation | null>(null);
   const [recoveryExportBusy, setRecoveryExportBusy] = useState(false);
   const [recoveryExportStatus, setRecoveryExportStatus] = useState("");
+  const [migration, setMigration] = useState<CoreMigrationStatus | null>(null);
+  const [migrationBusy, setMigrationBusy] = useState(false);
+  const [migrationMessage, setMigrationMessage] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -148,6 +152,21 @@ export default function CoreTransferSettings() {
       })
       .catch(() => {
         // Startup may still be initializing the authenticated registry.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void api.corefs.transfer
+      .migrationStatus()
+      .then((value) => {
+        if (active) setMigration(value);
+      })
+      .catch(() => {
+        // A pre-provisioned Core can legitimately have no migration journal.
       });
     return () => {
       active = false;
@@ -194,6 +213,65 @@ export default function CoreTransferSettings() {
       setStatus(error instanceof Error ? error.message : "Destination probe failed.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  const handleRunMigration = async () => {
+    if (!window.confirm("Prepare and validate the encrypted CoreFS migration? Portable writes will be frozen until you accept or reject it.")) {
+      return;
+    }
+    setMigrationBusy(true);
+    setMigrationMessage("");
+    try {
+      const value = await api.corefs.transfer.runMigration(migration?.state === "failed");
+      setMigration(value);
+      setMigrationMessage(
+        value.state === "awaiting_acceptance"
+          ? "Migration is verified and remains reversible. Review the migrated count, then explicitly accept or reject it."
+          : `Migration state: ${value.state}.`,
+      );
+    } catch (error) {
+      setMigrationMessage(error instanceof Error ? error.message : "Migration preparation failed.");
+    } finally {
+      setMigrationBusy(false);
+    }
+  };
+
+  const handleAcceptMigration = async () => {
+    if (!window.confirm("Accept this verified migration? A restart is required before the first irreversible CoreFS write.")) {
+      return;
+    }
+    setMigrationBusy(true);
+    setMigrationMessage("");
+    try {
+      const value = await api.corefs.transfer.acceptMigration();
+      setMigration(value);
+      setMigrationMessage(
+        value.restartRequired
+          ? "Migration accepted. Restart animaOS now; startup will create and verify the encrypted Runtime recovery bundle before first-write cutover is allowed."
+          : "Migration accepted and the restart recovery gate is ready.",
+      );
+    } catch (error) {
+      setMigrationMessage(error instanceof Error ? error.message : "Migration acceptance failed.");
+    } finally {
+      setMigrationBusy(false);
+    }
+  };
+
+  const handleRejectMigration = async () => {
+    if (!window.confirm("Reject this migration and restore legacy authority? The verified CoreFS shadow will remain non-authoritative.")) {
+      return;
+    }
+    setMigrationBusy(true);
+    setMigrationMessage("");
+    try {
+      const value = await api.corefs.transfer.rejectMigration();
+      setMigration(value);
+      setMigrationMessage("Migration rejected. Legacy authority and Soul routing were restored.");
+    } catch (error) {
+      setMigrationMessage(error instanceof Error ? error.message : "Migration rejection failed.");
+    } finally {
+      setMigrationBusy(false);
     }
   };
 
@@ -596,6 +674,65 @@ export default function CoreTransferSettings() {
 
   return (
     <div className="space-y-5">
+      <section className={`${glass} p-6 space-y-5`}>
+        <div>
+          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
+            CoreFS migration cutover
+          </h2>
+          <p className="mt-2 font-mono text-caption text-foreground/35 leading-relaxed">
+            Prepare a reversible encrypted shadow, verify it, and explicitly accept or reject it. Acceptance never
+            performs the irreversible write: animaOS must restart first to prepare the stopped-Runtime recovery bundle.
+          </p>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <Metric label="Migration state" value={migration?.state ?? "Unavailable"} />
+          <Metric label="Migrated records" value={migration?.migratedCount.toString() ?? "—"} />
+          <Metric label="Validation generation" value={migration?.generation?.toString() ?? "—"} />
+        </div>
+
+        {migration?.restartRequired && (
+          <p className="font-mono text-caption text-foreground/55 leading-relaxed">
+            Restart required. Before first write this prepares the encrypted legacy-Runtime recovery bundle; after the
+            first forward-only write it switches to fresh Runtime and retires the plaintext legacy source.
+          </p>
+        )}
+        {migration?.firstWriteReady && (
+          <p className="font-mono text-caption text-foreground/55 leading-relaxed">
+            Recovery bundle verified. The next authored CoreFS change is the single forward-only cutover event; restart
+            animaOS immediately afterward to complete the fresh Runtime transition.
+          </p>
+        )}
+        {migration?.forwardOnly && !migration.restartRequired && (
+          <p className="font-mono text-caption text-foreground/55 leading-relaxed">
+            Forward-only cutover and fresh Runtime transition are complete.
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {(migration === null || ["not_started", "failed"].includes(migration.state)) &&
+            !migration?.forwardOnly && (
+            <ActionButton onClick={handleRunMigration} disabled={migrationBusy}>
+              {migrationBusy ? "Preparing…" : migration?.state === "failed" ? "Retry migration" : "Prepare migration"}
+            </ActionButton>
+          )}
+          {migration?.state === "awaiting_acceptance" && (
+            <>
+              <ActionButton onClick={handleAcceptMigration} disabled={migrationBusy}>
+                {migrationBusy ? "Applying…" : "Accept verified migration"}
+              </ActionButton>
+              <ActionButton onClick={handleRejectMigration} disabled={migrationBusy}>
+                Reject and restore legacy
+              </ActionButton>
+            </>
+          )}
+        </div>
+
+        {migrationMessage && (
+          <p className="font-mono text-caption text-foreground/45 leading-relaxed">{migrationMessage}</p>
+        )}
+      </section>
+
       <section className={`${glass} p-6 space-y-5`}>
         <div>
           <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
