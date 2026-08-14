@@ -43,12 +43,21 @@ def sync_document_source(
     )
     joined_text = "\n\n".join(chunk.content_text for chunk in chunks)
     artifact_hash = _content_hash(joined_text or document.sha256)
+    from anima_server.services.corefs.asset_authority import CoreFsByteSource
+    from anima_server.services.documents.store import resolve_document_byte_source
+
+    byte_source = resolve_document_byte_source(document, user_id=document.user_id)
+    source_uri = (
+        f"corefs://object/{byte_source.stable_id}"
+        if isinstance(byte_source, CoreFsByteSource)
+        else f"runtime-document://{document.id}"
+    )
     source = register_source(
         db,
         SourceIdentity(
             user_id=document.user_id,
             kind="document",
-            source_uri=f"runtime-document://{document.id}",
+            source_uri=source_uri,
             content_hash=document.sha256,
             title=document.filename,
             media_type=document.mime_type,
@@ -56,7 +65,7 @@ def sync_document_source(
                 "runtime_document_id": document.id,
                 "runtime_thread_id": document.thread_id,
                 "runtime_workflow_run_id": document.workflow_run_id,
-                "storage_path": document.storage_path,
+                "storage_path": source_uri,
                 "size_bytes": document.size_bytes,
                 "source_metadata": dict(document.metadata_json or {}),
             },

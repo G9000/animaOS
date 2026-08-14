@@ -67,10 +67,13 @@ def resolve_document_byte_source(
 
     session = active_asset_authority_session(user_id)
     if session is not None:
-        stable_id = migration_opaque_id("document", str(document.id))
+        object_uri = document.storage_path
+        if not object_uri.startswith("corefs://object/"):
+            stable_id = migration_opaque_id("document", str(document.id))
+            object_uri = f"corefs://object/{stable_id}"
         return open_corefs_byte_source(
             session=session,
-            object_uri=f"corefs://object/{stable_id}",
+            object_uri=object_uri,
             expected_kinds=frozenset({"attachment"}),
         )
     return str(resolve_document_storage_path(document.storage_path, user_id=user_id))
@@ -81,10 +84,27 @@ def register_document(
     registration: DocumentRegistration,
 ) -> RuntimeDocument:
     from anima_server.services.corefs.asset_authority import (
+        CoreFsSourceError,
+        active_asset_authority_session,
+        open_corefs_byte_source,
         require_legacy_asset_mutation_allowed,
     )
 
-    require_legacy_asset_mutation_allowed(registration.user_id)
+    session = active_asset_authority_session(registration.user_id)
+    if session is not None:
+        source = open_corefs_byte_source(
+            session=session,
+            object_uri=registration.storage_path,
+            expected_kinds=frozenset({"attachment"}),
+        )
+        if (
+            source.content_type != registration.mime_type
+            or source.content_sha256 != registration.sha256
+            or source.size != registration.size_bytes
+        ):
+            raise CoreFsSourceError("Canonical document registration changed identity.")
+    else:
+        require_legacy_asset_mutation_allowed(registration.user_id)
     existing = db.scalar(
         select(RuntimeDocument).where(
             RuntimeDocument.user_id == registration.user_id,

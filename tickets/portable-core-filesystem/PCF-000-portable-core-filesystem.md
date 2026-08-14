@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 14:50 MYT
+- Updated: 2026-08-14 14:57 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -478,6 +478,13 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   plaintext. The scoped legacy/canonical chat-image band passes `47` with Ruff
   and diff hygiene green. Image-gallery/document/knowledge writers and raw
   scans keep PCF-008 active; no external or irreversible action occurred.
+- 2026-08-14 14:57 MYT - PCF-008 PDF upload, registration, parse/reparse input,
+  and derived source synchronization now use authenticated CoreFS originals;
+  legacy storage-path starts fail closed and only sealed/rebuildable Runtime
+  projections remain. The broader document band passes `104` plus the focused
+  authority rerun, with scoped hygiene green. Image-gallery/knowledge writers
+  and raw scans keep PCF-008 active; no external or irreversible action
+  occurred.
 
 ## Validation
 

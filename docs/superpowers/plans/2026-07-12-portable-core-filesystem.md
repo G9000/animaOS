@@ -1054,7 +1054,11 @@ Chat-image uploads now publish unique canonical attachment objects, bind their
 URIs to optimistic message events, feed providers from bounded authenticated
 bytes, project into canonical history, and unlink through message revision plus
 recoverable trash without new Runtime asset/link rows or host plaintext.
-Image-gallery/document/knowledge writers remain open.
+PDF uploads now publish/deduplicate authenticated canonical originals, reject
+post-cutover legacy storage paths, and drive registration, parse/reparse, plus
+derived source synchronization from canonical bytes while retaining only
+sealed/rebuildable Runtime projections. Image-gallery/knowledge writers remain
+open.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 

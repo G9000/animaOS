@@ -6,10 +6,21 @@ from typing import Any
 import pytest
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
-from anima_server.models.runtime import RuntimeThread, RuntimeWorkflowRun
+from anima_server.models.runtime import RuntimeDocument, RuntimeThread, RuntimeWorkflowRun
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.vector_store import VectorSearchResult
+from anima_server.services.corefs import logical
+from anima_server.services.corefs.cutover import (
+    approve_validation_cutover,
+    begin_migration,
+    publish_validation_readonly,
+    reconcile_cutover_authority,
+)
+from anima_server.services.corefs.diary_migration import (
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
 from anima_server.services.documents import ExtractedDocumentChunk, pdf_workflow
 from anima_server.services.documents.parsing import ExtractionOutcome
 from anima_server.services.documents.parsing_pack import ParsingPackStatus
@@ -208,6 +219,84 @@ def test_upload_pdf_creates_owned_workflow_and_saves_file() -> None:
         workflow = status_response.json()
         assert workflow["input"]["filename"] == "Plan Manual.pdf"
         assert workflow["input"]["storage_path"] == storage_path
+
+
+def test_post_cutover_pdf_upload_and_registration_use_only_corefs(
+    monkeypatch: Any,
+) -> None:
+    _patch_pdf_edges(monkeypatch, proposed_facts=[])
+    with managed_test_client("anima-documents-corefs-upload-") as client:
+        reg = _register_user(client, username="document-corefs-upload-user")
+        user_id = int(reg["id"])
+        token = str(reg["unlockToken"])
+        headers = {"x-anima-unlock": token}
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
+        begin_migration()
+        publish_validation_readonly(
+            generation=int(selected["generation"]),
+            catalog_hash=str(selected["catalogHash"]),
+        )
+        approve_validation_cutover()
+        logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=logical.CoreFsValidationSnapshot(
+                int(selected["generation"]),
+                str(selected["catalogHash"]),
+            ),
+            principal="user",
+            mutation={"operation": "mkdir", "path": "Document activation proof"},
+        )
+        marker = reconcile_cutover_authority(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        assert marker is not None
+        object.__setattr__(session, "content_authority", marker)
+
+        legacy_start = client.post(
+            "/api/documents/workflows/pdf",
+            headers=headers,
+            json=_pdf_payload(user_id),
+        )
+        assert legacy_start.status_code == 409, legacy_start.text
+
+        content = b"%PDF-1.4\ncanonical document body\n%%EOF"
+        uploaded = client.post(
+            "/api/documents/pdf",
+            headers=headers,
+            data={"userId": str(user_id)},
+            files={"file": ("Canonical Manual.pdf", content, "application/pdf")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        storage_path = uploaded.json()["document"]["storagePath"]
+        assert storage_path.startswith("corefs://object/")
+        assert not (settings.data_dir / ".anima" / "documents" / str(user_id)).exists()
+        stable_id = storage_path.rsplit("/", 1)[-1]
+        source = next(
+            item
+            for item in read_prepared_writing_snapshot(session=session).objects
+            if item.stable_id == stable_id
+        )
+        assert source.kind == "attachment"
+        assert read_prepared_writing_body(session=session, item=source) == content
+
+        resumed = client.post(
+            f"/api/documents/workflows/{uploaded.json()['workflowId']}/resume",
+            headers=headers,
+        )
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["currentState"] == "awaiting_approval"
+        runtime_factory = get_runtime_session_factory()
+        with runtime_factory() as runtime_db:
+            document = runtime_db.scalar(
+                select(RuntimeDocument).where(RuntimeDocument.user_id == user_id)
+            )
+            assert document is not None
+            assert document.storage_path == storage_path
+            assert document.sha256 == uploaded.json()["document"]["sha256"]
 
 
 def test_start_pdf_workflow_rejects_missing_thread_id() -> None:

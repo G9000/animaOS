@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 14:50 MYT
+- Updated: 2026-08-14 14:57 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -448,6 +448,15 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   canonical chat/image band passes `47`, with Ruff and diff hygiene green.
   Image-gallery/document/knowledge writers and raw scans keep Step 8 open; no
   external or irreversible action occurred.
+- 2026-08-14 14:57 MYT - Routed post-cutover PDF upload, deduplication,
+  registration, parse/reparse input, and derived-source synchronization through
+  authenticated CoreFS document objects. Upload is bounded before allocation,
+  creates no plaintext host file, rejects manual legacy storage paths, and
+  retains only sealed/rebuildable Runtime document, chunk, and source
+  projections bound to the canonical URI. The broader upload/workflow/store/
+  reparse/migration/asset band passes `104`, with the focused authority rerun,
+  Ruff, and diff hygiene green. Image-gallery/knowledge writers and raw scans
+  keep Step 8 open; no external or irreversible action occurred.
 
 ## Validation
 
@@ -616,6 +625,11 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after canonical chat-image routing (`47 passed`)
   - scoped Ruff check and `git diff --check` after canonical chat-image routing
     (passed)
+  - `uv run pytest -q --tb=short apps/server/tests/test_documents_api.py apps/server/tests/test_document_store.py apps/server/tests/test_pdf_workflow_checkpoints.py apps/server/tests/test_document_reparse.py apps/server/tests/test_corefs_document_migration.py apps/server/tests/test_corefs_assets.py`
+    after canonical document upload/registration (`104 passed`)
+  - focused post-cutover document authority rerun (`1 passed`)
+  - scoped Ruff check and `git diff --check` after canonical document routing
+    (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -675,6 +689,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/src/anima_server/api/routes/{chat.py,threads.py}`
   - `apps/server/src/anima_server/api/routes/images.py`
   - `apps/server/src/anima_server/services/agent/attachments.py`
+  - `apps/server/src/anima_server/api/routes/documents.py`
+  - `apps/server/src/anima_server/services/documents/store.py`
+  - `apps/server/src/anima_server/services/ingestion/{sources.py,adapters/documents.py}`
+  - `apps/server/tests/test_documents_api.py`
   - `apps/server/tests/{test_corefs_conversation_migration.py,test_threads_api.py}`
   - `apps/server/src/anima_server/services/agent/{persistence.py,service.py}`
   - `apps/server/src/anima_server/models/runtime.py`
