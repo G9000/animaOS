@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 05:24 MYT
+- Updated: 2026-08-14 14:10 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -411,6 +411,16 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   `15` with scoped Ruff/diff hygiene green. Attachments, remaining writer
   families, and raw scans keep Step 8 open. No external or irreversible action
   occurred.
+- 2026-08-14 14:10 MYT - Routed diary entries, folders, and legacy-draft
+  handoff through authenticated CoreFS authority after cutover. Migrated and
+  newly created entries list from canonical bodies; create/update/unfile/
+  rename/delete use native optimistic mutations and recoverable trash; draft
+  revisions enforce the exact monotonic handoff token. A full route regression
+  proves retained SQL folder/entry counts remain unchanged. Diary/migration
+  coverage passes `51` and scoped Ruff/diff hygiene passes. Binary attachment
+  mutation remains fail-closed until the asset adapter; other asset/document/
+  knowledge writers and raw scans keep Step 8 open. No external or
+  irreversible action occurred.
 
 ## Validation
 
@@ -561,6 +571,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after canonical approval/resume persistence (passed)
   - `uv run pytest -q --tb=short apps/server/tests/test_threads_api.py apps/server/tests/test_corefs_conversation_migration.py`
     after canonical message edit/delete transitions (`15 passed`)
+  - `uv run pytest -q --tb=short apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py`
+    after canonical diary/folder/draft routing (`51 passed`)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -626,6 +638,9 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `packages/anima-file-tools/tests/patch.rs`
   - `packages/anima-corefs/src/logical/{mutation.rs,mutation/patch.rs,mutation/tests.rs}`
   - `packages/anima-core/src/ffi.rs`
+  - `apps/server/src/anima_server/services/corefs/{writing_authority.py,writing_mutations.py,diary_migration.py}`
+  - `apps/server/src/anima_server/api/routes/diary.py`
+  - `apps/server/tests/test_diary_api.py`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

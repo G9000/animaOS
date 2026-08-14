@@ -1041,7 +1041,10 @@ fresh Runtime rows. Approval checkpoints remain unlock-sealed operational
 Runtime state, and resumed visible responses return only to CoreFS with
 collision-free Runtime/step metadata. Visible message edit/delete now append
 optimistic immutable CoreFS events with exact prior-version fences and terminal
-deletion semantics. Attachments and diary/asset/document writers remain open.
+deletion semantics. Diary entry/folder CRUD and monotonic legacy-draft handoff
+now read and mutate only authenticated CoreFS, including recoverable trash and
+resumable unfile/move behavior. Binary attachments and asset/document/knowledge
+writers remain open.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 

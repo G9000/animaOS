@@ -4,6 +4,13 @@ import hashlib
 
 from anima_server.config import settings
 from anima_server.db.session import get_user_session_factory
+from anima_server.services.corefs import logical
+from anima_server.services.corefs.cutover import (
+    approve_validation_cutover,
+    begin_migration,
+    publish_validation_readonly,
+    reconcile_cutover_authority,
+)
 from anima_server.services.corefs.diary_migration import (
     InactiveFolder,
     LegacyDiaryDraft,
@@ -44,6 +51,161 @@ def _writing_generation(user_id: int) -> int | None:
             text("select generation from corefs_writing_source_state where user_id = :user_id"),
             {"user_id": user_id},
         )
+
+
+def test_diary_routes_use_only_corefs_after_global_cutover() -> None:
+    with managed_test_client("anima-diary-corefs-authority-") as client:
+        reg = _register_user(client, username="diary-corefs-authority")
+        user_id = int(reg["id"])
+        token = str(reg["unlockToken"])
+        headers = {"x-anima-unlock": token}
+
+        legacy_folder = client.post(
+            "/api/diary/folders",
+            headers=headers,
+            json={"userId": user_id, "name": "Legacy folder"},
+        )
+        assert legacy_folder.status_code == 201
+        legacy_folder_id = int(legacy_folder.json()["id"])
+        legacy_entry = client.post(
+            "/api/diary",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "entryDate": "2026-08-14",
+                "title": "Legacy title",
+                "body": "Legacy body",
+                "mood": "steady",
+                "folderId": legacy_folder_id,
+            },
+        )
+        assert legacy_entry.status_code == 201
+
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        with get_user_session_factory(user_id)() as db:
+            prepared = prepare_diary_validation_catalog(session=session, db=db)
+            legacy_counts = db.execute(
+                text(
+                    "select "
+                    "(select count(*) from diary_folders where user_id = :user_id), "
+                    "(select count(*) from diary_entries where user_id = :user_id)"
+                ),
+                {"user_id": user_id},
+            ).one()
+        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
+        assert prepared.generation == int(selected["generation"])
+        begin_migration()
+        publish_validation_readonly(
+            generation=int(selected["generation"]),
+            catalog_hash=str(selected["catalogHash"]),
+        )
+        approve_validation_cutover()
+        logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=logical.CoreFsValidationSnapshot(
+                int(selected["generation"]),
+                str(selected["catalogHash"]),
+            ),
+            principal="user",
+            mutation={"operation": "mkdir", "path": "Diary activation proof"},
+        )
+        marker = reconcile_cutover_authority(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        assert marker is not None
+        object.__setattr__(session, "content_authority", marker)
+
+        prepared_response = client.get("/api/diary/corefs-prepared", headers=headers)
+        assert prepared_response.status_code == 200
+        assert prepared_response.json()["authoritative"] is True
+        listed = client.get(f"/api/diary?userId={user_id}", headers=headers)
+        assert listed.status_code == 200, listed.text
+        assert [entry["body"] for entry in listed.json()] == ["<p>Legacy body</p>"]
+
+        folder = client.post(
+            "/api/diary/folders",
+            headers=headers,
+            json={"userId": user_id, "name": "Core folder"},
+        )
+        assert folder.status_code == 201, folder.text
+        folder_id = int(folder.json()["id"])
+        renamed = client.patch(
+            f"/api/diary/folders/{folder_id}",
+            headers=headers,
+            json={"name": "Core folder renamed"},
+        )
+        assert renamed.status_code == 200, renamed.text
+        assert renamed.json()["name"] == "Core folder renamed"
+        folders = client.get(f"/api/diary/folders?userId={user_id}", headers=headers)
+        assert folders.status_code == 200
+        assert next(item for item in folders.json() if item["id"] == folder_id)["name"] == (
+            "Core folder renamed"
+        )
+
+        created = client.post(
+            "/api/diary",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "entryDate": "2026-08-14",
+                "title": "Core title",
+                "body": "<p>Core body</p>",
+                "folderId": folder_id,
+            },
+        )
+        assert created.status_code == 201, created.text
+        entry_id = int(created.json()["id"])
+        updated = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"body": "<p>Updated Core body</p>", "clearFolder": True},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["body"] == "<p>Updated Core body</p>"
+        assert updated.json()["folderId"] is None
+
+        draft_body = "<p>Canonical draft</p>"
+        draft_hash = hashlib.sha256(draft_body.encode()).hexdigest()
+        draft = client.post(
+            "/api/diary/drafts/import",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "draftId": "draft-corefs-authority",
+                "clientRevision": 1,
+                "contentSha256": draft_hash,
+                "targetEntryId": entry_id,
+                "html": draft_body,
+                "title": "Draft",
+                "mood": "calm",
+                "entryDate": "2026-08-14",
+                "updatedAt": "2026-08-14T05:00:00Z",
+            },
+        )
+        assert draft.status_code == 200, draft.text
+        assert draft.json()["authoritative"] is True
+
+        attachment = client.post(
+            f"/api/diary/{entry_id}/attachments",
+            headers=headers,
+            files={"file": ("blocked.bin", b"blocked", "application/octet-stream")},
+        )
+        assert attachment.status_code == 409
+        assert client.delete(f"/api/diary/folders/{folder_id}", headers=headers).status_code == 200
+        assert client.delete(f"/api/diary/{entry_id}", headers=headers).status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            assert db.execute(
+                text(
+                    "select "
+                    "(select count(*) from diary_folders where user_id = :user_id), "
+                    "(select count(*) from diary_entries where user_id = :user_id)"
+                ),
+                {"user_id": user_id},
+            ).one() == legacy_counts
 
 
 def test_every_diary_api_writer_advances_the_source_generation() -> None:
