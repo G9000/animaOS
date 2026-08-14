@@ -6,7 +6,9 @@ category: architecture
 
 # Document Processing Architecture
 
-This document describes the current document-processing path in AnimaOS. The implemented user-facing document format is PDF. Documents are runtime context for chat and RAG; they are not automatically promoted into durable SQLCipher memory.
+This document describes the current document-processing path in AnimaOS. The implemented user-facing document format is PDF. Uploaded originals and canonical normalized source bodies are portable CoreFS content. Parsing, chunking, workflow checkpoints, and embeddings are machine-local Runtime projections; none automatically promotes a document into durable SQLCipher Soul memory.
+
+> **Portable Core authority note:** sections that enumerate `runtime_documents`, chunks, sources, spans, and embeddings describe the rebuildable processing/index pipeline. They do not grant those rows canonical binary/text authority. After cutover, every parse/reparse path reopens the authenticated CoreFS original, and Runtime rows retain only safe references, sealed/rebuildable payloads, and operational metadata.
 
 PDF ingestion also feeds the universal source-ingestion layer described in
 [Source Ingestion](source-ingestion.md). The PDF workflow keeps its existing
@@ -20,7 +22,7 @@ bundle export, linting, and source evidence drilldown.
 Document processing covers five responsibilities:
 
 1. Accept a PDF from the desktop chat UI.
-2. Store the uploaded file under the local runtime data root.
+2. Validate and publish the uploaded original as a bounded authenticated CoreFS object.
 3. Run a resumable PDF ingestion workflow that extracts text, chunks it, embeds chunks, and marks the document indexed.
 4. Retrieve relevant chunks during chat and inject them as a high-priority document context block.
 5. Render visible attachment/source pills so the user can see which PDF was attached or cited.
@@ -100,20 +102,20 @@ There is also `POST /api/documents/workflows/pdf` for starting a workflow from a
 
 ## Runtime Storage Model
 
-Documents live in the runtime PostgreSQL store, not the encrypted soul database.
+Document identity/original bytes live in CoreFS. Runtime PostgreSQL holds processing and retrieval projections, not the encrypted Soul database and not the only copy of document content.
 
 | Runtime table | Purpose |
 | --- | --- |
 | `runtime_workflow_runs` | One resumable workflow run, including `workflow_type`, `status`, `current_state`, input, result, and error JSON |
 | `runtime_workflow_checkpoints` | Ordered idempotent checkpoints for each completed or waiting workflow state |
-| `runtime_documents` | Per-user document metadata: filename, MIME type, storage path, SHA-256, size, status, indexed timestamp, optional thread/workflow ids |
-| `runtime_document_chunks` | Extracted text chunks with chunk index, page range, content hash, token count, section title, and metadata |
+| `runtime_documents` | Processing status plus canonical CoreFS source reference, hash/size/type, indexed timestamp, and optional thread/workflow ids |
+| `runtime_document_chunks` | Rebuildable extracted chunk projection with ordering/page metadata and safe/sealed content representation |
 | `runtime_sources`, `runtime_source_artifacts`, `runtime_source_spans` | Universal source-ingestion mirror for indexed documents and chunks |
 | `runtime_knowledge_concepts`, `runtime_knowledge_concept_sources`, `runtime_knowledge_links` | Optional compiled OKF/LLM-wiki concepts, citations, and links derived from source spans |
 | `embeddings` | pgvector rows for document chunks and other runtime-search sources |
 | `runtime_messages` | User/assistant chat rows, including serialized document attachment/source pills in `content_json` |
 
-`runtime_documents` is unique on `(user_id, sha256)`, so uploading the same file for the same user reuses the existing document row. The document row is still runtime state: it can support local retrieval and workflow resumption, but it is not the portable memory authority.
+`runtime_documents` deduplicates the processing projection by owner/hash while canonical CoreFS publication is independently idempotent. The row can support retrieval and workflow resumption, but loss of the row never loses the original or normalized portable source.
 
 ## Checkpointed PDF Ingestion
 
@@ -342,7 +344,7 @@ Uploaded PDFs do not automatically become long-term memory.
 
 The boundary is:
 
-- Raw document metadata, text chunks, and chunk embeddings live in runtime PostgreSQL.
+- Canonical document metadata/original/normalized bodies live in CoreFS; chunks and embeddings are rebuildable Runtime projections.
 - Retrieved chunks are prompt context for the current turn.
 - The workflow may stage proposed facts in `awaiting_approval`.
 - Only approved proposals create `MemoryCandidate` rows.
@@ -427,8 +429,8 @@ Important regression coverage lives in:
 - PDF is the chat upload format; HTML files and web captures ingest through the knowledge routes (`/api/knowledge/sources/html`, `/sources/web-capture`), and markdown/text through their source endpoints.
 - Chat images use the central image asset/indexing path, not the PDF document workflow.
 - OCR requires the `docling` extra; without it, scanned PDFs fail with a clear message.
-- Document chunks are runtime context, not encrypted soul memory.
-- The source-ingestion mirror is runtime evidence and compiled knowledge, not encrypted soul memory.
+- Document chunks are Runtime context, not SQLCipher Soul memory and not canonical document authority.
+- The source-ingestion projection is rebuildable Runtime evidence/compiled knowledge over canonical CoreFS sources.
 - Citation pills identify the document, not exact chunk ids or page-level inline citations.
 - Chat document grounding starts from explicit or active thread documents; the agent can widen to the whole library only through `search_documents(scope="all")`.
 - Runtime pgvector availability and embedding provider availability determine whether indexing/search can complete.

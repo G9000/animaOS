@@ -550,6 +550,15 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   remains active for Step 4's separately authorized signed-artifact/irreversible
   gate, architecture documentation, and full validation; the paid workflow is
   still disabled and no real cutover or external action occurred.
+- 2026-08-14 17:16 MYT - PCF-008 Step 9 is complete. All canonical thesis,
+  architecture, schema, memory/document/source, and PRD surfaces now use the
+  implemented Soul/CoreFS portable authority plus machine-local Runtime
+  boundary, including exact storage/key/route/cutover/transfer/recovery and
+  restart-only lifecycle contracts. The filesystem architecture intentionally
+  keeps planned status until the mandatory signed-package/irreversible gate
+  passes. Repository organization and diff hygiene pass. PCF-008 remains
+  active for Step 4, focused/full validation, and cost-deferred package
+  evidence; no paid workflow or external/irreversible action occurred.
 
 ## Validation
 

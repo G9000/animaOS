@@ -1140,7 +1140,19 @@ Ruff, and diff hygiene pass. No real Core was deleted.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 
-- [ ] **Step 9: Update architecture documentation**
+- [x] **Step 9: Update architecture documentation**
+
+Completion progress (2026-08-14): the whitepaper, Portable Core and three-tier
+theses, architecture index, memory/document/source/schema references, and
+three-tier PRD now use the implemented Soul + CoreFS inside `.anima/` /
+machine-local Runtime boundary. They record canonical domain/route authority,
+the active paths and key hierarchy, resumable migration/rejection, both
+restart transitions, V2 single/multipart transfer and degraded recovery, plus
+restart-only activation/rollback/deletion. The obsolete JSONL Archive authority,
+Runtime-inside-Core layout, Runtime binary/source authority, plaintext index,
+and impossible discarded-key forward-secrecy claims were removed. The
+filesystem architecture remains deliberately marked `planned` only because
+the signed-package and irreversible first-release acceptance gate has not run.
 
 Update `docs/thesis/whitepaper.md`, `docs/thesis/portable-core.md`, `docs/thesis/three-tier-architecture.md`, `docs/architecture/README.md`, `docs/architecture/memory/memory-system.md`, `docs/architecture/system/database-schema.md`, and `docs/prds/three-tier-architecture.md` to describe the refined Core/Soul/CoreFS/Runtime boundary. Reconcile every node and edge in `docs/architecture/system/anima-core-filesystem.md` against the implemented routes, crates, storage paths, permission matrix, startup states, and transfer modes; remove its planned-status warning only after the complete cutover acceptance gate passes.
 

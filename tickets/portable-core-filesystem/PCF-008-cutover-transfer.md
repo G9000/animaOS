@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 17:05 MYT
+- Updated: 2026-08-14 17:16 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -550,6 +550,21 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   Step 4 remains deliberately unexecuted behind the mandatory signed-package
   evidence gate; the paid workflow stays disabled and no real source, marker,
   external action, or irreversible operation occurred.
+- 2026-08-14 17:16 MYT - Completed Step 9's architecture reconciliation.
+  The whitepaper, Portable Core/three-tier theses, architecture index,
+  memory/document/source/database references, PRD amendment, and canonical
+  filesystem graph now describe Soul + CoreFS as portable authority and
+  PostgreSQL/device/grant/credential state as machine-local. The docs record
+  implemented domain routes, exact paths, key purposes, reversible
+  migration/rejection, restart-fenced first write, fresh Runtime/Soul
+  retirement, V2 single/multipart transfer, degraded recovery, and restart-only
+  activation/rollback/deletion. Obsolete Runtime-inside-Core, JSONL authority,
+  Runtime original/source authority, plaintext index, and impossible
+  discarded-key forward-secrecy claims were removed. The canonical filesystem
+  page deliberately retains planned status until the signed-package and
+  irreversible acceptance gate passes. Repository organization and diff
+  hygiene pass; the paid workflow remains disabled and no external action or
+  real cutover occurred.
 
 ## Validation
 
@@ -584,6 +599,9 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts apps/desktop/tests/api-auth.test.ts`
     (`37 passed`)
   - `bun run build:desktop` and `bun run lint:server` (passed)
+  - `bun scripts/check-repo-organization.ts` after Step 9 architecture
+    reconciliation (passed)
+  - `git diff --check` after Step 9 (passed)
   - `env PYO3_PYTHON=.venv/bin/python cargo check -p anima-core --features python`
     (passed)
   - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing

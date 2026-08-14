@@ -6,7 +6,7 @@ category: architecture
 
 # Source Ingestion Architecture
 
-Source ingestion is the universal evidence layer for files, media, web captures, transcripts, app exports, and future source adapters. It keeps raw or derived evidence in the runtime database, compiles that evidence into OKF-compatible concept pages, and lets the agent search compiled knowledge while drilling back into citable spans.
+Source ingestion is the universal evidence layer for files, media, web captures, transcripts, app exports, and future adapters. It preserves canonical original and normalized bodies in encrypted CoreFS, builds Runtime artifacts/spans/concepts as replaceable projections, and lets the agent search compiled knowledge while drilling back into authenticated source content.
 
 This layer is separate from long-term personal memory. It may produce knowledge concepts or future memory candidates, but it does not automatically promote source content into SQLCipher memory.
 
@@ -29,7 +29,7 @@ The current implementation covers:
 
 ## Runtime Model
 
-Source ingestion stores rebuildable operational knowledge in the runtime DB:
+Source ingestion stores rebuildable operational knowledge in Runtime PostgreSQL. The tables below are projections over canonical CoreFS sources, not portable content authority:
 
 | Table | Purpose |
 | --- | --- |
@@ -104,7 +104,7 @@ Concept rows map to OKF-compatible markdown files:
 
 Import is permissive. Unknown concept types and unknown frontmatter fields are accepted. Existing concepts are updated by user and slug. Markdown links between imported concept files become `runtime_knowledge_links` with `link_type="related"`.
 
-Export writes compiled concepts and citation metadata, not raw source binaries. The raw evidence remains in the runtime source tables.
+OKF export writes compiled concepts and citation metadata. Canonical raw/normalized evidence remains in CoreFS; Runtime source rows can be deleted and rebuilt.
 
 ## LLM-Wiki Compiler
 
@@ -196,9 +196,9 @@ The desktop `KnowledgeLibrary` page exposes source and concept lists, concept ma
 
 Source ingestion is not durable personal memory. The boundary is:
 
-- source metadata, artifacts, spans, concept pages, links, lint findings, and embeddings live in runtime state,
+- source originals/normalized bodies live in CoreFS; artifacts, spans, concept pages, links, lint findings, and embeddings are Runtime projections,
 - source spans and compiled concepts can ground an answer,
-- imported/exported OKF bundles are portable knowledge artifacts, not the encrypted soul database,
+- imported/exported OKF bundles are portable knowledge artifacts backed by CoreFS, not SQLCipher Soul identity/memory,
 - automatic promotion into `MemoryItem`, structured claims, self-model blocks, or user profile data is out of scope,
 - any future memory promotion must create explicit candidates and pass through the existing Soul Writer/promotion path.
 
