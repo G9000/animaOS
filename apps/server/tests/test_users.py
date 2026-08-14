@@ -11,6 +11,7 @@ from anima_server.services.corefs.cutover import (
     reconcile_cutover_authority,
 )
 from anima_server.services.corefs.diary_migration import (
+    migration_opaque_id,
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
 )
@@ -115,6 +116,14 @@ def test_post_cutover_account_profile_never_mutates_legacy_user(
             json={"name": "Legacy retained"},
         )
         assert legacy_update.status_code == 200, legacy_update.text
+        legacy_avatar_bytes = b"\x89PNG\r\n\x1a\nretained-legacy-avatar"
+        legacy_avatar = client.post(
+            f"/api/consciousness/{user_id}/agent-profile/avatar",
+            headers=headers,
+            files={"file": ("legacy.png", legacy_avatar_bytes, "image/png")},
+        )
+        assert legacy_avatar.status_code == 200, legacy_avatar.text
+        legacy_avatar_url = legacy_avatar.json()["avatarUrl"]
 
         session = unlock_session_store.resolve(token)
         assert session is not None
@@ -188,6 +197,40 @@ def test_post_cutover_account_profile_never_mutates_legacy_user(
         )
         assert fetched_setup.status_code == 200, fetched_setup.text
         assert fetched_setup.json()["setupComplete"] is True
+        assert fetched_setup.json()["avatarUrl"] is None
+        assert (
+            client.get(
+                f"/api/consciousness/{user_id}/agent-profile/avatar",
+                headers=headers,
+            ).status_code
+            == 404
+        )
+
+        avatar_bytes = b"\x89PNG\r\n\x1a\ncanonical-agent-avatar"
+        avatar = client.post(
+            f"/api/consciousness/{user_id}/agent-profile/avatar",
+            headers=headers,
+            files={"file": ("agent.png", avatar_bytes, "image/png")},
+        )
+        assert avatar.status_code == 200, avatar.text
+        assert avatar.json()["avatarUrl"] == (
+            f"/consciousness/{user_id}/agent-profile/avatar"
+        )
+        avatar_response = client.get(
+            f"/api/consciousness/{user_id}/agent-profile/avatar",
+            headers=headers,
+        )
+        assert avatar_response.status_code == 200, avatar_response.text
+        assert avatar_response.content == avatar_bytes
+        assert avatar_response.headers["content-type"] == "image/png"
+        profile_with_avatar = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=headers,
+        )
+        assert profile_with_avatar.status_code == 200, profile_with_avatar.text
+        assert profile_with_avatar.json()["avatarUrl"] == avatar.json()["avatarUrl"]
+        legacy_avatar_path = get_user_data_dir(user_id) / "avatars" / "agent.png"
+        assert legacy_avatar_path.read_bytes() == legacy_avatar_bytes
 
         with get_user_session_factory(user_id)() as db:
             legacy = db.get(User, user_id)
@@ -197,6 +240,7 @@ def test_post_cutover_account_profile_never_mutates_legacy_user(
             assert legacy.username == "alice"
             assert legacy.display_name == "Legacy retained"
             assert legacy_agent.setup_complete is False
+            assert legacy_agent.avatar_url == legacy_avatar_url
 
         account_item = next(
             item
@@ -209,6 +253,35 @@ def test_post_cutover_account_profile_never_mutates_legacy_user(
         assert account.username == "renamed"
         assert account.display_name == "Canonical Name"
         assert account.setup_complete is True
+
+        avatar_item = next(
+            item
+            for item in read_prepared_writing_snapshot(session=session).objects
+            if item.stable_id == migration_opaque_id("identity-avatar", "agent-profile")
+        )
+        assert avatar_item.kind == "gallery-asset"
+        assert read_prepared_writing_body(session=session, item=avatar_item) == avatar_bytes
+
+        removed_avatar = client.delete(
+            f"/api/consciousness/{user_id}/agent-profile/avatar",
+            headers=headers,
+        )
+        assert removed_avatar.status_code == 200, removed_avatar.text
+        assert removed_avatar.json()["avatarUrl"] is None
+        assert (
+            client.get(
+                f"/api/consciousness/{user_id}/agent-profile/avatar",
+                headers=headers,
+            ).status_code
+            == 404
+        )
+        profile_without_avatar = client.get(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=headers,
+        )
+        assert profile_without_avatar.status_code == 200, profile_without_avatar.text
+        assert profile_without_avatar.json()["avatarUrl"] is None
+        assert legacy_avatar_path.read_bytes() == legacy_avatar_bytes
 
         delete = client.delete(f"/api/users/{user_id}", headers=headers)
         assert delete.status_code == 409

@@ -132,25 +132,34 @@ def _execute(
     mutation: dict[str, object],
     body: bytes | None,
 ) -> None:
-    result = logical.execute_mutation_v1(
-        corefs_session=session.corefs_session,
-        keys=session.corefs_keys,
-        selected=catalog.selection.snapshot,
-        principal="user",
-        mutation=mutation,
-        body=body,
-        invalidate=lambda _generation, _catalog_hash: invalidate_active_catalog_indexes(
-            int(session.user_id)
-        ),
-    )
-    changes = result.get("changes")
-    if not isinstance(changes, list) or len(changes) != 1 or not isinstance(changes[0], dict):
-        raise AssetMutationError("Native CoreFS asset mutation result is invalid.")
-    publish_content_authority_after_mutation(
-        session,
-        generation=int(result["generation"]),
-        catalog_hash=str(result["catalogHash"]),
-    )
+    try:
+        result = logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=catalog.selection.snapshot,
+            principal="user",
+            mutation=mutation,
+            body=body,
+            invalidate=lambda _generation, _catalog_hash: invalidate_active_catalog_indexes(
+                int(session.user_id)
+            ),
+        )
+        changes = result.get("changes")
+        if (
+            not isinstance(changes, list)
+            or len(changes) != 1
+            or not isinstance(changes[0], dict)
+        ):
+            raise AssetMutationError("Native CoreFS asset mutation result is invalid.")
+        publish_content_authority_after_mutation(
+            session,
+            generation=int(result["generation"]),
+            catalog_hash=str(result["catalogHash"]),
+        )
+    except AssetMutationError:
+        raise
+    except (RuntimeError, ValueError) as exc:
+        raise AssetMutationError("Canonical asset mutation failed.") from exc
 
 
 def _asset_lock(user_id: int) -> RLock:

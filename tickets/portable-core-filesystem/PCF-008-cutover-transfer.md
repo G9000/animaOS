@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 14:29 MYT
+- Updated: 2026-08-14 14:38 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -430,6 +430,15 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   document-migration band passes `59`, with scoped Ruff and diff hygiene green.
   Image/avatar/chat/document/knowledge writers and raw scans keep Step 8 open;
   no external or irreversible action occurred.
+- 2026-08-14 14:38 MYT - Routed agent-avatar upload, authenticated streaming,
+  profile/biography projection, replacement, and deletion through the canonical
+  `core.gallery` object after cutover. The retained profile row and legacy
+  plaintext avatar remain untouched and are never used as fallback authority;
+  upload reads are bounded before allocation and delete uses recoverable
+  CoreFS trash. The focused authority regression passes and the wider account,
+  biography, creation, and asset band passes `39`, with scoped Ruff and diff
+  hygiene green. Chat/image/document/knowledge writers and raw scans keep Step
+  8 open; no external or irreversible action occurred.
 
 ## Validation
 
@@ -586,6 +595,14 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after the canonical diary binary-attachment adapter (`59 passed`)
   - scoped Ruff check/format and `git diff --check` after the diary binary-
     attachment adapter (passed)
+  - `uv run pytest -q --tb=short apps/server/tests/test_users.py::test_post_cutover_account_profile_never_mutates_legacy_user`
+    after canonical agent-avatar routing (`1 passed`)
+  - `uv run pytest -q --tb=short apps/server/tests/test_users.py apps/server/tests/test_agent_biography_preview.py apps/server/tests/test_creation_flow.py apps/server/tests/test_corefs_assets.py`
+    (`39 passed`)
+  - `uv run pytest -q --tb=short apps/server/tests/test_users.py::test_post_cutover_account_profile_never_mutates_legacy_user apps/server/tests/test_corefs_assets.py`
+    after normalizing native asset-mutation failures (`6 passed`)
+  - scoped Ruff check and `git diff --check` after canonical agent-avatar
+    routing (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in

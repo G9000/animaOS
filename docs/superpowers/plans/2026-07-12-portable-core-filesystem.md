@@ -1047,7 +1047,10 @@ resumable unfile/move behavior. Diary binary uploads now publish bounded,
 reopened, hash/type-verified attachment objects beneath `core.gallery`, link
 their metadata into the canonical diary body, support authenticated download
 and cover selection, and leave the retained Soul attachment table unchanged.
-Image/avatar/chat/document/knowledge writers remain open.
+Agent-avatar upload, authenticated streaming, replacement, profile/biography
+projection, and recoverable deletion now use a stable canonical gallery object
+without mutating or falling back to retained profile metadata/plaintext files.
+Chat/image/document/knowledge writers remain open.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 
