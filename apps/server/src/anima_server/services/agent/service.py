@@ -34,8 +34,9 @@ from anima_server.schemas.chat import (
     TodayContext,
 )
 from anima_server.services.agent.attachments import (
-    AttachmentValidationError,
     prepare_chat_attachments,
+    prepare_corefs_chat_attachments,
+    resolve_corefs_chat_attachment,
     validate_chat_attachment_inputs,
 )
 from anima_server.services.agent.client_actions import build_client_action_runtime
@@ -1269,10 +1270,6 @@ async def _prepare_corefs_turn_context(
     )
 
     _validate_image_attachment_inputs(attachments)
-    if attachments:
-        raise AttachmentValidationError(
-            "CoreFS chat attachment writes are not enabled until the asset adapter is active."
-        )
     view = (
         get_canonical_thread(session=authority_session, thread_id=thread_id)
         if thread_id is not None
@@ -1302,7 +1299,20 @@ async def _prepare_corefs_turn_context(
     companion.thread_id = thread.id
     if previous_thread_id != thread.id:
         companion.invalidate_history(thread_id=thread.id)
-    history = [StoredMessage(role=message.role, content=message.content) for message in view.messages]
+    history = [
+        StoredMessage(
+            role=message.role,
+            content=message.content,
+            attachments=tuple(
+                resolve_corefs_chat_attachment(
+                    session=authority_session,
+                    object_uri=uri,
+                )
+                for uri in message.attachment_uris
+            ),
+        )
+        for message in view.messages
+    ]
     cleaned_context_messages = [
         (message, message.content.strip())
         for message in context_messages
@@ -1345,12 +1355,36 @@ async def _prepare_corefs_turn_context(
             document_ids=document_ids,
         ),
     )
-    canonical_user = append_canonical_message(
+    prepared_attachments = prepare_corefs_chat_attachments(
         session=authority_session,
-        thread_id=thread.id,
-        role="user",
-        content=user_message,
+        attachments=attachments,
     )
+    try:
+        canonical_user = append_canonical_message(
+            session=authority_session,
+            thread_id=thread.id,
+            role="user",
+            content=user_message,
+            attachment_uris=tuple(
+                attachment.storage_path
+                for attachment in prepared_attachments
+                if attachment.storage_path is not None
+            ),
+        )
+    except Exception:
+        from anima_server.services.corefs.asset_authority import CoreFsSourceError
+        from anima_server.services.corefs.asset_mutations import (
+            AssetMutationError,
+            trash_canonical_asset,
+        )
+
+        for attachment in reversed(prepared_attachments):
+            with contextlib.suppress(AssetMutationError, CoreFsSourceError, ValueError):
+                trash_canonical_asset(
+                    session=authority_session,
+                    stable_id=attachment.id,
+                )
+        raise
     user_msg = append_corefs_message_reference(
         runtime_db,
         thread=thread,
@@ -1372,7 +1406,7 @@ async def _prepare_corefs_turn_context(
         companion=companion,
         history=history,
         conversation_turn_count=conversation_turn_count,
-        prepared_attachments=(),
+        prepared_attachments=prepared_attachments,
         document_ids=document_ids,
         persisted_context_messages=persisted_context_messages,
         today_context=today_context,

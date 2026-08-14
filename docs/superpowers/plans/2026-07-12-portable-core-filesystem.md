@@ -1050,7 +1050,11 @@ and cover selection, and leave the retained Soul attachment table unchanged.
 Agent-avatar upload, authenticated streaming, replacement, profile/biography
 projection, and recoverable deletion now use a stable canonical gallery object
 without mutating or falling back to retained profile metadata/plaintext files.
-Chat/image/document/knowledge writers remain open.
+Chat-image uploads now publish unique canonical attachment objects, bind their
+URIs to optimistic message events, feed providers from bounded authenticated
+bytes, project into canonical history, and unlink through message revision plus
+recoverable trash without new Runtime asset/link rows or host plaintext.
+Image-gallery/document/knowledge writers remain open.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 

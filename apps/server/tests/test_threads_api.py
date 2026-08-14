@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 import pytest
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
@@ -30,6 +32,10 @@ from anima_server.services.corefs.cutover import (
     begin_migration,
     publish_validation_readonly,
     reconcile_cutover_authority,
+)
+from anima_server.services.corefs.diary_migration import (
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
 )
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
@@ -236,6 +242,82 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch)
             "Persist this turn only in CoreFS",
             chat.json()["response"],
         ]
+        monkeypatch.setattr(
+            agent_service,
+            "ensure_image_attachments_supported",
+            lambda _attachments: None,
+        )
+        attachment_bytes = b"\x89PNG\r\n\x1a\ncanonical-chat-attachment"
+        attachment_chat = client.post(
+            "/api/chat",
+            headers=headers,
+            json={
+                "message": "Read this canonical image",
+                "userId": user_id,
+                "attachments": [
+                    {
+                        "kind": "image",
+                        "filename": "canonical.png",
+                        "mimeType": "image/png",
+                        "data": base64.b64encode(attachment_bytes).decode("ascii"),
+                    }
+                ],
+            },
+        )
+        assert attachment_chat.status_code == 200, attachment_chat.text
+        attachment_history = client.get(
+            "/api/chat/history",
+            headers=headers,
+            params={"userId": user_id, "limit": 20},
+        )
+        assert attachment_history.status_code == 200, attachment_history.text
+        attachment_message = next(
+            item
+            for item in attachment_history.json()
+            if item["content"] == "Read this canonical image"
+        )
+        assert len(attachment_message["attachments"]) == 1
+        attachment = attachment_message["attachments"][0]
+        assert attachment["mimeType"] == "image/png"
+        assert attachment["sizeBytes"] == len(attachment_bytes)
+        fetched_attachment = client.get(attachment["url"], headers=headers)
+        assert fetched_attachment.status_code == 200, fetched_attachment.text
+        assert fetched_attachment.content == attachment_bytes
+        assert not (settings.data_dir / "users" / str(user_id) / "attachments").exists()
+        stable_id = attachment["id"]
+        prepared_attachment = next(
+            item
+            for item in read_prepared_writing_snapshot(session=session).objects
+            if item.stable_id == stable_id
+        )
+        assert prepared_attachment.kind == "attachment"
+        assert (
+            read_prepared_writing_body(session=session, item=prepared_attachment)
+            == attachment_bytes
+        )
+        removed_attachment = client.delete(
+            f"/api/images/messages/{attachment_message['id']}/attachments/{stable_id}",
+            headers=headers,
+        )
+        assert removed_attachment.status_code == 200, removed_attachment.text
+        assert removed_attachment.json() == {
+            "status": "removed",
+            "imageAssetId": None,
+            "assetDeleted": True,
+            "fileDeleted": False,
+        }
+        after_attachment_removal = client.get(
+            "/api/chat/history",
+            headers=headers,
+            params={"userId": user_id, "limit": 20},
+        )
+        removed_message = next(
+            item
+            for item in after_attachment_removal.json()
+            if item["content"] == "Read this canonical image"
+        )
+        assert removed_message["attachments"] == []
+        assert client.get(attachment["url"], headers=headers).status_code == 404
         with client.stream(
             "POST",
             "/api/chat",
@@ -254,6 +336,8 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch)
             headers=headers,
         )
         assert [item["role"] for item in after_stream.json()["messages"]] == [
+            "user",
+            "assistant",
             "user",
             "assistant",
             "user",
@@ -407,17 +491,13 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch)
         visible_references = [
             message for message in canonical_references if message.corefs_message_id is not None
         ]
-        assert len(visible_references) == 5
+        assert len(visible_references) == 7
         assert all(message.content_text is None for message in visible_references)
         assert all(message.content_json is None for message in visible_references)
         assert all(message.corefs_event_id for message in visible_references)
-        assert sorted(message.corefs_sequence_id for message in visible_references) == [
-            1,
-            2,
-            3,
-            4,
-            5,
-        ]
+        assert sorted(message.corefs_sequence_id for message in visible_references) == list(
+            range(1, 8)
+        )
         approval_messages = [
             message for message in canonical_references if message.role == "approval"
         ]

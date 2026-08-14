@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 14:38 MYT
+- Updated: 2026-08-14 14:50 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -439,6 +439,15 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   biography, creation, and asset band passes `39`, with scoped Ruff and diff
   hygiene green. Chat/image/document/knowledge writers and raw scans keep Step
   8 open; no external or irreversible action occurred.
+- 2026-08-14 14:50 MYT - Routed post-cutover chat-image upload, model input,
+  canonical-history projection, message-bound authenticated download, unlink,
+  and recoverable deletion through CoreFS. New images create no Runtime asset,
+  link, or plaintext host file; provider adapters read bounded authenticated
+  bytes from the active session, and unlink appends an optimistic canonical
+  message revision before trashing its unique object. The scoped legacy and
+  canonical chat/image band passes `47`, with Ruff and diff hygiene green.
+  Image-gallery/document/knowledge writers and raw scans keep Step 8 open; no
+  external or irreversible action occurred.
 
 ## Validation
 
@@ -603,6 +612,10 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     after normalizing native asset-mutation failures (`6 passed`)
   - scoped Ruff check and `git diff --check` after canonical agent-avatar
     routing (passed)
+  - `uv run pytest -q --tb=short apps/server/tests/test_chat_attachments.py apps/server/tests/test_chat_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_threads_api.py apps/server/tests/test_corefs_conversation_migration.py`
+    after canonical chat-image routing (`47 passed`)
+  - scoped Ruff check and `git diff --check` after canonical chat-image routing
+    (passed)
   - direct Python-enabled anima-core unit-test linking remains unavailable on
     this macOS extension-module host because Python symbols are not linked;
     the same binding compiles, while its transaction behavior is covered in
@@ -660,6 +673,8 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/test_users.py`
   - `apps/server/src/anima_server/services/corefs/{conversation_authority.py,conversation_mutations.py}`
   - `apps/server/src/anima_server/api/routes/{chat.py,threads.py}`
+  - `apps/server/src/anima_server/api/routes/images.py`
+  - `apps/server/src/anima_server/services/agent/attachments.py`
   - `apps/server/tests/{test_corefs_conversation_migration.py,test_threads_api.py}`
   - `apps/server/src/anima_server/services/agent/{persistence.py,service.py}`
   - `apps/server/src/anima_server/models/runtime.py`
