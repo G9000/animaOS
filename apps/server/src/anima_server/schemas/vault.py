@@ -31,4 +31,5 @@ class VaultImportResponse(BaseModel):
     restoredUsers: int
     restoredMemoryFiles: int
     requiresReauth: bool = True
+    migrationRequired: bool = True
     format: VaultTransferFormat = "vault_json"

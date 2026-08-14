@@ -24,6 +24,7 @@ from anima_server.models import (
 from anima_server.services import core as core_service
 from anima_server.services import vault as vault_module
 from anima_server.services.corefs import keyslots as keyslots_service
+from anima_server.services.corefs.cutover import CutoverRecord, CutoverState
 from anima_server.services.data_crypto import df, ef
 from anima_server.services.storage import get_user_data_dir
 from anima_server.services.vault import decrypt_string, encrypt_string
@@ -116,6 +117,7 @@ def test_export_and_import_vault_restores_auth_and_files() -> None:
             "restoredUsers": 1,
             "restoredMemoryFiles": 1,
             "requiresReauth": True,
+            "migrationRequired": True,
             "format": "vault_json",
         }
 
@@ -124,7 +126,9 @@ def test_export_and_import_vault_restores_auth_and_files() -> None:
             assert [record.username for record in users] == ["alice"]
             assert users[0].display_name == "Alice"
 
-        assert (user_dir / "memory" / "entry.md").read_text(encoding="utf-8") == "hello from vault"
+        assert (user_dir / "memory" / "entry.md").read_text(encoding="utf-8") == (
+            "hello from vault"
+        )
 
         stale_session_response = client.get(
             "/api/auth/me",
@@ -137,6 +141,97 @@ def test_export_and_import_vault_restores_auth_and_files() -> None:
             json={"username": "alice", "password": "pw123456"},
         )
         assert login_response.status_code == 200
+
+
+def test_import_v1_json_migrates_before_restoring_legacy_source() -> None:
+    with managed_test_client("anima-vault-v1-json-") as client:
+        alice = _register_user(client)
+        user_id = int(alice["id"])
+        headers = {"x-anima-unlock": alice["unlockToken"]}
+
+        exported = client.post(
+            "/api/vault/export",
+            headers=headers,
+            json={"passphrase": "vault-pass", "format": "vault_json"},
+        )
+        assert exported.status_code == 200
+        envelope = json.loads(exported.json()["vault"])
+        payload = json.loads(decrypt_string(envelope, "vault-pass"))
+        payload["version"] = 1
+        legacy_vault = json.dumps(
+            encrypt_string(
+                json.dumps(payload),
+                "vault-pass",
+                aad=base64.b64decode(envelope["aad_b64"]),
+            )
+        )
+
+        with get_user_session_factory(user_id)() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            user.display_name = "Changed"
+            db.commit()
+
+        restored = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={
+                "passphrase": "vault-pass",
+                "vault": legacy_vault,
+                "format": "vault_json",
+            },
+        )
+
+        assert restored.status_code == 200
+        assert restored.json()["migrationRequired"] is True
+        with get_user_session_factory(user_id)() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            assert user.display_name == "Alice"
+
+
+def test_import_legacy_vault_fails_before_mutation_after_migration_freeze(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with managed_test_client("anima-vault-cutover-gate-") as client:
+        alice = _register_user(client)
+        user_id = int(alice["id"])
+        headers = {"x-anima-unlock": alice["unlockToken"]}
+        exported = client.post(
+            "/api/vault/export",
+            headers=headers,
+            json={"passphrase": "vault-pass"},
+        )
+        assert exported.status_code == 200
+
+        with get_user_session_factory(user_id)() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            user.display_name = "Must survive"
+            db.commit()
+
+        monkeypatch.setattr(
+            vault_module,
+            "read_cutover_record",
+            lambda: CutoverRecord(CutoverState.MIGRATING_WRITE_FROZEN),
+        )
+        rejected = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={
+                "passphrase": "vault-pass",
+                "vault": exported.json()["vault"],
+            },
+        )
+
+        assert rejected.status_code == 400
+        assert rejected.json() == {
+            "error": "Legacy vault import is available only before CoreFS migration begins."
+        }
+        with get_user_session_factory(user_id)() as db:
+            user = db.get(User, user_id)
+            assert user is not None
+            assert user.display_name == "Must survive"
 
 
 def test_export_and_import_vault_restores_versioned_soul_keyslots(monkeypatch) -> None:
@@ -1215,6 +1310,20 @@ def test_export_and_import_anima_capsule_restores_auth_and_files(
         assert export_payload["format"] == "anima_capsule"
         assert export_payload["filename"].endswith(".anima")
 
+        encoded_sections = json.loads(
+            base64.b64decode(export_payload["vault"]).decode("utf-8")
+        )
+        metadata = json.loads(
+            base64.b64decode(encoded_sections["metadata"]).decode("utf-8")
+        )
+        metadata["version"] = 1
+        encoded_sections["metadata"] = base64.b64encode(
+            json.dumps(metadata, sort_keys=True).encode("utf-8")
+        ).decode("ascii")
+        legacy_capsule = base64.b64encode(
+            json.dumps(encoded_sections, sort_keys=True).encode("utf-8")
+        ).decode("ascii")
+
         with get_user_session_factory(user_id)() as db:
             user = db.get(User, user_id)
             assert user is not None
@@ -1228,7 +1337,7 @@ def test_export_and_import_anima_capsule_restores_auth_and_files(
             headers=headers,
             json={
                 "passphrase": "vault-pass",
-                "vault": export_payload["vault"],
+                "vault": legacy_capsule,
                 "format": "anima_capsule",
             },
         )
@@ -1239,6 +1348,7 @@ def test_export_and_import_anima_capsule_restores_auth_and_files(
             "restoredUsers": 1,
             "restoredMemoryFiles": 1,
             "requiresReauth": True,
+            "migrationRequired": True,
             "format": "anima_capsule",
         }
 

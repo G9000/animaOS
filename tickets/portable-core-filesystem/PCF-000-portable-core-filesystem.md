@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 16:01 MYT
+- Updated: 2026-08-14 16:13 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -514,6 +514,16 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   `79`. Backward V1/JSON import and restart-safe whole-Core account deletion
   remain before PCF-008 closeout. The paid package workflow is still disabled,
   and no external, destructive, or irreversible action occurred.
+- 2026-08-14 16:13 MYT - PCF-008 completed backward V1/JSON import and enabled
+  the now-authenticated multipart desktop path. Legacy JSON/capsule restore is
+  explicitly pre-cutover-only, reports required canonical migration, clears
+  unlock sessions, and rejects every later cutover state before mutation. The
+  Vault suite passes `28`, desktop transfer contracts pass `3`, and the
+  production desktop build plus scoped Ruff/diff hygiene pass. PCF-008 Steps 2
+  and 7 are complete; restart-safe whole-Core account deletion is the remaining
+  local behavior gap before the separately authorized release evidence gate.
+  The paid workflow remains disabled and no external or irreversible action
+  occurred.
 
 ## Validation
 

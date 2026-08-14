@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 16:01 MYT
+- Updated: 2026-08-14 16:13 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -506,6 +506,19 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   disabled. Backward V1/JSON import and restart-safe whole-Core account
   deletion remain open; no external, destructive, or irreversible action
   occurred.
+- 2026-08-14 16:13 MYT - Closed the backward V1/JSON transfer gap. Core
+  Transfer now detects encrypted legacy JSON vaults and binary `ANMA`
+  capsules, imports them only into the pre-cutover legacy source, clears the
+  unlock session, and reports that canonical migration is required. The
+  server authenticates cutover state before decrypting or mutating and rejects
+  every frozen/validation/pending/forward-only state; V1 JSON schema migration
+  and V1 capsule restoration are covered, including a no-mutation post-freeze
+  regression. The completed native multipart product path is enabled in the
+  desktop instead of remaining visibly gated. Vault tests pass `28`, the
+  desktop contract passes `3`, and the production desktop build plus scoped
+  Ruff/diff hygiene pass. Steps 2 and 7 are complete; restart-safe whole-Core
+  account deletion remains the only local Step 8 behavior gap. The paid
+  workflow remains disabled and no external or irreversible action occurred.
 
 ## Validation
 
@@ -522,6 +535,11 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     multipart set coverage)
   - `uv run pytest apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_transfer_api.py -q`
     (`79 passed` after multipart product/import integration)
+  - `uv run pytest apps/server/tests/test_vault.py -q` (`28 passed` after V1
+    JSON/capsule compatibility and post-freeze no-mutation coverage)
+  - `bun test apps/desktop/tests/corefs-transfer.test.ts` (`3 passed` after
+    legacy import and multipart UI activation)
+  - `bun run build:desktop` (passed)
   - `env PYO3_PYTHON=.venv/bin/python cargo check -p anima-core --features python`
     (passed)
   - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing
@@ -763,6 +781,11 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/test_diary_api.py`
   - `apps/server/src/anima_server/services/corefs/{asset_authority.py,asset_mutations.py}`
   - `apps/server/tests/{test_corefs_assets.py,test_corefs_document_migration.py}`
+  - `apps/server/src/anima_server/{services/vault.py,schemas/vault.py}`
+  - `apps/server/tests/test_vault.py`
+  - `packages/api-client/src/types.ts`
+  - `apps/desktop/src/pages/settings/CoreTransferSettings.tsx`
+  - `apps/desktop/tests/corefs-transfer.test.ts`
 - Notes:
   - PCF-001 through PCF-007 are done. The four-platform signed-package gate
     remains mandatory and cost-deferred; it cannot be dispatched or waived by

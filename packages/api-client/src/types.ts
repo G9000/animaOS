@@ -383,6 +383,7 @@ export interface VaultImportResponse {
   restoredUsers: number;
   restoredMemoryFiles: number;
   requiresReauth?: boolean;
+  migrationRequired?: boolean;
   format?: VaultTransferFormat;
 }
 

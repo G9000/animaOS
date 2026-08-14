@@ -50,6 +50,11 @@ from anima_server.models import (
 )
 from anima_server.services import anima_core_bindings
 from anima_server.services.core import update_core_manifest
+from anima_server.services.corefs.cutover import (
+    CutoverState,
+    CutoverStateError,
+    read_cutover_record,
+)
 from anima_server.services.crypto import (
     AUTH_TAG_LENGTH,
     IV_LENGTH,
@@ -557,7 +562,25 @@ def import_vault(
     user_id: int | None = None,
     transfer_format: str = VAULT_FORMAT_JSON,
 ) -> dict[str, Any]:
-    """Import an encrypted vault into the current database context."""
+    """Import a legacy encrypted vault before CoreFS authority migration.
+
+    The V1 JSON/capsule formats restore the legacy SQL/file sources which the
+    PCF-008 converter subsequently consumes.  They must never mutate those
+    retained sources after migration has frozen them or CoreFS has become the
+    forward-only authority.
+    """
+    try:
+        cutover = read_cutover_record()
+    except CutoverStateError as exc:
+        raise ValueError(
+            "Legacy vault import is unavailable because CoreFS authority "
+            "state cannot be authenticated."
+        ) from exc
+    if cutover.state is not CutoverState.LEGACY_AUTHORITATIVE:
+        raise ValueError(
+            "Legacy vault import is available only before CoreFS migration begins."
+        )
+
     transfer_format = _validate_vault_format(transfer_format)
 
     if transfer_format == VAULT_FORMAT_CAPSULE:
@@ -652,6 +675,7 @@ def import_vault(
         "restoredUsers": restored_users,
         "restoredMemoryFiles": restored_memory_files,
         "requiresReauth": True,
+        "migrationRequired": True,
         "format": transfer_format,
     }
 

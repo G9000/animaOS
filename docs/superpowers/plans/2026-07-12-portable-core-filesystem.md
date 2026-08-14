@@ -889,7 +889,7 @@ missing evidence blocks PCF-008; it cannot be treated as a skipped CI check.
 
 Cover `migrating-write-frozen`, `corefs-validation-readonly`, `corefs-approved-pending-first-write`, authenticated first-write cutover marker, crash before manifest finalization, and forward-only rejection of legacy rollback.
 
-- [ ] **Step 2: Write failing transfer tests**
+- [x] **Step 2: Write failing transfer tests**
 
 Progress (2026-08-13): live Soul-bearing capture now checkpoints WAL, pins one
 SQLite/SQLCipher read snapshot, writes an independently verified encrypted
@@ -899,7 +899,7 @@ native generation/catalog/source inventory after Soul capture, and binds the
 native streaming session to that exact authenticated catalog while retaining
 the object lease. WAL inclusion, temporary cleanup, concurrent catalog change,
 and real SQLCipher-at-rest regressions pass. Multipart-set and backward-V1
-cases remain open, so this step is intentionally not checked complete.
+cases were completed by the later 2026-08-14 milestones below.
 
 Multipart progress (2026-08-14): native volumes now share one KDF salt and
 nonce prefix while reserving disjoint ordinal blocks in the one 64-bit set
@@ -908,7 +908,17 @@ archive IDs, lengths, hashes, counters, payload kind, Core/owner identity, and
 coherent generations. Set import rejects missing, extra, reordered,
 foreign-set, tampered, truncated, and appended inputs before returning staging,
 then validates aggregate path uniqueness and full payload completeness. The
-remaining Step 2 gap is backward V1/JSON import.
+remaining Step 2 gap was backward V1/JSON import.
+
+Compatibility progress (2026-08-14): encrypted legacy JSON payload version 1
+and Rust-backed `ANMA` capsule version 1 restore through the retained import
+reader while legacy SQL remains authoritative. Import returns an explicit
+migration-required result and fails before decryption or mutation once the
+cutover state leaves `legacy-authoritative`; the Core Transfer desktop detects
+the legacy format from file bytes rather than its extension. The current
+multipart UI gate was removed now that controller-last set publication is
+complete. Focused legacy JSON/capsule, post-freeze no-mutation, desktop
+contract, Ruff, and production desktop-build gates pass; this step is complete.
 
 Cover closed cold copy; live write-barrier snapshots; SQLCipher checkpoint; catalog/GC pinning; reachable-object selection; no Runtime inclusion; `full`, `soul`, and `fs` artifact/key allowlists, scoped credential replacement, and recovery states; fixed-header/profile bounds; exact normative AAD tuple; pre-archive record hash; global nonce ordinal; destination capacity/writable/single-file-limit preflight; <=8-MiB buffers and <=32-MiB aggregate transfer working set excluding the fixed Argon2 workspace; `.partial` cleanup; single-file and FAT32-like multipart output; failure at every part/controller/directory publication boundary; disconnect/cancel; missing/reordered/mixed/tampered volumes; same-volume import capacity/staging; final-directory and active-Core registry-pointer activation failures; V1 CoreFS-reattachment rejection; destination hash/decrypt verification; rejection of incoherent live raw copies; same-machine duplicate-Core instance handling; and binary objects larger than the legacy 16-MiB section limit.
 
@@ -977,7 +987,7 @@ complete.
 
 Implement `corefs_transfer` schemas/routes for local destination probe, estimate, prepare, progress, cancel, verify, import, and completion. Wire `packages/api-client` and `CoreTransferSettings.tsx` to present **Export ANIMA CORE** and **Restore ANIMA CORE** as the primary flow, with **Soul only** and **CoreFS only** under Advanced Recovery. Show write-barrier/checkpoint state, selected artifact kind, required/available export bytes, required/available same-volume import-staging bytes, detected single-file limit, single/multipart decision, bounded streaming progress, verification, and safe destination result. Soul-only recovery clearly labels degraded `filesystem_missing`; CoreFS-only recovery exposes authenticated browse/export and returns `corefs_reattachment_not_supported` for V1 attach attempts. Do not instruct users to drag-copy a live Core or run the live Core from removable media.
 
-- [ ] **Step 7: Implement scalable vault/export/import**
+- [x] **Step 7: Implement scalable vault/export/import**
 
 Progress (2026-08-13): single-file V2 export/import primitives are in place,
 including payload-kind record allowlists and key-material-scoped transient
@@ -986,8 +996,8 @@ authority; CoreFS-only artifacts cannot carry SQLCipher root wrappers. Live
 Soul is captured through a verified encrypted online backup, and full/CoreFS
 streaming is bound to a frozen authenticated `fs/HEAD` plus exact native
 generation/catalog hash under the object lease. Native multipart-set
-authentication and backward V1 import remain open, so this step is
-intentionally not checked complete.
+authentication and backward V1 import were completed by the later 2026-08-14
+milestones below.
 
 Multipart progress (2026-08-14): Rust now writes and authenticates one
 controller-bound volume set with shared KDF material and a globally
@@ -995,7 +1005,17 @@ non-repeating nonce space, and extracts the exact complete set into a single
 create-only staging Core. Python prepares one stable source inventory, writes,
 reopens, and verifies each bounded part, publishes the encrypted controller
 last, and imports only the controller-authenticated aggregate. Backward V1/JSON
-import is the remaining Step 7 implementation gap.
+import was the remaining Step 7 implementation gap.
+
+Compatibility progress (2026-08-14): the deprecated JSON/capsule reader now
+has an explicit import-only product surface inside Core Transfer. JSON V1 is
+migrated to the supported payload schema before restoration; capsule V1 is
+decoded by the bounded Rust reader. Both restore only the pre-cutover legacy
+source so the existing converter can produce canonical CoreFS content, clear
+unlock sessions afterward, and report that migration is required. Every
+non-legacy cutover state rejects the request before source mutation. New
+product exports continue through authenticated `anima_core_v2`; this step is
+complete.
 
 Startup progress (2026-08-13): the machine-local active-Core registry is now
 authenticated by an OS-credential-held key, resolved before the Core lock and

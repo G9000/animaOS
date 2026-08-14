@@ -62,10 +62,17 @@ describe("ANIMA CORE transfer settings", () => {
       "exact staged generation",
       "never becomes the running Core",
       "Cancel recovery export safely",
+      "Import a legacy vault",
+      "encrypted V1 JSON vaults and ANMA capsules",
+      "readLegacyVaultFile",
+      "Import legacy source",
+      "only before CoreFS migration begins",
     ]) {
       expect(page).toContain(contract);
     }
     expect(page).not.toContain("localStorage");
+    expect(page).not.toContain("Multipart export remains disabled");
+    expect(page).not.toContain("multipart export, which is still gated");
   });
 
   test("redirects the legacy vault screen to the Core transfer flow", () => {
