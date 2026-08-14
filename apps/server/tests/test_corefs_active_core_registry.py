@@ -6,13 +6,20 @@ from uuid import uuid4
 
 import pytest
 from anima_server.config import settings
+from anima_server.services.core import ensure_core_manifest, get_core_id
 from anima_server.services.corefs.active_core_registry import (
+    consume_scheduled_account_deletion,
     initialize_active_core_after_manifest,
     read_active_core_status,
     resolve_active_core_for_startup,
+    schedule_active_core_account_deletion,
     schedule_active_core_rollback,
     schedule_full_restore_activation,
     verify_full_core_candidate,
+)
+from anima_server.services.corefs.instance_registry import (
+    RuntimeInstanceBinding,
+    RuntimeInstanceRegistry,
 )
 from anima_server.services.corefs.transfer import (
     TransferError,
@@ -22,11 +29,18 @@ from anima_server.services.corefs.transfer import (
 from anima_server.services.credentials import CredentialStore, MemoryCredentialBackend
 
 
-def _manifest_core(path: Path, core_id: str, *, complete: bool = False) -> None:
+def _manifest_core(
+    path: Path,
+    core_id: str,
+    *,
+    complete: bool = False,
+    owner_user_id: int = 1,
+) -> None:
     path.mkdir()
     manifest = {
         "core_id": core_id,
         "owner_id": str(uuid4()),
+        "owner_user_id": owner_user_id,
     }
     if complete:
         manifest["archive_payload_scope"] = "full"
@@ -36,6 +50,202 @@ def _manifest_core(path: Path, core_id: str, *, complete: bool = False) -> None:
     (path / "fs" / "catalogs").mkdir(parents=True)
     (path / "fs" / "HEAD").write_bytes(b"authenticated-head")
     (path / "fs" / "catalogs" / "catalog.acore").write_bytes(b"encrypted-catalog")
+
+
+def _claim_runtime(
+    core: Path,
+    app_data: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[RuntimeInstanceRegistry, RuntimeInstanceBinding]:
+    registry = RuntimeInstanceRegistry(app_data)
+    binding = registry.resolve(core)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(app_data))
+    monkeypatch.setattr(settings, "runtime_instance_data_dir", str(binding.instance_root))
+    return registry, binding
+
+
+def test_whole_core_account_deletion_is_restart_only_and_recreates_no_old_data(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = managed_tmp_path / ".anima"
+    core_id = str(uuid4())
+    _manifest_core(configured, core_id, owner_user_id=7)
+    (configured / "private-marker").write_text("must disappear", encoding="utf-8")
+    app_data = managed_tmp_path / "app-data"
+    runtime_registry, runtime_binding = _claim_runtime(configured, app_data, monkeypatch)
+    runtime = runtime_binding.instance_root
+    (runtime / "sealed-runtime").write_bytes(b"ciphertext")
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", configured)
+
+    startup = resolve_active_core_for_startup(store=store)
+    initialize_active_core_after_manifest(startup)
+    scheduled = schedule_active_core_account_deletion(user_id=7, store=store)
+
+    assert scheduled.restart_required is True
+    assert configured.is_dir()
+    assert runtime.is_dir()
+    assert scheduled.request_path.is_file()
+
+    with pytest.raises(TransferError, match="not stopped"):
+        consume_scheduled_account_deletion(
+            startup.registry_path,
+            authentication_key=startup.authentication_key,
+            store=store,
+        )
+    assert configured.is_dir()
+    assert runtime.is_dir()
+
+    runtime_registry.release(runtime_binding)
+    monkeypatch.setattr(settings, "runtime_instance_data_dir", "")
+    resumed = resolve_active_core_for_startup(store=store)
+
+    assert resumed.pointer is None
+    assert settings.data_dir == configured
+    assert not configured.exists()
+    assert not runtime.exists()
+    assert not scheduled.request_path.exists()
+    assert not startup.registry_path.exists()
+    instance_registry = json.loads(
+        (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
+    )
+    assert instance_registry["instances"] == []
+
+    ensure_core_manifest()
+    replacement_pointer = initialize_active_core_after_manifest(resumed)
+    assert replacement_pointer.core_id == get_core_id()
+    assert replacement_pointer.core_id != core_id
+    assert not (configured / "private-marker").exists()
+
+
+def test_whole_core_account_deletion_removes_retained_rollback_core(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = managed_tmp_path / ".anima"
+    configured_id = str(uuid4())
+    _manifest_core(configured, configured_id, owner_user_id=7)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", configured)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(managed_tmp_path / "app-data"))
+    monkeypatch.setattr(settings, "runtime_instance_data_dir", "")
+    startup = resolve_active_core_for_startup(store=store)
+    initialize_active_core_after_manifest(startup)
+
+    restored = managed_tmp_path / ".restore.partial"
+    restored_id = str(uuid4())
+    _manifest_core(restored, restored_id, complete=True, owner_user_id=7)
+    activated = activate_staged_core(
+        restored,
+        managed_tmp_path / ".anima-restored",
+        startup.registry_path,
+        authentication_key=startup.authentication_key,
+        core_id=restored_id,
+        activation_id=str(uuid4()),
+        verifier=verify_full_core_candidate,
+    )
+    monkeypatch.setattr(settings, "data_dir", activated.pointer.active_core_path)
+    runtime_registry, runtime_binding = _claim_runtime(
+        activated.pointer.active_core_path,
+        managed_tmp_path / "app-data",
+        monkeypatch,
+    )
+    schedule_active_core_account_deletion(user_id=7, store=store)
+    runtime_registry.release(runtime_binding)
+
+    monkeypatch.setattr(settings, "data_dir", configured)
+    resolve_active_core_for_startup(store=store)
+
+    assert not configured.exists()
+    assert not activated.pointer.active_core_path.exists()
+
+
+@pytest.mark.parametrize(
+    "crash_boundary",
+    [
+        "account-delete:after-journal",
+        "account-delete:after-active-quarantine",
+        "account-delete:after-retained-quarantine",
+        "account-delete:after-runtime-quarantine",
+        "account-delete:after-registry-removal",
+        "account-delete:after-data-removal",
+        "account-delete:after-request-removal",
+    ],
+)
+def test_whole_core_account_deletion_resumes_at_every_crash_boundary(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_boundary: str,
+) -> None:
+    configured = managed_tmp_path / ".anima"
+    _manifest_core(configured, str(uuid4()), owner_user_id=7)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", configured)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(managed_tmp_path / "app-data"))
+    runtime_registry, runtime_binding = _claim_runtime(
+        configured,
+        managed_tmp_path / "app-data",
+        monkeypatch,
+    )
+    startup = resolve_active_core_for_startup(store=store)
+    initialize_active_core_after_manifest(startup)
+    scheduled = schedule_active_core_account_deletion(user_id=7, store=store)
+    runtime_registry.release(runtime_binding)
+
+    def crash(boundary: str) -> None:
+        if boundary == crash_boundary:
+            raise OSError("simulated restart")
+
+    with pytest.raises(OSError, match="simulated restart"):
+        consume_scheduled_account_deletion(
+            startup.registry_path,
+            authentication_key=startup.authentication_key,
+            store=store,
+            boundary_hook=crash,
+        )
+
+    if crash_boundary == "account-delete:after-request-removal":
+        assert not scheduled.request_path.exists()
+    else:
+        assert scheduled.request_path.is_file()
+    assert startup.registry_path.with_name("active-core.json.delete-journal").is_file()
+
+    resolve_active_core_for_startup(store=store)
+    assert not configured.exists()
+    assert not runtime_binding.instance_root.exists()
+    assert not scheduled.request_path.exists()
+    assert not startup.registry_path.with_name("active-core.json.delete-journal").exists()
+    instance_registry = json.loads(
+        (
+            managed_tmp_path / "app-data" / "core-instance-registry.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert instance_registry["instances"] == []
+
+
+def test_tampered_whole_core_account_deletion_request_preserves_core(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = managed_tmp_path / ".anima"
+    _manifest_core(configured, str(uuid4()), owner_user_id=7)
+    store = CredentialStore(MemoryCredentialBackend())
+    monkeypatch.setattr(settings, "data_dir", configured)
+    monkeypatch.setattr(settings, "runtime_app_data_dir", str(managed_tmp_path / "app-data"))
+    _claim_runtime(configured, managed_tmp_path / "app-data", monkeypatch)
+    startup = resolve_active_core_for_startup(store=store)
+    initialize_active_core_after_manifest(startup)
+    scheduled = schedule_active_core_account_deletion(user_id=7, store=store)
+    payload = json.loads(scheduled.request_path.read_text(encoding="utf-8"))
+    payload["userId"] = 8
+    scheduled.request_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(TransferError, match="tag is invalid"):
+        resolve_active_core_for_startup(store=store)
+
+    assert configured.is_dir()
+    assert startup.registry_path.is_file()
 
 
 def test_startup_registry_selects_activated_full_core_and_retains_old_core(

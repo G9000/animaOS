@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 16:13 MYT
+- Updated: 2026-08-14 16:35 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -519,6 +519,21 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   Ruff/diff hygiene pass. Steps 2 and 7 are complete; restart-safe whole-Core
   account deletion remains the only local Step 8 behavior gap. The paid
   workflow remains disabled and no external or irreversible action occurred.
+- 2026-08-14 16:35 MYT - Completed Step 8's final local behavior gap with
+  authenticated restart-only whole-Core account deletion. Scheduling verifies
+  the canonical owner, complete active/retained Cores, exact current Runtime
+  binding, and absence of competing restart intents, then revokes all unlock
+  sessions without touching live storage. Pre-resource startup fails closed
+  while the old Runtime process is live; once stopped, an authenticated journal
+  drives active-Core, retained-Core, and exact Runtime quarantine/removal,
+  registry retirement, credential deletion, and fresh-Core recreation. All
+  seven durable crash boundaries resume, tampered intent and live-process cases
+  preserve data, zero-based owner IDs work through Soul relocation, and the
+  desktop clears decrypted client state before presenting restart guidance.
+  Registry/Soul/user tests pass `42`, API-client/desktop contracts pass `34`,
+  the desktop production build and full Server Ruff pass, and Step 8 is locally
+  complete. No real Core, Runtime, or recovery source was deleted; the paid
+  workflow remains disabled and no external or irreversible action occurred.
 
 ## Validation
 
@@ -540,6 +555,13 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `bun test apps/desktop/tests/corefs-transfer.test.ts` (`3 passed` after
     legacy import and multipart UI activation)
   - `bun run build:desktop` (passed)
+  - `uv run pytest apps/server/tests/test_corefs_active_core_registry.py apps/server/tests/test_corefs_instance_registry.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_users.py -q`
+    (`42 passed` after restart-only deletion, live Runtime exclusion, registry
+    retirement, fresh-Core recreation, and every durable crash boundary)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts`
+    (`34 passed`)
+  - `bun run --cwd apps/desktop build` (passed)
+  - `bun run lint:server` (passed)
   - `env PYO3_PYTHON=.venv/bin/python cargo check -p anima-core --features python`
     (passed)
   - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing
@@ -748,6 +770,7 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/test_corefs_recovery_access.py`
   - `packages/api-client/src/types.ts`
   - `apps/server/src/anima_server/services/corefs/active_core_registry.py`
+  - `apps/server/src/anima_server/services/corefs/instance_registry.py`
   - `apps/server/tests/test_corefs_active_core_registry.py`
   - `apps/server/tests/test_encrypted_core_regression.py`
   - `apps/server/src/anima_server/services/corefs/legacy_runtime_recovery.py`
@@ -759,7 +782,9 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/server/tests/{test_tasks_api.py,test_corefs_preferences.py}`
   - `apps/server/src/anima_server/services/corefs/account_profile.py`
   - `apps/server/src/anima_server/api/routes/{users.py,consciousness.py}`
+  - `apps/server/src/anima_server/schemas/users.py`
   - `apps/server/tests/test_users.py`
+  - `apps/desktop/src/pages/Profile.tsx`
   - `apps/server/src/anima_server/services/corefs/{conversation_authority.py,conversation_mutations.py}`
   - `apps/server/src/anima_server/api/routes/{chat.py,threads.py}`
   - `apps/server/src/anima_server/api/routes/images.py`

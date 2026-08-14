@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 16:13 MYT
+- Updated: 2026-08-14 16:35 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -524,6 +524,18 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   local behavior gap before the separately authorized release evidence gate.
   The paid workflow remains disabled and no external or irreversible action
   occurred.
+- 2026-08-14 16:35 MYT - PCF-008 Step 8 is locally complete. Post-cutover
+  account deletion is now an authenticated restart-only transaction that
+  revokes unlock state immediately, requires the exact Runtime binding to be
+  stopped, and crash-resumably removes the active Core, retained rollback Core,
+  Runtime instance, machine registries, and obsolete credential before a fresh
+  empty Core can initialize. All seven durable seams, live-process exclusion,
+  tamper preservation, zero-based owner compatibility, client response, and
+  desktop restart guidance are covered; focused server tests pass `42`, Bun
+  contracts pass `34`, and the desktop build plus full Server Ruff pass. No
+  real data was deleted, the paid workflow remains disabled, and PCF-008 stays
+  in progress for Steps 3-5, documentation, full validation, and separately
+  authorized signed-package evidence.
 
 ## Validation
 

@@ -1052,7 +1052,7 @@ Probe local destination capacity, writability, path safety, and maximum single-f
 
 Import preflights capacity for a complete same-volume sibling staging Core plus margin while retaining any existing Core. It streams/authenticates into staging and activates a new destination by fsync + directory rename. Replacement never overwrites in place: lock, verify/fsync the new sibling, atomically swap the machine-local active-Core registry pointer, record completion, and retain the old Core for rollback. Startup recovers interrupted activation from the last authenticated registry generation. Inject failures at every staging/rename/pointer/completion boundary. V2 has no 16-MiB total content-section ceiling. Until Task 9, the encrypted Soul file may still contain read-only legacy rollback tables, but no active app service treats them as authority.
 
-- [ ] **Step 8: Disable legacy authority without deleting recovery sources**
+- [x] **Step 8: Disable legacy authority without deleting recovery sources**
 
 Progress (2026-08-13): authenticated forward-only task CRUD, portable-
 preference patches, and presence preference GET/PUT now commit/read only
@@ -1106,7 +1106,17 @@ sources, while OKF export and lint derive only from authenticated projections.
 The bounded raw gate now reports zero seeded private markers across a real
 stopped embedded PostgreSQL data directory and exact instance cache/log/index
 roots while proving its detector with a deliberate control leak. Restart-safe
-whole-Core account deletion remains open.
+whole-Core account deletion now publishes an authenticated restart intent,
+revokes every unlock session, and performs no live-resource deletion. The next
+pre-resource startup requires the exact machine-local Runtime binding to be
+stopped, journals the operation, then quarantines and removes the active Core,
+retained rollback Core, and exact Runtime instance before retiring their
+registries and credential. Every durable boundary resumes idempotently,
+tampered requests fail closed, a concurrently live process prevents deletion,
+zero-based owner IDs remain valid, and startup creates a fresh Core at the
+configured location without recreating old private data. Focused server and
+registry tests, client contracts, the desktop production build, full Server
+Ruff, and diff hygiene pass. No real Core was deleted.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 

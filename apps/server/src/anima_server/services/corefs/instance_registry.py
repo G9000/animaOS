@@ -311,6 +311,84 @@ class RuntimeInstanceRegistry:
                     break
         binding.instance_root.joinpath("instance-lease.json").unlink(missing_ok=True)
 
+    def verify_account_deletion_binding(
+        self,
+        *,
+        core_id: str,
+        instance_root: Path,
+        require_current_process: bool,
+        allow_missing: bool = False,
+    ) -> None:
+        """Fail closed unless an exact Runtime binding is safe for Core deletion."""
+        with _REGISTRY_LOCK, self._locked_registry():
+            record = self._account_deletion_record(
+                self._load_registry(),
+                core_id=core_id,
+                instance_root=instance_root,
+                allow_missing=allow_missing,
+            )
+            if record is None:
+                return
+            if require_current_process:
+                if not self._record_is_owned_by_current_process(record):
+                    raise InstanceBindingCollision(
+                        "Runtime deletion target is not owned by this process"
+                    )
+            elif self._record_is_live(record, now=self._now()):
+                raise InstanceBindingCollision(
+                    "Runtime deletion target is still owned by a live process"
+                )
+
+    def retire_account_deletion_binding(
+        self,
+        *,
+        core_id: str,
+        instance_root: Path,
+        allow_missing: bool = False,
+    ) -> None:
+        """Remove one stopped exact binding after its Runtime data is quarantined."""
+        with _REGISTRY_LOCK, self._locked_registry():
+            registry = self._load_registry()
+            record = self._account_deletion_record(
+                registry,
+                core_id=core_id,
+                instance_root=instance_root,
+                allow_missing=allow_missing,
+            )
+            if record is None:
+                return
+            if self._record_is_live(record, now=self._now()):
+                raise InstanceBindingCollision(
+                    "Runtime deletion target is still owned by a live process"
+                )
+            records = cast(list[dict[str, object]], registry["instances"])
+            records.remove(record)
+            self._write_registry(registry)
+
+    def _account_deletion_record(
+        self,
+        registry: dict[str, object],
+        *,
+        core_id: str,
+        instance_root: Path,
+        allow_missing: bool,
+    ) -> dict[str, object] | None:
+        expected_root = instance_root.expanduser().resolve(strict=False)
+        records = cast(list[dict[str, object]], registry["instances"])
+        matches = [
+            record
+            for record in records
+            if record.get("core_id") == core_id
+            and self._binding_from_record(record).instance_root == expected_root
+        ]
+        if not matches and allow_missing:
+            return None
+        if len(matches) != 1:
+            raise InstanceBindingCollision(
+                "Runtime deletion target has no unique instance binding"
+            )
+        return matches[0]
+
     def _binding_from_record(
         self, record: dict[str, object]
     ) -> RuntimeInstanceBinding:

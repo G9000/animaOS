@@ -54,7 +54,7 @@ def relocate_owner_soul_database(
     *,
     boundary_hook: BoundaryHook | None = None,
 ) -> SoulRelocationResult:
-    if legacy_user_id <= 0:
+    if legacy_user_id < 0:
         raise SoulRelocationError("legacy Soul owner ID is invalid")
     if read_cutover_record().state not in _RELOCATION_STATES:
         raise SoulRelocationError("Soul relocation requires the migration write barrier")
@@ -285,7 +285,7 @@ def _result_from_record(record: dict[str, object]) -> SoulRelocationResult:
     if (
         not isinstance(legacy_user_id, int)
         or isinstance(legacy_user_id, bool)
-        or legacy_user_id <= 0
+        or legacy_user_id < 0
         or active_relative != SOUL_DATABASE_RELATIVE_PATH
         or legacy_relative != f"users/{legacy_user_id}/anima.db"
         or not _is_sha256(inventory_hash)

@@ -19,7 +19,11 @@ from anima_server.services.corefs.account_profile import (
     serialize_account_profile,
     update_canonical_account_profile,
 )
+from anima_server.services.corefs.active_core_registry import (
+    schedule_active_core_account_deletion,
+)
 from anima_server.services.corefs.logical import CoreFsMutationUnavailable
+from anima_server.services.corefs.transfer import TransferError
 from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 from anima_server.services.sessions import unlock_session_store
 
@@ -131,13 +135,22 @@ def delete_user(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db),
-) -> dict[str, str]:
+) -> dict[str, object]:
     session = require_unlocked_user(request, user_id)
     if account_profile_corefs_authority_active(session):
-        raise HTTPException(
-            status_code=409,
-            detail="corefs_account_delete_restart_required",
-        )
+        try:
+            scheduled = schedule_active_core_account_deletion(user_id=user_id)
+        except (OSError, TransferError, ValueError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="corefs_account_delete_schedule_failed",
+            ) from exc
+        unlock_session_store.revoke_user(user_id)
+        return {
+            "message": "Whole-Core account deletion scheduled for restart",
+            "restartRequired": True,
+            "deletionId": scheduled.deletion_id,
+        }
     user = get_user_by_id(db, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -145,4 +158,4 @@ def delete_user(
     unlock_session_store.revoke_user(user_id)
     db.close()
     delete_account_storage(user_id)
-    return {"message": "User deleted"}
+    return {"message": "User deleted", "restartRequired": False, "deletionId": None}

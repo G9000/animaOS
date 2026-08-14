@@ -59,6 +59,11 @@ export interface ConfirmRecoveryCredentialResponse
 export interface LoginRequest extends ContractLoginRequest {}
 export interface RegisterRequest extends ContractRegisterRequest {}
 export interface UserResponse extends ContractUserResponse {}
+export interface DeleteUserResponse {
+  message: string;
+  restartRequired: boolean;
+  deletionId: string | null;
+}
 export interface CreateAiChatRequest extends ContractCreateAiChatRequest {}
 export interface CreateAiChatResponse extends ContractCreateAiChatResponse {}
 

@@ -16,6 +16,7 @@ from anima_server.services.corefs.diary_migration import (
     read_prepared_writing_snapshot,
 )
 from anima_server.services.corefs.formats import decode_account_profile_document
+from anima_server.services.corefs.soul_relocation import relocate_owner_soul_database
 from anima_server.services.sessions import unlock_session_store
 from anima_server.services.storage import get_user_data_dir
 from conftest import managed_test_client
@@ -91,7 +92,11 @@ def test_delete_user_removes_database_row_and_files() -> None:
         )
 
         assert response.status_code == 200
-        assert response.json() == {"message": "User deleted"}
+        assert response.json() == {
+            "message": "User deleted",
+            "restartRequired": False,
+            "deletionId": None,
+        }
         assert not user_dir.exists()
 
         login_response = client.post(
@@ -129,6 +134,7 @@ def test_post_cutover_account_profile_never_mutates_legacy_user(
         assert session is not None
         selected = session.corefs_session.validation_snapshot(session.corefs_keys)
         begin_migration()
+        relocate_owner_soul_database(user_id)
         publish_validation_readonly(
             generation=int(selected["generation"]),
             catalog_hash=str(selected["catalogHash"]),
@@ -284,11 +290,16 @@ def test_post_cutover_account_profile_never_mutates_legacy_user(
         assert legacy_avatar_path.read_bytes() == legacy_avatar_bytes
 
         delete = client.delete(f"/api/users/{user_id}", headers=headers)
-        assert delete.status_code == 409
-        assert delete.json()["error"] == "corefs_account_delete_restart_required"
+        assert delete.status_code == 200, delete.text
+        assert delete.json()["message"] == (
+            "Whole-Core account deletion scheduled for restart"
+        )
+        assert delete.json()["restartRequired"] is True
+        assert isinstance(delete.json()["deletionId"], str)
+        assert get_user_data_dir(user_id).is_dir()
 
-        logged_out = client.post("/api/auth/logout", headers=headers)
-        assert logged_out.status_code == 200
+        locked = client.get(f"/api/users/{user_id}", headers=headers)
+        assert locked.status_code == 401
         login = client.post(
             "/api/auth/login",
             json={"username": "renamed", "password": "pw123456"},

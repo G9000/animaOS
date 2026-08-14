@@ -9,6 +9,32 @@ function readClientSource(): string {
 }
 
 describe("createApiClient error handling", () => {
+  test("returns restart metadata for whole-Core account deletion", async () => {
+    let requestedUrl = "";
+    let requestedMethod = "";
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestedMethod = init?.method || "GET";
+        return new Response(
+          JSON.stringify({
+            message: "Whole-Core account deletion scheduled for restart",
+            restartRequired: true,
+            deletionId: "d0f7d7e7-9c57-4cd5-9942-f38aa8b1475a",
+          }),
+        );
+      },
+    });
+
+    const result = await api.users.delete(7);
+
+    expect(requestedUrl).toBe("https://api.test/api/users/7");
+    expect(requestedMethod).toBe("DELETE");
+    expect(result.restartRequired).toBe(true);
+    expect(result.deletionId).toBe("d0f7d7e7-9c57-4cd5-9942-f38aa8b1475a");
+  });
+
   test("sends the immutable legacy-draft handoff token", async () => {
     let requestBody: unknown = null;
     const api = createApiClient({

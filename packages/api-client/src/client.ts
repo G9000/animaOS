@@ -46,6 +46,7 @@ import type {
   DiaryEntryData,
   DiaryEntryUpdateData,
   DiaryFolderData,
+  DeleteUserResponse,
   DocumentWorkflow,
   DocumentWorkflowActionResponse,
   ParsingPackStatus,
@@ -716,7 +717,7 @@ export function createApiClient(options: ApiClientOptions) {
       update: (id: number, data: Partial<User>) =>
         request<User>(`/users/${id}`, { method: "PUT", body: data }),
       delete: (id: number) =>
-        request<{ message: string }>(`/users/${id}`, { method: "DELETE" }),
+        request<DeleteUserResponse>(`/users/${id}`, { method: "DELETE" }),
     },
     corefs: {
       operation: (payload: CoreFsOperationRequest) =>

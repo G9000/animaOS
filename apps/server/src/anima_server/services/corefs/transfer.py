@@ -548,6 +548,7 @@ def schedule_staged_core_activation(
         raise TransferError("scheduled activation paths are invalid")
     request = registry.with_name(f"{registry.name}.request")
     rollback_request = registry.with_name(f"{registry.name}.rollback-request")
+    deletion_request = registry.with_name(f"{registry.name}.delete-request")
     body = {
         "version": 1,
         "activationId": normalized_activation_id,
@@ -576,6 +577,8 @@ def schedule_staged_core_activation(
             raise TransferError("a retained rollback Core must be resolved before activation")
         if rollback_request.exists():
             raise TransferError("a retained-Core rollback is already scheduled")
+        if deletion_request.exists():
+            raise TransferError("whole-Core account deletion is already scheduled")
         _verify_manifest_core_id(staging, core_id)
         verifier(staging)
         if request.exists():
@@ -665,6 +668,7 @@ def schedule_retained_core_rollback(
     registry = registry_path.expanduser().resolve(strict=True)
     request = registry.with_name(f"{registry.name}.rollback-request")
     activation_request = registry.with_name(f"{registry.name}.request")
+    deletion_request = registry.with_name(f"{registry.name}.delete-request")
     body = {"version": 1, "rollbackId": normalized_rollback_id}
     with _ACTIVATION_LOCK, _exclusive_activation_lock(registry):
         pointer = _pointer_from_body(
@@ -687,6 +691,8 @@ def schedule_retained_core_rollback(
             raise TransferError("active Core pointer has no retained rollback Core")
         if activation_request.exists():
             raise TransferError("a Core activation is already scheduled")
+        if deletion_request.exists():
+            raise TransferError("whole-Core account deletion is already scheduled")
         if request.exists():
             existing = _read_authenticated_record(
                 request,
