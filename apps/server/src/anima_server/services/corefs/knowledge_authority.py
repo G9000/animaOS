@@ -203,8 +203,6 @@ def encode_knowledge_document(document: CanonicalKnowledgeDocument) -> bytes:
         or not document.source_media_type
         or not document.filename
         or not document.artifact_kind
-        or not document.content.strip()
-        or not document.original_content.strip()
     ):
         raise ValueError("Canonical knowledge-source document is incomplete.")
     return json.dumps(
@@ -294,13 +292,18 @@ def knowledge_projection_from_document(
 def _concept(source: CoreFSKnowledgeSourceProjection) -> CoreFSKnowledgeConceptProjection:
     compact = " ".join(source.content_text.split())
     title = source.source_title or source.filename
+    slug = f"corefs-source-{source.source_id}"
+    if source.source_kind == "okf" and source.source_uri.startswith("okf://"):
+        candidate = source.source_uri.removeprefix("okf://")
+        if candidate.endswith(".md") and "/" not in candidate:
+            slug = candidate[:-3]
     return CoreFSKnowledgeConceptProjection(
         concept_id=source.source_id,
         source_id=source.source_id,
         stable_id=source.stable_id,
         artifact_id=source.artifact_id,
         artifact_kind=source.artifact_kind,
-        slug=f"corefs-source-{source.source_id}",
+        slug=slug,
         title=title,
         description=compact[:240],
         concept_type="source_summary",

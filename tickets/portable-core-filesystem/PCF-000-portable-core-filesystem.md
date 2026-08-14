@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 15:16 MYT
+- Updated: 2026-08-14 15:25 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -493,6 +493,11 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   CoreFS without retained Runtime mutation. The widened band passes `99` with
   scoped Ruff green. OKF bundle import/export/lint and raw scans remain; no
   external or irreversible action occurred.
+- 2026-08-14 15:25 MYT - PCF-008 canonical OKF import now validates bounded
+  archives before stable idempotent CoreFS publication, while OKF export and
+  lint derive only from authenticated projections and create no Runtime
+  concepts/links. The knowledge/OKF band passes `61`. The full raw persistence
+  scan remains; no external or irreversible action occurred.
 
 ## Validation
 

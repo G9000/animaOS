@@ -80,7 +80,14 @@ def test_markdown_source_endpoint_creates_spans_and_compile_run() -> None:
             assert runtime_db.scalar(select(RuntimeKnowledgeConceptSource)) is not None
 
 
-def test_post_cutover_knowledge_sources_use_only_corefs() -> None:
+def test_post_cutover_knowledge_sources_use_only_corefs(monkeypatch) -> None:
+    from anima_server.services.corefs import migration as corefs_migration
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "schedule_unlocked_rebuild",
+        lambda *_args, **_kwargs: False,
+    )
     with managed_test_client("anima-knowledge-corefs-") as client:
         user_id, headers = _register(client, username="knowledge-corefs")
         token = headers["x-anima-unlock"]
@@ -193,6 +200,68 @@ def test_post_cutover_knowledge_sources_use_only_corefs() -> None:
         assert "Offline re-extraction source" in reextracted.json()["artifacts"][0][
             "contentText"
         ]
+
+        okf_zip = BytesIO()
+        with zipfile.ZipFile(okf_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "concepts/portable-alpha.md",
+                "---\ntype: note\ntitle: Portable Alpha\n---\n\n"
+                "Alpha links to [Beta](portable-beta.md).\n",
+            )
+            archive.writestr(
+                "concepts/portable-beta.md",
+                "---\ntype: claim\ntitle: Portable Beta\n---\n\n"
+                "Beta remains offline.\n",
+            )
+        imported = client.post(
+            f"/api/knowledge/import?userId={user_id}",
+            headers=headers,
+            files={
+                "file": (
+                    "portable.zip",
+                    okf_zip.getvalue(),
+                    "application/zip",
+                )
+            },
+        )
+        assert imported.status_code == 201, imported.text
+        assert imported.json() == {"conceptCount": 2, "linkCount": 1}
+        repeated_import = client.post(
+            f"/api/knowledge/import?userId={user_id}",
+            headers=headers,
+            files={
+                "file": (
+                    "portable.zip",
+                    okf_zip.getvalue(),
+                    "application/zip",
+                )
+            },
+        )
+        assert repeated_import.status_code == 201, repeated_import.text
+        assert len(
+            client.get(
+                f"/api/knowledge/sources?userId={user_id}",
+                headers=headers,
+            ).json()["sources"]
+        ) == 4
+        exported = client.get(
+            f"/api/knowledge/export?userId={user_id}",
+            headers=headers,
+        )
+        assert exported.status_code == 200, exported.text
+        with zipfile.ZipFile(BytesIO(exported.content)) as archive:
+            assert "concepts/portable-alpha.md" in archive.namelist()
+            assert "concepts/portable-beta.md" in archive.namelist()
+            assert "Alpha links to [Beta](portable-beta.md)." in archive.read(
+                "concepts/portable-alpha.md"
+            ).decode()
+        linted = client.post(
+            "/api/knowledge/lint",
+            headers=headers,
+            json={"userId": user_id},
+        )
+        assert linted.status_code == 200, linted.text
+        assert linted.json() == {"findings": []}
 
         with get_runtime_session_factory()() as runtime_db:
             assert runtime_db.scalar(select(RuntimeSource).limit(1)) is None

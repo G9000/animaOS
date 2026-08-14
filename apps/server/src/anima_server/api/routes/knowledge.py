@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import zipfile
 from pathlib import Path
+from stat import S_IFDIR, S_IFMT, S_IFREG
 from typing import Any
 from urllib.parse import urlparse
 
@@ -36,6 +37,8 @@ from anima_server.models.runtime import (
 )
 from anima_server.services.agent.embeddings import generate_embedding
 from anima_server.services.corefs.asset_authority import asset_authority_selection
+from anima_server.services.corefs.asset_mutations import AssetMutationError
+from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.knowledge_authority import (
     CanonicalKnowledgeDocument,
     canonical_knowledge_document,
@@ -56,7 +59,13 @@ from anima_server.services.ingestion.document_compiler import (
 )
 from anima_server.services.ingestion.html_extract import extract_html_article
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
-from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
+from anima_server.services.ingestion.okf import (
+    PortableOKFConcept,
+    export_okf_bundle,
+    export_portable_okf_bundle,
+    import_okf_bundle,
+    read_portable_okf_bundle,
+)
 from anima_server.services.ingestion.structured import parse_markdown_structure
 from anima_server.services.ingestion.web_fetch import (
     UnsafeFetchUrlError,
@@ -739,10 +748,36 @@ async def export_knowledge(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> Response:
-    await require_unlocked_user_async(request, userId)
+    session = await require_unlocked_user_async(request, userId)
     with tempfile.TemporaryDirectory(prefix="anima-okf-export-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
-        export_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+        if asset_authority_selection(session) is not None:
+            concepts = canonical_knowledge_view(
+                session=session
+            ).knowledge_concept_projections()
+            export_portable_okf_bundle(
+                concepts=tuple(
+                    PortableOKFConcept(
+                        slug=concept.slug,
+                        concept_type=concept.concept_type,
+                        title=concept.title,
+                        description=concept.description,
+                        body_markdown=concept.body_markdown,
+                        frontmatter_json={
+                            "anima": {
+                                "source_id": concept.source_id,
+                                "derived": True,
+                            }
+                        },
+                        original_markdown="",
+                        linked_slugs=(),
+                    )
+                    for concept in concepts
+                ),
+                bundle_dir=bundle_dir,
+            )
+        else:
+            export_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
         archive_path = Path(temp_dir) / "knowledge-bundle.zip"
         with zipfile.ZipFile(
             archive_path,
@@ -768,9 +803,13 @@ async def import_knowledge(
     file: UploadFile = File(...),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, userId)
-    _require_legacy_knowledge_mutation_allowed(userId)
-    content = await file.read()
+    session = await require_unlocked_user_async(request, userId)
+    content = await file.read(settings.diary_attachment_max_size_bytes + 1)
+    if len(content) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="OKF bundle is too large.",
+        )
     with tempfile.TemporaryDirectory(prefix="anima-okf-import-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
         bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -784,6 +823,47 @@ async def import_knowledge(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle zip.",
             ) from exc
+        if asset_authority_selection(session) is not None:
+            try:
+                concepts = read_portable_okf_bundle(bundle_dir=bundle_dir)
+                for concept in concepts:
+                    publish_canonical_knowledge_source(
+                        session=session,
+                        stable_id=migration_opaque_id(
+                            "knowledge-okf-source",
+                            concept.slug,
+                        ),
+                        replace_existing=True,
+                        document=CanonicalKnowledgeDocument(
+                            source_kind="okf",
+                            source_uri=f"okf://{concept.slug}.md",
+                            source_title=concept.title,
+                            source_media_type="text/markdown",
+                            filename=f"{concept.slug}.md",
+                            artifact_kind="structured_markdown",
+                            content=concept.body_markdown,
+                            original_content=concept.original_markdown,
+                        ),
+                    )
+            except (ValueError, yaml.YAMLError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid OKF bundle contents.",
+                ) from exc
+            except AssetMutationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Canonical OKF import failed.",
+                ) from exc
+            imported_slugs = {concept.slug for concept in concepts}
+            link_count = sum(
+                1
+                for concept in concepts
+                for linked_slug in set(concept.linked_slugs)
+                if linked_slug in imported_slugs and linked_slug != concept.slug
+            )
+            return {"conceptCount": len(concepts), "linkCount": link_count}
+        _require_legacy_knowledge_mutation_allowed(userId)
         try:
             result = import_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
         except (ValueError, yaml.YAMLError) as exc:
@@ -801,7 +881,15 @@ async def lint_knowledge(
     payload: KnowledgeLintRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, payload.userId)
+    session = await require_unlocked_user_async(request, payload.userId)
+    if asset_authority_selection(session) is not None:
+        return {
+            "findings": _canonical_lint_findings(
+                session=session,
+                source_id=payload.sourceId,
+                concept_id=payload.conceptId,
+            )
+        }
     findings = lint_knowledge_bundle(
         runtime_db,
         user_id=payload.userId,
@@ -1079,6 +1167,36 @@ def _canonical_compile_run(projection: Any) -> dict[str, Any]:
     }
 
 
+def _canonical_lint_findings(
+    *,
+    session: Any,
+    source_id: int | None,
+    concept_id: int | None,
+) -> list[dict[str, Any]]:
+    view = canonical_knowledge_view(session=session)
+    concepts = tuple(
+        concept
+        for concept in view.knowledge_concept_projections()
+        if (source_id is None or concept.source_id == source_id)
+        and (concept_id is None or concept.concept_id == concept_id)
+    )
+    title_counts: dict[str, int] = {}
+    for concept in view.knowledge_concept_projections():
+        title_counts[concept.title] = title_counts.get(concept.title, 0) + 1
+    return [
+        {
+            "code": "duplicate_concept_title",
+            "severity": "warning",
+            "message": f"Concept title {concept.title!r} is duplicated.",
+            "conceptId": concept.concept_id,
+            "sourceId": concept.source_id,
+            "linkId": None,
+        }
+        for concept in concepts
+        if title_counts[concept.title] > 1
+    ]
+
+
 def _require_legacy_knowledge_mutation_allowed(user_id: int) -> None:
     from anima_server.services.corefs.asset_authority import (
         require_legacy_asset_mutation_allowed,
@@ -1307,9 +1425,23 @@ def _contains_text(needle: str, *values: str | None) -> bool:
 
 def _extract_zip_safely(archive: zipfile.ZipFile, target_dir: Path) -> None:
     target_root = target_dir.resolve()
-    for member in archive.infolist():
+    members = archive.infolist()
+    if len(members) > 1_000 or sum(member.file_size for member in members) > (
+        settings.diary_attachment_max_size_bytes
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Expanded OKF bundle is too large.",
+        )
+    for member in members:
         destination = (target_root / member.filename).resolve()
-        if target_root not in destination.parents and destination != target_root:
+        unix_mode = member.external_attr >> 16
+        unsafe_type = unix_mode and S_IFMT(unix_mode) not in {0, S_IFDIR, S_IFREG}
+        if (
+            (target_root not in destination.parents and destination != target_root)
+            or member.flag_bits & 0x1
+            or unsafe_type
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle path.",
