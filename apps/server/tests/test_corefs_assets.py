@@ -119,9 +119,7 @@ def test_gallery_reference_map_reconciles_message_attachment_links(tmp_path: Pat
     assert shadow.resolve_reference({"id": "message-attachment-9"}) == (
         f"corefs://object/{expected_id}"
     )
-    assert shadow.resolve_reference({"sha256": digest}) == (
-        f"corefs://object/{expected_id}"
-    )
+    assert shadow.resolve_reference({"sha256": digest}) == (f"corefs://object/{expected_id}")
     assert shadow.resolve_reference({"storagePath": str(image)}) is None
 
 
@@ -225,17 +223,14 @@ def test_runtime_collector_keeps_originals_and_excludes_derived_families(
     }
     assert sum(item.descriptor.kind == "gallery-asset" for item in shadow.objects) == 2
     assert any(
-        item.descriptor.metadata.get("origin") == "identity-avatar"
-        for item in shadow.objects
+        item.descriptor.metadata.get("origin") == "identity-avatar" for item in shadow.objects
     )
     assert not any(
         key in repr(item.descriptor.metadata)
         for item in shadow.objects
         for key in (str(tmp_path), "must-not-survive", "/private/report.pdf")
     )
-    knowledge = next(
-        item for item in shadow.objects if item.descriptor.kind == "knowledge-source"
-    )
+    knowledge = next(item for item in shadow.objects if item.descriptor.kind == "knowledge-source")
     assert knowledge.body == source_text.encode()
 
 
@@ -369,9 +364,7 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
         expected_previous_segment_id=None,
         expected_previous_sha256=None,
     )
-    assert segment.events[0].attachment_uris == (
-        f"corefs://object/{prepared_asset.stable_id}",
-    )
+    assert segment.events[0].attachment_uris == (f"corefs://object/{prepared_asset.stable_id}",)
     index = CoreFSProgressiveIndex("combined-gallery")
     index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
     session.runtime_index = index
@@ -417,9 +410,7 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
         0,
     )
     rebuild_unlocked_search(session)
-    assert index.search_text("offline canonical source") == (
-        prepared_source.stable_id,
-    )
+    assert index.search_text("offline canonical source") == (prepared_source.stable_id,)
     knowledge_projection = index.knowledge_source_projections()
     assert len(knowledge_projection) == 1
     assert knowledge_projection[0].source_id == 41
@@ -439,6 +430,10 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "anima_server.services.corefs.asset_authority.active_asset_authority_session",
         lambda user_id: session if user_id == 7 else None,
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "anima_server.services.corefs.asset_authority.authenticated_content_authority",
+        lambda current, *, family: current.content_authority,
     )
     projected_source = resolve_projected_image_byte_source(
         user_id=7,

@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 14:10 MYT
+- Updated: 2026-08-14 14:29 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -456,6 +456,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   coverage passes `51`. Binary attachment and remaining asset/document/
   knowledge writers plus raw scans remain. No external or irreversible action
   occurred.
+- 2026-08-14 14:29 MYT - PCF-008 added the first post-cutover binary mutation
+  adapter and routed diary attachment upload, authenticated download, canonical
+  metadata linking, and cover selection through CoreFS only. Bounded uploads
+  are reopened and byte/hash/type verified, retained Soul attachment rows
+  remain unchanged, and the diary/asset/document-migration band passes `59`
+  with scoped hygiene green. Remaining image/avatar/chat/document/knowledge
+  writers and raw scans keep PCF-008 active; no external or irreversible
+  action occurred.
 
 ## Validation
 

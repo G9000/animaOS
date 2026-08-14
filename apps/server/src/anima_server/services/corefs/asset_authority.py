@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.content_authority import authenticated_content_authority
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 _CORE_OBJECT_URI = re.compile(r"corefs://object/([0-7][0-9A-HJKMNP-TV-Z]{25})")
@@ -99,6 +100,23 @@ class CoreFsByteSource:
         return body
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalAssetRecord:
+    stable_id: str
+    path: str
+    revision: int
+    object_kind: str
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalAssetCatalog:
+    selection: AssetAuthoritySelection
+    gallery_path: str
+    gallery_stable_id: str
+    trash_stable_id: str
+    assets: tuple[CanonicalAssetRecord, ...]
+
+
 def asset_authority_selection(session: object) -> AssetAuthoritySelection | None:
     marker = getattr(session, "content_authority", None)
     if not isinstance(marker, dict):
@@ -141,13 +159,95 @@ def require_legacy_asset_mutation_allowed(user_id: int) -> None:
         raise CoreFsSourceError("Legacy asset mutation is disabled after CoreFS cutover.")
 
 
+def read_canonical_asset_catalog(*, session: Any) -> CanonicalAssetCatalog:
+    try:
+        marker = authenticated_content_authority(session, family="assets")
+    except RuntimeError as exc:
+        raise CoreFsSourceError("CoreFS asset authority could not be refreshed.") from exc
+    selection = asset_authority_selection(session) if marker is not None else None
+    if selection is None:
+        raise CoreFsSourceError("Canonical asset authority is unavailable.")
+    role = session.corefs_session.resolve_validation_role_v1(
+        session.corefs_keys,
+        "core.gallery",
+    )
+    if (
+        not isinstance(role, dict)
+        or role.get("generation") != selection.generation
+        or role.get("catalogHash") != selection.catalog_hash
+        or not isinstance(role.get("stableId"), str)
+    ):
+        raise CoreFsSourceError("core.gallery role is unavailable.")
+    entries = _walk_all(session=session, selection=selection)
+    gallery = next(
+        (
+            entry
+            for entry in entries
+            if entry.get("kind") == "directory" and entry.get("stableId") == role["stableId"]
+        ),
+        None,
+    )
+    trash_ids = [
+        entry.get("stableId")
+        for entry in entries
+        if entry.get("kind") == "directory" and entry.get("role") == "core.trash"
+    ]
+    gallery_path = gallery.get("path") if isinstance(gallery, dict) else None
+    if (
+        not isinstance(gallery_path, str)
+        or not gallery_path
+        or len(trash_ids) != 1
+        or not isinstance(trash_ids[0], str)
+    ):
+        raise CoreFsSourceError("Canonical asset folder authority is unavailable.")
+    records: list[CanonicalAssetRecord] = []
+    for entry in entries:
+        path = entry.get("path")
+        stable_id = entry.get("stableId")
+        revision = entry.get("revision")
+        object_kind = entry.get("objectKind")
+        if (
+            entry.get("kind") != "file"
+            or not isinstance(path, str)
+            or not path.startswith(f"{gallery_path}/")
+        ):
+            continue
+        if (
+            not isinstance(stable_id, str)
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 1
+            or object_kind not in _ORIGINAL_KINDS
+        ):
+            raise CoreFsSourceError("Canonical asset identity is invalid.")
+        records.append(
+            CanonicalAssetRecord(
+                stable_id=stable_id,
+                path=path,
+                revision=revision,
+                object_kind=str(object_kind),
+            )
+        )
+    return CanonicalAssetCatalog(
+        selection=selection,
+        gallery_path=gallery_path,
+        gallery_stable_id=str(role["stableId"]),
+        trash_stable_id=trash_ids[0],
+        assets=tuple(records),
+    )
+
+
 def open_corefs_byte_source(
     *,
     session: Any,
     object_uri: str,
     expected_kinds: frozenset[str] = _ORIGINAL_KINDS,
 ) -> CoreFsByteSource:
-    selection = asset_authority_selection(session)
+    try:
+        marker = authenticated_content_authority(session, family="assets")
+    except RuntimeError as exc:
+        raise CoreFsSourceError("Canonical source authority could not be refreshed.") from exc
+    selection = asset_authority_selection(session) if marker is not None else None
     match = _CORE_OBJECT_URI.fullmatch(object_uri)
     if selection is None or match is None:
         raise CoreFsSourceError("Canonical source authority is unavailable.")
@@ -168,8 +268,7 @@ def open_corefs_byte_source(
         (
             entry.get("path")
             for entry in entries
-            if entry.get("kind") == "directory"
-            and entry.get("stableId") == role["stableId"]
+            if entry.get("kind") == "directory" and entry.get("stableId") == role["stableId"]
         ),
         None,
     )

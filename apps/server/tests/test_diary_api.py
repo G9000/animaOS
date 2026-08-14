@@ -13,6 +13,8 @@ from anima_server.services.corefs.cutover import (
 )
 from anima_server.services.corefs.diary_migration import (
     InactiveFolder,
+    InactiveObject,
+    InactiveWritingCatalog,
     LegacyDiaryDraft,
     LegacyNote,
     build_inactive_diary_catalog,
@@ -89,7 +91,8 @@ def test_diary_routes_use_only_corefs_after_global_cutover() -> None:
                 text(
                     "select "
                     "(select count(*) from diary_folders where user_id = :user_id), "
-                    "(select count(*) from diary_entries where user_id = :user_id)"
+                    "(select count(*) from diary_entries where user_id = :user_id), "
+                    "(select count(*) from diary_attachments where user_id = :user_id)"
                 ),
                 {"user_id": user_id},
             ).one()
@@ -188,24 +191,52 @@ def test_diary_routes_use_only_corefs_after_global_cutover() -> None:
         assert draft.status_code == 200, draft.text
         assert draft.json()["authoritative"] is True
 
+        attachment_bytes = b"\x89PNG\r\n\x1a\ncanonical-diary-attachment"
         attachment = client.post(
             f"/api/diary/{entry_id}/attachments",
             headers=headers,
-            files={"file": ("blocked.bin", b"blocked", "application/octet-stream")},
+            files={"file": ("canonical.png", attachment_bytes, "image/png")},
+            data={"caption": "Canonical cover"},
         )
-        assert attachment.status_code == 409
+        assert attachment.status_code == 201, attachment.text
+        attachment_payload = attachment.json()
+        assert attachment_payload["kind"] == "image"
+        assert attachment_payload["filename"] == "canonical.png"
+        assert attachment_payload["caption"] == "Canonical cover"
+        assert attachment_payload["sizeBytes"] == len(attachment_bytes)
+        assert attachment_payload["sha256"] == hashlib.sha256(attachment_bytes).hexdigest()
+        attachment_id = int(attachment_payload["id"])
+        downloaded = client.get(
+            f"/api/diary/{entry_id}/attachments/{attachment_id}",
+            headers=headers,
+        )
+        assert downloaded.status_code == 200, downloaded.text
+        assert downloaded.content == attachment_bytes
+        assert downloaded.headers["content-type"] == "image/png"
+        cover = client.patch(
+            f"/api/diary/{entry_id}",
+            headers=headers,
+            json={"coverAttachmentId": attachment_id},
+        )
+        assert cover.status_code == 200, cover.text
+        assert cover.json()["coverAttachmentId"] == attachment_id
+        assert [item["id"] for item in cover.json()["attachments"]] == [attachment_id]
         assert client.delete(f"/api/diary/folders/{folder_id}", headers=headers).status_code == 200
         assert client.delete(f"/api/diary/{entry_id}", headers=headers).status_code == 200
 
         with get_user_session_factory(user_id)() as db:
-            assert db.execute(
-                text(
-                    "select "
-                    "(select count(*) from diary_folders where user_id = :user_id), "
-                    "(select count(*) from diary_entries where user_id = :user_id)"
-                ),
-                {"user_id": user_id},
-            ).one() == legacy_counts
+            assert (
+                db.execute(
+                    text(
+                        "select "
+                        "(select count(*) from diary_folders where user_id = :user_id), "
+                        "(select count(*) from diary_entries where user_id = :user_id), "
+                        "(select count(*) from diary_attachments where user_id = :user_id)"
+                    ),
+                    {"user_id": user_id},
+                ).one()
+                == legacy_counts
+            )
 
 
 def test_every_diary_api_writer_advances_the_source_generation() -> None:
@@ -770,12 +801,8 @@ def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> N
 
         conflicting = dict(payload)
         conflicting["html"] = "<p>different body at the same client revision</p>"
-        conflicting["contentSha256"] = hashlib.sha256(
-            conflicting["html"].encode()
-        ).hexdigest()
-        conflict = client.post(
-            "/api/diary/drafts/import", headers=headers, json=conflicting
-        )
+        conflicting["contentSha256"] = hashlib.sha256(conflicting["html"].encode()).hexdigest()
+        conflict = client.post("/api/diary/drafts/import", headers=headers, json=conflicting)
         assert conflict.status_code == 409
         assert "revision" in conflict.text.lower()
 
@@ -795,9 +822,12 @@ def test_legacy_browser_draft_import_is_encrypted_verified_and_idempotent() -> N
         refreshed_draft = next(
             item for item in refreshed_objects if item.stable_id == first.json()["stableId"]
         )
-        assert decode_draft_document(
-            read_prepared_writing_body(session=session, item=refreshed_draft)
-        ).body == newer["html"]
+        assert (
+            decode_draft_document(
+                read_prepared_writing_body(session=session, item=refreshed_draft)
+            ).body
+            == newer["html"]
+        )
 
 
 def test_note_is_read_back_through_authorized_stable_role() -> None:
@@ -916,9 +946,16 @@ def test_unlock_lifecycle_rerun_preserves_native_layout_and_is_a_noop() -> None:
                 ),
                 order=0,
                 role=item.role,
-                owner="user",
-                agent_access="write",
-                policy="user-write" if item.role is not None else "inherit",
+                owner="shared" if item.role == "core.conversations" else "user",
+                agent_access="manage" if item.role == "core.conversations" else "write",
+                policy=(
+                    "shared-manage"
+                    if item.role == "core.conversations"
+                    else "user-write"
+                    if item.role is not None or item.parent_id is None
+                    else "inherit"
+                ),
+                metadata=item.metadata,
             )
             for item in prepared.folders
         )
@@ -960,6 +997,43 @@ def test_unlock_lifecycle_rerun_preserves_native_layout_and_is_a_noop() -> None:
             ),
             preserved_folders=preserved,
         ).with_expected_revisions({draft_id: draft.revision, note_id: note.revision})
+        preserved_objects = tuple(
+            InactiveObject(
+                stable_id=item.stable_id,
+                parent_id=item.parent_id,
+                name=item.name,
+                kind=item.kind,
+                content_type=item.content_type,
+                content=read_prepared_writing_body(session=session, item=item),
+                content_hash=item.content_hash,
+                source_hash=item.content_hash,
+                body_encoding=item.body_encoding,
+                created_at=item.created_at,
+                updated_at=item.updated_at,
+                expected_revision=item.revision,
+                metadata=item.metadata,
+            )
+            for item in prepared.objects
+            if item.stable_id not in {draft_id, note_id}
+        )
+        moved_folder_ids = {item.stable_id for item in moved.folders}
+        preserved_extra_folders = tuple(
+            item for item in preserved if item.stable_id not in moved_folder_ids
+        )
+        moved = InactiveWritingCatalog(
+            user_id=moved.user_id,
+            folders=(*moved.folders, *preserved_extra_folders),
+            objects=(*moved.objects, *preserved_objects),
+            catalog_hash=hashlib.sha256(
+                "\n".join(
+                    item.content_hash
+                    for item in sorted(
+                        (*moved.objects, *preserved_objects),
+                        key=lambda value: value.stable_id,
+                    )
+                ).encode()
+            ).hexdigest(),
+        )
         head = session.corefs_session.validation_snapshot(session.corefs_keys)
         moved_result = publish_catalog_native(
             moved,

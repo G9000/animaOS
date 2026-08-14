@@ -152,9 +152,7 @@ def upsert_canonical_draft(
                 ):
                     raise WritingMutationError("Draft handoff revision is stale.")
         target = (
-            find_canonical_entry(catalog, target_entry_id)
-            if target_entry_id is not None
-            else None
+            find_canonical_entry(catalog, target_entry_id) if target_entry_id is not None else None
         )
         if target_entry_id is not None and target is None:
             raise WritingMutationError("Draft target entry is unavailable.")
@@ -299,6 +297,79 @@ def update_canonical_diary_entry(
         return verified
 
 
+def attach_canonical_diary_asset(
+    *,
+    session: Any,
+    entry_id: int,
+    attachment_id: int,
+    stable_id: str,
+    kind: str,
+    mime_type: str,
+    filename: str | None,
+    caption: str | None,
+    size_bytes: int,
+    sha256: str,
+    created_at: str,
+) -> CanonicalDiaryEntry | None:
+    with _writing_lock(int(session.user_id)):
+        catalog = read_canonical_writing_catalog(session=session)
+        record = find_canonical_entry(catalog, entry_id)
+        if record is None:
+            return None
+        item = catalog.objects_by_stable_id.get(stable_id)
+        if (
+            item is None
+            or item.kind != "attachment"
+            or item.body_length != size_bytes
+            or item.content_hash != sha256
+            or item.content_type != mime_type
+        ):
+            raise WritingMutationError("Canonical diary attachment body is unavailable.")
+        existing_ids = {value.get("legacyId") for value in record.document.attachment_metadata}
+        if attachment_id in existing_ids:
+            raise WritingMutationError("Canonical diary attachment identity already exists.")
+        metadata = {
+            "legacyId": attachment_id,
+            "stableId": stable_id,
+            "kind": kind,
+            "mimeType": mime_type,
+            "filename": filename,
+            "caption": caption,
+            "sha256": sha256,
+            "createdAt": created_at,
+        }
+        document = replace(
+            record.document,
+            attachment_uris=(
+                *record.document.attachment_uris,
+                f"corefs://object/{stable_id}",
+            ),
+            attachment_metadata=(*record.document.attachment_metadata, metadata),
+            updated_at=created_at,
+        )
+        _execute(
+            session=session,
+            catalog=catalog,
+            mutation={
+                "operation": "write_file",
+                "target": {"stableId": record.document.stable_id},
+                "expectedRevision": record.revision,
+                "contentType": DIARY_CONTENT_TYPE,
+                "bodyEncoding": "utf-8",
+            },
+            body=_encode_diary(document),
+        )
+        verified = find_canonical_entry(
+            read_canonical_writing_catalog(session=session),
+            entry_id,
+        )
+        if verified is None or not any(
+            value.get("stableId") == stable_id for value in verified.document.attachment_metadata
+        ):
+            raise WritingMutationError("Canonical diary attachment link did not verify.")
+        return verified
+
+
 def delete_canonical_diary_entry(*, session: Any, entry_id: int) -> bool:
     with _writing_lock(int(session.user_id)):
         catalog = read_canonical_writing_catalog(session=session)
@@ -316,10 +387,13 @@ def delete_canonical_diary_entry(*, session: Any, entry_id: int) -> bool:
             },
             body=None,
         )
-        return find_canonical_entry(
-            read_canonical_writing_catalog(session=session),
-            entry_id,
-        ) is None
+        return (
+            find_canonical_entry(
+                read_canonical_writing_catalog(session=session),
+                entry_id,
+            )
+            is None
+        )
 
 
 def create_canonical_diary_folder(*, session: Any, name: str) -> CanonicalDiaryFolder:
@@ -437,9 +511,7 @@ def delete_canonical_diary_folder(*, session: Any, folder_id: int) -> bool:
                 mutation={
                     "operation": "move",
                     "source": {"stableId": current.stable_id},
-                    "destination": (
-                        f"{current_catalog.journal_folder.path}/{current.stable_id}"
-                    ),
+                    "destination": (f"{current_catalog.journal_folder.path}/{current.stable_id}"),
                     "expectedRevision": current.revision,
                 },
                 body=None,
@@ -459,10 +531,13 @@ def delete_canonical_diary_folder(*, session: Any, folder_id: int) -> bool:
             },
             body=None,
         )
-        return find_canonical_folder(
-            read_canonical_writing_catalog(session=session),
-            folder_id,
-        ) is None
+        return (
+            find_canonical_folder(
+                read_canonical_writing_catalog(session=session),
+                folder_id,
+            )
+            is None
+        )
 
 
 def _encode_diary(document: DiaryDocument) -> bytes:
@@ -498,11 +573,7 @@ def _require_folder(
 
 def _attachment_metadata(document: DiaryDocument, attachment_id: int) -> dict[str, Any]:
     attachment = next(
-        (
-            item
-            for item in document.attachment_metadata
-            if item.get("legacyId") == attachment_id
-        ),
+        (item for item in document.attachment_metadata if item.get("legacyId") == attachment_id),
         None,
     )
     if attachment is None:
@@ -543,8 +614,10 @@ def _execute(
         ),
     )
     changes = result.get("changes")
-    if not isinstance(changes, list) or not changes or not all(
-        isinstance(change, dict) for change in changes
+    if (
+        not isinstance(changes, list)
+        or not changes
+        or not all(isinstance(change, dict) for change in changes)
     ):
         raise WritingMutationError("Native CoreFS writing mutation result is invalid.")
     publish_content_authority_after_mutation(

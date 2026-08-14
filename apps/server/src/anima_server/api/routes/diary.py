@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import re
+import secrets
+from contextlib import suppress
+from datetime import UTC, datetime
+from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import (
@@ -18,6 +23,7 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session_async
+from anima_server.config import settings
 from anima_server.db import get_db
 from anima_server.schemas.diary import (
     DiaryAttachmentResponse,
@@ -32,9 +38,16 @@ from anima_server.schemas.diary import (
     DiaryFolderResponse,
     DiaryFolderUpdateRequest,
 )
+from anima_server.services.corefs.asset_authority import CoreFsSourceError
+from anima_server.services.corefs.asset_mutations import (
+    AssetMutationError,
+    trash_canonical_asset,
+    upsert_canonical_binary_asset,
+)
 from anima_server.services.corefs.diary_migration import (
     DiaryMigrationError,
     LegacyDiaryDraft,
+    migration_opaque_id,
     prepare_diary_validation_catalog,
     resolve_prepared_role,
 )
@@ -49,6 +62,7 @@ from anima_server.services.corefs.writing_authority import (
 )
 from anima_server.services.corefs.writing_mutations import (
     WritingMutationError,
+    attach_canonical_diary_asset,
     create_canonical_diary_entry,
     create_canonical_diary_folder,
     delete_canonical_diary_entry,
@@ -447,9 +461,84 @@ async def upload_attachment(
 ) -> DiaryAttachmentResponse:
     session = await require_unlocked_session_async(request)
     if writing_corefs_authority_active(session):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="CoreFS diary attachment writes are not enabled until the asset adapter is active.",
+        catalog = read_canonical_writing_catalog(session=session)
+        entry = find_canonical_entry(catalog, entry_id)
+        if entry is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Diary entry not found.",
+            )
+        data = await file.read(settings.diary_attachment_max_size_bytes + 1)
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Attachment file is empty.",
+            )
+        if len(data) > settings.diary_attachment_max_size_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Attachment is too large. Limit is "
+                    f"{settings.diary_attachment_max_size_bytes} bytes."
+                ),
+            )
+        mime_type = (file.content_type or "application/octet-stream").split(";", 1)[0]
+        mime_type = mime_type.strip().lower() or "application/octet-stream"
+        kind = _canonical_attachment_kind(mime_type)
+        filename = _canonical_attachment_filename(file.filename)
+        cleaned_caption = caption.strip() if caption is not None and caption.strip() else None
+        digest = hashlib.sha256(data).hexdigest()
+        existing_ids = {
+            value.get("legacyId")
+            for record in catalog.entries
+            for value in record.document.attachment_metadata
+        }
+        attachment_id = _new_diary_attachment_id(existing_ids)
+        stable_id = migration_opaque_id("diary-attachment", str(attachment_id))
+        created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+        try:
+            upsert_canonical_binary_asset(
+                session=session,
+                stable_id=stable_id,
+                name=filename or stable_id,
+                object_kind="attachment",
+                content_type=mime_type,
+                data=data,
+            )
+            record = attach_canonical_diary_asset(
+                session=session,
+                entry_id=entry_id,
+                attachment_id=attachment_id,
+                stable_id=stable_id,
+                kind=kind,
+                mime_type=mime_type,
+                filename=filename,
+                caption=cleaned_caption,
+                size_bytes=len(data),
+                sha256=digest,
+                created_at=created_at,
+            )
+        except (AssetMutationError, CoreFsSourceError, WritingMutationError) as exc:
+            with suppress(AssetMutationError, CoreFsSourceError, ValueError):
+                trash_canonical_asset(session=session, stable_id=stable_id)
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        if record is None:
+            with suppress(AssetMutationError, CoreFsSourceError, ValueError):
+                trash_canonical_asset(session=session, stable_id=stable_id)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Diary entry not found.",
+            )
+        refreshed = read_canonical_writing_catalog(session=session)
+        metadata = next(
+            item
+            for item in record.document.attachment_metadata
+            if item.get("legacyId") == attachment_id
+        )
+        return _canonical_attachment_response(
+            refreshed,
+            entry_id=entry_id,
+            metadata=metadata,
         )
     entry = load_entry_for_user(db, user_id=session.user_id, entry_id=entry_id)
     if entry is None:
@@ -493,11 +582,7 @@ async def download_attachment(
             None,
         )
         stable_id = metadata.get("stableId") if isinstance(metadata, dict) else None
-        item = (
-            catalog.objects_by_stable_id.get(stable_id)
-            if isinstance(stable_id, str)
-            else None
-        )
+        item = catalog.objects_by_stable_id.get(stable_id) if isinstance(stable_id, str) else None
         if item is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -651,9 +736,34 @@ def _canonical_attachment_response(
         sizeBytes=item.body_length,
         sha256=digest,
         createdAt=(
-            metadata.get("createdAt")
-            if isinstance(metadata.get("createdAt"), str)
-            else None
+            metadata.get("createdAt") if isinstance(metadata.get("createdAt"), str) else None
         ),
         url=f"/api/diary/{entry_id}/attachments/{attachment_id}",
     )
+
+
+def _new_diary_attachment_id(existing: set[object]) -> int:
+    while True:
+        candidate = secrets.randbelow((1 << 52) - 1) + 1
+        if candidate not in existing:
+            return candidate
+
+
+def _canonical_attachment_kind(mime_type: str) -> str:
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("audio/"):
+        return "audio"
+    if mime_type.startswith("video/"):
+        return "video"
+    return "file"
+
+
+_SAFE_ATTACHMENT_NAME_RE = re.compile(r"[^a-zA-Z0-9._ -]+")
+
+
+def _canonical_attachment_filename(filename: str | None) -> str | None:
+    if filename is None:
+        return None
+    name = _SAFE_ATTACHMENT_NAME_RE.sub("_", Path(filename).name.strip())
+    return name[:180] or None
