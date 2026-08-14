@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 15:25 MYT
+- Updated: 2026-08-14 15:32 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -477,6 +477,18 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   projections. The knowledge/OKF/autocompile band passes `61`, with scoped
   Ruff green. The full fresh-Runtime/cache/log/index raw scan remains before
   Step 8 can close; no external or irreversible action occurred.
+- 2026-08-14 15:32 MYT - Added and passed the bounded raw privacy release
+  gate against a real stopped embedded PostgreSQL data directory plus exact
+  instance cache, health-log, and index roots. Eight portable/message/chunk/
+  OCR/source/candidate/pending/preview/vector markers exist only inside
+  authenticated ciphertext; streaming validation returns opaque labels rather
+  than private bytes or absolute paths, rejects symlinks and concurrent file
+  changes, detects a deliberate control leak, and reports zero production-root
+  hits. The wider Runtime privacy/relocation/database band passes `107`. That
+  run also exposed and fixed the nullable message-reference migration's
+  compatibility with the existing over-advanced-stamp repair path. Restart-
+  safe whole-Core account deletion remains the only Step 8 behavior gap; no
+  real source deletion, external action, or irreversible cutover occurred.
 
 ## Validation
 
@@ -488,6 +500,7 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - scoped Ruff check/format, Rust format, and `git diff --check` (passed)
   - `uv run pytest -q apps/server/tests/test_knowledge_api.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_corefs_assets.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py` (`99 passed`)
   - `uv run pytest -q apps/server/tests/test_knowledge_api.py apps/server/tests/test_okf_import_export.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_knowledge_autocompile.py` (`61 passed`)
+  - `uv run pytest -q apps/server/tests/test_corefs_runtime_privacy.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_runtime_db.py -k 'not test_external_runtime_database_url and not test_runtime_database_url'` (`107 passed`)
   - `cargo test -p anima-core core_archive` (`6 passed`)
   - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing
     crate lints allowed (`passed`; the unchanged strict crate-wide invocation

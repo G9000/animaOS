@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 15:25 MYT
+- Updated: 2026-08-14 15:32 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -498,6 +498,13 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   lint derive only from authenticated projections and create no Runtime
   concepts/links. The knowledge/OKF band passes `61`. The full raw persistence
   scan remains; no external or irreversible action occurred.
+- 2026-08-14 15:32 MYT - PCF-008's bounded raw privacy gate passes against a
+  real stopped embedded PostgreSQL data directory and exact cache/log/index
+  roots with eight seeded private marker classes present only as authenticated
+  ciphertext. The Runtime privacy/relocation/database band passes `107`, and
+  the discovered legacy bad-stamp migration seam is repaired. Restart-safe
+  whole-Core account deletion remains the Step 8 gap; no real deletion,
+  external action, or irreversible cutover occurred.
 
 ## Validation
 

@@ -19,6 +19,12 @@ depends_on = None
 
 def upgrade() -> None:
     inspector = inspect(op.get_bind())
+    if not inspector.has_table("runtime_messages"):
+        # A repaired legacy Runtime may carry an over-advanced stamp while
+        # missing pre-stamp tables. RuntimeBase creates the complete current
+        # table after Alembic; this revision must not make that repair path
+        # unrecoverable merely to add nullable projection columns.
+        return
     columns = {column["name"] for column in inspector.get_columns("runtime_messages")}
     with op.batch_alter_table("runtime_messages") as batch_op:
         if "corefs_message_id" not in columns:
@@ -52,6 +58,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     inspector = inspect(op.get_bind())
+    if not inspector.has_table("runtime_messages"):
+        return
     indexes = {index["name"] for index in inspector.get_indexes("runtime_messages")}
     if "ix_runtime_messages_corefs_sequence_id" in indexes:
         op.drop_index("ix_runtime_messages_corefs_sequence_id", table_name="runtime_messages")

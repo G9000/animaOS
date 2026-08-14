@@ -1063,7 +1063,10 @@ knowledge content in canonical CoreFS objects without Runtime knowledge rows.
 Migrated gallery reads, retention sidecars, and recoverable forget also use
 CoreFS authority. Bounded OKF import publishes stable idempotent canonical
 sources, while OKF export and lint derive only from authenticated projections.
-The full fresh-Runtime/cache/log/index raw scan remains open.
+The bounded raw gate now reports zero seeded private markers across a real
+stopped embedded PostgreSQL data directory and exact instance cache/log/index
+roots while proving its detector with a deliberate control leak. Restart-safe
+whole-Core account deletion remains open.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 

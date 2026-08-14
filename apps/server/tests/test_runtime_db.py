@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -162,6 +163,98 @@ def test_embedded_pg_database_url_returns_raw_url(managed_tmp_path: Path) -> Non
         _start_embedded_pg_or_skip(pg)
         assert pg.database_url.startswith("postgresql")
     finally:
+        pg.stop()
+
+
+@requires_embedded_pg
+def test_fresh_embedded_runtime_and_instance_roots_contain_no_seeded_plaintext(
+    managed_tmp_path: Path,
+) -> None:
+    from anima_server.services.corefs.privacy_validation import scan_private_markers
+    from anima_server.services.corefs.runtime_sealing import (
+        RuntimePayloadAAD,
+        RuntimePayloadSealer,
+    )
+
+    markers = {
+        "message": b"release-gate-message-plaintext",
+        "chunk": b"release-gate-chunk-plaintext",
+        "ocr": b"release-gate-ocr-plaintext",
+        "source": b"release-gate-source-plaintext",
+        "candidate": b"release-gate-candidate-plaintext",
+        "pending": b"release-gate-pending-plaintext",
+        "preview": b"release-gate-preview-plaintext",
+        "vector": b"release-gate-vector-plaintext",
+    }
+    pg = EmbeddedPG(managed_tmp_path / "instance" / "runtime" / "pg_data")
+    engine = None
+    try:
+        _start_embedded_pg_or_skip(pg)
+        engine = create_engine(runtime_module._to_sync_url(pg.database_url), future=True)
+        sealer = RuntimePayloadSealer()
+        sealer.install(sqlcipher_key=b"p" * 32, local_instance_id="privacy-scan")
+        sealed_rows = []
+        for row_id, (row_type, marker) in enumerate(markers.items(), start=1):
+            sealed = sealer.seal(
+                marker,
+                aad=RuntimePayloadAAD(
+                    row_type=row_type,
+                    row_id=str(row_id),
+                    owner_id="privacy-owner",
+                ),
+            )
+            sealed_rows.append(
+                {
+                    "row_type": hashlib.sha256(row_type.encode()).hexdigest(),
+                    "payload": sealed.nonce + sealed.ciphertext,
+                }
+            )
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE TABLE privacy_release_probe "
+                    "(id BIGSERIAL PRIMARY KEY, row_type TEXT NOT NULL, payload BYTEA NOT NULL)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO privacy_release_probe (row_type, payload) "
+                    "VALUES (:row_type, :payload)"
+                ),
+                sealed_rows,
+            )
+        engine.dispose()
+        engine = None
+        pg.stop()
+
+        instance_root = managed_tmp_path / "instance"
+        cache = instance_root / "cache"
+        logs = instance_root / "health-logs"
+        index = cache / "indices"
+        index.mkdir(parents=True)
+        logs.mkdir(parents=True)
+        (cache / "checkpoint.json").write_text(
+            '{"generation":1,"status":"ready"}',
+            encoding="utf-8",
+        )
+        (logs / "health.jsonl").write_text(
+            '{"event":"runtime_ready"}\n',
+            encoding="utf-8",
+        )
+        (index / "opaque.bin").write_bytes(hashlib.sha256(b"index").digest())
+
+        assert scan_private_markers(
+            roots={
+                "runtime": pg.data_dir,
+                "cache": cache,
+                "logs": logs,
+                "index": index,
+            },
+            markers=markers,
+        ) == ()
+    finally:
+        if engine is not None:
+            engine.dispose()
         pg.stop()
 
 
