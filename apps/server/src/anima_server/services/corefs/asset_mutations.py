@@ -44,6 +44,12 @@ def upsert_canonical_binary_asset(
         raise AssetMutationError("Canonical asset exceeds the portable size limit.")
     if object_kind not in {"attachment", "gallery-asset", "knowledge-source"}:
         raise AssetMutationError("Canonical asset kind is invalid.")
+    body_encoding = "utf-8" if object_kind == "knowledge-source" else "binary"
+    if body_encoding == "utf-8":
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise AssetMutationError("Canonical knowledge source must be UTF-8.") from exc
     with _asset_lock(int(session.user_id)):
         catalog = read_canonical_asset_catalog(session=session)
         existing = _find_asset(catalog, stable_id)
@@ -67,7 +73,7 @@ def upsert_canonical_binary_asset(
                 "target": {"stableId": stable_id},
                 "expectedRevision": existing.revision,
                 "contentType": content_type,
-                "bodyEncoding": "binary",
+                "bodyEncoding": body_encoding,
             }
         else:
             component = portable_catalog_component(name, stable_id=stable_id)
@@ -77,7 +83,7 @@ def upsert_canonical_binary_asset(
                 "stableId": stable_id,
                 "kind": object_kind,
                 "contentType": content_type,
-                "bodyEncoding": "binary",
+                "bodyEncoding": body_encoding,
             }
         _execute(session=session, catalog=catalog, mutation=mutation, body=data)
         refreshed = read_canonical_asset_catalog(session=session)

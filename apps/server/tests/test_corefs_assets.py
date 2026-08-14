@@ -29,10 +29,16 @@ from anima_server.services.corefs.asset_migration import (
 from anima_server.services.corefs.conversation_migration import (
     build_conversation_shadow_catalog,
 )
+from anima_server.services.corefs.cutover import CutoverState
 from anima_server.services.corefs.diary_migration import (
     migration_opaque_id,
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
+)
+from anima_server.services.corefs.image_authority import (
+    canonical_image_projection,
+    forget_canonical_image,
+    set_canonical_image_retention,
 )
 from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
 from anima_server.services.corefs.messages import decode_message_segment
@@ -469,3 +475,52 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     assert {item.stable_id for item in after.objects} == {
         item.stable_id for item in prepared.objects
     }
+    restarted_session.content_authority = {
+        "version": 1,
+        "state": "cutover_complete",
+        "legacyRollbackDisabled": True,
+        "cutoverEpoch": 1,
+        "families": ["assets", "documents", "knowledge"],
+        "generation": repeated.generation,
+        "catalogHash": repeated.catalog_hash,
+    }
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "anima_server.services.corefs.cutover.reconcile_cutover_authority",
+        lambda **_kwargs: (
+            restarted_session.content_authority
+            if restarted_session.content_authority["generation"] > repeated.generation
+            else None
+        ),
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "anima_server.services.corefs.cutover.read_cutover_record",
+        lambda: SimpleNamespace(
+            state=(
+                CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY
+                if restarted_session.content_authority["generation"]
+                > repeated.generation
+                else CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE
+            ),
+            cutover_epoch=1,
+            validation_generation=repeated.generation,
+            validation_catalog_hash=repeated.catalog_hash,
+        ),
+    )
+    direct_projection = canonical_image_projection(
+        session=restarted_session,
+        image_asset_id=8,
+    )
+    assert direct_projection is not None
+    assert direct_projection.stable_id == prepared_asset.stable_id
+    assert (
+        set_canonical_image_retention(
+            session=restarted_session,
+            image_asset_id=8,
+            retention_state="durable",
+        )
+        == "durable"
+    )
+    assert forget_canonical_image(session=restarted_session, image_asset_id=8) is True
+    assert (
+        canonical_image_projection(session=restarted_session, image_asset_id=8) is None
+    )

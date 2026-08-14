@@ -13,6 +13,19 @@ from anima_server.models.runtime import (
     RuntimeSourceArtifact,
     RuntimeSourceSpan,
 )
+from anima_server.services.corefs import logical
+from anima_server.services.corefs.cutover import (
+    approve_validation_cutover,
+    begin_migration,
+    publish_validation_readonly,
+    reconcile_cutover_authority,
+)
+from anima_server.services.corefs.diary_migration import (
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
+from anima_server.services.corefs.knowledge_authority import decode_knowledge_document
+from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from sqlalchemy import select
 
@@ -65,6 +78,127 @@ def test_markdown_source_endpoint_creates_spans_and_compile_run() -> None:
             assert concept.concept_type == "source_summary"
             assert concept.metadata_json["compiled_from_source_id"] == payload["source"]["id"]
             assert runtime_db.scalar(select(RuntimeKnowledgeConceptSource)) is not None
+
+
+def test_post_cutover_knowledge_sources_use_only_corefs() -> None:
+    with managed_test_client("anima-knowledge-corefs-") as client:
+        user_id, headers = _register(client, username="knowledge-corefs")
+        token = headers["x-anima-unlock"]
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
+        begin_migration()
+        publish_validation_readonly(
+            generation=int(selected["generation"]),
+            catalog_hash=str(selected["catalogHash"]),
+        )
+        approve_validation_cutover()
+        logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=logical.CoreFsValidationSnapshot(
+                int(selected["generation"]),
+                str(selected["catalogHash"]),
+            ),
+            principal="user",
+            mutation={"operation": "mkdir", "path": "Knowledge activation proof"},
+        )
+        marker = reconcile_cutover_authority(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
+        assert marker is not None
+        object.__setattr__(session, "content_authority", marker)
+
+        markdown = "# Canonical Knowledge\n\nA portable zephyrblade reference."
+        created = client.post(
+            "/api/knowledge/sources/markdown",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "filename": "../portable.md",
+                "title": "Portable Reference",
+                "content": markdown,
+                "compile": True,
+            },
+        )
+        assert created.status_code == 201, created.text
+        payload = created.json()
+        assert payload["source"]["kind"] == "markdown"
+        assert payload["source"]["sourceUri"] == "markdown://portable.md"
+        assert payload["compileRun"]["status"] == "completed"
+        assert payload["compileRun"]["runType"] == "compile:derived"
+        source_id = int(payload["source"]["id"])
+        object_uri = payload["artifacts"][0]["metadata"]["objectUri"]
+        stable_id = object_uri.rsplit("/", 1)[-1]
+        item = next(
+            candidate
+            for candidate in read_prepared_writing_snapshot(session=session).objects
+            if candidate.stable_id == stable_id
+        )
+        document = decode_knowledge_document(
+            read_prepared_writing_body(session=session, item=item)
+        )
+        assert document.original_content == markdown
+        assert "zephyrblade" in document.content
+
+        listed = client.get(
+            f"/api/knowledge/sources?userId={user_id}",
+            headers=headers,
+        )
+        assert listed.status_code == 200, listed.text
+        assert [source["id"] for source in listed.json()["sources"]] == [source_id]
+        fetched = client.get(
+            f"/api/knowledge/sources/{source_id}?userId={user_id}",
+            headers=headers,
+        )
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["source"]["sourceUri"] == "markdown://portable.md"
+        searched = client.get(
+            f"/api/knowledge/search?userId={user_id}&q=zephyrblade",
+            headers=headers,
+        )
+        assert searched.status_code == 200, searched.text
+        assert searched.json()["evidenceSpans"][0]["sourceId"] == source_id
+        compiled = client.post(
+            f"/api/knowledge/sources/{source_id}/compile?userId={user_id}",
+            headers=headers,
+        )
+        assert compiled.status_code == 202, compiled.text
+        assert compiled.json()["compileRun"]["runType"] == "compile:derived"
+
+        captured = client.post(
+            "/api/knowledge/sources/web-capture",
+            headers=headers,
+            json={
+                "userId": user_id,
+                "url": "https://example.test/reference",
+                "html": (
+                    "<html><head><title>Portable HTML</title></head>"
+                    "<body><article><h1>Portable HTML</h1>"
+                    "<p>Offline re-extraction source.</p></article></body></html>"
+                ),
+                "fetch": False,
+                "compile": False,
+            },
+        )
+        assert captured.status_code == 201, captured.text
+        captured_id = int(captured.json()["source"]["id"])
+        reextracted = client.post(
+            f"/api/knowledge/sources/{captured_id}/reextract?userId={user_id}",
+            headers=headers,
+        )
+        assert reextracted.status_code == 200, reextracted.text
+        assert reextracted.json()["source"]["id"] == captured_id
+        assert "Offline re-extraction source" in reextracted.json()["artifacts"][0][
+            "contentText"
+        ]
+
+        with get_runtime_session_factory()() as runtime_db:
+            assert runtime_db.scalar(select(RuntimeSource).limit(1)) is None
+            assert runtime_db.scalar(select(RuntimeSourceArtifact).limit(1)) is None
+            assert runtime_db.scalar(select(RuntimeSourceSpan).limit(1)) is None
+            assert runtime_db.scalar(select(RuntimeKnowledgeConcept).limit(1)) is None
 
 
 def test_markdown_source_endpoint_compile_keeps_span_topics_active() -> None:

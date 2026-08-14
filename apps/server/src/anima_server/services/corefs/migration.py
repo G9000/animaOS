@@ -1071,6 +1071,27 @@ def _rebuild_knowledge_source_projection(
     text: str,
 ) -> None:
     metadata = entry.get("metadata")
+    if metadata == {}:
+        from anima_server.services.corefs.knowledge_authority import (
+            decode_knowledge_document,
+            knowledge_projection_from_document,
+        )
+
+        try:
+            document = decode_knowledge_document(text.encode("utf-8"))
+        except ValueError as exc:
+            raise _NonIndexableCoreFSObject(
+                "Canonical knowledge document is invalid"
+            ) from exc
+        index.replace_knowledge_source_projection(
+            knowledge_projection_from_document(
+                stable_id=entry["stable_id"],
+                filename=entry["path"].rsplit("/", 1)[-1],
+                document=document,
+                content_sha256=entry["content_hash"],
+            )
+        )
+        return
     if not isinstance(metadata, dict):
         raise _NonIndexableCoreFSObject("Canonical knowledge metadata is invalid")
     source_id = metadata.get("sourceId")

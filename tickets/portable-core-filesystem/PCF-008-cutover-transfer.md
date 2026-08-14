@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 14:57 MYT
+- Updated: 2026-08-14 15:16 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -457,6 +457,18 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   reparse/migration/asset band passes `104`, with the focused authority rerun,
   Ruff, and diff hygiene green. Image-gallery/knowledge writers and raw scans
   keep Step 8 open; no external or irreversible action occurred.
+- 2026-08-14 15:16 MYT - Routed post-cutover pasted text, Markdown, web
+  capture, HTML upload, deterministic derived compile/search, and offline HTML
+  re-extraction through authenticated canonical knowledge-source documents.
+  Each source retains both its exact original content and normalized snapshot;
+  re-extraction advances the same stable source revision without network
+  access, and no Runtime source/artifact/span/concept row is created. Migrated
+  gallery images now resolve directly from the authenticated catalog, persist
+  retention policy in an encrypted CoreFS sidecar, and use source-first
+  recoverable trash without mutating retained Runtime image rows. The widened
+  knowledge/image/HTML/structured/web band passes `99`, with scoped Ruff
+  hygiene green. OKF bundle import/export/lint and the full raw scans keep Step
+  8 open; no external or irreversible action occurred.
 
 ## Validation
 
@@ -466,6 +478,7 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `cargo clippy -p anima-corefs --all-targets -- -D warnings` (passed)
   - `PYO3_USE_ABI3_FORWARD_COMPATIBILITY=1 cargo check -p anima-core --features python` (passed)
   - scoped Ruff check/format, Rust format, and `git diff --check` (passed)
+  - `uv run pytest -q apps/server/tests/test_knowledge_api.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_corefs_assets.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py` (`99 passed`)
   - `cargo test -p anima-core core_archive` (`6 passed`)
   - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing
     crate lints allowed (`passed`; the unchanged strict crate-wide invocation

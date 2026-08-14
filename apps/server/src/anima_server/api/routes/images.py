@@ -14,7 +14,10 @@ from anima_server.db import get_runtime_db
 from anima_server.models.runtime import RuntimeImageAsset
 from anima_server.schemas.images import ImageRetentionUpdate
 from anima_server.services.agent.companion import invalidate_companion
-from anima_server.services.corefs.asset_authority import CoreFsByteSource
+from anima_server.services.corefs.asset_authority import (
+    CoreFsByteSource,
+    asset_authority_selection,
+)
 from anima_server.services.corefs.asset_mutations import (
     AssetMutationError,
     trash_canonical_asset,
@@ -27,6 +30,10 @@ from anima_server.services.corefs.conversation_authority import (
 from anima_server.services.corefs.conversation_mutations import (
     ConversationMutationError,
     edit_canonical_message,
+)
+from anima_server.services.corefs.image_authority import (
+    forget_canonical_image,
+    set_canonical_image_retention,
 )
 from anima_server.services.images.deletion import (
     forget_image_asset,
@@ -155,6 +162,28 @@ async def forget_image_asset_endpoint(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     unlock_session = await require_unlocked_session_async(request)
+    if asset_authority_selection(unlock_session) is not None:
+        try:
+            forgotten = forget_canonical_image(
+                session=unlock_session,
+                image_asset_id=image_asset_id,
+            )
+        except (AssetMutationError, RuntimeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Canonical image mutation failed.",
+            ) from exc
+        if not forgotten:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Image not found",
+            )
+        invalidate_companion(unlock_session.user_id)
+        return {
+            "status": "forgotten",
+            "imageAssetId": image_asset_id,
+            "fileDeleted": False,
+        }
     result = forget_image_asset(
         runtime_db,
         user_id=unlock_session.user_id,
@@ -179,6 +208,33 @@ async def update_image_retention(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     unlock_session = await require_unlocked_session_async(request)
+    if asset_authority_selection(unlock_session) is not None:
+        try:
+            retention_state = set_canonical_image_retention(
+                session=unlock_session,
+                image_asset_id=image_asset_id,
+                retention_state=payload.retentionState,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        except (AssetMutationError, RuntimeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Canonical image mutation failed.",
+            ) from exc
+        if retention_state is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Image not found",
+            )
+        return {
+            "status": "updated",
+            "imageAssetId": image_asset_id,
+            "retentionState": retention_state,
+        }
     try:
         asset = set_image_retention_state(
             runtime_db,
