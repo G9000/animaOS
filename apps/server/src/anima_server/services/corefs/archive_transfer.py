@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import tempfile
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from anima_server.services import anima_core_bindings
 from anima_server.services.core import get_manifest_path
@@ -21,6 +23,7 @@ from anima_server.services.corefs.types import PayloadScope
 
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_RECOVERY_RECORDS = 10_000
+_MULTIPART_CONTROLLER_MAGIC = b"ANIMACT2"
 
 
 class CoreArchiveTransferError(RuntimeError):
@@ -63,6 +66,17 @@ class CoreArchiveImportResult:
     chunk_count: int
     max_buffer_bytes: int
     control_records: tuple[tuple[str, int, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class CoreArchiveMultipartExportResult:
+    inventory: CoreArchiveInventory
+    archive_id: str
+    plaintext_bytes: int
+    chunk_count: int
+    max_buffer_bytes: int
+    publication_path: Path
+    bytes_published: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +184,251 @@ def export_core_archive_v2(
         plaintext_bytes=int(summary["plaintextBytes"]),
         chunk_count=int(summary["chunkCount"]),
         max_buffer_bytes=int(summary["maxBufferBytes"]),
+    )
+
+
+def export_core_archive_multipart_v2(
+    *,
+    session: Any,
+    destination: Path,
+    set_name: str,
+    passphrase: str,
+    payload_kind: CoreArchivePayloadKind,
+    soul_generation: int | None,
+    part_limit_bytes: int,
+    declared_volume_count: int,
+    cancel_requested: Callable[[], bool] | None = None,
+    core_root: Path | None = None,
+    manifest: dict[str, object] | None = None,
+) -> CoreArchiveMultipartExportResult:
+    """Publish one authenticated controller-last V2 multipart archive set."""
+    from anima_server.services.corefs.transfer import (
+        ARCHIVE_FRAME_RESERVE_BYTES,
+        PublishedVolume,
+        publish_multipart,
+    )
+
+    if len(passphrase) < 8:
+        raise CoreArchiveTransferError("archive passphrase must be at least 8 characters")
+    if declared_volume_count < 2:
+        raise CoreArchiveTransferError("multipart archive requires at least two volumes")
+    if part_limit_bytes <= ARCHIVE_FRAME_RESERVE_BYTES:
+        raise CoreArchiveTransferError("multipart archive part limit is too small")
+
+    with tempfile.TemporaryDirectory(prefix="anima-core-archive-metadata-") as temporary_name:
+        temporary_root = Path(temporary_name)
+        prepared = _prepare_core_archive(
+            session=session,
+            payload_kind=payload_kind,
+            soul_generation=soul_generation,
+            snapshot_root=temporary_root,
+            core_root=core_root,
+            manifest=manifest,
+        )
+        inventory = prepared.inventory
+        manifest_path = temporary_root / "manifest.json"
+        keyslots_path = temporary_root / "root-keyslots.json"
+        _write_private_file(manifest_path, prepared.manifest_snapshot)
+        _write_private_file(keyslots_path, prepared.keyslot_snapshot)
+        sources = [
+            _source("manifest", "manifest.json", manifest_path),
+            *prepared.sources,
+            _source("keyslots", "keyslots/root-keyslots.json", keyslots_path),
+        ]
+        partitions = _partition_archive_sources(
+            sources,
+            declared_volume_count=declared_volume_count,
+            payload_limit_bytes=part_limit_bytes - ARCHIVE_FRAME_RESERVE_BYTES,
+        )
+        volume_set_id = str(uuid4())
+        kdf_salt = secrets.token_hex(32)
+        nonce_prefix = secrets.token_hex(4)
+        summaries: dict[int, dict[str, object]] = {}
+
+        def volume_producer(ordinal: int, volume_sources: list[dict[str, str]]):
+            def produce(output_path: Path) -> None:
+                archive_id = str(uuid4())
+                request = _archive_write_request(
+                    inventory=inventory,
+                    payload_kind=payload_kind,
+                    sources=volume_sources,
+                    archive_id=archive_id,
+                    volume_set_id=volume_set_id,
+                    volume_mode="multipart",
+                    declared_volume_count=declared_volume_count,
+                    volume_ordinal=ordinal,
+                    kdf_salt=kdf_salt,
+                    nonce_prefix=nonce_prefix,
+                )
+                try:
+                    raw = session.corefs_session.archive_write_v2(
+                        session.corefs_keys,
+                        os.fspath(output_path),
+                        passphrase.encode("utf-8"),
+                        json.dumps(request, sort_keys=True, separators=(",", ":")),
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise CoreArchiveTransferError(
+                        "native ANIMA CORE multipart volume export failed"
+                    ) from exc
+                summary = _validate_extracted_summary(raw)
+                _match_volume_summary(
+                    summary,
+                    inventory=inventory,
+                    volume_set_id=volume_set_id,
+                    archive_id=archive_id,
+                    source_count=len(volume_sources),
+                    source_bytes=sum(
+                        Path(source["sourcePath"]).stat().st_size
+                        for source in volume_sources
+                    ),
+                )
+                summaries[ordinal] = summary
+
+            return produce
+
+        producers = [
+            volume_producer(ordinal, partition)
+            for ordinal, partition in enumerate(partitions, start=1)
+        ]
+
+        def verify_volume(path: Path) -> None:
+            ordinal = int(path.name.removeprefix("volume-").split(".", 1)[0])
+            extractor = anima_core_bindings.require_binding(
+                "core_archive_extract_volume_v2"
+            )
+            staging = Path(
+                tempfile.mkdtemp(prefix=".anima-core-volume-verify-", dir=path.parent)
+            )
+            shutil.rmtree(staging)
+            try:
+                raw = extractor(
+                    os.fspath(path),
+                    passphrase.encode("utf-8"),
+                    os.fspath(staging),
+                    ordinal,
+                )
+                verified = _validate_extracted_summary(raw)
+                written = summaries.get(ordinal)
+                if written is None or any(
+                    verified.get(key) != written.get(key)
+                    for key in (
+                        "archiveId",
+                        "volumeSetId",
+                        "payloadKind",
+                        "coreId",
+                        "ownerId",
+                        "soulGeneration",
+                        "filesystemGeneration",
+                        "recordCount",
+                        "chunkCount",
+                        "plaintextBytes",
+                        "maxBufferBytes",
+                    )
+                ):
+                    raise CoreArchiveTransferError(
+                        "multipart volume verification changed its summary"
+                    )
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise CoreArchiveTransferError(
+                    "ANIMA CORE multipart volume verification failed"
+                ) from exc
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+
+        def controller_request(volumes: Sequence[PublishedVolume]) -> dict[str, object]:
+            if len(volumes) != declared_volume_count or len(summaries) != len(volumes):
+                raise CoreArchiveTransferError("multipart volume inventory is incomplete")
+            if (
+                sum(int(summary["plaintextBytes"]) for summary in summaries.values())
+                != inventory.selected_bytes
+                or sum(int(summary["recordCount"]) for summary in summaries.values())
+                != inventory.record_count
+            ):
+                raise CoreArchiveTransferError(
+                    "multipart archive changed its selected inventory"
+                )
+            return {
+                "payloadKind": payload_kind.value,
+                "coreId": inventory.core_id,
+                "ownerId": inventory.owner_id,
+                "soulGeneration": inventory.soul_generation,
+                "filesystemGeneration": inventory.filesystem_generation,
+                "volumeSetId": volume_set_id,
+                "kdfSalt": kdf_salt,
+                "noncePrefix": nonce_prefix,
+                "volumes": [
+                    {
+                        "ordinal": volume.ordinal,
+                        "filename": volume.filename,
+                        "archiveId": summaries[volume.ordinal]["archiveId"],
+                        "byteLength": volume.length,
+                        "sha256": volume.sha256,
+                        "recordCount": summaries[volume.ordinal]["recordCount"],
+                        "chunkCount": summaries[volume.ordinal]["chunkCount"],
+                        "plaintextBytes": summaries[volume.ordinal]["plaintextBytes"],
+                    }
+                    for volume in volumes
+                ],
+            }
+
+        expected_controller: dict[str, object] = {}
+
+        def produce_controller(
+            output_path: Path,
+            volumes: tuple[PublishedVolume, ...],
+        ) -> None:
+            nonlocal expected_controller
+            expected_controller = controller_request(volumes)
+            writer = anima_core_bindings.require_binding(
+                "core_archive_write_controller_v2"
+            )
+            try:
+                writer(
+                    os.fspath(output_path),
+                    passphrase.encode("utf-8"),
+                    json.dumps(expected_controller, sort_keys=True, separators=(",", ":")),
+                )
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise CoreArchiveTransferError(
+                    "ANIMA CORE multipart controller export failed"
+                ) from exc
+
+        def verify_controller(path: Path) -> None:
+            reader = anima_core_bindings.require_binding(
+                "core_archive_read_controller_v2"
+            )
+            try:
+                raw = reader(os.fspath(path), passphrase.encode("utf-8"))
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise CoreArchiveTransferError(
+                    "ANIMA CORE multipart controller verification failed"
+                ) from exc
+            _match_controller_summary(raw, expected_controller)
+
+        publication = publish_multipart(
+            destination,
+            set_name,
+            volume_producers=producers,
+            controller_producer=produce_controller,
+            volume_verifier=verify_volume,
+            controller_verifier=verify_controller,
+            part_limit_bytes=part_limit_bytes,
+            cancel_requested=cancel_requested,
+        )
+
+    plaintext_bytes = sum(int(summary["plaintextBytes"]) for summary in summaries.values())
+    record_count = sum(int(summary["recordCount"]) for summary in summaries.values())
+    if plaintext_bytes != inventory.selected_bytes or record_count != inventory.record_count:
+        raise CoreArchiveTransferError("multipart archive changed its selected inventory")
+    return CoreArchiveMultipartExportResult(
+        inventory=inventory,
+        archive_id=volume_set_id,
+        plaintext_bytes=plaintext_bytes,
+        chunk_count=sum(int(summary["chunkCount"]) for summary in summaries.values()),
+        max_buffer_bytes=max(int(summary["maxBufferBytes"]) for summary in summaries.values()),
+        publication_path=publication.path,
+        bytes_published=publication.bytes_published,
     )
 
 
@@ -290,7 +549,12 @@ def verify_core_archive_v2(
     passphrase: str,
     expected: CoreArchiveInventory | None = None,
 ) -> dict[str, object]:
-    extractor = anima_core_bindings.require_binding("core_archive_extract_v2")
+    binding_name = (
+        "core_archive_extract_set_v2"
+        if _is_multipart_controller(archive_path)
+        else "core_archive_extract_v2"
+    )
+    extractor = anima_core_bindings.require_binding(binding_name)
     staging_parent = archive_path.expanduser().resolve(strict=True).parent
     staging = Path(tempfile.mkdtemp(prefix=".anima-core-verify-", dir=staging_parent))
     shutil.rmtree(staging)
@@ -336,7 +600,12 @@ def stage_core_archive_v2(
     if staging.parent != parent or staging.exists():
         raise CoreArchiveTransferError("ANIMA CORE import staging path is invalid")
 
-    extractor = anima_core_bindings.require_binding("core_archive_extract_v2")
+    binding_name = (
+        "core_archive_extract_set_v2"
+        if _is_multipart_controller(archive)
+        else "core_archive_extract_v2"
+    )
+    extractor = anima_core_bindings.require_binding(binding_name)
     try:
         try:
             raw = extractor(
@@ -371,6 +640,14 @@ def _read_manifest(path: Path) -> dict[str, object]:
     if not isinstance(value, dict):
         raise CoreArchiveTransferError("ANIMA CORE manifest is invalid")
     return cast(dict[str, object], value)
+
+
+def _is_multipart_controller(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            return handle.read(len(_MULTIPART_CONTROLLER_MAGIC)) == _MULTIPART_CONTROLLER_MAGIC
+    except OSError as exc:
+        raise CoreArchiveTransferError("ANIMA CORE archive is unavailable") from exc
 
 
 def _required_uuid(manifest: dict[str, object], key: str) -> str:
@@ -429,6 +706,121 @@ def _source(record_type: str, record_path: str, source_path: Path) -> dict[str, 
         "recordPath": record_path,
         "sourcePath": os.fspath(resolved),
     }
+
+
+def _archive_write_request(
+    *,
+    inventory: CoreArchiveInventory,
+    payload_kind: CoreArchivePayloadKind,
+    sources: Sequence[dict[str, str]],
+    archive_id: str,
+    volume_set_id: str,
+    volume_mode: str,
+    declared_volume_count: int,
+    volume_ordinal: int,
+    kdf_salt: str | None = None,
+    nonce_prefix: str | None = None,
+) -> dict[str, object]:
+    return {
+        "payloadKind": payload_kind.value,
+        "coreId": inventory.core_id,
+        "ownerId": inventory.owner_id,
+        "soulGeneration": inventory.soul_generation,
+        "filesystemGeneration": inventory.filesystem_generation,
+        "filesystemCatalogHash": inventory.filesystem_catalog_hash,
+        "archiveId": archive_id,
+        "volumeSetId": volume_set_id,
+        "volumeMode": volume_mode,
+        "declaredVolumeCount": declared_volume_count,
+        "volumeOrdinal": volume_ordinal,
+        "kdfSalt": kdf_salt,
+        "noncePrefix": nonce_prefix,
+        "sources": list(sources),
+    }
+
+
+def _partition_archive_sources(
+    sources: Sequence[dict[str, str]],
+    *,
+    declared_volume_count: int,
+    payload_limit_bytes: int,
+) -> list[list[dict[str, str]]]:
+    if declared_volume_count < 2 or declared_volume_count > len(sources):
+        raise CoreArchiveTransferError(
+            "multipart volume count cannot preserve non-empty record inventories"
+        )
+    partitions: list[list[dict[str, str]]] = [[]]
+    partition_bytes = 0
+    for source in sources:
+        source_bytes = Path(source["sourcePath"]).stat().st_size
+        if source_bytes > payload_limit_bytes:
+            raise CoreArchiveTransferError(
+                "one archive record exceeds the destination part limit"
+            )
+        if partitions[-1] and partition_bytes + source_bytes > payload_limit_bytes:
+            partitions.append([])
+            partition_bytes = 0
+        partitions[-1].append(source)
+        partition_bytes += source_bytes
+    if len(partitions) > declared_volume_count:
+        raise CoreArchiveTransferError(
+            "selected records exceed the preflighted multipart volume count"
+        )
+    while len(partitions) < declared_volume_count:
+        candidates = [
+            (sum(Path(item["sourcePath"]).stat().st_size for item in partition), index)
+            for index, partition in enumerate(partitions)
+            if len(partition) > 1
+        ]
+        if not candidates:
+            raise CoreArchiveTransferError(
+                "multipart volume count cannot preserve non-empty record inventories"
+            )
+        _, index = max(candidates)
+        moved = partitions[index].pop()
+        partitions.insert(index + 1, [moved])
+    return partitions
+
+
+def _match_volume_summary(
+    summary: dict[str, object],
+    *,
+    inventory: CoreArchiveInventory,
+    volume_set_id: str,
+    archive_id: str,
+    source_count: int,
+    source_bytes: int,
+) -> None:
+    expected = {
+        "payloadKind": inventory.payload_kind.value,
+        "coreId": inventory.core_id,
+        "ownerId": inventory.owner_id,
+        "soulGeneration": inventory.soul_generation,
+        "filesystemGeneration": inventory.filesystem_generation,
+        "volumeSetId": volume_set_id,
+        "archiveId": archive_id,
+        "recordCount": source_count,
+        "plaintextBytes": source_bytes,
+    }
+    if any(summary.get(key) != value for key, value in expected.items()):
+        raise CoreArchiveTransferError("native multipart volume changed its inventory")
+
+
+def _match_controller_summary(raw: object, expected: dict[str, object]) -> None:
+    if not isinstance(raw, dict):
+        raise CoreArchiveTransferError("native multipart controller summary is invalid")
+    public_expected = {
+        "version": 2,
+        "volumeSetId": expected["volumeSetId"],
+        "payloadKind": expected["payloadKind"],
+        "coreId": expected["coreId"],
+        "ownerId": expected["ownerId"],
+        "soulGeneration": expected["soulGeneration"],
+        "filesystemGeneration": expected["filesystemGeneration"],
+        "volumes": expected["volumes"],
+    }
+    if raw != public_expected:
+        raise CoreArchiveTransferError("native multipart controller changed its inventory")
 
 
 def keyslot_snapshot_bytes(manifest: dict[str, object]) -> bytes:

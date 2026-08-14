@@ -13,8 +13,11 @@ from anima_server.services.corefs.archive_transfer import (
     CoreArchiveExportResult,
     CoreArchiveImportResult,
     CoreArchiveInventory,
+    CoreArchiveMultipartExportResult,
     CoreArchivePayloadKind,
     CoreArchiveTransferError,
+    _is_multipart_controller,
+    export_core_archive_multipart_v2,
     export_core_archive_v2,
     inspect_core_archive_v2,
     stage_core_archive_v2,
@@ -50,6 +53,49 @@ from anima_server.services.corefs.transfer import (
 from anima_server.services.corefs.types import WrappingPath
 
 _MAX_OPERATIONS = 32
+
+
+def _multipart_set_name(final_name: str) -> str:
+    lowered = final_name.casefold()
+    for suffix in (".anima-core", ".anima"):
+        if lowered.endswith(suffix) and len(final_name) > len(suffix):
+            return final_name[: -len(suffix)]
+    return final_name
+
+
+def _import_source_bytes(archive: Path) -> int:
+    if not _is_multipart_controller(archive):
+        return archive.stat().st_size
+    if archive.name != "core.anima":
+        raise TransferError("multipart ANIMA CORE controller filename is invalid")
+    volumes: list[tuple[int, int]] = []
+    total = archive.stat().st_size
+    for child in archive.parent.iterdir():
+        if child == archive:
+            continue
+        if child.is_symlink() or not child.is_file():
+            raise TransferError("multipart ANIMA CORE directory is invalid")
+        name = child.name
+        prefix = "volume-"
+        suffix = ".anima-part"
+        ordinal_text = name[len(prefix) : -len(suffix)]
+        if (
+            not name.startswith(prefix)
+            or not name.endswith(suffix)
+            or len(ordinal_text) < 4
+            or not ordinal_text.isascii()
+            or not ordinal_text.isdigit()
+        ):
+            raise TransferError("multipart ANIMA CORE directory is invalid")
+        volumes.append((int(ordinal_text), child.stat().st_size))
+        if len(volumes) > 100_000:
+            raise TransferError("multipart ANIMA CORE volume count exceeds its bound")
+    volumes.sort()
+    if len(volumes) < 2 or [ordinal for ordinal, _ in volumes] != list(
+        range(1, len(volumes) + 1)
+    ):
+        raise TransferError("multipart ANIMA CORE volume inventory is incomplete")
+    return total + sum(length for _, length in volumes)
 
 
 class TransferOperationState(StrEnum):
@@ -207,10 +253,6 @@ class CoreTransferOperationManager:
             destination=destination,
         )
         assert isinstance(prepared, PreparedTransfer)
-        if prepared.probe.publication_mode is not PublicationMode.SINGLE_FILE:
-            raise TransferError(
-                "authenticated multipart archive sets are not available in this build"
-            )
         operation = TransferOperation(
             operation_id=str(uuid4()),
             user_id=user_id,
@@ -275,7 +317,7 @@ class CoreTransferOperationManager:
         final_name: str,
         passphrase: str,
     ) -> None:
-        result: CoreArchiveExportResult | None = None
+        result: CoreArchiveExportResult | CoreArchiveMultipartExportResult | None = None
 
         def update(
             state: TransferOperationState,
@@ -312,21 +354,48 @@ class CoreTransferOperationManager:
 
         try:
             update(TransferOperationState.RUNNING, "starting", 5)
-            publication = publish_single_file(
-                destination,
-                final_name,
-                producer=producer,
-                verifier=verifier,
-                cancel_requested=operation.cancel.is_set,
-            )
+            if operation.prepared.probe.publication_mode is PublicationMode.MULTIPART:
+                part_limit = operation.prepared.probe.part_limit_bytes
+                if part_limit is None:
+                    raise TransferError("multipart destination has no part limit")
+                update(TransferOperationState.RUNNING, "streaming", 25)
+                result = export_core_archive_multipart_v2(
+                    session=session,
+                    destination=destination,
+                    set_name=_multipart_set_name(final_name),
+                    passphrase=passphrase,
+                    payload_kind=operation.prepared.inventory.payload_kind,
+                    soul_generation=operation.prepared.inventory.soul_generation,
+                    part_limit_bytes=part_limit,
+                    declared_volume_count=(
+                        operation.prepared.probe.declared_volume_count
+                    ),
+                    cancel_requested=operation.cancel.is_set,
+                )
+                if result.inventory != operation.prepared.inventory:
+                    raise CoreArchiveTransferError(
+                        "archive inventory changed after destination preflight"
+                    )
+                publication_path = result.publication_path
+                published_bytes = result.bytes_published
+            else:
+                publication = publish_single_file(
+                    destination,
+                    final_name,
+                    producer=producer,
+                    verifier=verifier,
+                    cancel_requested=operation.cancel.is_set,
+                )
+                publication_path = publication.path
+                published_bytes = publication.bytes_published
             if result is None:
                 raise CoreArchiveTransferError("archive export produced no result")
             with self._lock:
                 operation.state = TransferOperationState.COMPLETED
                 operation.phase = "completed"
                 operation.progress_percent = 100
-                operation.bytes_published = publication.bytes_published
-                operation.result_path = publication.path
+                operation.bytes_published = published_bytes
+                operation.result_path = publication_path
                 operation.archive_id = result.archive_id
         except TransferCancelled:
             update(TransferOperationState.CANCELLED, "cancelled", operation.progress_percent)
@@ -378,7 +447,7 @@ class CoreImportOperationManager:
         active = get_core_dir().expanduser().resolve(strict=True)
         if not archive.is_file() or archive.is_relative_to(active):
             raise TransferError("ANIMA CORE import source is invalid")
-        archive_bytes = archive.stat().st_size
+        archive_bytes = _import_source_bytes(archive)
         if archive_bytes <= 0:
             raise TransferError("ANIMA CORE import source is empty")
         probe = probe_import_staging(
@@ -626,10 +695,6 @@ class CoreImportOperationManager:
                     estimate,
                     forbidden_roots=(get_core_dir(), staging_path),
                 )
-                if probe.publication_mode is not PublicationMode.SINGLE_FILE:
-                    raise TransferError(
-                        "authenticated multipart archive sets are not available in this build"
-                    )
                 export = self._transfer_operations.register_prepared(
                     user_id=user_id,
                     prepared=PreparedTransfer(
@@ -681,7 +746,7 @@ class CoreImportOperationManager:
         final_name: str,
         passphrase: str,
     ) -> None:
-        result: CoreArchiveExportResult | None = None
+        result: CoreArchiveExportResult | CoreArchiveMultipartExportResult | None = None
 
         def update(state: TransferOperationState, phase: str, progress: int) -> None:
             with self._transfer_operations._lock:
@@ -720,21 +785,59 @@ class CoreImportOperationManager:
         try:
             with access_lock:
                 update(TransferOperationState.RUNNING, "starting", 5)
-                publication = publish_single_file(
-                    export_operation.prepared.probe.destination,
-                    final_name,
-                    producer=producer,
-                    verifier=verifier,
-                    cancel_requested=export_operation.cancel.is_set,
-                )
+                if (
+                    export_operation.prepared.probe.publication_mode
+                    is PublicationMode.MULTIPART
+                ):
+                    part_limit = export_operation.prepared.probe.part_limit_bytes
+                    if part_limit is None:
+                        raise TransferError("multipart destination has no part limit")
+                    update(TransferOperationState.RUNNING, "streaming", 25)
+                    context.verify_authority()
+                    with _validation_pointer_alias(
+                        context.core_root,
+                        context.control_records,
+                    ):
+                        result = export_core_archive_multipart_v2(
+                            session=context,
+                            destination=export_operation.prepared.probe.destination,
+                            set_name=_multipart_set_name(final_name),
+                            passphrase=passphrase,
+                            payload_kind=CoreArchivePayloadKind.FS,
+                            soul_generation=None,
+                            part_limit_bytes=part_limit,
+                            declared_volume_count=(
+                                export_operation.prepared.probe.declared_volume_count
+                            ),
+                            cancel_requested=export_operation.cancel.is_set,
+                            core_root=context.core_root,
+                            manifest=context.manifest,
+                        )
+                    context.verify_authority()
+                    if result.inventory != export_operation.prepared.inventory:
+                        raise CoreArchiveTransferError(
+                            "recovery archive inventory changed after destination preflight"
+                        )
+                    publication_path = result.publication_path
+                    published_bytes = result.bytes_published
+                else:
+                    publication = publish_single_file(
+                        export_operation.prepared.probe.destination,
+                        final_name,
+                        producer=producer,
+                        verifier=verifier,
+                        cancel_requested=export_operation.cancel.is_set,
+                    )
+                    publication_path = publication.path
+                    published_bytes = publication.bytes_published
                 if result is None:
                     raise CoreArchiveTransferError("CoreFS recovery export produced no result")
                 with self._transfer_operations._lock:
                     export_operation.state = TransferOperationState.COMPLETED
                     export_operation.phase = "completed"
                     export_operation.progress_percent = 100
-                    export_operation.bytes_published = publication.bytes_published
-                    export_operation.result_path = publication.path
+                    export_operation.bytes_published = published_bytes
+                    export_operation.result_path = publication_path
                     export_operation.archive_id = result.archive_id
         except TransferCancelled:
             update(

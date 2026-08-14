@@ -558,7 +558,38 @@ mod python {
         declared_volume_count: u32,
         #[serde(default)]
         volume_ordinal: u32,
+        #[serde(default)]
+        kdf_salt: Option<String>,
+        #[serde(default)]
+        nonce_prefix: Option<String>,
         sources: Vec<CoreArchiveSourceWire>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveControllerVolumeWire {
+        ordinal: u32,
+        filename: String,
+        archive_id: String,
+        byte_length: u64,
+        sha256: String,
+        record_count: usize,
+        chunk_count: u64,
+        plaintext_bytes: u64,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveControllerWire {
+        payload_kind: String,
+        core_id: String,
+        owner_id: String,
+        soul_generation: Option<u64>,
+        filesystem_generation: Option<u64>,
+        volume_set_id: String,
+        kdf_salt: String,
+        nonce_prefix: String,
+        volumes: Vec<CoreArchiveControllerVolumeWire>,
     }
 
     fn core_archive_default_volume_mode() -> String {
@@ -777,6 +808,87 @@ mod python {
         Ok(value.to_owned())
     }
 
+    fn core_archive_hex<const N: usize>(value: &str, label: &'static str) -> PyResult<[u8; N]> {
+        if value.len() != N * 2
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "ANIMA CORE archive {label} is invalid"
+            )));
+        }
+        let mut decoded = [0u8; N];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let nibble = |byte: u8| match byte {
+                b'0'..=b'9' => byte - b'0',
+                b'a'..=b'f' => byte - b'a' + 10,
+                _ => unreachable!("validated lowercase hexadecimal"),
+            };
+            decoded[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+        }
+        Ok(decoded)
+    }
+
+    fn core_archive_capture(
+        payload_kind: crate::core_archive::PayloadKind,
+        core_id: uuid::Uuid,
+        owner_id: uuid::Uuid,
+        soul_generation: Option<u64>,
+        filesystem_generation: Option<u64>,
+    ) -> PyResult<crate::core_archive::ArchiveCapture> {
+        match payload_kind {
+            crate::core_archive::PayloadKind::Full => {
+                Ok(crate::core_archive::ArchiveCapture::full(
+                    core_id,
+                    owner_id,
+                    soul_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "full ANIMA CORE archive requires a Soul generation",
+                        )
+                    })?,
+                    filesystem_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "full ANIMA CORE archive requires a filesystem generation",
+                        )
+                    })?,
+                ))
+            }
+            crate::core_archive::PayloadKind::Soul => {
+                if filesystem_generation.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "Soul archive cannot declare a filesystem generation",
+                    ));
+                }
+                Ok(crate::core_archive::ArchiveCapture::soul(
+                    core_id,
+                    owner_id,
+                    soul_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "Soul archive requires a Soul generation",
+                        )
+                    })?,
+                ))
+            }
+            crate::core_archive::PayloadKind::Fs => {
+                if soul_generation.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS archive cannot declare a Soul generation",
+                    ));
+                }
+                Ok(crate::core_archive::ArchiveCapture::fs(
+                    core_id,
+                    owner_id,
+                    filesystem_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS archive requires a filesystem generation",
+                        )
+                    })?,
+                ))
+            }
+        }
+    }
+
     fn core_archive_summary_value(
         summary: &crate::core_archive::ArchiveSummary,
     ) -> serde_json::Value {
@@ -799,6 +911,40 @@ mod python {
             "plaintextBytes": summary.plaintext_bytes,
             "maxBufferBytes": summary.max_buffer_bytes,
         })
+    }
+
+    fn core_archive_record_value(
+        record: &crate::core_archive::ExtractedRecord,
+    ) -> serde_json::Value {
+        let record_type = match record.record_type {
+            crate::core_archive::RecordType::Manifest => "manifest",
+            crate::core_archive::RecordType::SoulDatabase => "soul_database",
+            crate::core_archive::RecordType::Catalog => "catalog",
+            crate::core_archive::RecordType::Object => "object",
+            crate::core_archive::RecordType::Keyslots => "keyslots",
+            crate::core_archive::RecordType::Recovery => "recovery",
+        };
+        json!({
+            "recordType": record_type,
+            "recordPath": record.record_path,
+            "plaintextLength": record.plaintext_length,
+            "recordHash": record.record_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        })
+    }
+
+    fn core_archive_extracted_value(
+        summary: &crate::core_archive::ArchiveSummary,
+        records: &[crate::core_archive::ExtractedRecord],
+    ) -> serde_json::Value {
+        let mut value = core_archive_summary_value(summary);
+        value
+            .as_object_mut()
+            .expect("archive summary is an object")
+            .insert(
+                "records".to_owned(),
+                serde_json::Value::Array(records.iter().map(core_archive_record_value).collect()),
+            );
+        value
     }
 
     #[pyfunction]
@@ -831,40 +977,13 @@ mod python {
                 }
             }
         }
-        let capture = match payload_kind {
-            crate::core_archive::PayloadKind::Full => crate::core_archive::ArchiveCapture::full(
-                core_id,
-                owner_id,
-                wire.soul_generation.ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "full ANIMA CORE archive requires a Soul generation",
-                    )
-                })?,
-                wire.filesystem_generation.ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "full ANIMA CORE archive requires a filesystem generation",
-                    )
-                })?,
-            ),
-            crate::core_archive::PayloadKind::Soul => crate::core_archive::ArchiveCapture::soul(
-                core_id,
-                owner_id,
-                wire.soul_generation.ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "Soul archive requires a Soul generation",
-                    )
-                })?,
-            ),
-            crate::core_archive::PayloadKind::Fs => crate::core_archive::ArchiveCapture::fs(
-                core_id,
-                owner_id,
-                wire.filesystem_generation.ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "CoreFS archive requires a filesystem generation",
-                    )
-                })?,
-            ),
-        };
+        let capture = core_archive_capture(
+            payload_kind,
+            core_id,
+            owner_id,
+            wire.soul_generation,
+            wire.filesystem_generation,
+        )?;
         let archive_id = match wire.archive_id.as_deref() {
             Some(value) => core_archive_uuid(value, "archive ID")?,
             None => uuid::Uuid::new_v4(),
@@ -879,6 +998,29 @@ mod python {
                 ))
             }
         };
+        let set_crypto = match (
+            volume_mode,
+            wire.kdf_salt.as_deref(),
+            wire.nonce_prefix.as_deref(),
+        ) {
+            (crate::core_archive::VolumeMode::Single, None, None) => None,
+            (crate::core_archive::VolumeMode::Multipart, Some(salt), Some(prefix)) => {
+                Some(crate::core_archive::ArchiveSetCrypto {
+                    kdf_salt: core_archive_hex(salt, "KDF salt")?,
+                    nonce_prefix: core_archive_hex(prefix, "nonce prefix")?,
+                })
+            }
+            (crate::core_archive::VolumeMode::Single, _, _) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "single ANIMA CORE archive cannot declare multipart cryptography",
+                ))
+            }
+            (crate::core_archive::VolumeMode::Multipart, _, _) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "multipart ANIMA CORE archive requires one shared KDF salt and nonce prefix",
+                ))
+            }
+        };
         let options = crate::core_archive::ArchiveWriteOptions {
             payload_kind,
             capture,
@@ -887,6 +1029,7 @@ mod python {
             volume_mode,
             declared_volume_count: wire.declared_volume_count,
             volume_ordinal: wire.volume_ordinal,
+            set_crypto,
         };
         let sources = wire
             .sources
@@ -940,32 +1083,190 @@ mod python {
                 crate::core_archive::extract_archive(&mut file, passphrase, &destination)
             })
             .map_err(core_archive_error)?;
-        let records = extracted
-            .records
-            .iter()
-            .map(|record| {
-                let record_type = match record.record_type {
-                    crate::core_archive::RecordType::Manifest => "manifest",
-                    crate::core_archive::RecordType::SoulDatabase => "soul_database",
-                    crate::core_archive::RecordType::Catalog => "catalog",
-                    crate::core_archive::RecordType::Object => "object",
-                    crate::core_archive::RecordType::Keyslots => "keyslots",
-                    crate::core_archive::RecordType::Recovery => "recovery",
-                };
-                json!({
-                    "recordType": record_type,
-                    "recordPath": record.record_path,
-                    "plaintextLength": record.plaintext_length,
-                    "recordHash": record.record_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        json_value_to_py(
+            py,
+            core_archive_extracted_value(&extracted.summary, &extracted.records),
+        )
+    }
+
+    #[pyfunction]
+    fn core_archive_extract_volume_v2(
+        py: Python<'_>,
+        input_path: &str,
+        passphrase: &[u8],
+        destination: &str,
+        expected_volume_ordinal: u32,
+    ) -> PyResult<PyObject> {
+        let input = PathBuf::from(input_path);
+        let destination = PathBuf::from(destination);
+        let extracted = py
+            .allow_threads(|| {
+                let mut file = File::open(input)?;
+                crate::core_archive::extract_archive_volume(
+                    &mut file,
+                    passphrase,
+                    &destination,
+                    expected_volume_ordinal,
+                )
+            })
+            .map_err(core_archive_error)?;
+        json_value_to_py(
+            py,
+            core_archive_extracted_value(&extracted.summary, &extracted.records),
+        )
+    }
+
+    fn core_archive_controller_value(
+        controller: &crate::core_archive::MultipartController,
+    ) -> serde_json::Value {
+        let payload_kind = match controller.payload_kind {
+            crate::core_archive::PayloadKind::Full => "full",
+            crate::core_archive::PayloadKind::Soul => "soul",
+            crate::core_archive::PayloadKind::Fs => "fs",
+        };
+        json!({
+            "version": 2,
+            "volumeSetId": controller.volume_set_id.to_string(),
+            "payloadKind": payload_kind,
+            "coreId": controller.capture.core_id.to_string(),
+            "ownerId": controller.capture.owner_id.to_string(),
+            "soulGeneration": controller.capture.soul_generation,
+            "filesystemGeneration": controller.capture.filesystem_generation,
+            "volumes": controller.volumes.iter().map(|volume| json!({
+                "ordinal": volume.ordinal,
+                "filename": volume.filename,
+                "archiveId": volume.archive_id.to_string(),
+                "byteLength": volume.byte_length,
+                "sha256": volume.sha256.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                "recordCount": volume.record_count,
+                "chunkCount": volume.chunk_count,
+                "plaintextBytes": volume.plaintext_bytes,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    fn decode_core_archive_controller(
+        wire: CoreArchiveControllerWire,
+    ) -> PyResult<(
+        crate::core_archive::ArchiveSetCrypto,
+        crate::core_archive::MultipartController,
+    )> {
+        let payload_kind = core_archive_payload_kind(&wire.payload_kind)?;
+        let core_id = core_archive_uuid(&wire.core_id, "Core ID")?;
+        let owner_id = core_archive_uuid(&wire.owner_id, "owner ID")?;
+        let capture = core_archive_capture(
+            payload_kind,
+            core_id,
+            owner_id,
+            wire.soul_generation,
+            wire.filesystem_generation,
+        )?;
+        let crypto = crate::core_archive::ArchiveSetCrypto {
+            kdf_salt: core_archive_hex(&wire.kdf_salt, "KDF salt")?,
+            nonce_prefix: core_archive_hex(&wire.nonce_prefix, "nonce prefix")?,
+        };
+        let volumes = wire
+            .volumes
+            .into_iter()
+            .map(|volume| {
+                Ok(crate::core_archive::MultipartVolumeCommitment {
+                    ordinal: volume.ordinal,
+                    filename: volume.filename,
+                    archive_id: core_archive_uuid(&volume.archive_id, "volume archive ID")?,
+                    byte_length: volume.byte_length,
+                    sha256: core_archive_hex(&volume.sha256, "volume SHA-256")?,
+                    record_count: volume.record_count,
+                    chunk_count: volume.chunk_count,
+                    plaintext_bytes: volume.plaintext_bytes,
                 })
             })
-            .collect::<Vec<_>>();
-        let mut value = core_archive_summary_value(&extracted.summary);
-        value
-            .as_object_mut()
-            .expect("archive summary is an object")
-            .insert("records".to_owned(), serde_json::Value::Array(records));
-        json_value_to_py(py, value)
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok((
+            crypto,
+            crate::core_archive::MultipartController {
+                volume_set_id: core_archive_uuid(&wire.volume_set_id, "volume-set ID")?,
+                payload_kind,
+                capture,
+                volumes,
+            },
+        ))
+    }
+
+    #[pyfunction]
+    fn core_archive_write_controller_v2(
+        py: Python<'_>,
+        output_path: &str,
+        passphrase: &[u8],
+        request_json: &str,
+    ) -> PyResult<PyObject> {
+        let wire: CoreArchiveControllerWire = decode_preparation_json(request_json)?;
+        let (crypto, controller) = decode_core_archive_controller(wire)?;
+        let output = PathBuf::from(output_path);
+        py.allow_threads(|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)?;
+            let result = crate::core_archive::write_multipart_controller(
+                &mut file,
+                passphrase,
+                &crypto,
+                &controller,
+            );
+            match result {
+                Ok(()) => {
+                    file.sync_all()?;
+                    Ok(())
+                }
+                Err(error) => {
+                    drop(file);
+                    let _ = std::fs::remove_file(&output);
+                    Err(error)
+                }
+            }
+        })
+        .map_err(core_archive_error)?;
+        json_value_to_py(py, core_archive_controller_value(&controller))
+    }
+
+    #[pyfunction]
+    fn core_archive_read_controller_v2(
+        py: Python<'_>,
+        input_path: &str,
+        passphrase: &[u8],
+    ) -> PyResult<PyObject> {
+        let input = PathBuf::from(input_path);
+        let controller = py
+            .allow_threads(|| {
+                let mut file = File::open(input)?;
+                crate::core_archive::read_multipart_controller(&mut file, passphrase)
+            })
+            .map_err(core_archive_error)?;
+        json_value_to_py(py, core_archive_controller_value(&controller))
+    }
+
+    #[pyfunction]
+    fn core_archive_extract_set_v2(
+        py: Python<'_>,
+        controller_path: &str,
+        passphrase: &[u8],
+        destination: &str,
+    ) -> PyResult<PyObject> {
+        let controller_path = PathBuf::from(controller_path);
+        let destination = PathBuf::from(destination);
+        let extracted = py
+            .allow_threads(|| {
+                crate::core_archive::extract_multipart_archive_set(
+                    &controller_path,
+                    passphrase,
+                    &destination,
+                )
+            })
+            .map_err(core_archive_error)?;
+        json_value_to_py(
+            py,
+            core_archive_extracted_value(&extracted.summary, &extracted.records),
+        )
     }
 
     fn decode_validation_batch_json(
@@ -5335,6 +5636,10 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_catalog_physical_name, m)?)?;
         m.add_function(wrap_pyfunction!(core_archive_write_v2, m)?)?;
         m.add_function(wrap_pyfunction!(core_archive_extract_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_extract_volume_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_write_controller_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_read_controller_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_extract_set_v2, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_validation_snapshot, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_stat_v1, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_list_v1, m)?)?;

@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 15:32 MYT
+- Updated: 2026-08-14 16:01 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -489,6 +489,23 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   compatibility with the existing over-advanced-stamp repair path. Restart-
   safe whole-Core account deletion remains the only Step 8 behavior gap; no
   real source deletion, external action, or irreversible cutover occurred.
+- 2026-08-14 16:01 MYT - Completed the native authenticated multipart V2
+  transfer milestone. Every part shares one Argon/HKDF salt and nonce prefix,
+  uses a disjoint monotonically ordered 64-bit nonce block, authenticates its
+  exact volume ordinal, and is committed by the encrypted controller written
+  last at `core.anima`. Native set import checks the exact directory, ordered
+  part names, lengths, hashes, archive/set/capture identity, aggregate record
+  uniqueness and payload completeness before returning a create-only staging
+  Core; missing, extra, reordered, foreign-set, tampered, truncated, or
+  appended inputs fail with staging cleanup. The product export manager now
+  routes FAT-like probes through verified controller-last publication, and
+  full plus recovery-only imports recognize the controller magic and preflight
+  the complete set rather than only the controller file. Native archive tests
+  pass `7`, focused transfer/server/API tests pass `79`, Python-feature compile
+  and scoped strict Clippy pass, and the paid package workflow remains
+  disabled. Backward V1/JSON import and restart-safe whole-Core account
+  deletion remain open; no external, destructive, or irreversible action
+  occurred.
 
 ## Validation
 
@@ -501,7 +518,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `uv run pytest -q apps/server/tests/test_knowledge_api.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_corefs_assets.py apps/server/tests/test_image_assets.py apps/server/tests/test_image_deletion.py apps/server/tests/test_html_ingestion.py apps/server/tests/test_structured_document.py apps/server/tests/test_web_fetch.py` (`99 passed`)
   - `uv run pytest -q apps/server/tests/test_knowledge_api.py apps/server/tests/test_okf_import_export.py apps/server/tests/test_corefs_knowledge_sources.py apps/server/tests/test_knowledge_autocompile.py` (`61 passed`)
   - `uv run pytest -q apps/server/tests/test_corefs_runtime_privacy.py apps/server/tests/test_corefs_legacy_runtime.py apps/server/tests/test_runtime_db.py -k 'not test_external_runtime_database_url and not test_runtime_database_url'` (`107 passed`)
-  - `cargo test -p anima-core core_archive` (`6 passed`)
+  - `cargo test -p anima-core core_archive` (`7 passed` after authenticated
+    multipart set coverage)
+  - `uv run pytest apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_transfer_api.py -q`
+    (`79 passed` after multipart product/import integration)
+  - `env PYO3_PYTHON=.venv/bin/python cargo check -p anima-core --features python`
+    (passed)
   - scoped `cargo clippy -p anima-core --lib` with only unrelated pre-existing
     crate lints allowed (`passed`; the unchanged strict crate-wide invocation
     remains blocked by existing `cards.rs`, `frame.rs`, and `path_engine.rs`

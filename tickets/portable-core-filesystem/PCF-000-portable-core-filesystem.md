@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 15:32 MYT
+- Updated: 2026-08-14 16:01 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -505,6 +505,15 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   the discovered legacy bad-stamp migration seam is repaired. Restart-safe
   whole-Core account deletion remains the Step 8 gap; no real deletion,
   external action, or irreversible cutover occurred.
+- 2026-08-14 16:01 MYT - PCF-008 now publishes and imports native
+  controller-last multipart V2 archive sets with shared KDF material,
+  non-overlapping global nonce blocks, exact ordered part commitments, complete
+  aggregate inventory validation, and failed-stage cleanup. FAT-like export,
+  recovery re-export, controller-aware import preflight, and product operation
+  status are wired; native tests pass `7` and the focused transfer band passes
+  `79`. Backward V1/JSON import and restart-safe whole-Core account deletion
+  remain before PCF-008 closeout. The paid package workflow is still disabled,
+  and no external, destructive, or irreversible action occurred.
 
 ## Validation
 

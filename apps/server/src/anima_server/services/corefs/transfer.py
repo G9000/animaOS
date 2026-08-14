@@ -179,8 +179,13 @@ def probe_local_destination(
     part_limit = min(DEFAULT_PART_LIMIT_BYTES, detected_limit)
     if part_limit <= ARCHIVE_FRAME_RESERVE_BYTES:
         raise TransferError("transfer destination single-file limit is too small")
-    volume_count = math.ceil(estimate.archive_bytes / part_limit)
-    if volume_count <= 1 or volume_count > (2**32 - 1):
+    payload_limit = part_limit - ARCHIVE_FRAME_RESERVE_BYTES
+    volume_count = max(2, math.ceil(estimate.archive_bytes / payload_limit))
+    if (
+        volume_count <= 1
+        or volume_count > (2**32 - 1)
+        or volume_count > estimate.record_count
+    ):
         raise TransferError("transfer multipart volume count is invalid")
     return DestinationProbe(
         destination=resolved,

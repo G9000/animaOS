@@ -12,6 +12,7 @@ from anima_server.services.corefs import archive_transfer
 from anima_server.services.corefs.archive_transfer import (
     CoreArchivePayloadKind,
     CoreArchiveTransferError,
+    export_core_archive_multipart_v2,
     export_core_archive_v2,
     stage_core_archive_v2,
     verify_core_archive_v2,
@@ -162,6 +163,109 @@ def test_full_export_uses_only_native_reachable_inventory_and_wrapped_keyslots(
     assert result.inventory.soul_generation == 3
     assert result.max_buffer_bytes <= 32 * 1024 * 1024
     assert result.inventory.soul_inventory_hash is not None
+
+
+def test_multipart_export_publishes_verified_native_parts_and_controller_last(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _core(managed_tmp_path, monkeypatch)
+    destination = managed_tmp_path / "backup"
+    destination.mkdir()
+    controller_requests: list[dict[str, object]] = []
+
+    def writer(path: str, _passphrase: bytes, request_json: str) -> dict[str, object]:
+        request = json.loads(request_json)
+        sources = request["sources"]
+        selected_bytes = sum(
+            Path(source["sourcePath"]).stat().st_size for source in sources
+        )
+        summary = {
+            "version": 2,
+            "archiveId": request["archiveId"],
+            "volumeSetId": request["volumeSetId"],
+            "payloadKind": "full",
+            "coreId": CORE_ID,
+            "ownerId": OWNER_ID,
+            "soulGeneration": 3,
+            "filesystemGeneration": 7,
+            "recordCount": len(sources),
+            "chunkCount": len(sources),
+            "plaintextBytes": selected_bytes,
+            "maxBufferBytes": 2 * 1024 * 1024,
+        }
+        Path(path).write_text(json.dumps(summary, sort_keys=True), encoding="utf-8")
+        return summary
+
+    def extract_volume(
+        path: str,
+        _passphrase: bytes,
+        destination_path: str,
+        _ordinal: int,
+    ) -> dict[str, object]:
+        Path(destination_path).mkdir()
+        summary = json.loads(Path(path).read_text(encoding="utf-8"))
+        return {**summary, "records": []}
+
+    def write_controller(
+        path: str,
+        _passphrase: bytes,
+        request_json: str,
+    ) -> dict[str, object]:
+        request = json.loads(request_json)
+        controller_requests.append(request)
+        Path(path).write_bytes(b"ANIMACT2" + request_json.encode("utf-8"))
+        return {}
+
+    def read_controller(path: str, _passphrase: bytes) -> dict[str, object]:
+        request = json.loads(Path(path).read_bytes()[8:])
+        return {
+            "version": 2,
+            "volumeSetId": request["volumeSetId"],
+            "payloadKind": request["payloadKind"],
+            "coreId": request["coreId"],
+            "ownerId": request["ownerId"],
+            "soulGeneration": request["soulGeneration"],
+            "filesystemGeneration": request["filesystemGeneration"],
+            "volumes": request["volumes"],
+        }
+
+    bindings = {
+        "core_archive_extract_volume_v2": extract_volume,
+        "core_archive_write_controller_v2": write_controller,
+        "core_archive_read_controller_v2": read_controller,
+    }
+    monkeypatch.setattr(
+        anima_core_bindings,
+        "require_binding",
+        lambda name: bindings[name],
+    )
+    result = export_core_archive_multipart_v2(
+        session=_session(root, writer=writer),
+        destination=destination,
+        set_name="ANIMA-CORE",
+        passphrase="correct horse battery staple",
+        payload_kind=CoreArchivePayloadKind.FULL,
+        soul_generation=3,
+        part_limit_bytes=2 * 1024 * 1024,
+        declared_volume_count=2,
+    )
+
+    published = destination / "ANIMA-CORE"
+    assert result.publication_path == published
+    assert {child.name for child in published.iterdir()} == {
+        "core.anima",
+        "volume-0001.anima-part",
+        "volume-0002.anima-part",
+    }
+    assert (published / "core.anima").read_bytes().startswith(b"ANIMACT2")
+    assert len(controller_requests) == 1
+    assert [volume["ordinal"] for volume in controller_requests[0]["volumes"]] == [
+        1,
+        2,
+    ]
+    assert result.archive_id == controller_requests[0]["volumeSetId"]
+    assert result.plaintext_bytes == result.inventory.selected_bytes
 
 
 def test_fs_export_accepts_only_an_explicit_staged_root_and_manifest(

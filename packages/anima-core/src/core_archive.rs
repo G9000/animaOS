@@ -22,8 +22,11 @@ use zeroize::Zeroizing;
 
 pub const MAGIC: &[u8; 8] = b"ANIMACR2";
 pub const TRAILER_MAGIC: &[u8; 8] = b"ANIMAEND";
+pub const CONTROLLER_MAGIC: &[u8; 8] = b"ANIMACT2";
+pub const CONTROLLER_TRAILER_MAGIC: &[u8; 8] = b"ANIMACMT";
 pub const FORMAT_VERSION: u16 = 2;
 pub const HEADER_LENGTH: u16 = 105;
+pub const CONTROLLER_HEADER_LENGTH: u16 = 84;
 pub const CIPHER_ID_AES_256_GCM: u8 = 1;
 pub const KDF_ID_ARGON2ID_HKDF_SHA256: u8 = 1;
 pub const KDF_PROFILE_ID_V2: u8 = 1;
@@ -41,8 +44,11 @@ const MANIFEST_NONCE_ORDINAL: u64 = 0;
 const AAD_DOMAIN: &[u8] = b"anima-core-archive-chunk-v2:";
 const MANIFEST_AAD_DOMAIN: &[u8] = b"anima-core-archive-v2-manifest";
 const FOOTER_AAD_DOMAIN: &[u8] = b"anima-core-archive-v2-footer";
+const CONTROLLER_AAD_DOMAIN: &[u8] = b"anima-core-archive-v2-controller";
 const HKDF_INFO: &[u8] = b"anima-core-archive-v2";
 const GCM_TAG_BYTES: usize = 16;
+const MULTIPART_NONCE_STRIDE: u64 = 1 << 32;
+const CONTROLLER_NONCE_ORDINAL: u64 = u64::MAX;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -140,6 +146,27 @@ pub struct ArchiveWriteOptions {
     pub volume_mode: VolumeMode,
     pub declared_volume_count: u32,
     pub volume_ordinal: u32,
+    pub set_crypto: Option<ArchiveSetCrypto>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArchiveSetCrypto {
+    pub kdf_salt: [u8; KDF_SALT_BYTES],
+    pub nonce_prefix: [u8; 4],
+}
+
+impl ArchiveSetCrypto {
+    #[must_use]
+    pub fn generate() -> Self {
+        let mut kdf_salt = [0u8; KDF_SALT_BYTES];
+        OsRng.fill_bytes(&mut kdf_salt);
+        let mut nonce_prefix = [0u8; 4];
+        OsRng.fill_bytes(&mut nonce_prefix);
+        Self {
+            kdf_salt,
+            nonce_prefix,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -199,6 +226,7 @@ impl ArchiveWriteOptions {
             volume_mode: VolumeMode::Single,
             declared_volume_count: 1,
             volume_ordinal: 0,
+            set_crypto: None,
         }
     }
 }
@@ -229,6 +257,32 @@ pub struct ExtractedRecord {
     pub record_hash: [u8; 32],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultipartVolumeCommitment {
+    pub ordinal: u32,
+    pub filename: String,
+    pub archive_id: Uuid,
+    pub byte_length: u64,
+    pub sha256: [u8; 32],
+    pub record_count: usize,
+    pub chunk_count: u64,
+    pub plaintext_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultipartController {
+    pub volume_set_id: Uuid,
+    pub payload_kind: PayloadKind,
+    pub capture: ArchiveCapture,
+    pub volumes: Vec<MultipartVolumeCommitment>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExtractedArchiveSet {
+    pub summary: ArchiveSummary,
+    pub records: Vec<ExtractedRecord>,
+}
+
 #[derive(Clone, Debug)]
 struct FixedHeader {
     kdf_salt: [u8; KDF_SALT_BYTES],
@@ -249,18 +303,22 @@ impl FixedHeader {
             options.declared_volume_count,
             options.volume_ordinal,
         )?;
-        let mut kdf_salt = [0u8; KDF_SALT_BYTES];
-        OsRng.fill_bytes(&mut kdf_salt);
-        let mut nonce_prefix = [0u8; 4];
-        OsRng.fill_bytes(&mut nonce_prefix);
+        if options.volume_mode == VolumeMode::Single && options.set_crypto.is_some() {
+            return Err(CoreArchiveError::InvalidHeader("single archive set crypto"));
+        }
+        if options.volume_mode == VolumeMode::Multipart && options.set_crypto.is_none() {
+            return Err(CoreArchiveError::InvalidHeader("multipart set crypto"));
+        }
+        let generated = ArchiveSetCrypto::generate();
+        let crypto = options.set_crypto.as_ref().unwrap_or(&generated);
         Ok(Self {
-            kdf_salt,
+            kdf_salt: crypto.kdf_salt,
             archive_id: options.archive_id,
             volume_set_id: options.volume_set_id,
             payload_kind: options.payload_kind,
             volume_mode: options.volume_mode,
             declared_volume_count: options.declared_volume_count,
-            nonce_prefix,
+            nonce_prefix: crypto.nonce_prefix,
         })
     }
 
@@ -396,6 +454,118 @@ struct InventoryFooter {
     inventory_hash: String,
 }
 
+#[derive(Clone, Debug)]
+struct ControllerHeader {
+    kdf_salt: [u8; KDF_SALT_BYTES],
+    volume_set_id: Uuid,
+    payload_kind: PayloadKind,
+    declared_volume_count: u32,
+    nonce_prefix: [u8; 4],
+}
+
+impl ControllerHeader {
+    fn new(controller: &MultipartController, crypto: &ArchiveSetCrypto) -> Self {
+        Self {
+            kdf_salt: crypto.kdf_salt,
+            volume_set_id: controller.volume_set_id,
+            payload_kind: controller.payload_kind,
+            declared_volume_count: controller.volumes.len() as u32,
+            nonce_prefix: crypto.nonce_prefix,
+        }
+    }
+
+    fn encode(&self) -> Vec<u8> {
+        let mut encoded = Vec::with_capacity(usize::from(CONTROLLER_HEADER_LENGTH));
+        encoded.extend_from_slice(CONTROLLER_MAGIC);
+        encoded.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
+        encoded.extend_from_slice(&CONTROLLER_HEADER_LENGTH.to_be_bytes());
+        encoded.push(CIPHER_ID_AES_256_GCM);
+        encoded.push(KDF_ID_ARGON2ID_HKDF_SHA256);
+        encoded.push(KDF_PROFILE_ID_V2);
+        encoded.extend_from_slice(&KDF_TIME_COST.to_be_bytes());
+        encoded.extend_from_slice(&KDF_MEMORY_KIB.to_be_bytes());
+        encoded.extend_from_slice(&KDF_PARALLELISM.to_be_bytes());
+        encoded.extend_from_slice(&self.kdf_salt);
+        encoded.extend_from_slice(self.volume_set_id.as_bytes());
+        encoded.push(self.payload_kind as u8);
+        encoded.extend_from_slice(&self.declared_volume_count.to_be_bytes());
+        encoded.extend_from_slice(&self.nonce_prefix);
+        debug_assert_eq!(encoded.len(), usize::from(CONTROLLER_HEADER_LENGTH));
+        encoded
+    }
+
+    fn decode<R: Read>(reader: &mut R) -> Result<(Self, Vec<u8>), CoreArchiveError> {
+        let mut encoded = vec![0u8; usize::from(CONTROLLER_HEADER_LENGTH)];
+        reader.read_exact(&mut encoded)?;
+        if &encoded[..8] != CONTROLLER_MAGIC {
+            return Err(CoreArchiveError::InvalidHeader("controller magic"));
+        }
+        if read_u16(&encoded, 8)? != FORMAT_VERSION {
+            return Err(CoreArchiveError::InvalidHeader("controller format version"));
+        }
+        if read_u16(&encoded, 10)? != CONTROLLER_HEADER_LENGTH {
+            return Err(CoreArchiveError::InvalidHeader("controller header length"));
+        }
+        if encoded[12] != CIPHER_ID_AES_256_GCM {
+            return Err(CoreArchiveError::InvalidHeader("controller cipher"));
+        }
+        if encoded[13] != KDF_ID_ARGON2ID_HKDF_SHA256 {
+            return Err(CoreArchiveError::InvalidHeader("controller KDF"));
+        }
+        if encoded[14] != KDF_PROFILE_ID_V2 {
+            return Err(CoreArchiveError::InvalidHeader("controller KDF profile"));
+        }
+        if read_u32(&encoded, 15)? != KDF_TIME_COST
+            || read_u32(&encoded, 19)? != KDF_MEMORY_KIB
+            || read_u32(&encoded, 23)? != KDF_PARALLELISM
+        {
+            return Err(CoreArchiveError::InvalidHeader("controller KDF costs"));
+        }
+        let declared_volume_count = read_u32(&encoded, 76)?;
+        if declared_volume_count < 2 {
+            return Err(CoreArchiveError::InvalidHeader("controller volume count"));
+        }
+        Ok((
+            Self {
+                kdf_salt: copy_array::<KDF_SALT_BYTES>(&encoded, 27)?,
+                volume_set_id: Uuid::from_bytes(copy_array::<16>(&encoded, 59)?),
+                payload_kind: PayloadKind::from_u8(encoded[75])?,
+                declared_volume_count,
+                nonce_prefix: copy_array::<4>(&encoded, 80)?,
+            },
+            encoded,
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ControllerManifest {
+    version: u8,
+    volume_set_id: Uuid,
+    payload_kind: PayloadKind,
+    core_id: Uuid,
+    owner_id: Uuid,
+    soul_generation: Option<u64>,
+    filesystem_generation: Option<u64>,
+    declared_volume_count: u32,
+    header_hash: String,
+    volumes: Vec<ControllerVolumeDescriptor>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ControllerVolumeDescriptor {
+    ordinal: u32,
+    filename: String,
+    archive_id: Uuid,
+    byte_length: u64,
+    sha256: String,
+    record_count: u64,
+    chunk_count: u64,
+    plaintext_bytes: u64,
+}
+
 struct PreparedSource {
     descriptor: RecordDescriptor,
     file: File,
@@ -414,7 +584,7 @@ pub fn write_archive<W: Write>(
         return Err(CoreArchiveError::InvalidManifest("record count"));
     }
     validate_capture_contract(options.payload_kind, &options.capture)?;
-    validate_source_set(options.payload_kind, &sources)?;
+    validate_source_set(options.payload_kind, options.volume_mode, &sources)?;
 
     let mut prepared = Vec::with_capacity(sources.len());
     let mut total_chunks = 0u64;
@@ -481,21 +651,23 @@ pub fn write_archive<W: Write>(
     if manifest_bytes.len() > MAX_MANIFEST_BYTES {
         return Err(CoreArchiveError::InvalidManifest("manifest size"));
     }
+    validate_volume_nonce_capacity(options.volume_mode, total_chunks)?;
 
     let key = Zeroizing::new(derive_archive_key(passphrase, &header.kdf_salt)?);
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| CoreArchiveError::Crypto)?;
     writer.write_all(&header_bytes)?;
     let manifest_aad = envelope_aad(MANIFEST_AAD_DOMAIN, &header_hash);
+    let nonce_base = volume_nonce_base(options.volume_mode, options.volume_ordinal)?;
     let encrypted_manifest = encrypt(
         &cipher,
         &header.nonce_prefix,
-        MANIFEST_NONCE_ORDINAL,
+        nonce_base + MANIFEST_NONCE_ORDINAL,
         &manifest_aad,
         &manifest_bytes,
     )?;
     write_length_prefixed(writer, &encrypted_manifest)?;
 
-    let mut nonce_ordinal = 1u64;
+    let mut nonce_ordinal = nonce_base + 1;
     let mut max_buffer_bytes = manifest_bytes.len() + encrypted_manifest.len();
     let mut second_pass_inventory = Sha256::new();
     for source in &mut prepared {
@@ -558,6 +730,7 @@ pub fn write_archive<W: Write>(
         inventory_hash: hex(&second_pass_inventory.finalize()),
     };
     let footer_bytes = serde_json::to_vec(&footer)?;
+    validate_volume_nonce_ordinal(options.volume_mode, nonce_base, nonce_ordinal)?;
     let footer_aad = envelope_aad(FOOTER_AAD_DOMAIN, &header_hash);
     let encrypted_footer = encrypt(
         &cipher,
@@ -583,6 +756,345 @@ pub fn write_archive<W: Write>(
     })
 }
 
+pub fn write_multipart_controller<W: Write>(
+    writer: &mut W,
+    passphrase: &[u8],
+    crypto: &ArchiveSetCrypto,
+    controller: &MultipartController,
+) -> Result<(), CoreArchiveError> {
+    if passphrase.is_empty() {
+        return Err(CoreArchiveError::InvalidManifest("empty passphrase"));
+    }
+    validate_multipart_controller(controller)?;
+    let header = ControllerHeader::new(controller, crypto);
+    let header_bytes = header.encode();
+    let header_hash: [u8; 32] = Sha256::digest(&header_bytes).into();
+    let manifest = ControllerManifest {
+        version: 1,
+        volume_set_id: controller.volume_set_id,
+        payload_kind: controller.payload_kind,
+        core_id: controller.capture.core_id,
+        owner_id: controller.capture.owner_id,
+        soul_generation: controller.capture.soul_generation,
+        filesystem_generation: controller.capture.filesystem_generation,
+        declared_volume_count: u32::try_from(controller.volumes.len())
+            .map_err(|_| CoreArchiveError::InvalidManifest("controller volume count"))?,
+        header_hash: hex(&header_hash),
+        volumes: controller
+            .volumes
+            .iter()
+            .map(|volume| {
+                Ok(ControllerVolumeDescriptor {
+                    ordinal: volume.ordinal,
+                    filename: volume.filename.clone(),
+                    archive_id: volume.archive_id,
+                    byte_length: volume.byte_length,
+                    sha256: hex(&volume.sha256),
+                    record_count: u64::try_from(volume.record_count).map_err(|_| {
+                        CoreArchiveError::InvalidManifest("controller record count")
+                    })?,
+                    chunk_count: volume.chunk_count,
+                    plaintext_bytes: volume.plaintext_bytes,
+                })
+            })
+            .collect::<Result<Vec<_>, CoreArchiveError>>()?,
+    };
+    let manifest_bytes = serde_json::to_vec(&manifest)?;
+    if manifest_bytes.len() > MAX_MANIFEST_BYTES {
+        return Err(CoreArchiveError::InvalidManifest(
+            "controller manifest size",
+        ));
+    }
+    let key = Zeroizing::new(derive_archive_key(passphrase, &crypto.kdf_salt)?);
+    let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| CoreArchiveError::Crypto)?;
+    let aad = envelope_aad(CONTROLLER_AAD_DOMAIN, &header_hash);
+    let encrypted = encrypt(
+        &cipher,
+        &crypto.nonce_prefix,
+        CONTROLLER_NONCE_ORDINAL,
+        &aad,
+        &manifest_bytes,
+    )?;
+    enforce_memory_bound(manifest_bytes.len() + encrypted.len())?;
+    writer.write_all(&header_bytes)?;
+    write_length_prefixed(writer, &encrypted)?;
+    writer.write_all(CONTROLLER_TRAILER_MAGIC)?;
+    writer.flush()?;
+    Ok(())
+}
+
+pub fn read_multipart_controller<R: Read>(
+    reader: &mut R,
+    passphrase: &[u8],
+) -> Result<MultipartController, CoreArchiveError> {
+    let (controller, _) = read_multipart_controller_with_crypto(reader, passphrase)?;
+    Ok(controller)
+}
+
+fn read_multipart_controller_with_crypto<R: Read>(
+    reader: &mut R,
+    passphrase: &[u8],
+) -> Result<(MultipartController, ArchiveSetCrypto), CoreArchiveError> {
+    if passphrase.is_empty() {
+        return Err(CoreArchiveError::InvalidManifest("empty passphrase"));
+    }
+    let (header, header_bytes) = ControllerHeader::decode(reader)?;
+    let header_hash: [u8; 32] = Sha256::digest(&header_bytes).into();
+    let crypto = ArchiveSetCrypto {
+        kdf_salt: header.kdf_salt,
+        nonce_prefix: header.nonce_prefix,
+    };
+    let key = Zeroizing::new(derive_archive_key(passphrase, &crypto.kdf_salt)?);
+    let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| CoreArchiveError::Crypto)?;
+    let encrypted = read_length_prefixed(reader, MAX_MANIFEST_BYTES + GCM_TAG_BYTES)?;
+    let aad = envelope_aad(CONTROLLER_AAD_DOMAIN, &header_hash);
+    let manifest_bytes = decrypt(
+        &cipher,
+        &crypto.nonce_prefix,
+        CONTROLLER_NONCE_ORDINAL,
+        &aad,
+        &encrypted,
+    )?;
+    if manifest_bytes.len() > MAX_MANIFEST_BYTES {
+        return Err(CoreArchiveError::InvalidManifest(
+            "controller manifest size",
+        ));
+    }
+    enforce_memory_bound(manifest_bytes.len() + encrypted.len())?;
+    let manifest: ControllerManifest = serde_json::from_slice(&manifest_bytes)?;
+    let mut trailer = [0u8; 8];
+    reader.read_exact(&mut trailer)?;
+    if &trailer != CONTROLLER_TRAILER_MAGIC {
+        return Err(CoreArchiveError::InvalidManifest("controller trailer"));
+    }
+    if reader.read(&mut [0u8; 1])? != 0 {
+        return Err(CoreArchiveError::InvalidManifest(
+            "controller appended data",
+        ));
+    }
+    if manifest.version != 1
+        || manifest.volume_set_id != header.volume_set_id
+        || manifest.payload_kind != header.payload_kind
+        || manifest.declared_volume_count != header.declared_volume_count
+        || manifest.header_hash != hex(&header_hash)
+    {
+        return Err(CoreArchiveError::InvalidManifest(
+            "controller header binding",
+        ));
+    }
+    let volumes = manifest
+        .volumes
+        .into_iter()
+        .map(|volume| {
+            Ok(MultipartVolumeCommitment {
+                ordinal: volume.ordinal,
+                filename: volume.filename,
+                archive_id: volume.archive_id,
+                byte_length: volume.byte_length,
+                sha256: parse_hash(&volume.sha256)?,
+                record_count: usize::try_from(volume.record_count)
+                    .map_err(|_| CoreArchiveError::InvalidManifest("controller record count"))?,
+                chunk_count: volume.chunk_count,
+                plaintext_bytes: volume.plaintext_bytes,
+            })
+        })
+        .collect::<Result<Vec<_>, CoreArchiveError>>()?;
+    let controller = MultipartController {
+        volume_set_id: manifest.volume_set_id,
+        payload_kind: manifest.payload_kind,
+        capture: ArchiveCapture {
+            core_id: manifest.core_id,
+            owner_id: manifest.owner_id,
+            soul_generation: manifest.soul_generation,
+            filesystem_generation: manifest.filesystem_generation,
+        },
+        volumes,
+    };
+    validate_multipart_controller(&controller)?;
+    Ok((controller, crypto))
+}
+
+pub fn extract_multipart_archive_set(
+    controller_path: &Path,
+    passphrase: &[u8],
+    destination: &Path,
+) -> Result<ExtractedArchiveSet, CoreArchiveError> {
+    if destination.exists() {
+        return Err(CoreArchiveError::InvalidRecord(
+            "staging destination already exists",
+        ));
+    }
+    let result = extract_multipart_archive_set_into(controller_path, passphrase, destination);
+    if result.is_err() && destination.exists() {
+        let _ = std::fs::remove_dir_all(destination);
+    }
+    result
+}
+
+fn extract_multipart_archive_set_into(
+    controller_path: &Path,
+    passphrase: &[u8],
+    destination: &Path,
+) -> Result<ExtractedArchiveSet, CoreArchiveError> {
+    if controller_path.file_name().and_then(|name| name.to_str()) != Some("core.anima") {
+        return Err(CoreArchiveError::InvalidManifest("controller filename"));
+    }
+    let controller_metadata = std::fs::symlink_metadata(controller_path)?;
+    if !controller_metadata.file_type().is_file() {
+        return Err(CoreArchiveError::InvalidManifest("controller file"));
+    }
+    let source_directory = controller_path
+        .parent()
+        .ok_or(CoreArchiveError::InvalidManifest("controller directory"))?;
+    let mut controller_file = File::open(controller_path)?;
+    let (controller, crypto) =
+        read_multipart_controller_with_crypto(&mut controller_file, passphrase)?;
+    validate_multipart_directory(source_directory, &controller)?;
+
+    std::fs::create_dir(destination)?;
+    let mut records = Vec::new();
+    let mut record_paths = HashSet::new();
+    let mut total_chunks = 0u64;
+    let mut total_plaintext = 0u64;
+    let mut max_buffer_bytes = 0usize;
+    for volume in &controller.volumes {
+        let path = source_directory.join(&volume.filename);
+        let metadata_before = std::fs::symlink_metadata(&path)?;
+        if !metadata_before.file_type().is_file() || metadata_before.len() != volume.byte_length {
+            return Err(CoreArchiveError::InvalidManifest("controller volume file"));
+        }
+        let mut file = File::open(&path)?;
+        if file.metadata()?.len() != volume.byte_length || hash_reader(&mut file)? != volume.sha256
+        {
+            return Err(CoreArchiveError::InvalidManifest("controller volume hash"));
+        }
+        file.seek(SeekFrom::Start(0))?;
+        let (header, _) = FixedHeader::decode(&mut file)?;
+        validate_controller_volume_header(&header, &crypto, &controller, volume)?;
+        file.seek(SeekFrom::Start(0))?;
+        let volume_staging = destination.join(format!(".volume-{:04}", volume.ordinal));
+        let extracted =
+            extract_archive_volume(&mut file, passphrase, &volume_staging, volume.ordinal)?;
+        if extracted.summary.archive_id != volume.archive_id
+            || extracted.summary.volume_set_id != controller.volume_set_id
+            || extracted.summary.payload_kind != controller.payload_kind
+            || extracted.summary.capture != controller.capture
+            || extracted.summary.record_count != volume.record_count
+            || extracted.summary.chunk_count != volume.chunk_count
+            || extracted.summary.plaintext_bytes != volume.plaintext_bytes
+        {
+            return Err(CoreArchiveError::InvalidManifest(
+                "controller volume summary",
+            ));
+        }
+        total_chunks = total_chunks
+            .checked_add(extracted.summary.chunk_count)
+            .ok_or(CoreArchiveError::InvalidManifest("chunk count overflow"))?;
+        total_plaintext = total_plaintext
+            .checked_add(extracted.summary.plaintext_bytes)
+            .ok_or(CoreArchiveError::InvalidManifest(
+                "plaintext length overflow",
+            ))?;
+        max_buffer_bytes = max_buffer_bytes.max(extracted.summary.max_buffer_bytes);
+        for record in extracted.records {
+            if !record_paths.insert(record.record_path.clone()) {
+                return Err(CoreArchiveError::InvalidRecord("duplicate record path"));
+            }
+            let source = safe_destination(&volume_staging, &record.record_path)?;
+            let target = safe_destination(destination, &record.record_path)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::rename(source, target)?;
+            records.push(record);
+        }
+        std::fs::remove_dir_all(&volume_staging)?;
+    }
+    let aggregate = records
+        .iter()
+        .enumerate()
+        .map(|(ordinal, record)| RecordDescriptor {
+            record_type: record.record_type,
+            record_path: record.record_path.clone(),
+            record_ordinal: ordinal as u64,
+            record_hash: hex(&record.record_hash),
+            plaintext_length: record.plaintext_length,
+            chunk_count: chunk_count(record.plaintext_length)
+                .expect("authenticated record length has a valid chunk count"),
+        })
+        .collect::<Vec<_>>();
+    validate_descriptor_set(controller.payload_kind, &aggregate, true)?;
+    Ok(ExtractedArchiveSet {
+        summary: ArchiveSummary {
+            archive_id: controller.volume_set_id,
+            volume_set_id: controller.volume_set_id,
+            payload_kind: controller.payload_kind,
+            capture: controller.capture,
+            record_count: records.len(),
+            chunk_count: total_chunks,
+            plaintext_bytes: total_plaintext,
+            max_buffer_bytes,
+        },
+        records,
+    })
+}
+
+fn validate_multipart_directory(
+    directory: &Path,
+    controller: &MultipartController,
+) -> Result<(), CoreArchiveError> {
+    let mut expected = controller
+        .volumes
+        .iter()
+        .map(|volume| volume.filename.as_str())
+        .collect::<HashSet<_>>();
+    expected.insert("core.anima");
+    let mut observed = HashSet::with_capacity(expected.len());
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let filename = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| CoreArchiveError::InvalidManifest("controller directory entry"))?;
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if !expected.contains(filename.as_str())
+            || !metadata.file_type().is_file()
+            || !observed.insert(filename)
+        {
+            return Err(CoreArchiveError::InvalidManifest(
+                "controller directory inventory",
+            ));
+        }
+    }
+    if observed.len() != expected.len() {
+        return Err(CoreArchiveError::InvalidManifest(
+            "controller directory inventory",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_controller_volume_header(
+    header: &FixedHeader,
+    crypto: &ArchiveSetCrypto,
+    controller: &MultipartController,
+    volume: &MultipartVolumeCommitment,
+) -> Result<(), CoreArchiveError> {
+    if header.kdf_salt != crypto.kdf_salt
+        || header.nonce_prefix != crypto.nonce_prefix
+        || header.archive_id != volume.archive_id
+        || header.volume_set_id != controller.volume_set_id
+        || header.payload_kind != controller.payload_kind
+        || header.volume_mode != VolumeMode::Multipart
+        || header.declared_volume_count != controller.volumes.len() as u32
+    {
+        return Err(CoreArchiveError::InvalidManifest(
+            "controller volume binding",
+        ));
+    }
+    Ok(())
+}
+
 pub fn extract_archive<R: Read>(
     reader: &mut R,
     passphrase: &[u8],
@@ -593,7 +1105,30 @@ pub fn extract_archive<R: Read>(
             "staging destination already exists",
         ));
     }
-    let result = extract_archive_into(reader, passphrase, destination);
+    let result = extract_archive_into(reader, passphrase, destination, None);
+    if result.is_err() && destination.exists() {
+        let _ = std::fs::remove_dir_all(destination);
+    }
+    result
+}
+
+pub fn extract_archive_volume<R: Read>(
+    reader: &mut R,
+    passphrase: &[u8],
+    destination: &Path,
+    expected_volume_ordinal: u32,
+) -> Result<ExtractedArchive, CoreArchiveError> {
+    if destination.exists() {
+        return Err(CoreArchiveError::InvalidRecord(
+            "staging destination already exists",
+        ));
+    }
+    let result = extract_archive_into(
+        reader,
+        passphrase,
+        destination,
+        Some(expected_volume_ordinal),
+    );
     if result.is_err() && destination.exists() {
         let _ = std::fs::remove_dir_all(destination);
     }
@@ -604,11 +1139,26 @@ fn extract_archive_into<R: Read>(
     reader: &mut R,
     passphrase: &[u8],
     destination: &Path,
+    expected_volume_ordinal: Option<u32>,
 ) -> Result<ExtractedArchive, CoreArchiveError> {
     if passphrase.is_empty() {
         return Err(CoreArchiveError::InvalidManifest("empty passphrase"));
     }
     let (header, header_bytes) = FixedHeader::decode(reader)?;
+    let nonce_base = match header.volume_mode {
+        VolumeMode::Single => {
+            if expected_volume_ordinal.is_some() {
+                return Err(CoreArchiveError::InvalidHeader("single volume ordinal"));
+            }
+            0
+        }
+        VolumeMode::Multipart => volume_nonce_base(
+            header.volume_mode,
+            expected_volume_ordinal.ok_or(CoreArchiveError::InvalidHeader(
+                "multipart volume ordinal required",
+            ))?,
+        )?,
+    };
     let header_hash: [u8; 32] = Sha256::digest(&header_bytes).into();
     let key = Zeroizing::new(derive_archive_key(passphrase, &header.kdf_salt)?);
     let cipher = Aes256Gcm::new_from_slice(key.as_ref()).map_err(|_| CoreArchiveError::Crypto)?;
@@ -617,7 +1167,7 @@ fn extract_archive_into<R: Read>(
     let manifest_bytes = decrypt(
         &cipher,
         &header.nonce_prefix,
-        MANIFEST_NONCE_ORDINAL,
+        nonce_base + MANIFEST_NONCE_ORDINAL,
         &manifest_aad,
         &encrypted_manifest,
     )?;
@@ -626,9 +1176,15 @@ fn extract_archive_into<R: Read>(
     }
     let manifest: ArchiveManifest = serde_json::from_slice(&manifest_bytes)?;
     validate_manifest(&header, &header_hash, &manifest)?;
+    validate_volume_nonce_capacity(manifest.volume_mode, manifest.expected_chunk_count)?;
 
     std::fs::create_dir_all(destination)?;
-    let mut nonce_ordinal = 1u64;
+    if manifest.volume_mode == VolumeMode::Multipart
+        && Some(manifest.volume_ordinal) != expected_volume_ordinal
+    {
+        return Err(CoreArchiveError::InvalidManifest("volume ordinal"));
+    }
+    let mut nonce_ordinal = nonce_base + 1;
     let mut max_buffer_bytes = manifest_bytes.len() + encrypted_manifest.len();
     let mut inventory = Sha256::new();
     let mut records = Vec::with_capacity(manifest.records.len());
@@ -648,6 +1204,7 @@ fn extract_archive_into<R: Read>(
         let mut hasher = Sha256::new();
         let mut offset = 0u64;
         for chunk_index in 0..descriptor.chunk_count {
+            validate_volume_nonce_ordinal(manifest.volume_mode, nonce_base, nonce_ordinal)?;
             let remaining = descriptor.plaintext_length - offset;
             let plaintext_length = usize::try_from(remaining.min(CHUNK_LIMIT_BYTES as u64))
                 .map_err(|_| CoreArchiveError::InvalidRecord("chunk length"))?;
@@ -712,6 +1269,7 @@ fn extract_archive_into<R: Read>(
     }
 
     let encrypted_footer = read_length_prefixed(reader, MAX_MANIFEST_BYTES + GCM_TAG_BYTES)?;
+    validate_volume_nonce_ordinal(manifest.volume_mode, nonce_base, nonce_ordinal)?;
     let footer_aad = envelope_aad(FOOTER_AAD_DOMAIN, &header_hash);
     let footer_bytes = decrypt(
         &cipher,
@@ -783,8 +1341,91 @@ fn validate_volume_contract(
     }
 }
 
+fn volume_nonce_base(
+    volume_mode: VolumeMode,
+    volume_ordinal: u32,
+) -> Result<u64, CoreArchiveError> {
+    match volume_mode {
+        VolumeMode::Single if volume_ordinal == 0 => Ok(0),
+        VolumeMode::Multipart if volume_ordinal > 0 => u64::from(volume_ordinal - 1)
+            .checked_mul(MULTIPART_NONCE_STRIDE)
+            .ok_or(CoreArchiveError::NonceOverflow),
+        _ => Err(CoreArchiveError::InvalidHeader("volume ordinal")),
+    }
+}
+
+fn validate_volume_nonce_capacity(
+    volume_mode: VolumeMode,
+    chunk_count: u64,
+) -> Result<(), CoreArchiveError> {
+    if volume_mode == VolumeMode::Multipart && chunk_count > MULTIPART_NONCE_STRIDE - 2 {
+        return Err(CoreArchiveError::NonceOverflow);
+    }
+    Ok(())
+}
+
+fn validate_volume_nonce_ordinal(
+    volume_mode: VolumeMode,
+    nonce_base: u64,
+    ordinal: u64,
+) -> Result<(), CoreArchiveError> {
+    if volume_mode == VolumeMode::Multipart
+        && ordinal
+            >= nonce_base
+                .checked_add(MULTIPART_NONCE_STRIDE)
+                .ok_or(CoreArchiveError::NonceOverflow)?
+    {
+        return Err(CoreArchiveError::NonceOverflow);
+    }
+    Ok(())
+}
+
+fn validate_multipart_controller(controller: &MultipartController) -> Result<(), CoreArchiveError> {
+    validate_capture_contract(controller.payload_kind, &controller.capture)?;
+    if controller.volumes.len() < 2
+        || controller.volumes.len() > MAX_RECORDS
+        || u32::try_from(controller.volumes.len()).is_err()
+    {
+        return Err(CoreArchiveError::InvalidManifest("controller volume count"));
+    }
+    let mut archive_ids = HashSet::with_capacity(controller.volumes.len());
+    let mut total_records = 0usize;
+    let mut total_chunks = 0u64;
+    let mut total_plaintext = 0u64;
+    for (index, volume) in controller.volumes.iter().enumerate() {
+        let ordinal = u32::try_from(index + 1)
+            .map_err(|_| CoreArchiveError::InvalidManifest("controller volume ordinal"))?;
+        if volume.ordinal != ordinal
+            || volume.filename != format!("volume-{ordinal:04}.anima-part")
+            || volume.archive_id == controller.volume_set_id
+            || !archive_ids.insert(volume.archive_id)
+            || volume.byte_length == 0
+            || volume.record_count == 0
+            || volume.chunk_count == 0
+        {
+            return Err(CoreArchiveError::InvalidManifest(
+                "controller volume descriptor",
+            ));
+        }
+        total_records = total_records
+            .checked_add(volume.record_count)
+            .ok_or(CoreArchiveError::InvalidManifest("controller record count"))?;
+        total_chunks = total_chunks
+            .checked_add(volume.chunk_count)
+            .ok_or(CoreArchiveError::InvalidManifest("controller chunk count"))?;
+        total_plaintext = total_plaintext.checked_add(volume.plaintext_bytes).ok_or(
+            CoreArchiveError::InvalidManifest("controller plaintext bytes"),
+        )?;
+    }
+    if total_records > MAX_RECORDS || total_chunks < total_records as u64 || total_plaintext == 0 {
+        return Err(CoreArchiveError::InvalidManifest("controller totals"));
+    }
+    Ok(())
+}
+
 fn validate_source_set(
     payload_kind: PayloadKind,
+    volume_mode: VolumeMode,
     sources: &[ArchiveSource],
 ) -> Result<(), CoreArchiveError> {
     let descriptors = sources
@@ -799,12 +1440,17 @@ fn validate_source_set(
             chunk_count: 1,
         })
         .collect::<Vec<_>>();
-    validate_descriptor_set(payload_kind, &descriptors)
+    validate_descriptor_set(
+        payload_kind,
+        &descriptors,
+        volume_mode == VolumeMode::Single,
+    )
 }
 
 fn validate_descriptor_set(
     payload_kind: PayloadKind,
     records: &[RecordDescriptor],
+    require_complete_payload: bool,
 ) -> Result<(), CoreArchiveError> {
     if records.is_empty() || records.len() > MAX_RECORDS {
         return Err(CoreArchiveError::InvalidManifest("record count"));
@@ -838,11 +1484,12 @@ fn validate_descriptor_set(
         }
         parse_hash(&record.record_hash)?;
     }
-    if !has_manifest
-        || matches!(payload_kind, PayloadKind::Full | PayloadKind::Soul) && !has_soul
-        || matches!(payload_kind, PayloadKind::Full | PayloadKind::Fs)
-            && (!has_head || !has_catalog)
-        || !has_keyslots
+    if require_complete_payload
+        && (!has_manifest
+            || matches!(payload_kind, PayloadKind::Full | PayloadKind::Soul) && !has_soul
+            || matches!(payload_kind, PayloadKind::Full | PayloadKind::Fs)
+                && (!has_head || !has_catalog)
+            || !has_keyslots)
     {
         return Err(CoreArchiveError::InvalidManifest("payload completeness"));
     }
@@ -936,7 +1583,11 @@ fn validate_manifest(
             filesystem_generation: manifest.filesystem_generation,
         },
     )?;
-    validate_descriptor_set(manifest.payload_kind, &manifest.records)?;
+    validate_descriptor_set(
+        manifest.payload_kind,
+        &manifest.records,
+        manifest.volume_mode == VolumeMode::Single,
+    )?;
     let record_count = u64::try_from(manifest.records.len())
         .map_err(|_| CoreArchiveError::InvalidManifest("record count"))?;
     let (chunk_count, plaintext_bytes) =
@@ -1585,5 +2236,181 @@ mod tests {
             Err(CoreArchiveError::InvalidManifest("appended data"))
         ));
         assert!(!appended_staging.exists());
+    }
+
+    #[test]
+    fn multipart_controller_commits_one_crypto_set_and_complete_inventory() {
+        let (root, sources) = full_fixture();
+        let capture = capture(PayloadKind::Full);
+        let volume_set_id = Uuid::new_v4();
+        let crypto = ArchiveSetCrypto::generate();
+        let set = tempfile::tempdir().unwrap();
+        let partitions = [sources[..2].to_vec(), sources[2..].to_vec()];
+        let mut commitments = Vec::new();
+
+        for (index, volume_sources) in partitions.into_iter().enumerate() {
+            let ordinal = u32::try_from(index + 1).unwrap();
+            let filename = format!("volume-{ordinal:04}.anima-part");
+            let path = set.path().join(&filename);
+            let archive_id = Uuid::new_v4();
+            let options = ArchiveWriteOptions {
+                payload_kind: PayloadKind::Full,
+                capture: capture.clone(),
+                archive_id,
+                volume_set_id,
+                volume_mode: VolumeMode::Multipart,
+                declared_volume_count: 2,
+                volume_ordinal: ordinal,
+                set_crypto: Some(crypto.clone()),
+            };
+            let mut output = File::create(&path).unwrap();
+            let summary = write_archive(&mut output, PASSPHRASE, &options, volume_sources).unwrap();
+            output.sync_all().unwrap();
+            drop(output);
+
+            let mut encoded = File::open(&path).unwrap();
+            let (header, _) = FixedHeader::decode(&mut encoded).unwrap();
+            assert_eq!(header.kdf_salt, crypto.kdf_salt);
+            assert_eq!(header.nonce_prefix, crypto.nonce_prefix);
+            assert_eq!(
+                volume_nonce_base(VolumeMode::Multipart, ordinal).unwrap(),
+                u64::from(ordinal - 1) * MULTIPART_NONCE_STRIDE
+            );
+
+            let mut encoded = File::open(&path).unwrap();
+            let digest = hash_reader(&mut encoded).unwrap();
+            commitments.push(MultipartVolumeCommitment {
+                ordinal,
+                filename,
+                archive_id,
+                byte_length: encoded.metadata().unwrap().len(),
+                sha256: digest,
+                record_count: summary.record_count,
+                chunk_count: summary.chunk_count,
+                plaintext_bytes: summary.plaintext_bytes,
+            });
+        }
+
+        let controller = MultipartController {
+            volume_set_id,
+            payload_kind: PayloadKind::Full,
+            capture: capture.clone(),
+            volumes: commitments,
+        };
+        let mut reordered = controller.clone();
+        reordered.volumes.swap(0, 1);
+        assert!(matches!(
+            write_multipart_controller(&mut io::sink(), PASSPHRASE, &crypto, &reordered,),
+            Err(CoreArchiveError::InvalidManifest(
+                "controller volume descriptor"
+            ))
+        ));
+        let foreign_header = FixedHeader {
+            kdf_salt: crypto.kdf_salt,
+            archive_id: controller.volumes[0].archive_id,
+            volume_set_id: Uuid::new_v4(),
+            payload_kind: controller.payload_kind,
+            volume_mode: VolumeMode::Multipart,
+            declared_volume_count: 2,
+            nonce_prefix: crypto.nonce_prefix,
+        };
+        assert!(matches!(
+            validate_controller_volume_header(
+                &foreign_header,
+                &crypto,
+                &controller,
+                &controller.volumes[0],
+            ),
+            Err(CoreArchiveError::InvalidManifest(
+                "controller volume binding"
+            ))
+        ));
+        let controller_path = set.path().join("core.anima");
+        let mut output = File::create(&controller_path).unwrap();
+        write_multipart_controller(&mut output, PASSPHRASE, &crypto, &controller).unwrap();
+        output.sync_all().unwrap();
+        drop(output);
+        let mut encoded = File::open(&controller_path).unwrap();
+        assert_eq!(
+            read_multipart_controller(&mut encoded, PASSPHRASE).unwrap(),
+            controller
+        );
+
+        let volume_one = set.path().join("volume-0001.anima-part");
+        let destination = tempfile::tempdir().unwrap();
+        let ordinary_staging = destination.path().join("ordinary");
+        assert!(matches!(
+            extract_archive(
+                &mut File::open(&volume_one).unwrap(),
+                PASSPHRASE,
+                &ordinary_staging,
+            ),
+            Err(CoreArchiveError::InvalidHeader(
+                "multipart volume ordinal required"
+            ))
+        ));
+        assert!(!ordinary_staging.exists());
+
+        let wrong_staging = destination.path().join("wrong-ordinal");
+        assert!(matches!(
+            extract_archive_volume(
+                &mut File::open(&volume_one).unwrap(),
+                PASSPHRASE,
+                &wrong_staging,
+                2,
+            ),
+            Err(CoreArchiveError::Crypto)
+        ));
+        assert!(!wrong_staging.exists());
+
+        let staging = destination.path().join("complete");
+        let extracted =
+            extract_multipart_archive_set(&controller_path, PASSPHRASE, &staging).unwrap();
+        assert_eq!(extracted.summary.archive_id, volume_set_id);
+        assert_eq!(extracted.summary.capture, capture);
+        assert_eq!(extracted.records.len(), sources.len());
+        assert_eq!(
+            std::fs::read(staging.join("soul/soul.db")).unwrap(),
+            b"encrypted soul bytes"
+        );
+        assert_eq!(
+            std::fs::read(staging.join("objects/object-1.acore")).unwrap(),
+            b"encrypted object bytes"
+        );
+
+        write_file(&set.path().join("volume-0003.anima-part"), b"unexpected");
+        let extra_staging = destination.path().join("extra-volume");
+        assert!(matches!(
+            extract_multipart_archive_set(&controller_path, PASSPHRASE, &extra_staging),
+            Err(CoreArchiveError::InvalidManifest(
+                "controller directory inventory"
+            ))
+        ));
+        assert!(!extra_staging.exists());
+
+        std::fs::remove_file(set.path().join("volume-0003.anima-part")).unwrap();
+        let volume_two = set.path().join("volume-0002.anima-part");
+        let volume_two_bytes = std::fs::read(&volume_two).unwrap();
+        std::fs::remove_file(&volume_two).unwrap();
+        let missing_staging = destination.path().join("missing-volume");
+        assert!(matches!(
+            extract_multipart_archive_set(&controller_path, PASSPHRASE, &missing_staging),
+            Err(CoreArchiveError::InvalidManifest(
+                "controller directory inventory"
+            ))
+        ));
+        assert!(!missing_staging.exists());
+
+        std::fs::write(&volume_two, &volume_two_bytes).unwrap();
+        let mut tampered = volume_two_bytes.clone();
+        *tampered.last_mut().unwrap() ^= 0x80;
+        std::fs::write(&volume_two, tampered).unwrap();
+        let mixed_staging = destination.path().join("tampered-volume");
+        assert!(matches!(
+            extract_multipart_archive_set(&controller_path, PASSPHRASE, &mixed_staging),
+            Err(CoreArchiveError::InvalidManifest("controller volume hash"))
+        ));
+        assert!(!mixed_staging.exists());
+        drop(root);
     }
 }

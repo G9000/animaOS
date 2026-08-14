@@ -13,6 +13,7 @@ from anima_server.services.corefs.archive_transfer import (
     CoreArchiveExportResult,
     CoreArchiveImportResult,
     CoreArchiveInventory,
+    CoreArchiveMultipartExportResult,
     CoreArchivePayloadKind,
 )
 from anima_server.services.corefs.recovery_access import (
@@ -202,6 +203,71 @@ def test_operation_manager_publishes_verified_archive_and_retains_no_passphrase(
     assert not hasattr(operation, "passphrase")
 
 
+def test_operation_manager_routes_multipart_probe_through_controller_last_export(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = managed_tmp_path / "backup"
+    destination.mkdir()
+    inventory = _inventory()
+    prepared = PreparedTransfer(
+        inventory=inventory,
+        estimate=_estimate(),
+        probe=DestinationProbe(
+            destination=destination.resolve(),
+            available_bytes=10**9,
+            maximum_single_file_bytes=2 * 1024 * 1024,
+            publication_mode=PublicationMode.MULTIPART,
+            part_limit_bytes=2 * 1024 * 1024,
+            declared_volume_count=2,
+        ),
+    )
+    observed: dict[str, object] = {}
+
+    def export_multipart(**kwargs) -> CoreArchiveMultipartExportResult:
+        observed.update(kwargs)
+        published = destination / "ANIMA-CORE"
+        published.mkdir()
+        (published / "volume-0001.anima-part").write_bytes(b"one")
+        (published / "volume-0002.anima-part").write_bytes(b"two")
+        (published / "core.anima").write_bytes(b"ANIMACT2controller")
+        return CoreArchiveMultipartExportResult(
+            inventory=inventory,
+            archive_id="018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf",
+            plaintext_bytes=inventory.selected_bytes,
+            chunk_count=5,
+            max_buffer_bytes=1024,
+            publication_path=published,
+            bytes_published=22,
+        )
+
+    monkeypatch.setattr(
+        transfer_jobs,
+        "export_core_archive_multipart_v2",
+        export_multipart,
+    )
+    manager = CoreTransferOperationManager()
+    monkeypatch.setattr(manager, "inspect", lambda **_kwargs: prepared)
+    operation = manager.start_export(
+        user_id=7,
+        session=SimpleNamespace(),
+        destination=destination,
+        final_name="ANIMA-CORE.anima-core",
+        passphrase="correct horse battery staple",
+        payload_kind=CoreArchivePayloadKind.FULL,
+    )
+    deadline = time.monotonic() + 2
+    while operation.state.value not in {"completed", "failed"} and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    assert operation.state is TransferOperationState.COMPLETED
+    assert observed["set_name"] == "ANIMA-CORE"
+    assert observed["declared_volume_count"] == 2
+    assert operation.result_path == destination / "ANIMA-CORE"
+    assert operation.archive_id == "018f0f4e-4ee4-7aa5-8eb2-1eb7699855bf"
+    assert not hasattr(operation, "passphrase")
+
+
 def test_import_manager_stages_verified_core_without_activation_or_passphrase_retention(
     managed_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -258,6 +324,50 @@ def test_import_manager_stages_verified_core_without_activation_or_passphrase_re
     assert scheduled.restart_required is True
     assert scheduled.phase == "activation_scheduled"
 
+
+def test_import_probe_counts_complete_multipart_set_and_rejects_missing_volume(
+    managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = managed_tmp_path / ".anima"
+    active.mkdir()
+    archive_set = managed_tmp_path / "ANIMA-CORE"
+    archive_set.mkdir()
+    controller = archive_set / "core.anima"
+    controller.write_bytes(b"ANIMACT2controller")
+    volume_one = archive_set / "volume-0001.anima-part"
+    volume_two = archive_set / "volume-0002.anima-part"
+    volume_one.write_bytes(b"one")
+    volume_two.write_bytes(b"two-two")
+    staging_parent = managed_tmp_path / "restore"
+    staging_parent.mkdir()
+    monkeypatch.setattr(transfer_jobs, "get_core_dir", lambda: active)
+    monkeypatch.setattr(
+        transfer_jobs,
+        "probe_import_staging",
+        lambda parent, **kwargs: ImportCapacityProbe(
+            staging_parent=parent.resolve(),
+            restored_core_bytes=kwargs["restored_core_bytes"],
+            available_bytes=10**9,
+            required_capacity_bytes=kwargs["restored_core_bytes"] + 1,
+        ),
+    )
+    manager = CoreImportOperationManager()
+
+    prepared = manager.inspect(
+        archive_path=controller,
+        staging_parent=staging_parent,
+    )
+    assert prepared.archive_bytes == sum(
+        path.stat().st_size for path in (controller, volume_one, volume_two)
+    )
+
+    volume_two.unlink()
+    with pytest.raises(transfer_jobs.TransferError, match="inventory is incomplete"):
+        manager.inspect(
+            archive_path=controller,
+            staging_parent=staging_parent,
+        )
 
 def test_corefs_only_recovery_cannot_attach_to_a_soul_in_v1(
     managed_tmp_path: Path,

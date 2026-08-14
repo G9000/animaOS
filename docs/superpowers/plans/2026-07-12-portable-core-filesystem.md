@@ -901,6 +901,15 @@ the object lease. WAL inclusion, temporary cleanup, concurrent catalog change,
 and real SQLCipher-at-rest regressions pass. Multipart-set and backward-V1
 cases remain open, so this step is intentionally not checked complete.
 
+Multipart progress (2026-08-14): native volumes now share one KDF salt and
+nonce prefix while reserving disjoint ordinal blocks in the one 64-bit set
+nonce space. The encrypted `core.anima` controller commits ordered part names,
+archive IDs, lengths, hashes, counters, payload kind, Core/owner identity, and
+coherent generations. Set import rejects missing, extra, reordered,
+foreign-set, tampered, truncated, and appended inputs before returning staging,
+then validates aggregate path uniqueness and full payload completeness. The
+remaining Step 2 gap is backward V1/JSON import.
+
 Cover closed cold copy; live write-barrier snapshots; SQLCipher checkpoint; catalog/GC pinning; reachable-object selection; no Runtime inclusion; `full`, `soul`, and `fs` artifact/key allowlists, scoped credential replacement, and recovery states; fixed-header/profile bounds; exact normative AAD tuple; pre-archive record hash; global nonce ordinal; destination capacity/writable/single-file-limit preflight; <=8-MiB buffers and <=32-MiB aggregate transfer working set excluding the fixed Argon2 workspace; `.partial` cleanup; single-file and FAT32-like multipart output; failure at every part/controller/directory publication boundary; disconnect/cancel; missing/reordered/mixed/tampered volumes; same-volume import capacity/staging; final-directory and active-Core registry-pointer activation failures; V1 CoreFS-reattachment rejection; destination hash/decrypt verification; rejection of incoherent live raw copies; same-machine duplicate-Core instance handling; and binary objects larger than the legacy 16-MiB section limit.
 
 - [ ] **Step 3: Implement resumable migration orchestration and physical Soul relocation**
@@ -930,7 +939,7 @@ complete.
 
 Before enabling writes, create and verify an authenticated encrypted recovery bundle of `legacy-runtime-source` outside `.anima/` while retaining plaintext rollback source. After the marked first mutation makes rollback forward-only, stop the legacy server, switch to the fresh runtime, delete the plaintext legacy directory, and retain only the encrypted recovery bundle for the later cleanup release. A moved Core never includes either runtime form.
 
-- [ ] **Step 6: Add exact transfer API and desktop flow**
+- [x] **Step 6: Add exact transfer API and desktop flow**
 
 Progress (2026-08-13): export plus non-activating restore staging are wired
 through the authenticated API client and desktop UI. Restore rechecks the exact
@@ -960,8 +969,11 @@ re-export now opens a credential-bound staged native context, uses only the
 explicit archive-authenticated staged root and manifest, pins the filesystem
 generation/object lease, rechecks control authority around streaming, and
 publishes through the verified cancellable `.partial` flow without attachment
-or activation. Multipart UI remains open, so this step is intentionally not
-checked complete.
+or activation. FAT-like probes now execute that same product flow as a verified
+controller-last multipart set, report the set path/bytes/volume count through
+the existing operation status, and import `core.anima` only after preflighting
+all sibling parts. Focused server/API/product coverage passes `79`; this step is
+complete.
 
 Implement `corefs_transfer` schemas/routes for local destination probe, estimate, prepare, progress, cancel, verify, import, and completion. Wire `packages/api-client` and `CoreTransferSettings.tsx` to present **Export ANIMA CORE** and **Restore ANIMA CORE** as the primary flow, with **Soul only** and **CoreFS only** under Advanced Recovery. Show write-barrier/checkpoint state, selected artifact kind, required/available export bytes, required/available same-volume import-staging bytes, detected single-file limit, single/multipart decision, bounded streaming progress, verification, and safe destination result. Soul-only recovery clearly labels degraded `filesystem_missing`; CoreFS-only recovery exposes authenticated browse/export and returns `corefs_reattachment_not_supported` for V1 attach attempts. Do not instruct users to drag-copy a live Core or run the live Core from removable media.
 
@@ -976,6 +988,14 @@ streaming is bound to a frozen authenticated `fs/HEAD` plus exact native
 generation/catalog hash under the object lease. Native multipart-set
 authentication and backward V1 import remain open, so this step is
 intentionally not checked complete.
+
+Multipart progress (2026-08-14): Rust now writes and authenticates one
+controller-bound volume set with shared KDF material and a globally
+non-repeating nonce space, and extracts the exact complete set into a single
+create-only staging Core. Python prepares one stable source inventory, writes,
+reopens, and verifies each bounded part, publishes the encrypted controller
+last, and imports only the controller-authenticated aggregate. Backward V1/JSON
+import is the remaining Step 7 implementation gap.
 
 Startup progress (2026-08-13): the machine-local active-Core registry is now
 authenticated by an OS-credential-held key, resolved before the Core lock and
