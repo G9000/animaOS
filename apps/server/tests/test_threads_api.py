@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.db.session import get_user_session_factory
@@ -18,7 +19,12 @@ from anima_server.services.corefs import logical
 from anima_server.services.corefs.conversation_migration import (
     prepare_conversation_validation_catalog,
 )
-from anima_server.services.corefs.conversation_mutations import append_canonical_message
+from anima_server.services.corefs.conversation_mutations import (
+    ConversationMutationError,
+    append_canonical_message,
+    delete_canonical_message,
+    edit_canonical_message,
+)
 from anima_server.services.corefs.cutover import (
     approve_validation_cutover,
     begin_migration,
@@ -165,6 +171,38 @@ def test_global_cutover_routes_thread_lifecycle_only_through_corefs(monkeypatch)
         assert [item["content"] for item in canonical_messages.json()["messages"]] == [
             "CoreFS-only user message",
             "CoreFS-only assistant message",
+        ]
+        edited_message = edit_canonical_message(
+            session=session,
+            thread_id=canonical_thread_id,
+            message_id=user_message.message_id,
+            content="Edited CoreFS-only user message",
+            expected_event_id=user_message.current_event_id,
+            expected_version=user_message.version,
+        )
+        assert edited_message.version == 2
+        with pytest.raises(ConversationMutationError, match="precondition is stale"):
+            edit_canonical_message(
+                session=session,
+                thread_id=canonical_thread_id,
+                message_id=user_message.message_id,
+                content="Stale edit must not win",
+                expected_event_id=user_message.current_event_id,
+                expected_version=user_message.version,
+            )
+        assert delete_canonical_message(
+            session=session,
+            thread_id=canonical_thread_id,
+            message_id=assistant_message.message_id,
+            expected_event_id=assistant_message.current_event_id,
+            expected_version=assistant_message.version,
+        )
+        after_mutations = client.get(
+            f"/api/threads/{canonical_thread_id}/messages",
+            headers=headers,
+        )
+        assert [item["content"] for item in after_mutations.json()["messages"]] == [
+            "Edited CoreFS-only user message"
         ]
 
         reset = client.post(

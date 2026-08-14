@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from threading import RLock
@@ -31,6 +32,7 @@ from anima_server.services.corefs.messages import (
     ThreadDocument,
     append_message_event_with_tail_retry,
     encode_thread_document,
+    reduce_message_events,
 )
 
 _MAX_CREATE_ATTEMPTS = 4
@@ -52,91 +54,49 @@ def append_canonical_message(
     legacy_message_id: int | str | None = None,
     created_at: str | None = None,
 ) -> ReducedMessage:
-    user_id = int(session.user_id)
     timestamp = created_at or _timestamp()
     allocated_legacy_id = legacy_message_id
-    with _conversation_lock(user_id):
 
-        def load_tail() -> ConversationTailSnapshot:
-            catalog = read_canonical_conversation_catalog(session=session)
-            current = _find_thread(catalog, thread_id)
-            if current is None:
-                raise ConversationMutationError("Canonical thread was not found.")
-            if current.document.status != "active":
-                raise ConversationMutationError("Canonical thread is not active.")
-            _require_complete_thread(current)
-            return ConversationTailSnapshot(
-                thread_id=current.document.thread_id,
-                events=tuple(
-                    event
-                    for segment in current.segments
-                    for event in segment.segment.events
-                ),
-                tail=current.segments[-1].segment if current.segments else None,
-            )
+    def event_factory(snapshot: ConversationTailSnapshot) -> MessageEvent:
+        nonlocal allocated_legacy_id
+        existing_ids = {
+            event.legacy_message_id
+            for event in snapshot.events
+            if event.legacy_message_id is not None
+        }
+        if allocated_legacy_id is None:
+            allocated_legacy_id = _new_message_legacy_id(existing_ids)
+        elif allocated_legacy_id in existing_ids:
+            raise ConversationMutationError("Canonical message identity already exists.")
+        next_sequence = max((event.sequence for event in snapshot.events), default=0) + 1
+        message_id = migration_opaque_id(
+            "conversation-message",
+            f"{snapshot.thread_id}:{allocated_legacy_id}",
+        )
+        return MessageEvent(
+            event_id=migration_opaque_id(
+                "conversation-event",
+                f"{message_id}:created:1",
+            ),
+            message_id=message_id,
+            legacy_message_id=allocated_legacy_id,
+            thread_id=snapshot.thread_id,
+            sequence=next_sequence,
+            kind="message.created",
+            message_version=1,
+            expected_prior_event_id=None,
+            expected_prior_version=None,
+            role=role,
+            content=content,
+            attachment_uris=attachment_uris,
+            created_at=timestamp,
+        )
 
-        def event_factory(snapshot: ConversationTailSnapshot) -> MessageEvent:
-            nonlocal allocated_legacy_id
-            existing_ids = {
-                event.legacy_message_id
-                for event in snapshot.events
-                if event.legacy_message_id is not None
-            }
-            if allocated_legacy_id is None:
-                allocated_legacy_id = _new_message_legacy_id(existing_ids)
-            elif allocated_legacy_id in existing_ids:
-                raise ConversationMutationError("Canonical message identity already exists.")
-            next_sequence = max((event.sequence for event in snapshot.events), default=0) + 1
-            message_id = migration_opaque_id(
-                "conversation-message",
-                f"{snapshot.thread_id}:{allocated_legacy_id}",
-            )
-            return MessageEvent(
-                event_id=migration_opaque_id(
-                    "conversation-event",
-                    f"{message_id}:created:1",
-                ),
-                message_id=message_id,
-                legacy_message_id=allocated_legacy_id,
-                thread_id=snapshot.thread_id,
-                sequence=next_sequence,
-                kind="message.created",
-                message_version=1,
-                expected_prior_event_id=None,
-                expected_prior_version=None,
-                role=role,
-                content=content,
-                attachment_uris=attachment_uris,
-                created_at=timestamp,
-            )
-
-        def commit(plan: ConversationAppendPlan) -> None:
-            catalog = read_canonical_conversation_catalog(session=session)
-            current = _find_thread(catalog, thread_id)
-            if current is None:
-                raise ConversationTailConflict("canonical thread disappeared")
-            _require_complete_thread(current)
-            tail_record = current.segments[-1] if current.segments else None
-            actual_tail_id = tail_record.segment.segment_id if tail_record is not None else None
-            actual_tail_hash = tail_record.segment.sha256 if tail_record is not None else None
-            if (
-                actual_tail_id != plan.expected_tail_id
-                or actual_tail_hash != plan.expected_tail_sha256
-            ):
-                raise ConversationTailConflict("canonical thread tail changed")
-            _commit_message_append(
-                session=session,
-                catalog=catalog,
-                current=current,
-                tail_record=tail_record,
-                plan=plan,
-            )
-
-        plan = append_message_event_with_tail_retry(
-            load_tail=load_tail,
+    with _conversation_lock(int(session.user_id)):
+        plan = _append_canonical_event(
+            session=session,
+            thread_id=thread_id,
             event_factory=event_factory,
-            commit=commit,
-            max_attempts=_MAX_CREATE_ATTEMPTS,
         )
         refreshed = _find_thread(
             read_canonical_conversation_catalog(session=session),
@@ -151,6 +111,124 @@ def append_canonical_message(
         if created is None:
             raise ConversationMutationError("Canonical message append did not verify.")
         return created
+
+
+def edit_canonical_message(
+    *,
+    session: Any,
+    thread_id: int | str,
+    message_id: int | str,
+    content: str,
+    expected_event_id: str,
+    expected_version: int,
+    attachment_uris: tuple[str, ...] | None = None,
+    edited_at: str | None = None,
+) -> ReducedMessage:
+    timestamp = edited_at or _timestamp()
+
+    def event_factory(snapshot: ConversationTailSnapshot) -> MessageEvent:
+        current = _require_message(snapshot, message_id)
+        _require_message_precondition(
+            current,
+            expected_event_id=expected_event_id,
+            expected_version=expected_version,
+        )
+        version = current.version + 1
+        return MessageEvent(
+            event_id=migration_opaque_id(
+                "conversation-event",
+                f"{current.message_id}:edited:{version}",
+            ),
+            message_id=current.message_id,
+            legacy_message_id=current.legacy_message_id,
+            thread_id=current.thread_id,
+            sequence=current.sequence,
+            kind="message.edited",
+            message_version=version,
+            expected_prior_event_id=current.current_event_id,
+            expected_prior_version=current.version,
+            role=current.role,
+            content=content,
+            attachment_uris=(
+                current.attachment_uris if attachment_uris is None else attachment_uris
+            ),
+            created_at=timestamp,
+        )
+
+    with _conversation_lock(int(session.user_id)):
+        plan = _append_canonical_event(
+            session=session,
+            thread_id=thread_id,
+            event_factory=event_factory,
+        )
+        refreshed = _find_thread(
+            read_canonical_conversation_catalog(session=session),
+            thread_id,
+        )
+        if refreshed is None:
+            raise ConversationMutationError("Canonical message edit did not verify.")
+        edited = next(
+            (message for message in refreshed.messages if message.message_id == plan.event.message_id),
+            None,
+        )
+        if edited is None or edited.current_event_id != plan.event.event_id:
+            raise ConversationMutationError("Canonical message edit did not verify.")
+        return edited
+
+
+def delete_canonical_message(
+    *,
+    session: Any,
+    thread_id: int | str,
+    message_id: int | str,
+    expected_event_id: str,
+    expected_version: int,
+    deleted_at: str | None = None,
+) -> bool:
+    timestamp = deleted_at or _timestamp()
+
+    def event_factory(snapshot: ConversationTailSnapshot) -> MessageEvent:
+        current = _require_message(snapshot, message_id)
+        _require_message_precondition(
+            current,
+            expected_event_id=expected_event_id,
+            expected_version=expected_version,
+        )
+        version = current.version + 1
+        return MessageEvent(
+            event_id=migration_opaque_id(
+                "conversation-event",
+                f"{current.message_id}:deleted:{version}",
+            ),
+            message_id=current.message_id,
+            legacy_message_id=current.legacy_message_id,
+            thread_id=current.thread_id,
+            sequence=current.sequence,
+            kind="message.deleted",
+            message_version=version,
+            expected_prior_event_id=current.current_event_id,
+            expected_prior_version=current.version,
+            role=current.role,
+            content=current.content,
+            attachment_uris=current.attachment_uris,
+            created_at=timestamp,
+        )
+
+    with _conversation_lock(int(session.user_id)):
+        plan = _append_canonical_event(
+            session=session,
+            thread_id=thread_id,
+            event_factory=event_factory,
+        )
+        refreshed = _find_thread(
+            read_canonical_conversation_catalog(session=session),
+            thread_id,
+        )
+        if refreshed is None:
+            raise ConversationMutationError("Canonical message deletion did not verify.")
+        if any(message.message_id == plan.event.message_id for message in refreshed.messages):
+            raise ConversationMutationError("Canonical message deletion did not verify.")
+        return True
 
 
 def create_canonical_thread(*, session: Any, force_new: bool = False) -> CanonicalThreadView:
@@ -381,6 +459,91 @@ def _closed_document(document: ThreadDocument, *, now: str) -> ThreadDocument:
     )
 
 
+def _append_canonical_event(
+    *,
+    session: Any,
+    thread_id: int | str,
+    event_factory: Callable[[ConversationTailSnapshot], MessageEvent],
+) -> ConversationAppendPlan:
+    def load_tail() -> ConversationTailSnapshot:
+        catalog = read_canonical_conversation_catalog(session=session)
+        current = _find_thread(catalog, thread_id)
+        if current is None:
+            raise ConversationMutationError("Canonical thread was not found.")
+        if current.document.status != "active":
+            raise ConversationMutationError("Canonical thread is not active.")
+        _require_complete_thread(current)
+        return ConversationTailSnapshot(
+            thread_id=current.document.thread_id,
+            events=tuple(
+                event for segment in current.segments for event in segment.segment.events
+            ),
+            tail=current.segments[-1].segment if current.segments else None,
+        )
+
+    def commit(plan: ConversationAppendPlan) -> None:
+        catalog = read_canonical_conversation_catalog(session=session)
+        current = _find_thread(catalog, thread_id)
+        if current is None:
+            raise ConversationTailConflict("canonical thread disappeared")
+        _require_complete_thread(current)
+        tail_record = current.segments[-1] if current.segments else None
+        actual_tail_id = tail_record.segment.segment_id if tail_record is not None else None
+        actual_tail_hash = tail_record.segment.sha256 if tail_record is not None else None
+        if (
+            actual_tail_id != plan.expected_tail_id
+            or actual_tail_hash != plan.expected_tail_sha256
+        ):
+            raise ConversationTailConflict("canonical thread tail changed")
+        _commit_message_append(
+            session=session,
+            catalog=catalog,
+            current=current,
+            tail_record=tail_record,
+            plan=plan,
+        )
+
+    return append_message_event_with_tail_retry(
+        load_tail=load_tail,
+        event_factory=event_factory,
+        commit=commit,
+        max_attempts=_MAX_CREATE_ATTEMPTS,
+    )
+
+
+def _require_message(
+    snapshot: ConversationTailSnapshot,
+    message_id: int | str,
+) -> ReducedMessage:
+    for message in reduce_message_events(snapshot.events):
+        if message.message_id == str(message_id) or message.legacy_message_id == message_id:
+            return message
+        if str(message.legacy_message_id) == str(message_id):
+            return message
+    raise ConversationMutationError("Canonical message was not found.")
+
+
+def _require_message_precondition(
+    message: ReducedMessage,
+    *,
+    expected_event_id: str,
+    expected_version: int,
+) -> None:
+    if (
+        not isinstance(expected_event_id, str)
+        or not expected_event_id
+        or isinstance(expected_version, bool)
+        or not isinstance(expected_version, int)
+        or expected_version < 1
+    ):
+        raise ConversationMutationError("Canonical message precondition is invalid.")
+    if (
+        message.current_event_id != expected_event_id
+        or message.version != expected_version
+    ):
+        raise ConversationMutationError("Canonical message precondition is stale.")
+
+
 def _commit_message_append(
     *,
     session: Any,
@@ -417,6 +580,14 @@ def _commit_message_append(
             "contentType": MESSAGE_SEGMENT_CONTENT_TYPE,
         }
         expected_ids = {current.document.thread_id, plan.segment.segment_id}
+    message_count_delta = {
+        "message.created": 1,
+        "message.edited": 0,
+        "message.deleted": -1,
+    }[plan.event.kind]
+    message_count = current.document.message_count + message_count_delta
+    if message_count < 0:
+        raise ConversationMutationError("Canonical thread message count is invalid.")
     document = replace(
         current.document,
         updated_at=plan.event.created_at,
@@ -424,7 +595,7 @@ def _commit_message_append(
         segment_ids=segment_ids,
         segment_sha256=segment_hashes,
         segment_ranges=segment_ranges,
-        message_count=current.document.message_count + 1,
+        message_count=message_count,
     )
     updates = [
         (

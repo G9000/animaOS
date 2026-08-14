@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-13 23:56 MYT
+- Updated: 2026-08-14 05:24 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -443,6 +443,12 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   collisions. The combined approval/agent/chat regression band passes;
   edit/delete, attachments, remaining writers, and raw scans remain. No
   external or irreversible action occurred.
+- 2026-08-14 05:24 MYT - PCF-008 canonical message edit/delete now use
+  immutable authenticated events with exact prior-event/version preconditions,
+  bounded tail retry, native optimistic commit, terminal deletion, and correct
+  visible-count projection without Runtime/Soul writes. Focused coverage passes
+  `15`; attachments, remaining writers, and raw scans remain. No external or
+  irreversible action occurred.
 
 ## Validation
 
