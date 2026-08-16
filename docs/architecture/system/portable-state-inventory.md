@@ -117,7 +117,7 @@ runtime-db|runtime_knowledge_bundle_runs|id,user_id,run_type,status,source_id,in
 runtime-db|runtime_knowledge_concept_sources|id,user_id,concept_id,source_id,span_id,citation_label,quote_text,metadata_json,created_at|runtime-machine-local
 runtime-db|runtime_knowledge_concepts|id,user_id,concept_type,slug,title,description,body_markdown,frontmatter_json,metadata_json,content_hash,status,created_at,updated_at,compiled_at|runtime-machine-local
 runtime-db|runtime_knowledge_links|id,user_id,source_concept_id,target_concept_id,link_type,confidence,metadata_json,created_at,updated_at|runtime-machine-local
-runtime-db|runtime_messages|id,thread_id,user_id,run_id,step_id,sequence_id,role,content_text,content_json,tool_name,tool_call_id,tool_args_json,is_in_context,is_archived_history,token_estimate,source,created_at|runtime-machine-local
+runtime-db|runtime_messages|id,thread_id,user_id,run_id,step_id,sequence_id,role,content_text,content_json,tool_name,tool_call_id,tool_args_json,is_in_context,is_archived_history,token_estimate,source,corefs_message_id,corefs_event_id,corefs_sequence_id,created_at|runtime-machine-local
 runtime-db|runtime_reembed_completions|user_id,completed,updated_at|runtime-machine-local
 runtime-db|runtime_runs|id,thread_id,user_id,provider,model,mode,status,stop_reason,error_text,started_at,completed_at,prompt_tokens,completion_tokens,total_tokens,pending_approval_message_id|runtime-machine-local
 runtime-db|runtime_session_notes|id,thread_id,user_id,key,value,note_type,is_active,promoted_to_item_id,created_at|runtime-machine-local

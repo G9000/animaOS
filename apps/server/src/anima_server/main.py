@@ -207,10 +207,15 @@ def _start_embedded_pg() -> EmbeddedPG | None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    from .services.corefs.migration import (
+        drain_unlocked_rebuilds,
+        resume_unlocked_rebuilds,
+    )
     from .services.credentials import provision_broker_bootstrap_secret
     from .services.sessions import unlock_session_store
 
     provision_broker_bootstrap_secret(os.environ.get("ANIMA_CREDENTIAL_BROKER_SECRET"))
+    resume_unlocked_rebuilds()
     unlock_session_store.start()
     embedded_pg: EmbeddedPG | None = None
     runtime_binding: RuntimeInstanceBinding | None = None
@@ -267,6 +272,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 logger.warning("Offline presence catch-up failed", exc_info=True)
     except BaseException:
         try:
+            await asyncio.to_thread(drain_unlocked_rebuilds)
             await unlock_session_store.shutdown()
         finally:
             try:
@@ -397,6 +403,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await drain_background_memory_tasks()
         finally:
             try:
+                await asyncio.to_thread(drain_unlocked_rebuilds)
                 await unlock_session_store.shutdown()
             finally:
                 if health_handler is not None:

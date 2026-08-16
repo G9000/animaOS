@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 _rebuild_workers_lock = Lock()
 _rebuild_workers: WeakKeyDictionary[CoreFSProgressiveIndex, Thread] = WeakKeyDictionary()
 _rebuild_pending: WeakKeyDictionary[CoreFSProgressiveIndex, bool] = WeakKeyDictionary()
+_rebuilds_accepting = True
 
 
 class _NonIndexableCoreFSObject(ValueError):
@@ -422,6 +423,8 @@ def schedule_unlocked_rebuild(
     if index is None:
         raise ValueError("CoreFS rebuild requires an unlocked Runtime index")
     with _rebuild_workers_lock:
+        if not _rebuilds_accepting:
+            return False
         current = _rebuild_workers.get(index)
         if current is not None and current.is_alive():
             if rerun_if_active:
@@ -437,6 +440,31 @@ def schedule_unlocked_rebuild(
         _rebuild_workers[index] = worker
         worker.start()
     return True
+
+
+def resume_unlocked_rebuilds() -> None:
+    """Allow workers for a newly started application/test lifecycle."""
+    global _rebuilds_accepting
+    with _rebuild_workers_lock:
+        _rebuilds_accepting = True
+
+
+def drain_unlocked_rebuilds() -> None:
+    """Stop accepting rebuilds and join every worker before Runtime teardown."""
+    global _rebuilds_accepting
+    while True:
+        with _rebuild_workers_lock:
+            _rebuilds_accepting = False
+            _rebuild_pending.clear()
+            workers = tuple(
+                worker for worker in _rebuild_workers.values() if worker.is_alive()
+            )
+        if not workers:
+            return
+        for worker in workers:
+            if worker is current_thread():
+                raise RuntimeError("CoreFS rebuild worker cannot drain itself")
+            worker.join()
 
 
 def initialize_catalog_if_idle(

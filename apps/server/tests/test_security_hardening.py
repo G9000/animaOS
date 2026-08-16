@@ -39,21 +39,37 @@ def _register_user(client: TestClient) -> dict[str, object]:
 
 
 def _create_test_app() -> tuple[object, object, object]:
-    from anima_server import main as main_module
-    from anima_server.services.core import ensure_core_manifest, release_core_lock
-
     temp_root = create_managed_temp_dir("anima-sec-app-")
     original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
     settings.data_dir = temp_root / "anima-data"
-    ensure_core_manifest()
-    main_module._start_embedded_pg = lambda: None
-    release_core_lock()
+    settings.runtime_app_data_dir = str(temp_root / "runtime-app-data")
     try:
+        # Import only after both portable and machine-local roots are isolated.
+        # ``anima_server.main`` constructs a module-level app on first import,
+        # and active-Core discovery must never consult a developer installation.
+        from anima_server import main as main_module
+        from anima_server.services.core import ensure_core_manifest, release_core_lock
+
+        ensure_core_manifest()
+        main_module._start_embedded_pg = lambda: None
+        release_core_lock()
         return main_module.create_app(), original_data_dir, temp_root
     except Exception:
         settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
         shutil.rmtree(temp_root, ignore_errors=True)
         raise
+
+
+@pytest.fixture(autouse=True)
+def _restore_runtime_app_data_dir() -> object:
+    """Keep standalone app-construction tests out of real machine state."""
+    original = settings.runtime_app_data_dir
+    try:
+        yield
+    finally:
+        settings.runtime_app_data_dir = original
 
 
 def _cors_allow_origins(app: object) -> list[str]:
@@ -440,6 +456,7 @@ def test_create_app_refuses_to_bootstrap_when_core_lock_is_unavailable(
 
     original_data_dir = settings.data_dir
     settings.data_dir = managed_tmp_path / "locked-core"
+    settings.runtime_app_data_dir = str(managed_tmp_path / "runtime-app-data")
     sys.modules.pop("anima_server.main", None)
     try:
         main_module = importlib.import_module("anima_server.main")
