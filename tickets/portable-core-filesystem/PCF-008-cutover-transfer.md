@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 17:16 MYT
+- Updated: 2026-08-16 02:57 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -565,10 +565,41 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   irreversible acceptance gate passes. Repository organization and diff
   hygiene pass; the paid workflow remains disabled and no external action or
   real cutover occurred.
+- 2026-08-16 02:57 MYT - Completed every feasible local portion of Steps 10
+  and 11. The focused server authority/transfer matrix passes `211`, desktop
+  transfer contracts pass `3`, native capsule/archive filters pass `15` and
+  `7`, the complete desktop suite passes `371`, and the complete server suite
+  passes `3703` with `6` environment skips. Root lint/build, a temporary
+  Alembic upgrade to head `20260812_0001`, isolated temporary-Core `/health`,
+  repository organization, and diff hygiene pass. Full-suite stress exposed
+  and fixed a CoreFS rebuild-worker/Runtime-engine teardown race: lifecycle
+  shutdown now drains workers before engine disposal, scheduling is quiesced
+  during teardown, and concurrent test traffic uses per-test file-backed
+  SQLite connections. PCF-008 remains `in_progress` only for the mandatory
+  cost-deferred signed MSI/PKG/DEB/RPM evidence and explicitly authorized
+  live/irreversible Step 4 and smoke operations. The paid workflow remains
+  disabled; no real first write, source deletion, Core pointer swap, recovery
+  activation, external publication, or user-state mutation occurred.
 
 ## Validation
 
 - Commands:
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py -q`
+    (`211 passed`)
+  - `bun test apps/desktop/tests/corefs-transfer.test.ts` (`3 passed`)
+  - `cargo test -p anima-core capsule` (`15 passed`)
+  - `cargo test -p anima-core core_archive -q` (`7 passed`)
+  - `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test`
+    (`3703 passed, 6 skipped`; complete server suite)
+  - `bun run test:desktop` (`371 passed`)
+  - `bun run lint` and `bun run build` (passed)
+  - temporary `bun run db:server:current` after upgrading an isolated database
+    (`20260812_0001 (head)`)
+  - isolated temporary Core/Runtime startup with in-memory test credentials and
+    `GET /health` (`200`, `status=ok`; no real Core or credential-store access)
+  - focused rebuild-drain/migration/creation/knowledge/security/Runtime
+    regressions after the teardown-race repair (passed)
+  - `bun scripts/check-repo-organization.ts` and `git diff --check` (passed)
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_indexer.py apps/server/tests/test_dev_session_continuity.py -q` (`82 passed`)
   - `cargo test -p anima-corefs` (complete native suite passed)
   - `cargo clippy -p anima-corefs --all-targets -- -D warnings` (passed)
@@ -802,6 +833,11 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `packages/api-client/tests/client.test.ts`
   - `apps/desktop/src/{App.tsx,pages/settings/Settings.tsx,pages/settings/CoreTransferSettings.tsx}`
   - `apps/desktop/tests/corefs-transfer.test.ts`
+  - `apps/server/src/anima_server/services/corefs/migration.py`
+  - `apps/server/src/anima_server/main.py`
+  - `apps/server/tests/{conftest.py,test_corefs_migration.py,test_dev_session_continuity.py,test_security_hardening.py}`
+  - `apps/desktop/tests/desktop-release-contract.test.ts`
+  - `docs/architecture/system/portable-state-inventory.md`
   - `packages/anima-corefs/src/logical/{mod.rs,mutation.rs,mutation/executor.rs,mutation/tests.rs}`
   - `packages/anima-core/src/ffi.rs`
   - `apps/server/src/anima_server/{schemas/corefs.py,api/routes/corefs.py}`

@@ -879,7 +879,11 @@ missing evidence blocks PCF-008; it cannot be treated as a skipped CI check.
 - Test: `apps/desktop/tests/journal-draft-cleanup-authority.test.ts`
 - Test: `apps/server/tests/test_corefs_cutover.py`
 - Test: `apps/server/tests/test_corefs_transfer.py`
-- Test: `apps/server/tests/test_corefs_authority.py`
+- Test: `apps/server/tests/test_corefs_api.py`
+- Test: `apps/server/tests/test_corefs_logical.py`
+- Test: `apps/server/tests/test_corefs_security_api.py`
+- Test: `apps/server/tests/test_corefs_orchestration.py`
+- Test: `apps/server/tests/test_corefs_legacy_runtime_recovery.py`
 - Test: `apps/server/tests/test_corefs_soul_relocation.py`
 - Test: `apps/server/tests/test_vault.py`
 - Test: `apps/server/tests/test_health_integration.py`
@@ -1159,11 +1163,18 @@ Update `docs/thesis/whitepaper.md`, `docs/thesis/portable-core.md`, `docs/thesis
 - [ ] **Step 10: Run focused migration/transfer/authority tests**
 
 ```powershell
-$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_authority.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py -q
+$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py -q
 bun test apps/desktop/tests/corefs-transfer.test.ts
 cargo test -p anima-core capsule
 cargo test -p anima-core core_archive
 ```
+
+Local progress (2026-08-16): the focused server matrix passes `211`, desktop
+transfer contracts pass `3`, and the native capsule/archive filters pass `15`
+and `7`. The obsolete `test_corefs_authority.py` path was replaced above by
+the implemented API, logical, security, orchestration, and recovery authority
+suites. This step remains open because the required signed four-platform
+package execution below is deliberately cost-deferred and still disabled.
 
 Then, under separate funded execution authority, enable/dispatch the protected
 desktop package gate against the final signed MSI, notarized PKG, DEB, and RPM.
@@ -1180,12 +1191,25 @@ bun run build
 bun run db:server:current
 ```
 
+Local progress (2026-08-16): the complete server suite passes `3703` with `6`
+environment skips, the complete desktop suite passes `371`, and root lint plus
+build pass. A temporary database upgraded to Alembic head `20260812_0001`, and
+an isolated temporary Core/Runtime startup returned HTTP 200 from `/health`
+without reading or modifying the user's Core or credential store. Full-suite
+stress exposed a CoreFS index-rebuild worker racing Runtime-engine teardown;
+startup/shutdown now resume and drain those workers, and tests use separate
+file-backed SQLite connections for request/background concurrency. The focused
+drain, migration, creation, knowledge, security, and Runtime regressions pass.
+This step remains open for the signed-package evidence and explicitly
+authorized real-device/live-data smoke operations listed below; no live first
+write, source deletion, active-Core pointer swap, or recovery activation ran.
+
 Then start the app, verify `GET /health`, and smoke-test unlock/auth, chat, thread history, diary/drafts, notes through CoreFS, gallery, document upload/reindex, tasks, settings, memory promotion/provenance, lock, restart, Runtime deletion/rebuild, a full single-file transfer, FAT32-like multipart transfer, scoped credential replacement, degraded Soul-only `filesystem_missing` recovery, CoreFS-only recovery/export mode plus V1 reattachment rejection, interrupted removable-media export, interrupted active-Core pointer swap, rollback to the retained old Core, and clean-environment restore.
 
 - [ ] **Step 12: Commit first-release cutover**
 
 ```powershell
-git add apps/server/src/anima_server/services/corefs apps/server/src/anima_server/schemas/corefs_transfer.py apps/server/src/anima_server/schemas/vault.py apps/server/src/anima_server/api/routes/corefs_transfer.py apps/server/src/anima_server/api/routes/vault.py apps/server/src/anima_server/db/session.py apps/server/src/anima_server/db/user_store.py apps/server/src/anima_server/services/storage.py apps/server/src/anima_server/services/vault.py apps/server/src/anima_server/services/anima_core_bindings.py apps/server/src/anima_server/main.py packages/anima-core/src/core_archive.rs packages/anima-core/src/capsule.rs packages/anima-core/src/integrity.rs packages/anima-core/src/ffi.rs packages/anima-core/src/lib.rs packages/api-client/src/client.ts packages/api-client/src/types.ts apps/desktop/src/pages/settings/CoreTransferSettings.tsx apps/desktop/src/pages/settings/VaultSettings.tsx apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_authority.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py apps/desktop/tests/corefs-transfer.test.ts docs
+git add apps/server/src/anima_server/services/corefs apps/server/src/anima_server/schemas/corefs_transfer.py apps/server/src/anima_server/schemas/vault.py apps/server/src/anima_server/api/routes/corefs_transfer.py apps/server/src/anima_server/api/routes/vault.py apps/server/src/anima_server/db/session.py apps/server/src/anima_server/db/user_store.py apps/server/src/anima_server/services/storage.py apps/server/src/anima_server/services/vault.py apps/server/src/anima_server/services/anima_core_bindings.py apps/server/src/anima_server/main.py packages/anima-core/src/core_archive.rs packages/anima-core/src/capsule.rs packages/anima-core/src/integrity.rs packages/anima-core/src/ffi.rs packages/anima-core/src/lib.rs packages/api-client/src/client.ts packages/api-client/src/types.ts apps/desktop/src/pages/settings/CoreTransferSettings.tsx apps/desktop/src/pages/settings/VaultSettings.tsx apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py apps/desktop/tests/corefs-transfer.test.ts docs
 git -c commit.gpgsign=false commit -m "core: cut over to CoreFS authority"
 ```
 

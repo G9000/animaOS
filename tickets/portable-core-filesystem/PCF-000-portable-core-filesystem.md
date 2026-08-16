@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-14 16:35 MYT
+- Updated: 2026-08-16 02:57 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -559,12 +559,32 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   passes. Repository organization and diff hygiene pass. PCF-008 remains
   active for Step 4, focused/full validation, and cost-deferred package
   evidence; no paid workflow or external/irreversible action occurred.
+- 2026-08-16 02:57 MYT - PCF-008 completed every feasible local portion of
+  focused and full validation. The focused server authority/transfer matrix
+  passes `211`, desktop transfer contracts pass `3`, native capsule/archive
+  filters pass `15` and `7`, the complete desktop suite passes `371`, and the
+  complete server suite passes `3703` with `6` environment skips. Root
+  lint/build, a temporary Alembic upgrade to head, isolated temporary-Core
+  health, repository organization, and diff hygiene pass. A full-suite CoreFS
+  rebuild-worker/Runtime-engine teardown race was fixed with explicit worker
+  resume/drain lifecycle control and concurrent file-backed test databases.
+  PCF-008 remains `in_progress`; the mandatory signed four-platform package
+  evidence is cost-deferred, and the live irreversible first write/source
+  retirement/pointer and recovery smoke operations remain separately gated.
+  The paid workflow stays disabled and no real user state or external system
+  was changed.
 
 ## Validation
 
 - PCF-003 second-phase closeout: exact implementation head `f0991e38bbb7ee0a90f2b4cb5639f079a9dba72f` passed standalone checkout, Server Ruff, pytest, Windows native lease, and macOS native lease; complete pagination found no unresolved consequential feedback and the focused exact-head Codex review was clean.
 
 - Commands:
+  - PCF-008 local closeout: focused server authority/transfer tests `211/211`,
+    desktop transfer `3/3`, native capsule/archive `15/15` and `7/7`, complete
+    server `3703 passed, 6 skipped`, complete desktop `371/371`, root lint and
+    build, isolated Alembic head/health smoke, repository organization, and
+    diff hygiene all passed. Signed package evidence and live irreversible
+    smoke remain intentionally unexecuted.
   - PR #127 path-oracle/Soul-navigation follow-up: both focused regressions failed RED and pass GREEN; CoreFS migration plus Runtime privacy coverage passed `68`, all `79` desktop tests passed, and scoped Ruff/format, the desktop production build, repository organization, and diff hygiene passed.
   - PR #127 packaged Core/Runtime layout follow-up: the pure-layout regression failed RED before the resolver existed; three Rust cases cover disjoint defaults, explicit overrides, fallback-database continuity, and pre-validation environment placement; all `79` desktop tests pass, and the desktop production build, `cargo check -p desktop`, repository organization, and diff hygiene pass.
   - PR #127 final clean implementation head and second-phase closeout: head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed standalone checkout, Server Ruff, Server Tests, Windows native lease, and macOS native/fallback CoreFS checks; the unchanged Windows failed-job rerun passed after the known PCF-011 aggregate flake. Codex reported no major issues for reviewed commit `70d22b7c32`, and full GraphQL pagination consumed `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads.
