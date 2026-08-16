@@ -1190,7 +1190,7 @@ activation may be used.
 
 Then start the app, verify `GET /health`, and smoke-test unlock/auth, chat, thread history, diary/drafts, notes through CoreFS, gallery, document upload/reindex, tasks, settings, memory promotion/provenance, lock, restart, Runtime deletion/rebuild, a full single-file transfer, FAT32-like multipart transfer, scoped credential replacement, degraded Soul-only `filesystem_missing` recovery, CoreFS-only recovery/export mode plus V1 reattachment rejection, interrupted removable-media export, interrupted active-Core pointer swap, rollback to the retained old Core, and clean-environment restore.
 
-- [ ] **Step 12: Commit the greenfield first-release authority**
+- [x] **Step 12: Commit the greenfield first-release authority**
 
 Review `git status --short`, `git diff --stat`, and `git diff --check`, then
 stage only the paths listed in this Task 8 scope before committing.

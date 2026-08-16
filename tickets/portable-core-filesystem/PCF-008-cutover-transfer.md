@@ -10,7 +10,7 @@
 - Spec: `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md#approved-greenfield-release-amendment-2026-08-16`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-16 16:54 MYT
+- Updated: 2026-08-16 16:56 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
@@ -592,6 +592,11 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   while current-format V2 transfer, scoped recovery, retained-Core rollback,
   and crash recovery remain. A scoped-transfer regression now proves Soul-only
   archives omit CoreFS authority while FS archives retain it.
+- 2026-08-16 16:56 MYT - Committed the reviewed greenfield implementation as
+  `0981463f` (`corefs: establish greenfield authority`) and completed plan Step
+  12 locally. The ticket remains `in_progress` for Step 11 safe temporary
+  smoke/initiative closeout; push and PR metadata update are the user-
+  authorized publication actions next.
 
 ## Validation
 

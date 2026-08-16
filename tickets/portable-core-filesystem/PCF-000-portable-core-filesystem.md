@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-16 16:54 MYT
+- Updated: 2026-08-16 16:56 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -590,6 +590,10 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   TypeScript/Tauri/all-target Rust checks, full workspace build, Ruff,
   repository organization, and diff hygiene passed. PCF-008 remains
   `in_progress` for safe temporary smoke/initiative closeout only.
+- 2026-08-16 16:56 MYT - PCF-008 committed the greenfield implementation as
+  `0981463f` and completed its local commit step. The child and parent remain
+  `in_progress`; publication does not close the remaining safe-smoke and
+  initiative-closeout acceptance.
 
 ## Validation
 
