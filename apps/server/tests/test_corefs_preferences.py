@@ -3,13 +3,6 @@ from __future__ import annotations
 import pytest
 from anima_server.db.session import get_user_session_factory
 from anima_server.models import PresenceConfig
-from anima_server.services.corefs import logical
-from anima_server.services.corefs.cutover import (
-    approve_validation_cutover,
-    begin_migration,
-    publish_validation_readonly,
-    reconcile_cutover_authority,
-)
 from anima_server.services.corefs.diary_migration import (
     migration_opaque_id,
     read_prepared_writing_body,
@@ -144,17 +137,17 @@ def test_portable_preference_api_rejects_host_media_and_unknown_keys() -> None:
             headers=headers,
             json={"values": {"background": {"type": "image", "value": "private.png"}}},
         )
-        assert host_media.status_code == 422
+        assert host_media.status_code == 409
 
         unknown = client.patch(
             f"/api/preferences/{user_id}",
             headers=headers,
             json={"values": {"providerApiKey": "must-not-persist"}},
         )
-        assert unknown.status_code == 422
+        assert unknown.status_code == 409
 
 
-def test_post_cutover_preference_patch_writes_only_corefs(
+def test_authoritative_preference_patch_writes_only_corefs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with managed_test_client("anima-preferences-corefs-") as client:
@@ -177,33 +170,8 @@ def test_post_cutover_preference_patch_writes_only_corefs(
         )
         assert initial.status_code == 200, initial.text
 
-        session = unlock_session_store.resolve(token)
-        assert session is not None
-        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
-        begin_migration()
-        publish_validation_readonly(
-            generation=int(selected["generation"]),
-            catalog_hash=str(selected["catalogHash"]),
-        )
-        approve_validation_cutover()
-        logical.execute_mutation_v1(
-            corefs_session=session.corefs_session,
-            keys=session.corefs_keys,
-            selected=logical.CoreFsValidationSnapshot(
-                int(selected["generation"]), str(selected["catalogHash"])
-            ),
-            principal="user",
-            mutation={"operation": "mkdir", "path": "Preference activation proof"},
-        )
-        marker = reconcile_cutover_authority(
-            corefs_session=session.corefs_session,
-            keys=session.corefs_keys,
-        )
-        assert marker is not None
-        object.__setattr__(session, "content_authority", marker)
-
         def reject_legacy_preparation(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("post-cutover preferences touched the legacy preparation path")
+            raise AssertionError("authoritative preferences touched the preparation path")
 
         monkeypatch.setattr(
             "anima_server.services.corefs.preferences.prepare_writing_source_catalog",
@@ -255,7 +223,7 @@ def test_presence_update_refreshes_encrypted_preference_shadow() -> None:
         assert decoded.values["presence"]["customInstruction"] == "Be concise"
 
 
-def test_post_cutover_presence_uses_only_canonical_preferences(
+def test_authoritative_presence_uses_only_canonical_preferences(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with managed_test_client("anima-presence-corefs-") as client:
@@ -274,37 +242,15 @@ def test_post_cutover_presence_uses_only_canonical_preferences(
         initial = client.put(
             f"/api/presence/{user_id}",
             headers=headers,
-            json={"enabled": False, "customInstruction": "Legacy value"},
+            json={"enabled": False, "customInstruction": "Initial value"},
         )
         assert initial.status_code == 200, initial.text
 
         session = unlock_session_store.resolve(token)
         assert session is not None
-        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
-        begin_migration()
-        publish_validation_readonly(
-            generation=int(selected["generation"]),
-            catalog_hash=str(selected["catalogHash"]),
-        )
-        approve_validation_cutover()
-        logical.execute_mutation_v1(
-            corefs_session=session.corefs_session,
-            keys=session.corefs_keys,
-            selected=logical.CoreFsValidationSnapshot(
-                int(selected["generation"]), str(selected["catalogHash"])
-            ),
-            principal="user",
-            mutation={"operation": "mkdir", "path": "Presence activation proof"},
-        )
-        marker = reconcile_cutover_authority(
-            corefs_session=session.corefs_session,
-            keys=session.corefs_keys,
-        )
-        assert marker is not None
-        object.__setattr__(session, "content_authority", marker)
 
         def reject_legacy_write(*_args: object, **_kwargs: object) -> None:
-            raise AssertionError("post-cutover presence touched legacy persistence")
+            raise AssertionError("authoritative presence touched fallback persistence")
 
         monkeypatch.setattr(
             "anima_server.api.routes.presence.update_presence_config",
@@ -330,9 +276,7 @@ def test_post_cutover_presence_uses_only_canonical_preferences(
 
         with get_user_session_factory(user_id)() as db:
             legacy = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
-            assert legacy is not None
-            assert legacy.enabled is False
-            assert legacy.custom_instruction == "Legacy value"
+            assert legacy is None
             background_values = get_presence_config_values(db, user_id)
         assert background_values.enabled is True
         assert background_values.custom_instruction == "Canonical value"

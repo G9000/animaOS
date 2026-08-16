@@ -507,6 +507,15 @@ def test_scoped_export_excludes_other_compartment_key_material(
                 "object_key_epoch": 1,
             },
             "active_filesystem_root_generation": 1,
+            "corefs_authority": {
+                "version": 1,
+                "state": "authoritative",
+                "preparedGeneration": 1,
+                "preparedCatalogHash": "a" * 64,
+                "authorityEpoch": 7,
+                "authoritativeGeneration": 2,
+                "authoritativeCatalogHash": "b" * 64,
+            },
             "keyslots": [
                 {
                     "purpose": "soul",
@@ -545,7 +554,9 @@ def test_scoped_export_excludes_other_compartment_key_material(
         if payload_kind is CoreArchivePayloadKind.SOUL:
             assert "frk_rotation" not in archived_manifest
             assert "active_filesystem_root_generation" not in archived_manifest
+            assert "corefs_authority" not in archived_manifest
         else:
+            assert archived_manifest["corefs_authority"]["state"] == "authoritative"
             assert "wrapped_sqlcipher_key" not in archived_manifest
             assert "recovery_sqlcipher_key" not in archived_manifest
             assert "sqlcipher_kdf_salt" not in archived_manifest

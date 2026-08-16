@@ -43,7 +43,6 @@ from .api.routes.tasks import router as tasks_router
 from .api.routes.telegram import router as telegram_router
 from .api.routes.threads import router as threads_router
 from .api.routes.users import router as users_router
-from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import (
     default_runtime_app_data_root,
@@ -65,7 +64,6 @@ from .services.core import (
     acquire_core_lock,
     ensure_core_manifest,
     is_provisioned,
-    migrate_legacy_manifest_runtime_state,
 )
 from .services.corefs.active_core_registry import (
     initialize_active_core_after_manifest,
@@ -75,13 +73,6 @@ from .services.corefs.instance_registry import (
     RuntimeInstanceBinding,
     RuntimeInstanceRegistry,
 )
-from .services.corefs.legacy_runtime import relocate_legacy_runtime
-from .services.corefs.legacy_runtime_recovery import (
-    finalize_runtime_transition_after_startup,
-    runtime_transition_restart_signaled,
-    select_runtime_pg_data_dir_for_startup,
-)
-from .services.corefs.soul_relocation import retire_legacy_soul_database_after_cutover
 from .services.health.event_logger import emit as health_emit
 
 
@@ -143,16 +134,6 @@ def _claim_runtime_instance(
     )
     registry = RuntimeInstanceRegistry(app_data_root)
     binding = registry.resolve(settings.data_dir, runtime_url=runtime_url)
-    try:
-        migrate_legacy_manifest_runtime_state(registry, binding)
-        relocate_legacy_runtime(
-            settings.data_dir,
-            binding,
-            postgres_running=False,
-        )
-    except BaseException:
-        registry.release(binding)
-        raise
     settings.runtime_instance_data_dir = str(binding.instance_root)
     if settings.health_log_dir:
         configured_health_logs = Path(settings.health_log_dir).expanduser().resolve()
@@ -191,7 +172,7 @@ def _start_embedded_pg() -> EmbeddedPG | None:
         logger.warning("pgserver is not installed; skipping embedded runtime PostgreSQL startup.")
         return None
 
-    selected_pg_data_dir = select_runtime_pg_data_dir_for_startup(binding)
+    selected_pg_data_dir = binding.pg_data_dir
     if settings.runtime_pg_data_dir:
         configured_pg_data = Path(settings.runtime_pg_data_dir).expanduser().resolve()
         if configured_pg_data != selected_pg_data_dir:
@@ -242,21 +223,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             ensure_pgvector()
             ensure_runtime_tables()
             unlock_session_store.initialize_runtime_indexes()
-            if embedded_pg is not None:
-                finalize_runtime_transition_after_startup(runtime_binding)
-            else:
-                # An explicitly configured Runtime can be the fresh target too.
-                # Prepare only after its instance binding and schema pass; a
-                # live relocated postmaster still fails the recovery gate.
-                select_runtime_pg_data_dir_for_startup(runtime_binding)
-                finalize_runtime_transition_after_startup(
-                    runtime_binding,
-                    fresh_runtime_verifier=lambda: ensure_runtime_database_binding(
-                        core_id=runtime_binding.core_id,
-                        local_instance_id=runtime_binding.local_instance_id,
-                    ),
-                )
-
             try:
                 from .services.agent.inner_life.catchup import apply_offline_catchup
 
@@ -449,10 +415,7 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
                     status_code=403,
                     content={"error": "Invalid or missing sidecar nonce."},
                 )
-        response = await call_next(request)
-        if runtime_transition_restart_signaled():
-            response.headers["x-anima-restart-required"] = "corefs-cutover"
-        return response
+        return await call_next(request)
 
 
 def create_app() -> FastAPI:
@@ -469,7 +432,6 @@ def create_app() -> FastAPI:
         raise RuntimeError("Core is already open in another process")
     ensure_core_manifest()
     initialize_active_core_after_manifest(active_core_startup)
-    retire_legacy_soul_database_after_cutover()
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
@@ -567,7 +529,6 @@ def create_app() -> FastAPI:
     app.include_router(telegram_router)
     app.include_router(threads_router)
     app.include_router(users_router)
-    app.include_router(vault_router)
     app.include_router(ws_router)
 
     return app

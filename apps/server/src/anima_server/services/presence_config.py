@@ -53,8 +53,8 @@ class PresenceConfigValues:
 
 
 def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValues:
-    """Read presence from CoreFS after cutover and SQL only before cutover."""
-    from anima_server.services.corefs.cutover import CutoverState, read_cutover_record
+    """Read portable presence from CoreFS; require unlock once authority is active."""
+    from anima_server.services.corefs.authority import AuthorityState, read_authority_record
     from anima_server.services.corefs.preferences import (
         active_preference_authority_session,
         read_canonical_presence_values,
@@ -63,7 +63,7 @@ def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValue
     authority_session = active_preference_authority_session(user_id)
     if authority_session is not None:
         return read_canonical_presence_values(session=authority_session)
-    if read_cutover_record().state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
+    if read_authority_record().state is AuthorityState.AUTHORITATIVE:
         raise RuntimeError("Canonical presence preferences require an unlocked CoreFS session.")
 
     row = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))

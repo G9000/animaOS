@@ -23,7 +23,7 @@ from anima_server.services.corefs.archive_transfer import (
     stage_core_archive_v2,
     verify_core_archive_v2,
 )
-from anima_server.services.corefs.cutover import CutoverState, read_cutover_record
+from anima_server.services.corefs.authority import AuthorityState, read_authority_record
 from anima_server.services.corefs.recovery_access import (
     ControlRecord,
     CoreFsRecoveryAccessError,
@@ -91,9 +91,7 @@ def _import_source_bytes(archive: Path) -> int:
         if len(volumes) > 100_000:
             raise TransferError("multipart ANIMA CORE volume count exceeds its bound")
     volumes.sort()
-    if len(volumes) < 2 or [ordinal for ordinal, _ in volumes] != list(
-        range(1, len(volumes) + 1)
-    ):
+    if len(volumes) < 2 or [ordinal for ordinal, _ in volumes] != list(range(1, len(volumes) + 1)):
         raise TransferError("multipart ANIMA CORE volume inventory is incomplete")
     return total + sum(length for _, length in volumes)
 
@@ -367,9 +365,7 @@ class CoreTransferOperationManager:
                     payload_kind=operation.prepared.inventory.payload_kind,
                     soul_generation=operation.prepared.inventory.soul_generation,
                     part_limit_bytes=part_limit,
-                    declared_volume_count=(
-                        operation.prepared.probe.declared_volume_count
-                    ),
+                    declared_volume_count=(operation.prepared.probe.declared_volume_count),
                     cancel_requested=operation.cancel.is_set,
                 )
                 if result.inventory != operation.prepared.inventory:
@@ -785,10 +781,7 @@ class CoreImportOperationManager:
         try:
             with access_lock:
                 update(TransferOperationState.RUNNING, "starting", 5)
-                if (
-                    export_operation.prepared.probe.publication_mode
-                    is PublicationMode.MULTIPART
-                ):
+                if export_operation.prepared.probe.publication_mode is PublicationMode.MULTIPART:
                     part_limit = export_operation.prepared.probe.part_limit_bytes
                     if part_limit is None:
                         raise TransferError("multipart destination has no part limit")
@@ -975,16 +968,12 @@ class CoreImportOperationManager:
 def _coherent_soul_generation(payload_kind: CoreArchivePayloadKind) -> int | None:
     if payload_kind is CoreArchivePayloadKind.FS:
         return None
-    cutover = read_cutover_record()
-    if cutover.state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
-        generation = cutover.authoritative_generation
-    elif cutover.state in {
-        CutoverState.CORE_FS_VALIDATION_READONLY,
-        CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE,
-    }:
-        generation = cutover.validation_generation
-    else:
-        generation = None
+    authority = read_authority_record()
+    generation = (
+        authority.authoritative_generation
+        if authority.state is AuthorityState.AUTHORITATIVE
+        else None
+    )
     if generation is None or generation <= 0:
         raise TransferError("ANIMA CORE has no coherent Soul/filesystem transfer checkpoint")
     return generation

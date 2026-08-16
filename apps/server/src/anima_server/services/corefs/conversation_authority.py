@@ -67,7 +67,7 @@ class CanonicalConversationCatalog:
 def conversation_authority_selection(
     session: object,
 ) -> ConversationAuthoritySelection | None:
-    """Accept only a PCF-008-authenticated, family-scoped cutover marker."""
+    """Accept only a PCF-008-authenticated, family-scoped authority marker."""
     marker = getattr(session, "content_authority", None)
     if not isinstance(marker, dict):
         return None
@@ -76,7 +76,7 @@ def conversation_authority_selection(
     catalog_hash = marker.get("catalogHash")
     if (
         marker.get("version") != 1
-        or marker.get("state") != "cutover_complete"
+        or marker.get("state") != "authoritative"
         or not isinstance(families, list)
         or "conversations" not in families
         or isinstance(generation, bool)
@@ -113,8 +113,7 @@ def any_conversation_corefs_authority_active() -> bool:
     from anima_server.services.sessions import all_active_unlock_sessions
 
     return any(
-        conversation_corefs_authority_active(session)
-        for session in all_active_unlock_sessions()
+        conversation_corefs_authority_active(session) for session in all_active_unlock_sessions()
     )
 
 
@@ -221,9 +220,7 @@ def canonical_messages_for_display(view: CanonicalThreadView) -> list[dict[str, 
             "ts": message.created_at,
             "isArchivedHistory": view.document.status != "active",
             "retrieval": None,
-            "attachments": [
-                {"corefsUri": uri} for uri in message.attachment_uris
-            ],
+            "attachments": [{"corefsUri": uri} for uri in message.attachment_uris],
             "pills": [],
         }
         for message in view.messages

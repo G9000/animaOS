@@ -2,57 +2,48 @@
 
 - Status: in_progress
 - Priority: P0
-- Scope: migration cutover, local ANIMA CORE transfer/recovery, release validation
+- Scope: greenfield authority, local ANIMA CORE transfer/recovery, release validation
 - Parent: `PCF-000`
 - Depends on: `PCF-001`, `PCF-002`, `PCF-003`, `PCF-004`, `PCF-005`, `PCF-006`, `PCF-007`
 - Owner: Codex
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
-- Spec: `docs/superpowers/specs/2026-08-02-corefs-resumable-preparation-design.md#111-packaged-desktop-writer-exclusion-for-plaintext-draft-cleanup`
+- Spec: `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md#approved-greenfield-release-amendment-2026-08-16`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-16 02:57 MYT
+- Updated: 2026-08-16 16:54 MYT
 - Started: 2026-08-13 18:41 MYT
 - Completed:
 
 ## Goal
 
-Perform the verified reversible-to-forward-only cutover, provide safe cold/live transfer, and validate the first release without deleting legacy Soul rollback tables.
+Ship greenfield Portable Core authority, provide safe cold/live current-format transfer, and validate the first release without any unreleased compatibility surface.
 
 ## Deliverables
 
-- Resumable converter orchestration and acceptance states.
-- Verified SQLCipher checkpoint and copy-verify-flip from `users/<legacy-id>/anima.db` to `.anima/soul/soul.db`.
-- Authenticated first-write cutover marker.
-- Legacy PostgreSQL relocation, encrypted recovery bundle, and plaintext retirement after marker.
+- Direct greenfield Soul/CoreFS/Runtime bootstrap with canonical authority from the first private write.
+- Removal of pre-release SQLCipher/PostgreSQL/browser/transcript migration and fallback paths.
 - ANIMA CORE local transfer API/client/UI with full export/restore plus advanced Soul-only and CoreFS-only recovery.
-- Rust-backed `anima_core_v2` streaming container with authenticated `full`/`soul`/`fs` kinds, <=8-MiB I/O chunks, reachable-object verification, no 16-MiB total section ceiling, and backward V1/JSON import.
+- Rust-backed `anima_core_v2` streaming container with authenticated `full`/`soul`/`fs` kinds, <=8-MiB I/O chunks, reachable-object verification, no 16-MiB total section ceiling, and strict rejection of unsupported earlier formats.
 - Hard-drive/removable-media destination preflight, `.partial` publication, single-file output, and authenticated <=2-GiB multipart fallback for FAT32-like limits.
 - Bounded V2 KDF/header validation, one normative archive AAD tuple, pre-archive record hashing, globally unique archive nonce ordinals, and <=32-MiB aggregate streaming memory excluding the fixed Argon2 workspace.
 - Same-volume import staging, authenticated active-Core registry-pointer activation, retained-old-Core rollback, and crash tests at every multipart/import publication boundary.
-- Legacy app tables disabled as authority but retained read-only for PCF-009.
-- Protected final signed Windows, macOS, DEB, and RPM replacement-install
-  evidence for plaintext-draft cleanup, including exact artifact digests,
-  recorded before irreversible cutover or first-release publication.
+- No packaged legacy-writer exclusion or plaintext-draft cleanup authority.
 
 ## Acceptance
 
-- Rollback works before the marker and is rejected after it.
+- Greenfield bootstrap publishes only canonical current-format authority.
 - Cold and live prepared transfer exclude Runtime and restore all canonical content.
 - Full backend and Bun desktop tests execute and pass.
 - Fresh Runtime/cache/log/index raw scans find no seeded portable plaintext; sealed operational payloads are unlock-only.
-- Existing legacy sources remain recoverable in encrypted/read-only form for the observation window.
-- After the first-write marker, no service recreates the legacy `users/<id>/anima.db` layout and transfers contain the single canonical Soul file.
+- No service recognizes or recreates pre-release `users/<id>/anima.db`, embedded Runtime, plaintext browser draft, transcript archive, vault JSON, or capsule layouts.
 - A >16-MiB binary-object round trip streams without whole-archive base64 buffering and excludes Runtime/device/credential state.
 - Default artifacts are `anima-core-<timestamp>.anima`, `anima-core-soul-<timestamp>.anima`, and `anima-core-fs-<timestamp>.anima`; the authenticated payload kind, not the filename, controls import.
 - Soul-only restore enters `filesystem_missing`; CoreFS-only restore enters recovery/export-only mode; neither starts as a complete ANIMA.
 - Export/import memory remains bounded for an artifact larger than RAM, and insufficient capacity, unsupported destination, disconnect, tampered/missing/mixed volumes, or interrupted import cannot alter the live Core.
 - Soul/FS scoped credential replacement cannot unlock undeclared compartments or promote a partial artifact to `full`; CoreFS-to-Soul attachment returns `corefs_reattachment_not_supported` in V1.
 - Pre-authentication KDF/header limits, exact AAD fields, record-hash semantics, global nonce monotonicity, controller-last multipart commit, same-volume staging, registry swap, and old-Core rollback all have deterministic failure-injection coverage.
-- The protected package workflow passes against the final signed MSI,
-  notarized PKG, DEB, and RPM; all replacement-only launch-target, native
-  process-census, post-WebView capability, and source-first cleanup checks pass;
-  exact artifact digests are recorded. Missing or failed evidence blocks
-  cutover and release publication.
+- Unsupported pre-release data fails closed without becoming an authority or
+  requiring a paid cross-version package matrix.
 
 ## Activity Log
 
@@ -581,9 +572,42 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   disabled; no real first write, source deletion, Core pointer swap, recovery
   activation, external publication, or user-state mutation occurred.
 
+- 2026-08-16 15:34 MYT - User approved a greenfield first-release contract:
+  no supported user or installation predates Portable Core. PCF-008 now removes
+  unreleased SQLCipher/PostgreSQL/browser/transcript migration, compatibility
+  reads, legacy Runtime/Soul recovery, V1/JSON/capsule import, and the paid
+  packaged legacy-writer cleanup gate. Current-format crash recovery,
+  authenticated V2 transfer, replacement rollback, retention, and crypto
+  checks remain required. PR #142 was safely reduced to PCF-004 and draft PRs
+  #143-#147 now form the verified ticket stack; every prior head was preserved
+  before the exact force-with-lease update.
+- 2026-08-16 16:54 MYT - Implemented and validated the greenfield amendment
+  on the top stack branch. First-release bootstrap now activates authenticated
+  immutable CoreFS authority before publishing an unlock session, uses the
+  canonical Soul path directly, and rejects pre-release manifests. Removed the
+  paid workflow, package/install writer census, plaintext draft migration,
+  legacy Runtime/Soul/cutover orchestration, and V1 vault API/client/UI. The
+  resulting top diff is deletion-heavy (about `16.8k` removed versus fewer
+  than `1k` added),
+  while current-format V2 transfer, scoped recovery, retained-Core rollback,
+  and crash recovery remain. A scoped-transfer regression now proves Soul-only
+  archives omit CoreFS authority while FS archives retain it.
+
 ## Validation
 
 - Commands:
+  - greenfield replacement validation: server authority/transfer/registry/
+    preference/security modules (`44 passed`), rewritten diary/document/
+    knowledge/task/thread/user API modules (`19 passed`), state inventory
+    (`7 passed`), and the earlier archive/preparation band through every
+    changed case before its unchanged 100-MiB stress case (`57 passed`)
+  - `bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts apps/desktop/tests/api-auth.test.ts apps/desktop/tests/settings-storage-classification.test.ts`
+    (`36 passed`)
+  - desktop TypeScript, `cargo check -p desktop --all-targets`, CoreFS logical
+    mutation tests (`8 passed`), anima-core V2 archive tests (`7 passed`), and
+    `cargo check -p anima-corefs -p anima-core --all-targets` (passed)
+  - scoped/full Server Ruff, Rust format, `bun run build`, repository
+    organization, and `git diff --check` (passed)
   - `ANIMA_CORE_REQUIRE_ENCRYPTION=false uv run pytest apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_api.py apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_security_api.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_corefs_orchestration.py apps/server/tests/test_corefs_legacy_runtime_recovery.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py -q`
     (`211 passed`)
   - `bun test apps/desktop/tests/corefs-transfer.test.ts` (`3 passed`)
@@ -804,6 +828,7 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
     anima-corefs and its Python authority/request behavior is covered by the
     server band above
 - Changed paths:
+  - greenfield amendment: `apps/server/src/anima_server/services/corefs/{authority.py,greenfield.py,soul_store.py}`; session/keyslot/domain authority integration; native logical activation; current-format transfer/API/client/UI; removal of pre-release cutover/orchestration/legacy Runtime/Soul relocation, V1 vault, browser draft cleanup, installer/package scripts, paid workflow, and their tests
   - `apps/server/src/anima_server/services/corefs/cutover.py`
   - `apps/server/src/anima_server/services/sessions.py`
   - `apps/server/tests/test_corefs_cutover.py`
@@ -888,11 +913,12 @@ Perform the verified reversible-to-forward-only cutover, provide safe cold/live 
   - `apps/desktop/src/pages/settings/CoreTransferSettings.tsx`
   - `apps/desktop/tests/corefs-transfer.test.ts`
 - Notes:
-  - PCF-001 through PCF-007 are done. The four-platform signed-package gate
-    remains mandatory and cost-deferred; it cannot be dispatched or waived by
-    local ticket execution.
-  - The macOS host can compile-check the Python-enabled PyO3 binding, but its
-    extension-module test target is not locally linkable against the venv
-    interpreter. The binding regression remains in the Rust test target for a
-    supported native runner and Step 4 will add the end-to-end Python first-
-    mutation exercise.
+  - PCF-001 through PCF-007 are done. The 2026-08-16 greenfield amendment
+    removes the pre-release signed-package writer-exclusion gate; ordinary
+    release signing remains outside PCF-008.
+  - The macOS host compiles the Python-enabled PyO3 binding; native authority
+    transaction behavior is covered in Rust and the installed extension is
+    exercised through the greenfield server authority/API tests.
+  - Residual work: Step 11 safe temporary smoke coverage and initiative-level
+    closeout remain. No paid cross-version workflow or legacy fixture is
+    required, and no real user Core or external system was mutated.

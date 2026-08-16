@@ -48,7 +48,7 @@ class CanonicalTaskCatalog:
 
 
 def task_authority_selection(session: object) -> TaskAuthoritySelection | None:
-    """Accept only the authenticated global cutover marker owned by PCF-008."""
+    """Accept only the authenticated global authority marker owned by PCF-008."""
     marker = getattr(session, "content_authority", None)
     if not isinstance(marker, dict):
         return None
@@ -57,7 +57,7 @@ def task_authority_selection(session: object) -> TaskAuthoritySelection | None:
     catalog_hash = marker.get("catalogHash")
     if (
         marker.get("version") != 1
-        or marker.get("state") != "cutover_complete"
+        or marker.get("state") != "authoritative"
         or not isinstance(families, list)
         or "tasks" not in families
         or isinstance(generation, bool)
@@ -117,12 +117,9 @@ def read_canonical_task_catalog(*, session: Any) -> CanonicalTaskCatalog:
             or revision < 1
         ):
             raise TaskAuthorityError("Canonical task identity is invalid.")
-        document = decode_task_document(
-            _read_all(session=session, selection=selection, path=path)
-        )
-        if (
-            document.stable_id != stable_id
-            or document.stable_id != migration_opaque_id("task", str(document.legacy_id))
+        document = decode_task_document(_read_all(session=session, selection=selection, path=path))
+        if document.stable_id != stable_id or document.stable_id != migration_opaque_id(
+            "task", str(document.legacy_id)
         ):
             raise TaskAuthorityError("Canonical task body does not match its catalog identity.")
         tasks.append(CanonicalTaskRecord(document=document, path=path, revision=revision))

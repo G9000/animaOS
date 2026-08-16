@@ -323,27 +323,6 @@ export interface CoreActiveStatus {
   rollbackScheduled: boolean;
 }
 
-export type CoreMigrationState =
-  | "not_started"
-  | "preflight"
-  | "frozen"
-  | "converting"
-  | "verifying"
-  | "awaiting_acceptance"
-  | "accepted"
-  | "rejected"
-  | "failed";
-
-export interface CoreMigrationStatus {
-  state: CoreMigrationState;
-  generation: number | null;
-  migratedCount: number;
-  errorCode: string | null;
-  restartRequired: boolean;
-  firstWriteReady: boolean;
-  forwardOnly: boolean;
-}
-
 export type CoreFsClientScope = "none" | "read" | "write" | "manage";
 export type CoreFsClientInstallationStatus =
   | "pending"
@@ -393,24 +372,6 @@ export interface CoreFsClientAccessState {
   reapprovalRequiredAfterTransfer: boolean;
   installations: CoreFsClientInstallation[];
   folders: CoreFsGrantFolder[];
-}
-
-export type VaultTransferFormat = "vault_json" | "anima_capsule";
-
-export interface VaultExportResponse {
-  filename: string;
-  vault: string;
-  size: number;
-  format?: VaultTransferFormat;
-}
-
-export interface VaultImportResponse {
-  status: string;
-  restoredUsers: number;
-  restoredMemoryFiles: number;
-  requiresReauth?: boolean;
-  migrationRequired?: boolean;
-  format?: VaultTransferFormat;
 }
 
 export interface PersonaTemplateInfo {
@@ -1147,34 +1108,6 @@ export interface DiaryEntryUpdateData {
   clearMood?: boolean;
   clearFolder?: boolean;
   clearCover?: boolean;
-}
-
-export interface DiaryDraftImportData {
-  draftId: string;
-  clientRevision: number;
-  contentSha256: string;
-  targetEntryId?: number | null;
-  html: string;
-  title: string;
-  mood: string;
-  entryDate: string;
-  updatedAt: string;
-}
-
-export interface DiaryDraftCompletionToken {
-  draftId: string;
-  clientRevision: number;
-  contentSha256: string;
-}
-
-export interface DiaryDraftImportResult {
-  stableId: string;
-  revision: number;
-  generation: number;
-  catalogHash: string;
-  completionToken: DiaryDraftCompletionToken;
-  verified: boolean;
-  authoritative: boolean;
 }
 
 export interface DiaryCorefsPreparedData {

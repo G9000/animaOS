@@ -126,7 +126,7 @@ def asset_authority_selection(session: object) -> AssetAuthoritySelection | None
     catalog_hash = marker.get("catalogHash")
     if (
         marker.get("version") != 1
-        or marker.get("state") != "cutover_complete"
+        or marker.get("state") != "authoritative"
         or not isinstance(families, list)
         or not _AUTHORITY_FAMILIES.issubset(families)
         or isinstance(generation, bool)

@@ -57,7 +57,7 @@ def portable_preference_corefs_authority_active(session: object) -> bool:
     return (
         isinstance(marker, dict)
         and marker.get("version") == 1
-        and marker.get("state") == "cutover_complete"
+        and marker.get("state") == "authoritative"
         and isinstance(marker.get("families"), list)
         and "preferences" in marker["families"]
     )

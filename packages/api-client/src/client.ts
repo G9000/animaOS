@@ -12,7 +12,6 @@ import type {
   CoreActiveStatus,
   CoreImportOperation,
   CoreImportProbe,
-  CoreMigrationStatus,
   CoreFsRecoveryBrowseRequest,
   CoreFsRecoveryBrowseResponse,
   CoreFsRecoveryCredentialRequest,
@@ -41,8 +40,6 @@ import type {
   DbTableInfo,
   DiaryAttachmentData,
   DiaryCorefsPreparedData,
-  DiaryDraftImportData,
-  DiaryDraftImportResult,
   DiaryEntryCreateData,
   DiaryEntryData,
   DiaryEntryUpdateData,
@@ -97,9 +94,6 @@ import type {
   TraceEvent,
   TraceMessagePreview,
   User,
-  VaultExportResponse,
-  VaultImportResponse,
-  VaultTransferFormat,
 } from "./types";
 
 interface ApiRequestOptions {
@@ -854,23 +848,6 @@ export function createApiClient(options: ApiClientOptions) {
             "/corefs/transfer/active-core/rollback-on-restart",
             { method: "POST", body: { confirmed: true } },
           ),
-        migrationStatus: () =>
-          request<CoreMigrationStatus>("/corefs/transfer/migration/status"),
-        runMigration: (retryFailed = false) =>
-          request<CoreMigrationStatus>("/corefs/transfer/migration/run", {
-            method: "POST",
-            body: { retryFailed },
-          }),
-        acceptMigration: () =>
-          request<CoreMigrationStatus>("/corefs/transfer/migration/accept", {
-            method: "POST",
-            body: { confirmed: true },
-          }),
-        rejectMigration: () =>
-          request<CoreMigrationStatus>("/corefs/transfer/migration/reject", {
-            method: "POST",
-            body: { confirmed: true },
-          }),
       },
     },
     chat: {
@@ -1212,11 +1189,6 @@ export function createApiClient(options: ApiClientOptions) {
         request<{ deleted: boolean }>(`/diary/${entryId}`, {
           method: "DELETE",
         }),
-      importLegacyDraft: (userId: number, data: DiaryDraftImportData) =>
-        request<DiaryDraftImportResult>("/diary/drafts/import", {
-          method: "POST",
-          body: { userId, ...data },
-        }),
       corefsPrepared: () =>
         request<DiaryCorefsPreparedData>("/diary/corefs-prepared"),
       folders: {
@@ -1391,38 +1363,6 @@ export function createApiClient(options: ApiClientOptions) {
         ),
       getAgentAvatarUrl: (userId: number) =>
         `${normalizedBaseUrl}/api/consciousness/${userId}/agent-profile/avatar`,
-    },
-    vault: {
-      export: (
-        passphrase: string,
-        options?: {
-          scope?: "full" | "memories";
-          format?: VaultTransferFormat;
-        },
-      ) =>
-        request<VaultExportResponse>("/vault/export", {
-          method: "POST",
-          body: {
-            passphrase,
-            scope: options?.scope,
-            format: options?.format,
-          },
-        }),
-      import: (
-        passphrase: string,
-        vault: string,
-        options?: {
-          format?: VaultTransferFormat;
-        },
-      ) =>
-        request<VaultImportResponse>("/vault/import", {
-          method: "POST",
-          body: {
-            passphrase,
-            vault,
-            format: options?.format,
-          },
-        }),
     },
     images: {
       removeFromMessage: (messageId: number, attachmentId: string) =>

@@ -15,7 +15,7 @@ from anima_server.db.user_store import _bootstrapped_roots
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
 from anima_server.services.core import ensure_core_manifest, release_core_lock
-from anima_server.services.corefs.soul_relocation import create_verified_soul_snapshot
+from anima_server.services.corefs.soul_store import create_verified_soul_snapshot
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 from conftest import create_managed_temp_dir
 from fastapi.testclient import TestClient

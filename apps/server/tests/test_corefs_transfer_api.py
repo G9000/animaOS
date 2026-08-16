@@ -16,7 +16,6 @@ from anima_server.services.corefs.archive_transfer import (
     CoreArchiveMultipartExportResult,
     CoreArchivePayloadKind,
 )
-from anima_server.services.corefs.orchestration import MigrationState, MigrationStatus
 from anima_server.services.corefs.recovery_access import (
     CoreFsRecoveryAccessError,
     CoreFsRecoveryBrowseResult,
@@ -64,166 +63,6 @@ def _inventory() -> CoreArchiveInventory:
         selected_bytes=4096,
         record_count=5,
     )
-
-
-def test_migration_status_and_explicit_decisions_expose_restart_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = SimpleNamespace(
-        user_id=0,
-        corefs_session=object(),
-        corefs_keys=object(),
-        runtime_index=SimpleNamespace(core_id="core-a", local_instance_id="instance-a"),
-    )
-    status_value = MigrationStatus(
-        state=MigrationState.AWAITING_ACCEPTANCE,
-        generation=9,
-        catalog_hash="a" * 64,
-        source_hash="b" * 64,
-        migrated_count=41,
-        error_code=None,
-    )
-    decisions: list[str] = []
-
-    class Coordinator:
-        def status(self):
-            return status_value
-
-        def accept(self):
-            decisions.append("accept")
-            return MigrationStatus(
-                state=MigrationState.ACCEPTED,
-                generation=9,
-                catalog_hash="a" * 64,
-                source_hash="b" * 64,
-                migrated_count=41,
-                error_code=None,
-            )
-
-        def reject(self, **_kwargs):
-            decisions.append("reject")
-            return MigrationStatus(
-                state=MigrationState.REJECTED,
-                generation=None,
-                catalog_hash="a" * 64,
-                source_hash="b" * 64,
-                migrated_count=41,
-                error_code=None,
-            )
-
-    monkeypatch.setattr(corefs_transfer, "require_unlocked_session", lambda _request: session)
-    monkeypatch.setattr(corefs_transfer, "_migration_coordinator", lambda *_args: Coordinator())
-    monkeypatch.setattr(corefs_transfer, "runtime_transition_restart_required", lambda: True)
-    monkeypatch.setattr(
-        corefs_transfer,
-        "read_cutover_record",
-        lambda: SimpleNamespace(state=corefs_transfer.CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE),
-    )
-    app = _app()
-    app.dependency_overrides[corefs_transfer.get_runtime_db] = lambda: object()
-
-    with TestClient(app) as client:
-        status_response = client.get("/api/corefs/transfer/migration/status")
-        accept_response = client.post(
-            "/api/corefs/transfer/migration/accept",
-            json={"confirmed": True},
-        )
-        reject_response = client.post(
-            "/api/corefs/transfer/migration/reject",
-            json={"confirmed": True},
-        )
-
-    assert status_response.status_code == 200
-    assert status_response.json() == {
-        "state": "awaiting_acceptance",
-        "generation": 9,
-        "migratedCount": 41,
-        "errorCode": None,
-        "restartRequired": True,
-        "firstWriteReady": False,
-        "forwardOnly": False,
-    }
-    assert accept_response.status_code == 200
-    assert reject_response.status_code == 200
-    assert decisions == ["accept", "reject"]
-
-
-def test_migration_status_remains_accepted_after_fresh_runtime_loses_journal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = SimpleNamespace(user_id=0)
-    monkeypatch.setattr(corefs_transfer, "require_unlocked_session", lambda _request: session)
-    monkeypatch.setattr(
-        corefs_transfer,
-        "_migration_coordinator",
-        lambda *_args: SimpleNamespace(status=lambda: None),
-    )
-    monkeypatch.setattr(
-        corefs_transfer,
-        "read_cutover_record",
-        lambda: SimpleNamespace(
-            state=corefs_transfer.CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY
-        ),
-    )
-    monkeypatch.setattr(
-        corefs_transfer,
-        "runtime_transition_restart_required",
-        lambda: False,
-    )
-    app = _app()
-    app.dependency_overrides[corefs_transfer.get_runtime_db] = lambda: object()
-
-    with TestClient(app) as client:
-        response = client.get("/api/corefs/transfer/migration/status")
-
-    assert response.status_code == 200
-    assert response.json()["state"] == "accepted"
-    assert response.json()["forwardOnly"] is True
-
-
-def test_migration_run_uses_unlocked_soul_and_runtime_sessions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session = SimpleNamespace(user_id=0)
-    soul_db = object()
-    runtime_db = object()
-    observed: dict[str, object] = {}
-
-    def run(**kwargs):
-        observed.update(kwargs)
-        return MigrationStatus(
-            state=MigrationState.AWAITING_ACCEPTANCE,
-            generation=3,
-            catalog_hash="c" * 64,
-            source_hash="d" * 64,
-            migrated_count=12,
-            error_code=None,
-        )
-
-    monkeypatch.setattr(corefs_transfer, "require_unlocked_session", lambda _request: session)
-    monkeypatch.setattr(corefs_transfer, "run_portable_content_migration", run)
-    monkeypatch.setattr(corefs_transfer, "runtime_transition_restart_required", lambda: False)
-    monkeypatch.setattr(
-        corefs_transfer,
-        "read_cutover_record",
-        lambda: SimpleNamespace(state=corefs_transfer.CutoverState.CORE_FS_VALIDATION_READONLY),
-    )
-    app = _app()
-    app.dependency_overrides[corefs_transfer.get_db] = lambda: soul_db
-    app.dependency_overrides[corefs_transfer.get_runtime_db] = lambda: runtime_db
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/corefs/transfer/migration/run",
-            json={"retryFailed": True},
-        )
-
-    assert response.status_code == 200
-    assert response.json()["state"] == "awaiting_acceptance"
-    assert observed["session"] is session
-    assert observed["soul_db"] is soul_db
-    assert observed["runtime_db"] is runtime_db
-    assert observed["retry_failed"] is True
 
 
 def _estimate() -> TransferEstimate:
@@ -529,6 +368,7 @@ def test_import_probe_counts_complete_multipart_set_and_rejects_missing_volume(
             archive_path=controller,
             staging_parent=staging_parent,
         )
+
 
 def test_corefs_only_recovery_cannot_attach_to_a_soul_in_v1(
     managed_tmp_path: Path,

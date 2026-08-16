@@ -12,7 +12,6 @@ import anima_core
 import anima_server.services.corefs.writing_source as writing_source
 import pytest
 from anima_server.db.base import Base
-from anima_server.schemas.diary import DIARY_BODY_MAX_LENGTH, DiaryDraftImportRequest
 from anima_server.services.corefs.diary_migration import (
     DiaryMigrationError,
     InactiveFolder,
@@ -28,7 +27,6 @@ from anima_server.services.corefs.diary_migration import (
     read_prepared_writing_objects,
 )
 from anima_server.services.corefs.formats import (
-    MAX_WRITING_BODY_CHARACTERS,
     CoreFormatError,
     canonicalize_diary_html,
     decode_diary_document,
@@ -42,7 +40,6 @@ from anima_server.services.corefs.writing_source import (
     iter_writing_source_objects,
 )
 from corefs_writing_test_support import publish_catalog_native
-from pydantic import ValidationError
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -65,9 +62,7 @@ class _PreparationFaultProxy:
     def __getattr__(self, name: str) -> object:
         return getattr(self.native, name)
 
-    def preparation_prepare_object_v1(
-        self, keys: object, request: str, body: bytes
-    ) -> object:
+    def preparation_prepare_object_v1(self, keys: object, request: str, body: bytes) -> object:
         result = self.native.preparation_prepare_object_v1(keys, request, body)  # type: ignore[attr-defined]
         self.prepared_objects += 1
         if self.prepared_objects == self.fail_after_object:
@@ -172,9 +167,7 @@ def test_preparation_status_only_treats_the_exact_absent_condition_as_missing() 
 
     with pytest.raises(RuntimeError, match="snapshot is missing"):
         writing_source._preparation_status_or_none(
-            _PreparationStatusFailure(
-                RuntimeError("the active preparation snapshot is missing")
-            ),
+            _PreparationStatusFailure(RuntimeError("the active preparation snapshot is missing")),
             object(),
         )
 
@@ -194,9 +187,7 @@ def _ready_source_drift_status() -> dict[str, object]:
 
 
 def test_ready_source_drift_recovers_an_already_published_head() -> None:
-    native = _ReadySourceDriftNative(
-        {"generation": 8, "catalogHash": "8" * 64}
-    )
+    native = _ReadySourceDriftNative({"generation": 8, "catalogHash": "8" * 64})
 
     outcome = writing_source._reconcile_ready_source_drift(
         native, object(), _ready_source_drift_status()
@@ -217,28 +208,20 @@ def test_ready_source_drift_recovers_an_already_published_head() -> None:
 
 
 def test_ready_source_drift_only_abandons_an_unpublished_head() -> None:
-    native = _ReadySourceDriftNative(
-        {"generation": 7, "catalogHash": "6" * 64}
-    )
+    native = _ReadySourceDriftNative({"generation": 7, "catalogHash": "6" * 64})
 
     assert (
-        writing_source._reconcile_ready_source_drift(
-            native, object(), _ready_source_drift_status()
-        )
+        writing_source._reconcile_ready_source_drift(native, object(), _ready_source_drift_status())
         == "unpublished"
     )
     assert native.finalize_requests == []
 
 
 def test_ready_source_drift_preserves_a_conflicting_head() -> None:
-    native = _ReadySourceDriftNative(
-        {"generation": 9, "catalogHash": "9" * 64}
-    )
+    native = _ReadySourceDriftNative({"generation": 9, "catalogHash": "9" * 64})
 
     with pytest.raises(DiaryMigrationError, match="conflicts with the ready preparation"):
-        writing_source._reconcile_ready_source_drift(
-            native, object(), _ready_source_drift_status()
-        )
+        writing_source._reconcile_ready_source_drift(native, object(), _ready_source_drift_status())
     assert native.finalize_requests == []
 
 
@@ -393,70 +376,6 @@ def test_poison_validation_head_is_checkpointed_and_never_reinitialized(
     assert checkpoint["authoritative"] is False
 
 
-def test_public_draft_schema_round_trips_four_byte_unicode_through_native_boundary(
-    tmp_path: Path,
-) -> None:
-    assert DIARY_BODY_MAX_LENGTH == MAX_WRITING_BODY_CHARACTERS == 20_000_000
-    html = f"<p>{chr(0x10FFFF) * 1024}</p>"
-    payload = DiaryDraftImportRequest(
-        userId=1,
-        draftId="public-boundary",
-        clientRevision=1,
-        contentSha256=hashlib.sha256(html.encode()).hexdigest(),
-        html=html,
-        title="",
-        mood="",
-        entryDate="2026-08-02",
-        updatedAt="2026-08-02T00:00:00Z",
-    )
-    catalog = build_inactive_diary_catalog(
-        user_id=1,
-        folders=(),
-        entries=(),
-        drafts=(
-            LegacyDiaryDraft(
-                id=payload.draftId,
-                target_entry_id=None,
-                body=payload.html,
-                content_type="text/html",
-                updated_at="2026-08-02T00:00:00Z",
-            ),
-        ),
-    )
-    native = anima_core.CorefsSession(
-        str(tmp_path / "core"), migration_opaque_id("test-core", "public-writing-boundary")
-    )
-    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
-    first = publish_catalog_native(catalog, corefs_session=native, keys=keys)
-    draft_id = migration_opaque_id("diary-draft", payload.draftId)
-    prepared = read_prepared_writing_objects(
-        session=SimpleNamespace(corefs_session=native, corefs_keys=keys)
-    )
-    draft_item = next(item for item in prepared if item.stable_id == draft_id)
-    decoded = decode_draft_document(
-        read_prepared_writing_body(
-            session=SimpleNamespace(corefs_session=native, corefs_keys=keys),
-            item=draft_item,
-        )
-    )
-    assert decoded.body == html
-    before = native.validation_snapshot(keys)
-    assert before["generation"] == first["generation"]
-    with pytest.raises(ValidationError):
-        DiaryDraftImportRequest(
-            userId=1,
-            draftId="oversized",
-            clientRevision=1,
-            contentSha256=hashlib.sha256(("x" * (DIARY_BODY_MAX_LENGTH + 1)).encode()).hexdigest(),
-            html="x" * (DIARY_BODY_MAX_LENGTH + 1),
-            title="",
-            mood="",
-            entryDate="2026-08-02",
-            updatedAt="2026-08-02T00:00:00Z",
-        )
-    assert native.validation_snapshot(keys) == before
-
-
 def test_restart_rebuild_preserves_extracted_draft_attachment_exactly_and_is_a_noop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -552,9 +471,7 @@ def test_streaming_preparation_reconciles_every_durable_object_after_restart(
         updated_at="2026-08-02T00:00:00Z",
     )
     crashing = _PreparationFaultProxy(native, fail_after_object=fail_after_object)
-    with Session(engine) as db, pytest.raises(
-        DiaryMigrationError, match="failed safely"
-    ):
+    with Session(engine) as db, pytest.raises(DiaryMigrationError, match="failed safely"):
         prepare_diary_validation_catalog(
             session=SimpleNamespace(
                 user_id=51,
@@ -630,9 +547,7 @@ def test_streaming_preparation_recovers_native_finalize_failures(
         fail_finalize_before=not after_publication,
         fail_finalize_after=after_publication,
     )
-    with Session(engine) as db, pytest.raises(
-        DiaryMigrationError, match="failed safely"
-    ):
+    with Session(engine) as db, pytest.raises(DiaryMigrationError, match="failed safely"):
         prepare_diary_validation_catalog(
             session=SimpleNamespace(user_id=52, corefs_session=failing, corefs_keys=keys),
             db=db,

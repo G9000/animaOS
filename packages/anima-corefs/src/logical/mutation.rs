@@ -33,6 +33,7 @@ pub struct PatchAddFormat {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LogicalMutation {
+    ActivateAuthority,
     Mkdir {
         path: String,
         reserved_role: Option<String>,

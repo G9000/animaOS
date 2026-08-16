@@ -11,8 +11,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from anima_server.config import settings
-from anima_server.services.core import migrate_legacy_manifest_runtime_state
 from anima_server.services.corefs.instance_registry import (
     InstanceBindingCollision,
     RuntimeInstanceRegistry,
@@ -136,74 +134,7 @@ def test_registry_places_runtime_outside_core_and_rebinds_a_moved_core(
         / "pg_data"
     )
     assert not rebound.pg_data_dir.is_relative_to(moved)
-    assert str(moved.resolve()) not in (moved / "manifest.json").read_text(
-        encoding="utf-8"
-    )
-
-
-def test_registry_copy_verifies_legacy_manifest_runtime_state(
-    managed_tmp_path: Path,
-) -> None:
-    app_data = managed_tmp_path / "app-data"
-    core = _make_core(managed_tmp_path / "portable" / ".anima")
-    registry = RuntimeInstanceRegistry(app_data)
-    binding = registry.resolve(core)
-    values: dict[str, object] = {
-        "runtime_database_engine": "postgres",
-        "runtime_database_target_engine": "turso",
-        "runtime_migration_state": {"state": "requested"},
-    }
-
-    registry.record_legacy_manifest_state(binding, values)
-    registry.record_legacy_manifest_state(binding, values)
-
-    payload = json.loads((app_data / "core-instance-registry.json").read_text())
-    record = next(
-        item
-        for item in payload["instances"]
-        if item["local_instance_id"] == binding.local_instance_id
-    )
-    assert record["legacy_runtime_manifest_state"] == values
-
-    with pytest.raises(InstanceBindingCollision, match="conflicts"):
-        registry.record_legacy_manifest_state(
-            binding,
-            {"runtime_database_engine": "turso"},
-        )
-
-
-def test_legacy_manifest_runtime_state_is_scrubbed_only_after_registry_copy(
-    managed_tmp_path: Path,
-) -> None:
-    previous_data_dir = settings.data_dir
-    app_data = managed_tmp_path / "app-data"
-    core = _make_core(managed_tmp_path / "portable" / ".anima")
-    manifest_path = core / "manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    manifest.update(
-        {
-            "runtime_database_engine": "postgres",
-            "runtime_migration_state": {"state": "ready"},
-        }
-    )
-    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    settings.data_dir = core
-    try:
-        registry = RuntimeInstanceRegistry(app_data)
-        binding = registry.resolve(core)
-        migrate_legacy_manifest_runtime_state(registry, binding)
-    finally:
-        settings.data_dir = previous_data_dir
-
-    scrubbed = json.loads(manifest_path.read_text())
-    assert "runtime_database_engine" not in scrubbed
-    assert "runtime_migration_state" not in scrubbed
-    recorded = json.loads((app_data / "core-instance-registry.json").read_text())
-    state = recorded["instances"][0]["legacy_runtime_manifest_state"]
-    assert state == {
-        "runtime_database_engine": "postgres",
-        "runtime_migration_state": {"state": "ready"},
-    }
+    assert str(moved.resolve()) not in (moved / "manifest.json").read_text(encoding="utf-8")
 
 
 def test_registry_refuses_a_live_divergent_clone_and_rebuilds_after_stale_lease(
@@ -303,9 +234,7 @@ def test_registry_refuses_a_second_live_owner_for_the_same_core_path(
         (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
     )
     lease_payload = json.loads(
-        (first_binding.instance_root / "instance-lease.json").read_text(
-            encoding="utf-8"
-        )
+        (first_binding.instance_root / "instance-lease.json").read_text(encoding="utf-8")
     )
     assert registry_payload["instances"][0]["pid"] == 100
     assert lease_payload["pid"] == 100

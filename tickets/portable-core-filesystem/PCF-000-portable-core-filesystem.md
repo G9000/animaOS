@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-16 02:57 MYT
+- Updated: 2026-08-16 16:54 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -82,7 +82,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
 - PCF-003 - Machine-local Runtime and progressive indexing (PR #127 second-phase closeout completed 2026-08-01 19:49 MYT).
-- PCF-004 - Diary, folders, drafts, and notes (implementation slice completed 2026-08-13 15:58 MYT; final signed-package evidence retained by PCF-008).
+- PCF-004 - Diary, folders, drafts, and notes (implementation slice completed 2026-08-13 15:58 MYT; unreleased plaintext-draft compatibility is being removed by PCF-008).
 - PCF-005 - Canonical threads, messages, and transcript merge (completed locally 2026-08-13 11:36 MYT).
 - PCF-006 - Gallery, attachments, documents, and knowledge sources (completed locally 2026-08-13 12:41 MYT).
 - PCF-007 - Account profile, tasks, preferences, and credentials (completed locally 2026-08-13 18:40 MYT).
@@ -574,17 +574,39 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   The paid workflow stays disabled and no real user state or external system
   was changed.
 
+- 2026-08-16 15:34 MYT - User approved greenfield Portable Core scope because
+  no supported installation or user data predates the first release. PCF-008
+  will remove all unreleased database/browser/transcript/archive compatibility
+  and the paid legacy-writer package gate while preserving current-format
+  recovery and transfer safety. The former 73-commit PR #142 was preserved,
+  reduced by exact force-with-lease to PCF-004, and replaced by draft ticket
+  stack PRs #142-#147 with verified base/head relationships.
+- 2026-08-16 16:54 MYT - PCF-008 implemented the approved greenfield
+  amendment on top PR #147. The first supported release now establishes
+  canonical Soul/CoreFS authority directly and deletes the unreleased
+  migration, plaintext-draft, package-census, paid-workflow, legacy recovery,
+  and V1 vault surfaces. Focused server tests passed `44 + 19 + 7`, client/
+  desktop contracts passed `36`, native CoreFS/archive tests passed `8 + 7`,
+  TypeScript/Tauri/all-target Rust checks, full workspace build, Ruff,
+  repository organization, and diff hygiene passed. PCF-008 remains
+  `in_progress` for safe temporary smoke/initiative closeout only.
+
 ## Validation
 
 - PCF-003 second-phase closeout: exact implementation head `f0991e38bbb7ee0a90f2b4cb5639f079a9dba72f` passed standalone checkout, Server Ruff, pytest, Windows native lease, and macOS native lease; complete pagination found no unresolved consequential feedback and the focused exact-head Codex review was clean.
 
 - Commands:
+  - PCF-008 greenfield amendment: focused server `44 + 19 + 7`, desktop/client
+    `36`, CoreFS/archive `8 + 7`, TypeScript, Tauri/all-target Cargo checks,
+    full workspace build, Ruff, repository organization, and diff hygiene
+    passed.
   - PCF-008 local closeout: focused server authority/transfer tests `211/211`,
     desktop transfer `3/3`, native capsule/archive `15/15` and `7/7`, complete
     server `3703 passed, 6 skipped`, complete desktop `371/371`, root lint and
     build, isolated Alembic head/health smoke, repository organization, and
-    diff hygiene all passed. Signed package evidence and live irreversible
-    smoke remain intentionally unexecuted.
+    diff hygiene all passed. That matrix is historical after the greenfield
+    amendment; replacement validation must prove clean bootstrap and unsupported
+    pre-release input rejection without a paid cross-version package run.
   - PR #127 path-oracle/Soul-navigation follow-up: both focused regressions failed RED and pass GREEN; CoreFS migration plus Runtime privacy coverage passed `68`, all `79` desktop tests passed, and scoped Ruff/format, the desktop production build, repository organization, and diff hygiene passed.
   - PR #127 packaged Core/Runtime layout follow-up: the pure-layout regression failed RED before the resolver existed; three Rust cases cover disjoint defaults, explicit overrides, fallback-database continuity, and pre-validation environment placement; all `79` desktop tests pass, and the desktop production build, `cargo check -p desktop`, repository organization, and diff hygiene pass.
   - PR #127 final clean implementation head and second-phase closeout: head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed standalone checkout, Server Ruff, Server Tests, Windows native lease, and macOS native/fallback CoreFS checks; the unchanged Windows failed-job rerun passed after the known PCF-011 aggregate flake. Codex reported no major issues for reviewed commit `70d22b7c32`, and full GraphQL pagination consumed `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads.
@@ -768,6 +790,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001 through PCF-007 and PCF-011 are complete. PCF-008 is active and retains the mandatory deferred final signed-package evidence before cutover/release; PCF-009 and PCF-010 retain their separate approval gates.
+  - PCF-001 through PCF-007 and PCF-011 are complete. PCF-008 is active on
+    greenfield smoke/closeout; the unreleased signed-package compatibility gate
+    no longer applies. PCF-009 and PCF-010 retain their separate approval
+    gates.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.

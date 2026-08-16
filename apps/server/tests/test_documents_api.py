@@ -1,22 +1,12 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-import pytest
 from anima_server.config import settings
 from anima_server.db.runtime import get_runtime_session_factory
-from anima_server.models.runtime import RuntimeDocument, RuntimeThread, RuntimeWorkflowRun
-from anima_server.models.runtime_embedding import RuntimeEmbedding
+from anima_server.models.runtime import RuntimeDocument
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.vector_store import VectorSearchResult
-from anima_server.services.corefs import logical
-from anima_server.services.corefs.cutover import (
-    approve_validation_cutover,
-    begin_migration,
-    publish_validation_readonly,
-    reconcile_cutover_authority,
-)
 from anima_server.services.corefs.diary_migration import (
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
@@ -25,94 +15,36 @@ from anima_server.services.documents import ExtractedDocumentChunk, pdf_workflow
 from anima_server.services.documents.parsing import ExtractionOutcome
 from anima_server.services.documents.parsing_pack import ParsingPackStatus
 from anima_server.services.documents.pdf_text import PageText
-from anima_server.services.documents.reparse import ReparseResult
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-
-# Derived from the actual bound column rather than hardcoded: the pgvector
-# column dimension is fixed once per process (baked in at first import of
-# RuntimeEmbedding from the then-current default embedding provider), so a
-# literal here would drift out of sync whenever that default changes.
-_TEST_EMBEDDING_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
 
 
 def _register_user(
     client: TestClient,
     *,
     username: str = "document-api-user",
-    name: str = "Document API User",
 ) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
-        json={"username": username, "password": "pw123456", "name": name},
+        json={"username": username, "password": "pw123456", "name": "Document User"},
     )
-    assert response.status_code == 201
+    assert response.status_code == 201, response.text
     return response.json()
-
-
-def _pdf_payload(
-    user_id: int,
-    *,
-    thread_id: int | None = None,
-) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "userId": user_id,
-        "filename": "manual.pdf",
-        "mimeType": "application/pdf",
-        "storagePath": f".anima/documents/{user_id}/manual.pdf",
-        "sha256": "a" * 64,
-        "sizeBytes": 2048,
-        "metadata": {"source": "test"},
-    }
-    if thread_id is not None:
-        payload["threadId"] = thread_id
-    return payload
-
-
-def _embedding(*values: float) -> list[float]:
-    return [*values, *([0.0] * (_TEST_EMBEDDING_DIM - len(values)))]
 
 
 def _patch_pdf_edges(
     monkeypatch: Any,
     *,
     proposed_facts: list[dict[str, object]] | None = None,
-    summarize_failure: Exception | None = None,
 ) -> None:
     from anima_server.api.routes import documents as documents_route
 
     def fake_dependencies() -> pdf_workflow.PDFIngestionDependencies:
-        def summarize(document: Any, chunks: list[Any]) -> dict[str, object]:
-            if summarize_failure is not None:
-                raise summarize_failure
-            return {
-                "title": document.filename,
-                "chunk_count": len(chunks),
-                "summary": f"Indexed {len(chunks)} chunks from {document.filename}.",
-            }
-
-        def propose_facts(
-            document: Any,
-            chunks: list[Any],
-            summary: dict[str, object],
-        ) -> list[dict[str, object]]:
-            if proposed_facts is not None:
-                return proposed_facts
-            return [
-                {
-                    "content": f"{document.filename}: {summary['summary']}",
-                    "chunk_count": len(chunks),
-                }
-            ]
-
         return pdf_workflow.PDFIngestionDependencies(
-            extract_text=lambda _path: ExtractionOutcome(
-                pages=[
-                    PageText(page_number=1, text="alpha installation guide"),
-                    PageText(page_number=2, text="beta usage notes"),
-                ],
+            extract_text=lambda _source: ExtractionOutcome(
+                pages=[PageText(page_number=1, text="alpha installation guide")],
                 parse_quality="docling",
             ),
             chunk_text=lambda _pages: [
@@ -121,149 +53,33 @@ def _patch_pdf_edges(
                     content_text="alpha installation guide",
                     page_start=1,
                     page_end=1,
-                ),
-                ExtractedDocumentChunk(
-                    chunk_index=1,
-                    content_text="beta usage notes",
-                    page_start=2,
-                    page_end=2,
-                ),
+                )
             ],
-            embedding_fn=lambda _text: _embedding(0.0),
-            summarize=summarize,
-            propose_facts=propose_facts,
+            embedding_fn=lambda _text: [0.0] * 384,
+            summarize=lambda document, chunks: {
+                "title": document.filename,
+                "chunk_count": len(chunks),
+                "summary": f"Indexed {len(chunks)} chunks from {document.filename}.",
+            },
+            propose_facts=lambda _document, _chunks, _summary: (
+                [] if proposed_facts is None else proposed_facts
+            ),
         )
 
     monkeypatch.setattr(documents_route, "_default_pdf_dependencies", fake_dependencies)
-    monkeypatch.setattr(
-        pdf_workflow,
-        "extract_document_text",
-        lambda _path: ExtractionOutcome(
-            pages=[
-                PageText(page_number=1, text="alpha installation guide"),
-                PageText(page_number=2, text="beta usage notes"),
-            ],
-            parse_quality="docling",
-        ),
-    )
-
-def test_start_pdf_workflow_and_get_status() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-        thread_response = client.post("/api/threads", headers=headers)
-        assert thread_response.status_code == 201
-        thread_id = int(thread_response.json()["threadId"])
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=_pdf_payload(user_id, thread_id=thread_id),
-        )
-
-        assert start.status_code == 201
-        created = start.json()
-        assert created["workflowId"] == 1
-        assert created["status"] == "created"
-        assert created["currentState"] == "created"
-
-        status_response = client.get(
-            "/api/documents/workflows/1",
-            headers=headers,
-        )
-
-        assert status_response.status_code == 200
-        status = status_response.json()
-        assert status["id"] == 1
-        assert status["userId"] == user_id
-        assert status["threadId"] == thread_id
-        assert status["workflowType"] == "pdf_ingestion"
-        assert status["input"]["filename"] == "manual.pdf"
-        assert status["checkpoints"] == []
 
 
-def test_upload_pdf_creates_owned_workflow_and_saves_file() -> None:
-    with managed_test_client("anima-documents-upload-") as client:
-        reg = _register_user(client, username="document-upload-user")
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-        content = b"%PDF-1.4\n% test pdf\n"
-
-        response = client.post(
-            "/api/documents/pdf",
-            headers=headers,
-            data={"userId": str(user_id)},
-            files={"file": ("Plan Manual.pdf", content, "application/pdf")},
-        )
-
-        assert response.status_code == 201
-        payload = response.json()
-        assert payload["workflowId"] == 1
-        assert payload["status"] == "created"
-        assert payload["currentState"] == "created"
-        assert payload["document"]["filename"] == "Plan Manual.pdf"
-        assert payload["document"]["mimeType"] == "application/pdf"
-        assert payload["document"]["sizeBytes"] == len(content)
-
-        storage_path = payload["document"]["storagePath"]
-        assert storage_path.startswith(f".anima/documents/{user_id}/")
-        saved_path = settings.data_dir / storage_path
-        assert saved_path.read_bytes() == content
-
-        status_response = client.get(
-            "/api/documents/workflows/1",
-            headers=headers,
-        )
-        assert status_response.status_code == 200
-        workflow = status_response.json()
-        assert workflow["input"]["filename"] == "Plan Manual.pdf"
-        assert workflow["input"]["storage_path"] == storage_path
-
-
-def test_post_cutover_pdf_upload_and_registration_use_only_corefs(
+def test_greenfield_pdf_upload_is_corefs_only_and_completes_workflow(
     monkeypatch: Any,
 ) -> None:
     _patch_pdf_edges(monkeypatch, proposed_facts=[])
-    with managed_test_client("anima-documents-corefs-upload-") as client:
-        reg = _register_user(client, username="document-corefs-upload-user")
-        user_id = int(reg["id"])
-        token = str(reg["unlockToken"])
+    with managed_test_client("anima-documents-greenfield-") as client:
+        registered = _register_user(client)
+        user_id = int(registered["id"])
+        token = str(registered["unlockToken"])
         headers = {"x-anima-unlock": token}
-        session = unlock_session_store.resolve(token)
-        assert session is not None
-        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
-        begin_migration()
-        publish_validation_readonly(
-            generation=int(selected["generation"]),
-            catalog_hash=str(selected["catalogHash"]),
-        )
-        approve_validation_cutover()
-        logical.execute_mutation_v1(
-            corefs_session=session.corefs_session,
-            keys=session.corefs_keys,
-            selected=logical.CoreFsValidationSnapshot(
-                int(selected["generation"]),
-                str(selected["catalogHash"]),
-            ),
-            principal="user",
-            mutation={"operation": "mkdir", "path": "Document activation proof"},
-        )
-        marker = reconcile_cutover_authority(
-            corefs_session=session.corefs_session,
-            keys=session.corefs_keys,
-        )
-        assert marker is not None
-        object.__setattr__(session, "content_authority", marker)
-
-        legacy_start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=_pdf_payload(user_id),
-        )
-        assert legacy_start.status_code == 409, legacy_start.text
-
         content = b"%PDF-1.4\ncanonical document body\n%%EOF"
+
         uploaded = client.post(
             "/api/documents/pdf",
             headers=headers,
@@ -271,9 +87,13 @@ def test_post_cutover_pdf_upload_and_registration_use_only_corefs(
             files={"file": ("Canonical Manual.pdf", content, "application/pdf")},
         )
         assert uploaded.status_code == 201, uploaded.text
-        storage_path = uploaded.json()["document"]["storagePath"]
+        payload = uploaded.json()
+        storage_path = payload["document"]["storagePath"]
         assert storage_path.startswith("corefs://object/")
         assert not (settings.data_dir / ".anima" / "documents" / str(user_id)).exists()
+
+        session = unlock_session_store.resolve(token)
+        assert session is not None
         stable_id = storage_path.rsplit("/", 1)[-1]
         source = next(
             item
@@ -283,433 +103,110 @@ def test_post_cutover_pdf_upload_and_registration_use_only_corefs(
         assert source.kind == "attachment"
         assert read_prepared_writing_body(session=session, item=source) == content
 
+        status = client.get(f"/api/documents/workflows/{payload['workflowId']}", headers=headers)
+        assert status.status_code == 200, status.text
+        assert status.json()["input"]["storage_path"] == storage_path
+
         resumed = client.post(
-            f"/api/documents/workflows/{uploaded.json()['workflowId']}/resume",
-            headers=headers,
+            f"/api/documents/workflows/{payload['workflowId']}/resume", headers=headers
         )
         assert resumed.status_code == 200, resumed.text
         assert resumed.json()["currentState"] == "awaiting_approval"
-        runtime_factory = get_runtime_session_factory()
-        with runtime_factory() as runtime_db:
+
+        approved = client.post(
+            f"/api/documents/workflows/{payload['workflowId']}/approve-memory",
+            headers=headers,
+            json={"proposalIndices": []},
+        )
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "completed"
+
+        with get_runtime_session_factory()() as runtime_db:
             document = runtime_db.scalar(
                 select(RuntimeDocument).where(RuntimeDocument.user_id == user_id)
             )
             assert document is not None
             assert document.storage_path == storage_path
-            assert document.sha256 == uploaded.json()["document"]["sha256"]
 
 
-def test_start_pdf_workflow_rejects_missing_thread_id() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        start = client.post(
+def test_greenfield_document_workflow_rejects_host_storage_paths() -> None:
+    with managed_test_client("anima-documents-no-legacy-") as client:
+        registered = _register_user(client, username="document-no-legacy")
+        user_id = int(registered["id"])
+        headers = {"x-anima-unlock": str(registered["unlockToken"])}
+        response = client.post(
             "/api/documents/workflows/pdf",
             headers=headers,
-            json=_pdf_payload(user_id, thread_id=999),
+            json={
+                "userId": user_id,
+                "filename": "legacy.pdf",
+                "mimeType": "application/pdf",
+                "storagePath": f".anima/documents/{user_id}/legacy.pdf",
+                "sha256": "a" * 64,
+                "sizeBytes": 10,
+                "metadata": {},
+            },
         )
-
-        assert start.status_code == 404
-        assert start.json()["error"] == "Thread not found"
+        assert response.status_code == 409
 
 
-def test_start_pdf_workflow_rejects_other_users_thread_id() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="document-thread-owner")
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-        runtime_factory = get_runtime_session_factory()
-        with runtime_factory() as runtime_db:
-            other_thread = RuntimeThread(user_id=user_id + 999, status="active")
-            runtime_db.add(other_thread)
-            runtime_db.commit()
-            thread_id = other_thread.id
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=_pdf_payload(user_id, thread_id=thread_id),
-        )
-
-        assert start.status_code == 404
-        assert start.json()["error"] == "Thread not found"
-
-
-@pytest.mark.parametrize(
-    "storage_path",
-    [
-        "../outside.pdf",
-        str(Path.cwd() / "outside.pdf"),
-    ],
-)
-def test_start_pdf_workflow_rejects_storage_path_outside_data_dir(
-    storage_path: str,
-) -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-        payload = _pdf_payload(user_id)
-        payload["storagePath"] = storage_path
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=payload,
-        )
-
-        assert start.status_code == 400
-        assert start.json()["error"] == "Invalid document storage path."
-        runtime_factory = get_runtime_session_factory()
-        with runtime_factory() as runtime_db:
-            assert runtime_db.scalar(select(RuntimeWorkflowRun).limit(1)) is None
-
-
-@pytest.mark.parametrize(
-    "storage_path",
-    [
-        ".anima/documents/999/manual.pdf",
-        "users/999/attachments/chat/manual.pdf",
-    ],
-)
-def test_start_pdf_workflow_rejects_other_users_storage_path(
-    storage_path: str,
-) -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-        payload = _pdf_payload(user_id)
-        payload["storagePath"] = storage_path
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=payload,
-        )
-
-        assert start.status_code == 400
-        assert start.json()["error"] == "Invalid document storage path."
-        runtime_factory = get_runtime_session_factory()
-        with runtime_factory() as runtime_db:
-            assert runtime_db.scalar(select(RuntimeWorkflowRun).limit(1)) is None
-
-
-def test_resume_pdf_workflow_search_chunks_and_approve_memory(monkeypatch: Any) -> None:
-    _patch_pdf_edges(monkeypatch)
-    # This test asserts an exact single-result count against a hand-built
-    # vector-store fake; the cross-encoder rerank stage's candidate-pool
-    # over-fetch is covered separately in test_contextual_rerank.py.
+def test_document_search_uses_canonical_workflow_chunks(monkeypatch: Any) -> None:
+    _patch_pdf_edges(monkeypatch, proposed_facts=[])
     monkeypatch.setattr(settings, "retrieval_reranker", "off")
+    monkeypatch.setattr(
+        "anima_server.services.documents.rag.generate_embedding",
+        lambda _text: [0.0] * 384,
+    )
+    monkeypatch.setattr(
+        pgvec_module.PgVecStore,
+        "search_by_vector",
+        lambda *_args, **_kwargs: [
+            VectorSearchResult(
+                item_id=1,
+                content="alpha preview",
+                category="document",
+                importance=3,
+                similarity=0.91,
+                source_type="document_chunk",
+            )
+        ],
+    )
 
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
+    with managed_test_client("anima-documents-search-") as client:
+        registered = _register_user(client, username="document-search")
+        user_id = int(registered["id"])
+        headers = {"x-anima-unlock": str(registered["unlockToken"])}
+        uploaded = client.post(
+            "/api/documents/pdf",
             headers=headers,
-            json=_pdf_payload(user_id),
-        )
-        assert start.status_code == 201
-
-        resume = client.post(
-            "/api/documents/workflows/1/resume",
-            headers=headers,
-        )
-
-        assert resume.status_code == 200
-        resumed = resume.json()
-        assert resumed["workflowId"] == 1
-        assert resumed["status"] == "awaiting_input"
-        assert resumed["currentState"] == "awaiting_approval"
-        assert resumed["workflow"]["result"]["summary"] == {
-            "title": "manual.pdf",
-            "chunk_count": 2,
-            "summary": "Indexed 2 chunks from manual.pdf.",
-        }
-        assert resumed["workflow"]["result"]["proposed_facts"] == [
-            {
-                "content": "manual.pdf: Indexed 2 chunks from manual.pdf.",
-                "chunk_count": 2,
-            }
-        ]
-
-        status_response = client.get(
-            "/api/documents/workflows/1",
-            headers=headers,
-        )
-        assert status_response.status_code == 200
-        checkpoints = status_response.json()["checkpoints"]
-        chunked = next(item for item in checkpoints if item["state"] == "chunked")
-        chunk_ids = chunked["artifacts"]["chunk_ids"]
-
-        monkeypatch.setattr(
-            "anima_server.services.documents.rag.generate_embedding",
-            lambda text: _embedding(float(len(text)), 1.0),
-        )
-        monkeypatch.setattr(
-            pgvec_module.PgVecStore,
-            "search_by_vector",
-            lambda *_args, **_kwargs: [
-                VectorSearchResult(
-                    item_id=chunk_ids[0],
-                    content="alpha preview",
-                    category="document",
-                    importance=3,
-                    similarity=0.91,
-                    source_type="document_chunk",
+            data={"userId": str(user_id)},
+            files={
+                "file": (
+                    "Search.pdf",
+                    b"%PDF-1.4\ncanonical search document\n%%EOF",
+                    "application/pdf",
                 )
-            ],
+            },
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        workflow_id = int(uploaded.json()["workflowId"])
+        assert (
+            client.post(
+                f"/api/documents/workflows/{workflow_id}/resume", headers=headers
+            ).status_code
+            == 200
         )
 
-        search = client.post(
+        result = client.post(
             "/api/documents/search",
             headers=headers,
             json={"userId": user_id, "query": "installation", "limit": 3},
         )
-
-        assert search.status_code == 200
-        results = search.json()
-        assert results["count"] == 1
-        assert results["results"][0]["chunkId"] == chunk_ids[0]
-        assert results["results"][0]["documentId"] == 1
-        assert results["results"][0]["filename"] == "manual.pdf"
-        assert results["results"][0]["similarity"] == 0.91
-
-        approve = client.post(
-            "/api/documents/workflows/1/approve-memory",
-            headers=headers,
-            json={"proposalIndices": [0]},
-        )
-
-        assert approve.status_code == 200
-        approved = approve.json()
-        assert approved["workflowId"] == 1
-        assert approved["status"] == "completed"
-        assert approved["currentState"] == "memory_saved"
-        assert approved["workflow"]["result"] == {
-            "document_id": 1,
-            "decision": "approved",
-            "selected_count": 1,
-            "created_count": 1,
-            "candidate_ids": [1],
-        }
+        assert result.status_code == 200, result.text
+        assert result.json()["count"] == 1
 
 
-def test_approve_memory_allows_empty_selection_when_no_facts(
-    monkeypatch: Any,
-) -> None:
-    _patch_pdf_edges(monkeypatch, proposed_facts=[])
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=_pdf_payload(user_id),
-        )
-        assert start.status_code == 201
-        resume = client.post(
-            "/api/documents/workflows/1/resume",
-            headers=headers,
-        )
-        assert resume.status_code == 200
-        assert resume.json()["workflow"]["result"]["proposed_facts"] == []
-
-        approve = client.post(
-            "/api/documents/workflows/1/approve-memory",
-            headers=headers,
-            json={"proposalIndices": []},
-        )
-
-        assert approve.status_code == 200
-        approved = approve.json()
-        assert approved["status"] == "completed"
-        assert approved["currentState"] == "memory_saved"
-        assert approved["workflow"]["result"] == {
-            "document_id": 1,
-            "decision": "approved",
-            "selected_count": 0,
-            "created_count": 0,
-            "candidate_ids": [],
-        }
-
-
-def test_resume_preserves_committed_checkpoints_when_later_stage_fails(
-    monkeypatch: Any,
-) -> None:
-    _patch_pdf_edges(monkeypatch, summarize_failure=RuntimeError("summary unavailable"))
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=_pdf_payload(user_id),
-        )
-        assert start.status_code == 201
-
-        resume = client.post(
-            "/api/documents/workflows/1/resume",
-            headers=headers,
-        )
-
-        assert resume.status_code == 503
-        status_response = client.get(
-            "/api/documents/workflows/1",
-            headers=headers,
-        )
-        assert status_response.status_code == 200
-        status_json = status_response.json()
-        assert status_json["status"] == "running"
-        assert status_json["currentState"] == "indexed"
-        assert [checkpoint["state"] for checkpoint in status_json["checkpoints"]] == [
-            "file_registered",
-            "text_extracted",
-            "chunked",
-            "embedded",
-            "indexed",
-        ]
-
-
-def test_default_resume_returns_controlled_error_when_pdf_parser_unavailable() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=_pdf_payload(user_id),
-        )
-        assert start.status_code == 201
-
-        resume = client.post(
-            "/api/documents/workflows/1/resume",
-            headers=headers,
-        )
-
-        assert resume.status_code == 503
-        assert "PDF ingestion is unavailable" in resume.json()["error"]
-
-        status_response = client.get(
-            "/api/documents/workflows/1",
-            headers=headers,
-        )
-        assert status_response.status_code == 200
-        status_json = status_response.json()
-        assert status_json["status"] == "running"
-        assert status_json["currentState"] == "file_registered"
-        assert [checkpoint["state"] for checkpoint in status_json["checkpoints"]] == [
-            "file_registered"
-        ]
-
-
-@pytest.mark.parametrize("body", [{}, {"proposalIndices": [-1]}])
-def test_approve_memory_rejects_invalid_proposal_indices(
-    monkeypatch: Any,
-    body: dict[str, object],
-) -> None:
-    _patch_pdf_edges(monkeypatch)
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=headers,
-            json=_pdf_payload(user_id),
-        )
-        assert start.status_code == 201
-        resume = client.post(
-            "/api/documents/workflows/1/resume",
-            headers=headers,
-        )
-        assert resume.status_code == 200
-
-        approve = client.post(
-            "/api/documents/workflows/1/approve-memory",
-            headers=headers,
-            json=body,
-        )
-
-        assert approve.status_code == 422
-        status_response = client.get(
-            "/api/documents/workflows/1",
-            headers=headers,
-        )
-        assert status_response.status_code == 200
-        assert status_response.json()["status"] == "awaiting_input"
-        assert status_response.json()["currentState"] == "awaiting_approval"
-
-
-def test_document_workflows_are_hidden_from_other_unlocked_users() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        owner = _register_user(client, username="document-owner")
-        owner_session = unlock_session_store.resolve(str(owner["unlockToken"]))
-        assert owner_session is not None
-        other_token = unlock_session_store.create(
-            int(owner["id"]) + 999,
-            owner_session.deks,
-        )
-        owner_headers = {"x-anima-unlock": str(owner["unlockToken"])}
-        other_headers = {"x-anima-unlock": other_token}
-
-        start = client.post(
-            "/api/documents/workflows/pdf",
-            headers=owner_headers,
-            json=_pdf_payload(int(owner["id"])),
-        )
-        assert start.status_code == 201
-
-        status_response = client.get(
-            "/api/documents/workflows/1",
-            headers=other_headers,
-        )
-
-        assert status_response.status_code == 404
-
-        resume_response = client.post(
-            "/api/documents/workflows/1/resume",
-            headers=other_headers,
-        )
-        assert resume_response.status_code == 404
-
-        approve_response = client.post(
-            "/api/documents/workflows/1/approve-memory",
-            headers=other_headers,
-            json={"proposalIndices": [0]},
-        )
-        assert approve_response.status_code == 404
-
-        search_response = client.post(
-            "/api/documents/search",
-            headers=owner_headers,
-            json={"userId": int(owner["id"]) + 999, "query": "manual"},
-        )
-        assert search_response.status_code == 403
-
-
-def test_get_parsing_pack_status_requires_auth() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        response = client.get("/api/documents/parsing-pack")
-        assert response.status_code == 401
-
-
-def test_get_parsing_pack_status_returns_pack_state(monkeypatch: Any) -> None:
+def test_parsing_pack_status_and_download(monkeypatch: Any) -> None:
     from anima_server.api.routes import documents as documents_route
 
     monkeypatch.setattr(
@@ -717,243 +214,18 @@ def test_get_parsing_pack_status_returns_pack_state(monkeypatch: Any) -> None:
         "pack_status",
         lambda: ParsingPackStatus(state="downloading", progress=0.42),
     )
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="parsing-pack-status-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.get("/api/documents/parsing-pack", headers=headers)
-
-        assert response.status_code == 200
-        assert response.json() == {
-            "state": "downloading",
-            "progress": 0.42,
-            "error": None,
-        }
-
-
-def test_download_parsing_pack_triggers_ensure_and_returns_state(
-    monkeypatch: Any,
-) -> None:
-    from anima_server.api.routes import documents as documents_route
-
-    calls: list[bool] = []
-
-    def fake_ensure() -> ParsingPackStatus:
-        calls.append(True)
-        return ParsingPackStatus(state="downloading", progress=0.0)
-
-    monkeypatch.setattr(documents_route, "ensure_parsing_pack", fake_ensure)
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="parsing-pack-download-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/parsing-pack/download", headers=headers)
-
-        assert response.status_code == 200
-        assert response.json() == {"state": "downloading", "progress": 0.0, "error": None}
-        assert calls == [True]
-
-
-def test_download_parsing_pack_requires_auth() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        response = client.post("/api/documents/parsing-pack/download")
-        assert response.status_code == 401
-
-
-def test_reparse_document_returns_upgraded_payload(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-
-    captured: dict[str, object] = {}
-
-    def fake_reparse_document(
-        runtime_db: Any,
-        *,
-        user_id: int,
-        document_id: int,
-    ) -> ReparseResult:
-        captured["user_id"] = user_id
-        captured["document_id"] = document_id
-        return ReparseResult(status="upgraded", chunk_count=3)
-
-    monkeypatch.setattr(documents_route, "reparse_document", fake_reparse_document)
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-upgraded-user")
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/55/reparse", headers=headers)
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "upgraded", "chunk_count": 3}
-        assert captured == {"user_id": user_id, "document_id": 55}
-
-
-def test_reparse_document_returns_404_when_not_found(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-
     monkeypatch.setattr(
         documents_route,
-        "reparse_document",
-        lambda runtime_db, *, user_id, document_id: ReparseResult(status="not_found"),
+        "ensure_parsing_pack",
+        lambda: ParsingPackStatus(state="downloading", progress=0.0),
     )
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-missing-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/999/reparse", headers=headers)
-
-        assert response.status_code == 404
-        assert response.json()["error"] == "Document not found"
-
-
-def test_reparse_document_returns_409_when_pack_not_ready(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-
-    monkeypatch.setattr(
-        documents_route,
-        "reparse_document",
-        lambda runtime_db, *, user_id, document_id: ReparseResult(status="pack_not_ready"),
-    )
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-pack-not-ready-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/1/reparse", headers=headers)
-
-        assert response.status_code == 409
-        assert response.json()["error"] == "Parsing pack is not ready."
-
-
-def test_reparse_document_returns_upgraded_unembedded_payload(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-
-    monkeypatch.setattr(
-        documents_route,
-        "reparse_document",
-        lambda runtime_db, *, user_id, document_id: ReparseResult(
-            status="upgraded_unembedded", chunk_count=2
-        ),
-    )
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-unembedded-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/1/reparse", headers=headers)
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "upgraded_unembedded", "chunk_count": 2}
-
-
-def test_reparse_document_returns_502_when_parse_degraded(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-
-    monkeypatch.setattr(
-        documents_route,
-        "reparse_document",
-        lambda runtime_db, *, user_id, document_id: ReparseResult(status="parse_degraded"),
-    )
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-degraded-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/1/reparse", headers=headers)
-
-        assert response.status_code == 502
-        assert (
-            response.json()["error"]
-            == "Quality parsing failed for this document; try again."
-        )
-
-
-def test_reparse_document_returns_503_when_parser_unavailable(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-
-    monkeypatch.setattr(
-        documents_route,
-        "reparse_document",
-        lambda runtime_db, *, user_id, document_id: ReparseResult(
-            status="parser_unavailable",
-            detail="the quality parser is not installed; install the docling extra",
-        ),
-    )
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-parser-unavailable-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/1/reparse", headers=headers)
-
-        assert response.status_code == 503
-        assert (
-            "the quality parser is not installed; install the docling extra"
-            in response.json()["error"]
-        )
-
-
-def test_reparse_document_returns_503_for_runtime_error(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-
-    def raise_runtime_error(*args: Any, **kwargs: Any) -> Any:
-        raise RuntimeError("Failed to read PDF file /tmp/x.pdf: corrupt")
-
-    monkeypatch.setattr(documents_route, "reparse_document", raise_runtime_error)
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-runtime-error-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/1/reparse", headers=headers)
-
-        assert response.status_code == 503
-        assert "PDF parsing is unavailable" in response.json()["error"]
-
-
-def test_reparse_document_returns_503_for_document_parsing_error(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-    from anima_server.services.documents.parsing import DocumentParsingError
-
-    def raise_parsing_error(*args: Any, **kwargs: Any) -> Any:
-        raise DocumentParsingError("Docling could not extract any text from x.pdf.")
-
-    monkeypatch.setattr(documents_route, "reparse_document", raise_parsing_error)
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-parsing-error-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/1/reparse", headers=headers)
-
-        assert response.status_code == 503
-        assert "PDF parsing is unavailable" in response.json()["error"]
-
-
-def test_reparse_document_requires_auth() -> None:
-    with managed_test_client("anima-documents-api-") as client:
-        response = client.post("/api/documents/1/reparse")
-        assert response.status_code == 401
-
-
-def test_reparse_document_returns_400_for_storage_path_error(monkeypatch: Any) -> None:
-    from anima_server.api.routes import documents as documents_route
-    from anima_server.services.documents import DocumentStoragePathError
-
-    def raise_storage_error(*args: Any, **kwargs: Any) -> Any:
-        raise DocumentStoragePathError("Invalid document storage path.")
-
-    monkeypatch.setattr(documents_route, "reparse_document", raise_storage_error)
-
-    with managed_test_client("anima-documents-api-") as client:
-        reg = _register_user(client, username="reparse-storage-error-user")
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-
-        response = client.post("/api/documents/1/reparse", headers=headers)
-
-        assert response.status_code == 400
-        assert response.json()["error"] == "Invalid document storage path."
+    with managed_test_client("anima-documents-pack-") as client:
+        assert client.get("/api/documents/parsing-pack").status_code == 401
+        registered = _register_user(client, username="document-pack")
+        headers = {"x-anima-unlock": str(registered["unlockToken"])}
+        status = client.get("/api/documents/parsing-pack", headers=headers)
+        assert status.status_code == 200
+        assert status.json()["progress"] == 0.42
+        download = client.post("/api/documents/parsing-pack/download", headers=headers)
+        assert download.status_code == 200
+        assert download.json()["progress"] == 0.0

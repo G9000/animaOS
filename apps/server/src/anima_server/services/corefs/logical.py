@@ -235,73 +235,32 @@ def execute_mutation_v1(
     body: bytes | None = None,
     invalidate: Callable[[int, str], None] | None = None,
 ) -> dict[str, object]:
-    """Commit one native logical mutation under authenticated cutover state.
-
-    The manifest supplies only the pending first-write epoch. Native committed
-    HEAD remains the authority, so a crash after HEAD publication is reconciled
-    before choosing normal versus first-mutation mode.
-    """
-    from anima_server.services.corefs.cutover import (
-        CutoverState,
-        read_cutover_record,
-        reconcile_cutover_authority,
-    )
+    """Commit one native logical mutation under authenticated CoreFS authority."""
+    from anima_server.services.corefs.authority import reconcile_content_authority
 
     native = getattr(corefs_session, "logical_mutate_v1", None)
     if not callable(native):
         raise CoreFsMutationUnavailable("corefs_native_mutation_unavailable")
 
-    authority = reconcile_cutover_authority(corefs_session=corefs_session, keys=keys)
-    cutover = read_cutover_record()
-    if cutover.state is CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE:
-        from anima_server.services.corefs.legacy_runtime_recovery import (
-            LegacyRuntimeRecoveryError,
-            require_first_write_runtime_recovery,
-        )
-
-        try:
-            require_first_write_runtime_recovery()
-        except LegacyRuntimeRecoveryError as exc:
-            raise CoreFsMutationUnavailable("corefs_runtime_restart_required") from exc
-        if (
-            cutover.cutover_epoch is None
-            or cutover.validation_generation != selected.generation
-            or cutover.validation_catalog_hash != selected.catalog_hash
-        ):
-            raise CoreFsMutationUnavailable("corefs_cutover_snapshot_not_approved")
-        commit_mode = "first"
-        cutover_epoch: int | None = cutover.cutover_epoch
-    elif cutover.state is CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY:
-        from anima_server.services.corefs.legacy_runtime_recovery import (
-            runtime_transition_restart_required,
-        )
-
-        if runtime_transition_restart_required():
-            raise CoreFsMutationUnavailable("corefs_runtime_restart_required")
-        if (
-            authority is None
-            or authority.get("generation") != selected.generation
-            or authority.get("catalogHash") != selected.catalog_hash
-        ):
-            raise CoreFsMutationUnavailable("corefs_authoritative_snapshot_stale")
-        commit_mode = "normal"
-        cutover_epoch = None
-    else:
-        raise CoreFsMutationUnavailable(CORE_FS_MIGRATION_WRITE_FROZEN)
+    authority = reconcile_content_authority(corefs_session=corefs_session, keys=keys)
+    if (
+        authority is None
+        or authority.get("generation") != selected.generation
+        or authority.get("catalogHash") != selected.catalog_hash
+    ):
+        raise CoreFsMutationUnavailable("corefs_authoritative_snapshot_stale")
 
     now = datetime.now(UTC)
     request: dict[str, object] = {
         "version": 1,
         "principal": principal,
-        "commitMode": commit_mode,
+        "commitMode": "normal",
         "selectedGeneration": selected.generation,
         "selectedCatalogHash": selected.catalog_hash,
         "timestampMs": int(now.timestamp() * 1000),
         "timestamp": now.isoformat().replace("+00:00", "Z"),
         "mutation": mutation,
     }
-    if cutover_epoch is not None:
-        request["cutoverEpoch"] = cutover_epoch
     raw = native(
         keys,
         json.dumps(request, separators=(",", ":"), sort_keys=True),
@@ -333,16 +292,8 @@ def execute_mutation_v1(
     ):
         raise CoreFsMutationUnavailable("corefs_native_mutation_result_invalid")
 
-    if raw.get("cutoverCommitted") is True or raw.get("recoveryPending") is True:
-        reconcile_cutover_authority(corefs_session=corefs_session, keys=keys)
-    if raw.get("cutoverCommitted") is True:
-        from anima_server.services.corefs.legacy_runtime_recovery import (
-            mark_runtime_transition_restart_required,
-            runtime_transition_restart_required,
-        )
-
-        if runtime_transition_restart_required():
-            mark_runtime_transition_restart_required()
+    if raw.get("recoveryPending") is True:
+        reconcile_content_authority(corefs_session=corefs_session, keys=keys)
     if raw.get("invalidationDelivered") is not True and invalidate is not None:
         invalidate(generation, catalog_hash)
         raw = dict(raw)

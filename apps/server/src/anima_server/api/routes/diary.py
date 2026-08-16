@@ -28,9 +28,6 @@ from anima_server.db import get_db
 from anima_server.schemas.diary import (
     DiaryAttachmentResponse,
     DiaryCorefsPreparedResponse,
-    DiaryDraftCompletionToken,
-    DiaryDraftImportRequest,
-    DiaryDraftImportResponse,
     DiaryEntryCreateRequest,
     DiaryEntryResponse,
     DiaryEntryUpdateRequest,
@@ -46,9 +43,7 @@ from anima_server.services.corefs.asset_mutations import (
 )
 from anima_server.services.corefs.diary_migration import (
     DiaryMigrationError,
-    LegacyDiaryDraft,
     migration_opaque_id,
-    prepare_diary_validation_catalog,
     resolve_prepared_role,
 )
 from anima_server.services.corefs.formats import CoreFormatError
@@ -69,7 +64,6 @@ from anima_server.services.corefs.writing_mutations import (
     delete_canonical_diary_folder,
     rename_canonical_diary_folder,
     update_canonical_diary_entry,
-    upsert_canonical_draft,
 )
 from anima_server.services.diary import (
     DiaryValidationError,
@@ -115,95 +109,6 @@ async def corefs_prepared(request: Request) -> DiaryCorefsPreparedResponse:
         journalStableId=str(journal["stableId"]),
         notesStableId=str(notes["stableId"]),
         authoritative=writing_corefs_authority_active(session),
-    )
-
-
-@router.post("/drafts/import", response_model=DiaryDraftImportResponse)
-async def import_legacy_draft(
-    payload: DiaryDraftImportRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-) -> DiaryDraftImportResponse:
-    session = await require_unlocked_session_async(request)
-    if session.user_id != payload.userId:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Session user mismatch.")
-    if hashlib.sha256(payload.html.encode()).hexdigest() != payload.contentSha256:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Draft content hash does not match the submitted canonical body.",
-        )
-    if writing_corefs_authority_active(session):
-        try:
-            draft = upsert_canonical_draft(
-                session=session,
-                draft_id=payload.draftId,
-                client_revision=payload.clientRevision,
-                content_sha256=payload.contentSha256,
-                target_entry_id=payload.targetEntryId,
-                body=payload.html,
-                metadata={
-                    "title": payload.title,
-                    "mood": payload.mood,
-                    "entryDate": payload.entryDate,
-                    "legacyStorageKey": payload.draftId,
-                    "updatedAt": payload.updatedAt.isoformat().replace("+00:00", "Z"),
-                },
-                updated_at=payload.updatedAt.isoformat().replace("+00:00", "Z"),
-            )
-        except (CoreFormatError, WritingMutationError) as exc:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        catalog = read_canonical_writing_catalog(session=session)
-        return DiaryDraftImportResponse(
-            stableId=draft.document.stable_id,
-            revision=draft.revision,
-            generation=catalog.selection.generation,
-            catalogHash=catalog.selection.catalog_hash,
-            completionToken=DiaryDraftCompletionToken(
-                draftId=payload.draftId,
-                clientRevision=payload.clientRevision,
-                contentSha256=payload.contentSha256,
-            ),
-            authoritative=True,
-        )
-    try:
-        migrated = prepare_diary_validation_catalog(
-            session=session,
-            db=db,
-            staged_drafts=(
-                LegacyDiaryDraft(
-                    id=payload.draftId,
-                    client_revision=payload.clientRevision,
-                    content_sha256=payload.contentSha256,
-                    target_entry_id=payload.targetEntryId,
-                    body=payload.html,
-                    content_type="text/html",
-                    updated_at=payload.updatedAt.isoformat().replace("+00:00", "Z"),
-                    metadata={
-                        "title": payload.title,
-                        "mood": payload.mood,
-                        "entryDate": payload.entryDate,
-                        "legacyStorageKey": payload.draftId,
-                    },
-                ),
-            ),
-        )
-    except (DiaryMigrationError, ValueError) as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    if migrated.stable_id is None or migrated.revision is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Encrypted draft verification did not return a revision.",
-        )
-    return DiaryDraftImportResponse(
-        stableId=migrated.stable_id,
-        revision=migrated.revision,
-        generation=migrated.generation,
-        catalogHash=migrated.catalog_hash,
-        completionToken=DiaryDraftCompletionToken(
-            draftId=payload.draftId,
-            clientRevision=payload.clientRevision,
-            contentSha256=payload.contentSha256,
-        ),
     )
 
 

@@ -167,6 +167,51 @@ fn approved_first_mutation_publishes_cutover_then_normal_mutations_use_head() {
 }
 
 #[test]
+fn greenfield_activation_publishes_authority_without_changing_catalog_entries() {
+    let fixture = fixture("greenfield-activation", AnimaAccess::Manage);
+    let executor = CoreFsMutationExecutor::new(&fixture.coordinator, &fixture.keys);
+    let activated = executor
+        .execute(
+            MutationPrincipal::User,
+            fixture.selected.head().generation(),
+            fixture.selected.head().catalog_hash(),
+            MutationCommitMode::FirstMutation { cutover_epoch: 91 },
+            LogicalMutation::ActivateAuthority,
+            stamp(),
+            &IdentityValidator,
+        )
+        .unwrap();
+
+    assert_eq!(
+        activated.generation,
+        fixture.selected.head().generation() + 1
+    );
+    assert!(activated.cutover_committed);
+    assert!(activated.changes.is_empty());
+    let committed = fixture
+        .coordinator
+        .load_committed(&fixture.keys)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        committed.catalog().entries(),
+        fixture.selected.catalog().entries()
+    );
+    assert_eq!(committed.catalog().cutover_marker().unwrap().epoch(), 91);
+
+    let replay = executor.execute(
+        MutationPrincipal::User,
+        committed.head().generation(),
+        committed.head().catalog_hash(),
+        MutationCommitMode::Normal,
+        LogicalMutation::ActivateAuthority,
+        stamp(),
+        &IdentityValidator,
+    );
+    assert!(matches!(replay, Err(MutationError::InvalidLifecycle)));
+}
+
+#[test]
 fn mkdir_create_write_and_move_each_advance_exactly_one_validation_generation() {
     let fixture = fixture("basic", AnimaAccess::Manage);
     let authority = ConverterMutationAuthority::new();
@@ -617,6 +662,7 @@ fn cross_policy_moves_restores_and_patch_moves_fail_before_advancing_or_preparin
 
 fn all_operations() -> Vec<LogicalMutation> {
     vec![
+        LogicalMutation::ActivateAuthority,
         LogicalMutation::Mkdir {
             path: "x".into(),
             reserved_role: None,

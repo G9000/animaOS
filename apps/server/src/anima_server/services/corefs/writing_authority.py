@@ -99,7 +99,7 @@ def writing_authority_selection(session: object) -> WritingAuthoritySelection | 
     catalog_hash = marker.get("catalogHash")
     if (
         marker.get("version") != 1
-        or marker.get("state") != "cutover_complete"
+        or marker.get("state") != "authoritative"
         or not isinstance(families, list)
         or not {"diary", "notes"}.issubset(families)
         or isinstance(generation, bool)
@@ -227,7 +227,9 @@ def read_canonical_writing_catalog(*, session: Any) -> CanonicalWritingCatalog:
         ),
         reverse=True,
     )
-    folder_records = tuple(sorted(folder_records, key=lambda item: (item.created_at or "", item.name)))
+    folder_records = tuple(
+        sorted(folder_records, key=lambda item: (item.created_at or "", item.name))
+    )
     return CanonicalWritingCatalog(
         selection=selection,
         journal_folder=journal,
@@ -319,6 +321,4 @@ def _under(path: str, root: str) -> bool:
 
 
 def _stable_api_id(stable_id: str) -> int:
-    return int.from_bytes(hashlib.sha256(stable_id.encode()).digest()[:8], "big") & (
-        (1 << 52) - 1
-    )
+    return int.from_bytes(hashlib.sha256(stable_id.encode()).digest()[:8], "big") & ((1 << 52) - 1)

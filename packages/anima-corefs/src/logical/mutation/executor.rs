@@ -56,6 +56,9 @@ impl<'a> CoreFsShadowMutator<'a> {
         stamp: MutationStamp,
         validator: &dyn ContentFormatValidator,
     ) -> Result<MutationResult, MutationError> {
+        if matches!(operation, LogicalMutation::ActivateAuthority) {
+            return Err(MutationError::InvalidLifecycle);
+        }
         self.ensure_selected_is_current(selected)?;
         let keyring = FrkKeyring::new([self.keys]).map_err(|_| MutationError::Storage)?;
         let read_snapshot = CoreFsReadSnapshot::open(self.coordinator, selected, &keyring)
@@ -174,6 +177,9 @@ impl<'a> CoreFsMutationExecutor<'a> {
                 Ok(committed_result(outcome, changes, true))
             }
             MutationCommitMode::Normal => {
+                if matches!(operation, LogicalMutation::ActivateAuthority) {
+                    return Err(MutationError::InvalidLifecycle);
+                }
                 let committed = self
                     .coordinator
                     .load_committed(self.keys)

@@ -15,8 +15,8 @@ from uuid import UUID, uuid4
 
 from anima_server.services import anima_core_bindings
 from anima_server.services.core import get_manifest_path
-from anima_server.services.corefs.soul_relocation import (
-    SoulRelocationError,
+from anima_server.services.corefs.soul_store import (
+    SoulSnapshotError,
     create_verified_soul_snapshot,
 )
 from anima_server.services.corefs.types import PayloadScope
@@ -279,8 +279,7 @@ def export_core_archive_multipart_v2(
                     archive_id=archive_id,
                     source_count=len(volume_sources),
                     source_bytes=sum(
-                        Path(source["sourcePath"]).stat().st_size
-                        for source in volume_sources
+                        Path(source["sourcePath"]).stat().st_size for source in volume_sources
                     ),
                 )
                 summaries[ordinal] = summary
@@ -294,12 +293,8 @@ def export_core_archive_multipart_v2(
 
         def verify_volume(path: Path) -> None:
             ordinal = int(path.name.removeprefix("volume-").split(".", 1)[0])
-            extractor = anima_core_bindings.require_binding(
-                "core_archive_extract_volume_v2"
-            )
-            staging = Path(
-                tempfile.mkdtemp(prefix=".anima-core-volume-verify-", dir=path.parent)
-            )
+            extractor = anima_core_bindings.require_binding("core_archive_extract_volume_v2")
+            staging = Path(tempfile.mkdtemp(prefix=".anima-core-volume-verify-", dir=path.parent))
             shutil.rmtree(staging)
             try:
                 raw = extractor(
@@ -345,9 +340,7 @@ def export_core_archive_multipart_v2(
                 or sum(int(summary["recordCount"]) for summary in summaries.values())
                 != inventory.record_count
             ):
-                raise CoreArchiveTransferError(
-                    "multipart archive changed its selected inventory"
-                )
+                raise CoreArchiveTransferError("multipart archive changed its selected inventory")
             return {
                 "payloadKind": payload_kind.value,
                 "coreId": inventory.core_id,
@@ -380,9 +373,7 @@ def export_core_archive_multipart_v2(
         ) -> None:
             nonlocal expected_controller
             expected_controller = controller_request(volumes)
-            writer = anima_core_bindings.require_binding(
-                "core_archive_write_controller_v2"
-            )
+            writer = anima_core_bindings.require_binding("core_archive_write_controller_v2")
             try:
                 writer(
                     os.fspath(output_path),
@@ -395,9 +386,7 @@ def export_core_archive_multipart_v2(
                 ) from exc
 
         def verify_controller(path: Path) -> None:
-            reader = anima_core_bindings.require_binding(
-                "core_archive_read_controller_v2"
-            )
+            reader = anima_core_bindings.require_binding("core_archive_read_controller_v2")
             try:
                 raw = reader(os.fspath(path), passphrase.encode("utf-8"))
             except (OSError, RuntimeError, ValueError) as exc:
@@ -486,7 +475,7 @@ def _prepare_core_archive(
         soul_snapshot = snapshot_root / "soul.db"
         try:
             soul_inventory = create_verified_soul_snapshot(soul_path, soul_snapshot)
-        except SoulRelocationError as exc:
+        except SoulSnapshotError as exc:
             raise CoreArchiveTransferError("canonical Soul snapshot failed verification") from exc
         soul_inventory_hash = soul_inventory.combined_hash
         sources.append(_source("soul_database", "soul/soul.db", soul_snapshot))
@@ -754,9 +743,7 @@ def _partition_archive_sources(
     for source in sources:
         source_bytes = Path(source["sourcePath"]).stat().st_size
         if source_bytes > payload_limit_bytes:
-            raise CoreArchiveTransferError(
-                "one archive record exceeds the destination part limit"
-            )
+            raise CoreArchiveTransferError("one archive record exceeds the destination part limit")
         if partitions[-1] and partition_bytes + source_bytes > payload_limit_bytes:
             partitions.append([])
             partition_bytes = 0
@@ -873,7 +860,7 @@ def _scoped_archive_manifest(
         snapshot["degraded_state"] = "filesystem_missing"
         snapshot.pop("frk_rotation", None)
         snapshot.pop("active_filesystem_root_generation", None)
-        snapshot.pop("corefs_cutover", None)
+        snapshot.pop("corefs_authority", None)
     else:
         snapshot["degraded_state"] = "recovery_only"
         snapshot.pop("wrapped_sqlcipher_key", None)

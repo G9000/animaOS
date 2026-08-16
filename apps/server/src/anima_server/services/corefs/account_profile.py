@@ -49,7 +49,7 @@ def account_profile_corefs_authority_active(session: object) -> bool:
     return (
         isinstance(marker, dict)
         and marker.get("version") == 1
-        and marker.get("state") == "cutover_complete"
+        and marker.get("state") == "authoritative"
         and isinstance(marker.get("families"), list)
         and "account" in marker["families"]
     )
@@ -223,9 +223,9 @@ def read_unlocked_account_profile(
     """Open a short-lived native session for login-time profile hydration."""
     native = anima_core.CorefsSession(str(settings.data_dir), get_core_id())
     try:
-        from anima_server.services.corefs.cutover import reconcile_cutover_authority
+        from anima_server.services.corefs.authority import reconcile_content_authority
 
-        authority = reconcile_cutover_authority(corefs_session=native, keys=corefs_keys)
+        authority = reconcile_content_authority(corefs_session=native, keys=corefs_keys)
         session = SimpleNamespace(
             user_id=user_id,
             corefs_session=native,

@@ -459,6 +459,7 @@ mod python {
         deny_unknown_fields
     )]
     enum LogicalMutationWire {
+        ActivateAuthority,
         Mkdir {
             path: String,
             #[serde(default)]
@@ -1497,6 +1498,10 @@ mod python {
             .map_err(corefs_mutation_error)?;
         let mut body = body;
         let (mutation, body_encoding) = match wire.mutation {
+            LogicalMutationWire::ActivateAuthority => (
+                anima_corefs::logical::LogicalMutation::ActivateAuthority,
+                require_no_mutation_body(&body)?,
+            ),
             LogicalMutationWire::Mkdir {
                 path,
                 reserved_role,

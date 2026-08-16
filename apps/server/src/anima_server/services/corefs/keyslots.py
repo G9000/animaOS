@@ -525,6 +525,9 @@ def provision_initial_key_hierarchy(
     db.commit()
 
     def _activate(value: dict[str, object]) -> None:
+        from anima_server.services.corefs.authority import PORTABLE_CORE_RELEASE
+
+        value["portable_core_release"] = PORTABLE_CORE_RELEASE
         value["keyslots_version"] = 1
         value["keyslots"] = [slot.to_dict() for slot in slots]
         value["active_password_credential_generation"] = 1

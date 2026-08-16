@@ -98,10 +98,6 @@ function resolveStorageArgument(
     if (path.endsWith("daemon.ts") && expression.text === "key") {
       return ["anima_daemon_control_token", "ANIMA_DAEMON_CONTROL_TOKEN"];
     }
-    if (path.endsWith("draftMigration.ts")) {
-      if (expression.text === "storageKey") return ["legacy-journal-draft:*"];
-      if (expression.text === "stateKey") return ["anima:diary:draft-migration-state:v1:*"];
-    }
     if (path.endsWith("portablePreferences.ts") && expression.text === "key") {
       return [
         "anima-theme",
@@ -137,9 +133,6 @@ function resolveStorageArgument(
   }
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
     if (expression.expression.text === "keyHintKey") return ["anima:key-hint:*"];
-    if (expression.expression.text === "draftMigrationStateKey") {
-      return ["anima:diary:draft-migration-state:v1:*"];
-    }
   }
   throw new Error(`Unclassified storage key expression ${path}:${expression.getText(file)}`);
 }
@@ -173,7 +166,6 @@ describe("portable settings storage classification", () => {
         let store: "browser-local" | "browser-session" | null = null;
         if (owner === "localStorage") store = "browser-local";
         else if (owner === "sessionStorage") store = "browser-session";
-        else if (owner === "storage" && path.endsWith("draftMigration.ts")) store = "browser-local";
         else if (owner === "storage" && path.endsWith("portablePreferences.ts")) {
           store = "browser-local";
         }
@@ -206,6 +198,7 @@ describe("portable settings storage classification", () => {
     expect(local.get("anima_user")).toBe("remove-private-profile-cache");
     expect(local.get("anima_unlock_token")).toBe("remove-legacy-session");
     expect(local.get("anima_daemon_control_token")).toBe("os-credential");
-    expect(local.get("legacy-journal-draft:*")).toBe("corefs-object");
+    expect(local.has("legacy-journal-draft:*")).toBe(false);
+    expect(local.has("anima:diary:draft-migration-state:v1:*")).toBe(false);
   });
 });

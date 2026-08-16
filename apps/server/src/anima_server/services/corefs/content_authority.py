@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from anima_server.services.corefs.cutover import reconcile_cutover_authority
+from anima_server.services.corefs.authority import reconcile_content_authority
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
@@ -22,7 +22,7 @@ def authenticated_content_authority(
     """
     if not _marker_allows(getattr(session, "content_authority", None), family=family):
         return None
-    marker = reconcile_cutover_authority(
+    marker = reconcile_content_authority(
         corefs_session=session.corefs_session,
         keys=session.corefs_keys,
     )
@@ -71,8 +71,8 @@ def _marker_allows(marker: object, *, family: str | None) -> bool:
     catalog_hash = marker.get("catalogHash")
     return (
         marker.get("version") == 1
-        and marker.get("state") == "cutover_complete"
-        and marker.get("legacyRollbackDisabled") is True
+        and marker.get("state") == "authoritative"
+        and marker.get("authorityImmutable") is True
         and isinstance(families, list)
         and (family is None or family in families)
         and isinstance(generation, int)
@@ -80,5 +80,5 @@ def _marker_allows(marker: object, *, family: str | None) -> bool:
         and generation > 0
         and isinstance(catalog_hash, str)
         and _SHA256_HEX.fullmatch(catalog_hash) is not None
-        and marker.get("cutoverEpoch") is not None
+        and marker.get("authorityEpoch") is not None
     )

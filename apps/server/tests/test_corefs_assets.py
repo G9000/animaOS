@@ -18,6 +18,7 @@ from anima_server.models.runtime import (
     RuntimeSource,
     RuntimeSourceArtifact,
 )
+from anima_server.services.core import ensure_core_manifest, update_core_manifest
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.asset_authority import CoreFsSourceError
 from anima_server.services.corefs.asset_migration import (
@@ -26,10 +27,10 @@ from anima_server.services.corefs.asset_migration import (
     build_portable_asset_shadow,
     collect_portable_asset_shadow,
 )
+from anima_server.services.corefs.authority import activate_content_authority
 from anima_server.services.corefs.conversation_migration import (
     build_conversation_shadow_catalog,
 )
-from anima_server.services.corefs.cutover import CutoverState
 from anima_server.services.corefs.diary_migration import (
     migration_opaque_id,
     read_prepared_writing_body,
@@ -259,13 +260,13 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     tmp_path: Path,
     monkeypatch: object,
 ) -> None:
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        "anima_server.services.core.update_core_manifest", lambda _update: None
-    )
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        "anima_server.services.core.get_manifest_path",
-        lambda: tmp_path / "missing-manifest.json",
-    )
+    monkeypatch.setattr(settings, "data_dir", tmp_path / ".anima")  # type: ignore[attr-defined]
+    ensure_core_manifest()
+
+    def mark_first_release(manifest: dict[str, object]) -> None:
+        manifest["portable_core_release"] = 1
+
+    update_core_manifest(mark_first_release)
     engine = create_engine(f"sqlite:///{(tmp_path / 'source.db').as_posix()}")
     Base.metadata.create_all(engine)
     native = anima_core.CorefsSession(
@@ -351,6 +352,12 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
             supplemental_objects=(*conversations.objects, *assets.objects),
         )
     assert first.published is True
+    authority = activate_content_authority(
+        corefs_session=native,
+        keys=keys,
+        generation=first.generation,
+        catalog_hash=first.catalog_hash,
+    )
     prepared = read_prepared_writing_snapshot(session=session)
     assert {folder.role for folder in prepared.folders} >= {
         "core.conversations",
@@ -426,13 +433,7 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     assert image_projection is not None
     assert image_projection.stable_id == prepared_asset.stable_id
     assert image_projection.filename == "original.png"
-    session.content_authority = {
-        "version": 1,
-        "state": "cutover_complete",
-        "families": ["assets", "documents", "knowledge"],
-        "generation": selected.generation,
-        "catalogHash": selected.catalog_hash,
-    }
+    session.content_authority = authority
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "anima_server.services.corefs.asset_authority.active_asset_authority_session",
         lambda user_id: session if user_id == 7 else None,
@@ -475,37 +476,7 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     assert {item.stable_id for item in after.objects} == {
         item.stable_id for item in prepared.objects
     }
-    restarted_session.content_authority = {
-        "version": 1,
-        "state": "cutover_complete",
-        "legacyRollbackDisabled": True,
-        "cutoverEpoch": 1,
-        "families": ["assets", "documents", "knowledge"],
-        "generation": repeated.generation,
-        "catalogHash": repeated.catalog_hash,
-    }
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        "anima_server.services.corefs.cutover.reconcile_cutover_authority",
-        lambda **_kwargs: (
-            restarted_session.content_authority
-            if restarted_session.content_authority["generation"] > repeated.generation
-            else None
-        ),
-    )
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        "anima_server.services.corefs.cutover.read_cutover_record",
-        lambda: SimpleNamespace(
-            state=(
-                CutoverState.CORE_FS_AUTHORITATIVE_FORWARD_ONLY
-                if restarted_session.content_authority["generation"]
-                > repeated.generation
-                else CutoverState.CORE_FS_APPROVED_PENDING_FIRST_WRITE
-            ),
-            cutover_epoch=1,
-            validation_generation=repeated.generation,
-            validation_catalog_hash=repeated.catalog_hash,
-        ),
-    )
+    restarted_session.content_authority = authority
     direct_projection = canonical_image_projection(
         session=restarted_session,
         image_asset_id=8,
@@ -521,6 +492,4 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
         == "durable"
     )
     assert forget_canonical_image(session=restarted_session, image_asset_id=8) is True
-    assert (
-        canonical_image_projection(session=restarted_session, image_asset_id=8) is None
-    )
+    assert canonical_image_projection(session=restarted_session, image_asset_id=8) is None

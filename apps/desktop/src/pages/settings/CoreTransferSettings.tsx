@@ -5,57 +5,15 @@ import type {
   CoreImportOperation,
   CoreImportProbe,
   CoreFsRecoveryBrowseResponse,
-  CoreMigrationStatus,
   CoreTransferDestinationProbe,
   CoreTransferEstimate,
   CoreTransferOperation,
-  VaultTransferFormat,
 } from "@anima/api-client";
 import { glass } from "@anima/standard-templates";
 import { api } from "../../lib/api";
 
 const INPUT_CLASS =
   "w-full bg-foreground/[0.04] border border-hairline px-3 py-2 text-sm text-foreground placeholder:text-foreground/25 outline-none focus:border-hairline-strong transition-colors font-mono";
-
-const LEGACY_CAPSULE_MAGIC = new Uint8Array([0x41, 0x4e, 0x4d, 0x41]);
-const BASE64_CHUNK_BYTES = 24_576;
-
-function isLegacyCapsule(bytes: Uint8Array): boolean {
-  return (
-    bytes.length >= LEGACY_CAPSULE_MAGIC.length &&
-    LEGACY_CAPSULE_MAGIC.every((value, index) => bytes[index] === value)
-  );
-}
-
-function encodeBase64(bytes: Uint8Array): string {
-  let encoded = "";
-  for (let offset = 0; offset < bytes.length; offset += BASE64_CHUNK_BYTES) {
-    const chunk = bytes.subarray(offset, offset + BASE64_CHUNK_BYTES);
-    encoded += window.btoa(String.fromCharCode(...chunk));
-  }
-  return encoded;
-}
-
-async function readLegacyVaultFile(
-  file: File,
-): Promise<{ format: VaultTransferFormat; payload: string }> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  if (isLegacyCapsule(bytes)) {
-    return { format: "anima_capsule", payload: encodeBase64(bytes) };
-  }
-
-  let payload: string;
-  try {
-    payload = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    const envelope: unknown = JSON.parse(payload);
-    if (envelope === null || typeof envelope !== "object" || Array.isArray(envelope)) {
-      throw new Error("Legacy JSON vault envelope must be an object.");
-    }
-  } catch {
-    throw new Error("Choose a legacy JSON vault or ANMA capsule file.");
-  }
-  return { format: "vault_json", payload };
-}
 
 const PAYLOADS: Array<{
   kind: CoreArchivePayloadKind;
@@ -108,12 +66,6 @@ export default function CoreTransferSettings() {
   const [importOperation, setImportOperation] = useState<CoreImportOperation | null>(null);
   const [importBusy, setImportBusy] = useState(false);
   const [importStatus, setImportStatus] = useState("");
-  const [legacyVaultName, setLegacyVaultName] = useState("");
-  const [legacyVaultPayload, setLegacyVaultPayload] = useState("");
-  const [legacyVaultFormat, setLegacyVaultFormat] = useState<VaultTransferFormat | null>(null);
-  const [legacyPassphrase, setLegacyPassphrase] = useState("");
-  const [legacyBusy, setLegacyBusy] = useState(false);
-  const [legacyStatus, setLegacyStatus] = useState("");
   const [activeCoreStatus, setActiveCoreStatus] = useState<CoreActiveStatus | null>(null);
   const [rollbackConfirmed, setRollbackConfirmed] = useState(false);
   const [rollbackBusy, setRollbackBusy] = useState(false);
@@ -139,9 +91,6 @@ export default function CoreTransferSettings() {
   const [recoveryExportOperation, setRecoveryExportOperation] = useState<CoreTransferOperation | null>(null);
   const [recoveryExportBusy, setRecoveryExportBusy] = useState(false);
   const [recoveryExportStatus, setRecoveryExportStatus] = useState("");
-  const [migration, setMigration] = useState<CoreMigrationStatus | null>(null);
-  const [migrationBusy, setMigrationBusy] = useState(false);
-  const [migrationMessage, setMigrationMessage] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -152,21 +101,6 @@ export default function CoreTransferSettings() {
       })
       .catch(() => {
         // Startup may still be initializing the authenticated registry.
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    void api.corefs.transfer
-      .migrationStatus()
-      .then((value) => {
-        if (active) setMigration(value);
-      })
-      .catch(() => {
-        // A pre-provisioned Core can legitimately have no migration journal.
       });
     return () => {
       active = false;
@@ -213,65 +147,6 @@ export default function CoreTransferSettings() {
       setStatus(error instanceof Error ? error.message : "Destination probe failed.");
     } finally {
       setBusy(false);
-    }
-  };
-
-  const handleRunMigration = async () => {
-    if (!window.confirm("Prepare and validate the encrypted CoreFS migration? Portable writes will be frozen until you accept or reject it.")) {
-      return;
-    }
-    setMigrationBusy(true);
-    setMigrationMessage("");
-    try {
-      const value = await api.corefs.transfer.runMigration(migration?.state === "failed");
-      setMigration(value);
-      setMigrationMessage(
-        value.state === "awaiting_acceptance"
-          ? "Migration is verified and remains reversible. Review the migrated count, then explicitly accept or reject it."
-          : `Migration state: ${value.state}.`,
-      );
-    } catch (error) {
-      setMigrationMessage(error instanceof Error ? error.message : "Migration preparation failed.");
-    } finally {
-      setMigrationBusy(false);
-    }
-  };
-
-  const handleAcceptMigration = async () => {
-    if (!window.confirm("Accept this verified migration? A restart is required before the first irreversible CoreFS write.")) {
-      return;
-    }
-    setMigrationBusy(true);
-    setMigrationMessage("");
-    try {
-      const value = await api.corefs.transfer.acceptMigration();
-      setMigration(value);
-      setMigrationMessage(
-        value.restartRequired
-          ? "Migration accepted. Restart animaOS now; startup will create and verify the encrypted Runtime recovery bundle before first-write cutover is allowed."
-          : "Migration accepted and the restart recovery gate is ready.",
-      );
-    } catch (error) {
-      setMigrationMessage(error instanceof Error ? error.message : "Migration acceptance failed.");
-    } finally {
-      setMigrationBusy(false);
-    }
-  };
-
-  const handleRejectMigration = async () => {
-    if (!window.confirm("Reject this migration and restore legacy authority? The verified CoreFS shadow will remain non-authoritative.")) {
-      return;
-    }
-    setMigrationBusy(true);
-    setMigrationMessage("");
-    try {
-      const value = await api.corefs.transfer.rejectMigration();
-      setMigration(value);
-      setMigrationMessage("Migration rejected. Legacy authority and Soul routing were restored.");
-    } catch (error) {
-      setMigrationMessage(error instanceof Error ? error.message : "Migration rejection failed.");
-    } finally {
-      setMigrationBusy(false);
     }
   };
 
@@ -406,57 +281,6 @@ export default function CoreTransferSettings() {
       setImportStatus("Restore cancellation requested; staged residue will be removed safely.");
     } catch (error) {
       setImportStatus(error instanceof Error ? error.message : "Restore cancellation failed.");
-    }
-  };
-
-  const handleLegacyVaultFile = async (file: File | null) => {
-    setLegacyVaultName("");
-    setLegacyVaultPayload("");
-    setLegacyVaultFormat(null);
-    setLegacyStatus("");
-    if (!file) return;
-    try {
-      const legacy = await readLegacyVaultFile(file);
-      setLegacyVaultName(file.name);
-      setLegacyVaultPayload(legacy.payload);
-      setLegacyVaultFormat(legacy.format);
-      setLegacyStatus(
-        legacy.format === "anima_capsule"
-          ? "Legacy ANMA capsule recognized."
-          : "Legacy encrypted JSON vault recognized.",
-      );
-    } catch (error) {
-      setLegacyStatus(error instanceof Error ? error.message : "Legacy vault file is invalid.");
-    }
-  };
-
-  const handleLegacyImport = async () => {
-    if (!legacyVaultPayload || !legacyVaultFormat) {
-      setLegacyStatus("Choose a legacy JSON vault or ANMA capsule first.");
-      return;
-    }
-    if (legacyPassphrase.length < 8) {
-      setLegacyStatus("Legacy vault passphrase must be at least 8 characters.");
-      return;
-    }
-    setLegacyBusy(true);
-    setLegacyStatus("");
-    try {
-      const result = await api.vault.import(legacyPassphrase, legacyVaultPayload, {
-        format: legacyVaultFormat,
-      });
-      setLegacyStatus(
-        `Restored ${result.restoredUsers} legacy account source. Sign in again so animaOS can migrate it into ANIMA CORE before cutover.`,
-      );
-      setLegacyVaultPayload("");
-      setLegacyPassphrase("");
-    } catch (error) {
-      setLegacyStatus(
-        error instanceof Error ? error.message : "Legacy vault import failed closed.",
-      );
-    } finally {
-      setLegacyBusy(false);
-      setLegacyPassphrase("");
     }
   };
 
@@ -674,65 +498,6 @@ export default function CoreTransferSettings() {
 
   return (
     <div className="space-y-5">
-      <section className={`${glass} p-6 space-y-5`}>
-        <div>
-          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
-            CoreFS migration cutover
-          </h2>
-          <p className="mt-2 font-mono text-caption text-foreground/35 leading-relaxed">
-            Prepare a reversible encrypted shadow, verify it, and explicitly accept or reject it. Acceptance never
-            performs the irreversible write: animaOS must restart first to prepare the stopped-Runtime recovery bundle.
-          </p>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-3">
-          <Metric label="Migration state" value={migration?.state ?? "Unavailable"} />
-          <Metric label="Migrated records" value={migration?.migratedCount.toString() ?? "—"} />
-          <Metric label="Validation generation" value={migration?.generation?.toString() ?? "—"} />
-        </div>
-
-        {migration?.restartRequired && (
-          <p className="font-mono text-caption text-foreground/55 leading-relaxed">
-            Restart required. Before first write this prepares the encrypted legacy-Runtime recovery bundle; after the
-            first forward-only write it switches to fresh Runtime and retires the plaintext legacy source.
-          </p>
-        )}
-        {migration?.firstWriteReady && (
-          <p className="font-mono text-caption text-foreground/55 leading-relaxed">
-            Recovery bundle verified. The next authored CoreFS change is the single forward-only cutover event; restart
-            animaOS immediately afterward to complete the fresh Runtime transition.
-          </p>
-        )}
-        {migration?.forwardOnly && !migration.restartRequired && (
-          <p className="font-mono text-caption text-foreground/55 leading-relaxed">
-            Forward-only cutover and fresh Runtime transition are complete.
-          </p>
-        )}
-
-        <div className="flex flex-wrap gap-2">
-          {(migration === null || ["not_started", "failed"].includes(migration.state)) &&
-            !migration?.forwardOnly && (
-            <ActionButton onClick={handleRunMigration} disabled={migrationBusy}>
-              {migrationBusy ? "Preparing…" : migration?.state === "failed" ? "Retry migration" : "Prepare migration"}
-            </ActionButton>
-          )}
-          {migration?.state === "awaiting_acceptance" && (
-            <>
-              <ActionButton onClick={handleAcceptMigration} disabled={migrationBusy}>
-                {migrationBusy ? "Applying…" : "Accept verified migration"}
-              </ActionButton>
-              <ActionButton onClick={handleRejectMigration} disabled={migrationBusy}>
-                Reject and restore legacy
-              </ActionButton>
-            </>
-          )}
-        </div>
-
-        {migrationMessage && (
-          <p className="font-mono text-caption text-foreground/45 leading-relaxed">{migrationMessage}</p>
-        )}
-      </section>
-
       <section className={`${glass} p-6 space-y-5`}>
         <div>
           <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
@@ -1155,64 +920,6 @@ export default function CoreTransferSettings() {
               )}
             </div>
           )}
-      </section>
-
-      <section className={`${glass} p-6 space-y-5`}>
-        <div>
-          <h2 className="font-mono text-label tracking-caps-4 uppercase text-foreground/50">
-            Import a legacy vault
-          </h2>
-          <p className="mt-2 font-mono text-caption text-foreground/35 leading-relaxed">
-            Backward compatibility for encrypted V1 JSON vaults and ANMA capsules. This restores
-            the legacy source only before CoreFS migration begins; it cannot overwrite a frozen or
-            forward-only ANIMA CORE. Current exports always use the V2 transfer flow above.
-          </p>
-        </div>
-
-        <label className="inline-flex cursor-pointer border border-hairline px-3 py-2 font-mono text-label uppercase tracking-caps-2 text-foreground/50 hover:border-hairline-strong">
-          Choose legacy vault
-          <input
-            type="file"
-            accept=".anima,.json,.vault,application/json,application/octet-stream"
-            className="hidden"
-            onChange={(event) => {
-              void handleLegacyVaultFile(event.target.files?.[0] ?? null);
-              event.currentTarget.value = "";
-            }}
-          />
-        </label>
-
-        {legacyVaultFormat && (
-          <div className="grid gap-3 md:grid-cols-2">
-            <Metric label="Selected file" value={legacyVaultName} />
-            <Metric
-              label="Detected legacy format"
-              value={legacyVaultFormat === "anima_capsule" ? "ANMA capsule" : "Encrypted JSON"}
-            />
-          </div>
-        )}
-
-        <input
-          type="password"
-          value={legacyPassphrase}
-          onChange={(event) => setLegacyPassphrase(event.target.value)}
-          className={INPUT_CLASS}
-          placeholder="Legacy vault passphrase"
-          autoComplete="new-password"
-        />
-
-        <ActionButton
-          onClick={handleLegacyImport}
-          disabled={legacyBusy || !legacyVaultPayload}
-        >
-          {legacyBusy ? "Importing…" : "Import legacy source"}
-        </ActionButton>
-
-        {legacyStatus && (
-          <p className="font-mono text-caption text-foreground/45 leading-relaxed">
-            {legacyStatus}
-          </p>
-        )}
       </section>
 
       {activeCoreStatus?.retainedCoreId && (

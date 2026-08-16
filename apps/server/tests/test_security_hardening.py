@@ -217,23 +217,21 @@ def test_db_tables_allowed_in_sqlite_mode() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# /api/vault/import blocked in shared-DB mode
+# Pre-release vault import API is absent
 # --------------------------------------------------------------------------- #
 
 
-def test_vault_import_blocked_in_shared_mode() -> None:
+def test_pre_release_vault_import_api_is_absent() -> None:
     with managed_test_client("anima-sec-test-") as client:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
-            resp = client.post(
-                "/api/vault/import",
-                headers=headers,
-                json={"passphrase": "testpassphrase", "vault": '{"version":2}'},
-            )
-            assert resp.status_code == 403
-            assert "shared-database" in resp.json()["error"].lower()
+        resp = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={"passphrase": "testpassphrase", "vault": '{"version":2}'},
+        )
+        assert resp.status_code == 404
 
 
 # --------------------------------------------------------------------------- #

@@ -26,6 +26,7 @@ pub(super) fn plan_non_patch(
     validator: &dyn ContentFormatValidator,
 ) -> Result<(), MutationError> {
     match operation {
+        LogicalMutation::ActivateAuthority => {}
         LogicalMutation::Mkdir {
             path,
             reserved_role,

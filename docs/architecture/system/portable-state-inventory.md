@@ -136,15 +136,12 @@ browser-local|keys|anima_nav_collapsed,anima-sidebar-collapsed,anima-agent-rail-
 browser-local|keys|anima_user,anima_last_user|remove-private-profile-cache
 browser-local|keys|anima_unlock_token|remove-legacy-session
 browser-local|keys|anima_daemon_control_token,ANIMA_DAEMON_CONTROL_TOKEN|os-credential
-browser-local|keys|legacy-journal-draft:*|corefs-object
-browser-local|keys|anima:diary:draft-migration-state:v1:*|device-migration-state
 browser-session|keys|anima_unlock_token,anima_dashboard_greeting,anima_dashboard_greeting_oneshot,anima_pending_recovery,anima_today_context|session-only
 app-data|files|legacy:.anima/runtime-config.json|remove-after-device-config-migration
 app-data|files|runtime-config.json|device-runtime-config
 app-data|files|legacy:users/<id>/soul.md|remove-after-soul-migration
 app-data|files|runtime-daemon.control-token|os-credential
 app-data|files|runtime-daemon.state.json,runtime-port,runtime-lock,runtime-logs|device-runtime-state
-app-data|files|legacy-draft-cleanup-v1.lock,legacy-draft-cleanup-v1.epoch.json|device-migration-state
 app-data|files|core-instance-registry.json,.core-instance-registry.lock,.core-instance-registry.guard|device-instance-registry
 app-data|files|integration-links.json|device-integration-registry
 app-data|files|regeneration.json|device-runtime-state
@@ -177,16 +174,14 @@ anima-mod-store|google:tokens:*|accessToken,refreshToken,expiresAt,email|os-cred
 | localStorage | `anima_user`, `anima_last_user` | Remove private profile/login-hint caches; unlocked profile is session memory only |
 | localStorage | `anima_unlock_token` | Remove legacy copy; token is session/process only |
 | localStorage | `anima_daemon_control_token`, `ANIMA_DAEMON_CONTROL_TOKEN` | Migrate to OS credential and scrub |
-| localStorage | legacy Journal draft keys | Migrate to encrypted CoreFS draft objects and scrub under the PCF-004 cleanup authority |
-| localStorage | `anima:diary:draft-migration-state:v1:*` | Non-sensitive device-local migration sidecar; retain until authorized source cleanup |
 | sessionStorage | `anima_unlock_token` | Session-only and cleared on lock/logout |
 | sessionStorage | `anima_dashboard_greeting`, `anima_dashboard_greeting_oneshot` | Session-only, user-bound decrypted cache |
 | sessionStorage | `anima_pending_recovery` | Session-only setup handoff; clear after acknowledgement/lock |
 | sessionStorage | `anima_today_context` | Session-only same-day interaction context |
 
 Generic browser persistence helpers must not introduce a key outside this
-table. Dynamic Journal draft keys are the only private legacy localStorage
-family and are migration inputs, never a permitted new writer destination.
+table. The first supported release has no plaintext Journal draft key family;
+draft content is written directly to encrypted CoreFS objects.
 
 ## Persisted server settings
 
@@ -210,7 +205,6 @@ environment and launch configuration remain machine-local inputs.
 | server | legacy `users/<id>/soul.md` | Soul `user_directive`/persona section, then verified deletion |
 | local daemon/Tauri | `runtime-daemon.control-token` and browser copies | Shared OS credential entry, then verified deletion |
 | local daemon | `runtime-daemon.state.json`, runtime port/lock/log files | Device-local operational state |
-| Tauri | `legacy-draft-cleanup-v1.lock`, `legacy-draft-cleanup-v1.epoch.json` | Device-local cleanup authority state; contains no private draft body/hash |
 | server | `core-instance-registry.json` plus lock/guard files | Device-local Core/instance binding and runtime-engine migration state |
 | server | instance `config/integration-links.json` | Device-local Telegram/Discord link registry; relink after transfer |
 | server | instance `work/regeneration.json` | Disposable machine-local regeneration work state |

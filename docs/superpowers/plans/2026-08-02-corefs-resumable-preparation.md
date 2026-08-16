@@ -1,5 +1,14 @@
 # CoreFS Resumable Preparation Implementation Plan
 
+> **First-release supersession (2026-08-16):** The resumable native preparation
+> primitive remains part of CoreFS, but all pre-release browser-draft handoff,
+> plaintext cleanup, legacy SQL/runtime migration, and release-package census
+> work below is historical. No supported ANIMA desktop release or user data
+> predates portable Core release 1, so the supported product starts greenfield
+> and establishes CoreFS authority before publishing the first unlock session.
+> Removed files and commands in Tasks 8 and 10 must not be restored as release
+> requirements. Compatibility begins with the first supported release.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace PCF-004's aggregate in-memory validation-batch transport with an authenticated, encrypted, crash-resumable preparation protocol that handles writing corpora larger than 1 GiB while preserving one exact-CAS inactive-catalog publication, then remove imported plaintext browser drafts only after native packaged-desktop writer exclusion is proven.
