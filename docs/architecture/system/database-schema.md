@@ -10,14 +10,15 @@ category: architecture
 
 ## Overview
 
-- **24 tables** across 6 model files
-- **Per-user SQLite databases**: each user gets their own file at `{data_dir}/users/{id}/anima.db`
-- **SQLCipher encryption**: full-database encryption when passphrase is configured
-- **Field-level encryption**: sensitive text fields encrypted with per-domain AES-256-GCM DEKs
+- **Portable Soul**: one active single-owner SQLite/SQLCipher database at `{core}/soul/soul.db`
+- **Portable authored content**: native authenticated CoreFS catalogs/objects below `{core}/fs/` (not SQLAlchemy tables)
+- **Machine-local Runtime**: PostgreSQL outside `.anima/`, bound to the exact Core and local instance
+- **Legacy rollback schema**: pre-cutover app tables remain physically in Soul but are read-only/non-authoritative until PCF-009's separate cleanup gate
+- **Encryption**: SQLCipher protects the database; field/domain DEKs, CoreFS FRKs/Object DEKs, and archive keys remain purpose-separated
 
 ## Infrastructure: Session & Engine
 
-`db/session.py` is the central entry point for all database access. It manages engine creation, SQLCipher setup, session factory caching, and automatic Alembic migrations.
+`db/session.py` manages Soul engine creation, SQLCipher setup, session caching, and Core Alembic migrations. `db/runtime_session.py` and the instance registry manage machine-local Runtime. Canonical CoreFS access goes through unlocked native-session services rather than a SQLAlchemy engine.
 
 ### Request Flow
 
@@ -25,8 +26,9 @@ category: architecture
 get_db(request)
   └─► resolve x-anima-unlock token → UnlockSession → user_id
         └─► get_user_session_factory(user_id)
-              └─► ensure_user_database(user_id)
-                    ├─► get_user_database_url()     → sqlite:///data/users/{id}/anima.db
+              └─► active_soul_database_path(user_id)
+                    ├─► manifest soul_database record → sqlite:///{core}/soul/soul.db
+                    ├─► pre-cutover fallback only     → sqlite:///{data}/users/{id}/anima.db
                     ├─► get_engine()                ← thread-safe double-checked lock cache
                     │     └─► _make_engine()
                     │           ├─ ANIMA_CORE_PASSPHRASE set  → Argon2id+HKDF → SQLCipher key
@@ -49,13 +51,15 @@ PRAGMA busy_timeout = 5000
 
 ### Engine & Session Factory Cache
 
-Both are keyed by `database_url` string with `RLock` double-checked locking. A separate `_migrated_databases: set` ensures Alembic only runs once per engine per process lifetime.
+Soul engines/factories are keyed by canonical database URL with `RLock` double-checked locking. A separate migration cache ensures Core Alembic runs once per engine per process lifetime. Relocation and rollback dispose every user engine before checkpoint/copy/manifest routing changes.
 
 `dispose_user_database(user_id)` / `dispose_cached_engines()` evict entries and call `engine.dispose()` — used on logout and shutdown.
 
 ---
 
-## ER Diagram
+## Retained Soul ER Diagram
+
+The following diagram documents the physical Soul schema retained by the current first-release migration. It is not an authority map. Rows for threads/messages/tasks/preferences/links and other migrated app families remain only for reversible rollback and cannot be written after forward-only cutover. Canonical counterparts live in CoreFS; execution/projection counterparts use the separate Runtime schema.
 
 ```mermaid
 erDiagram
@@ -286,7 +290,7 @@ erDiagram
 | `user_keys` | `UserKey` | `models/user_key.py` | Per-domain wrapped DEKs (Argon2id + AES-GCM key wrapping); `domain` column added in `20260319_0006` |
 | `agent_profile` | `AgentProfile` | `models/consciousness.py` | Structured identity: agent_name, creator_name, relationship (1:1 per user) |
 
-### Agent Runtime
+### Retained Legacy Agent Runtime
 
 | Table | Model | File | Purpose |
 |---|---|---|---|
@@ -323,7 +327,7 @@ erDiagram
 | `kg_entities` | `KgEntity` | `models/kg.py` | Named entities (person, place, concept, etc.). Unique on `(user_id, name_normalized)`. Stores embedding for semantic entity search |
 | `kg_relations` | `KgRelation` | `models/kg.py` | Typed directed edges between entities. `source_memory_id` links back to the `memory_items` row that created this relation |
 
-### Housekeeping
+### Retained Legacy App/Housekeeping
 
 | Table | Model | File | Purpose |
 |---|---|---|---|
@@ -342,9 +346,10 @@ erDiagram
 ### Heat scoring
 `memory_items.heat` (float, indexed on `(user_id, heat)`) is a decay-based relevance score. High-heat memories surface first in retrieval. A background job decays heat over time.
 
-### Dual embedding storage
-- `memory_items.embedding_json` — JSON array, persisted, readable by any query
-- `memory_vectors.embedding` — `LargeBinary` blob, loaded into the in-memory vector index for fast cosine similarity search at inference time
+### Embedding authority
+- `memory_items.embedding_json` — portable Soul cache associated with the durable memory item
+- Runtime PostgreSQL `embeddings.vector` — active rebuildable pgvector projection
+- `memory_vectors.embedding` — retained legacy Soul representation, not the active search backend
 
 ### Session notes as working memory
 `session_notes` is a per-thread scratch-pad. Notes are created mid-conversation and can be `promoted_to_item_id` — a FK set when the note is elevated to a full `memory_items` row.
@@ -359,9 +364,9 @@ erDiagram
 
 ## Schema Migrations
 
-Schema changes are managed by **Alembic** and run automatically on startup. When `ensure_user_database()` is called, it invokes `alembic upgrade head` programmatically against the per-user SQLCipher engine. No manual migration step is needed.
+Schema changes are managed by **Alembic** and run automatically on startup. Core/Soul migrations run programmatically against the active SQLCipher engine; Runtime migrations run against the exact machine-local PostgreSQL binding. No manual migration step is needed.
 
-Migration files live in `apps/server/alembic/versions/`. Migrations that modify existing tables must use `batch_alter_table` (SQLite does not support `ALTER` for constraints or foreign keys).
+Core migration files live in `apps/server/alembic_core/versions/`; Runtime migrations live in `apps/server/alembic_runtime/versions/`. Core revisions that modify existing tables use `batch_alter_table` for SQLite compatibility. Native CoreFS catalog/object formats are versioned in Rust and are not Alembic-managed.
 
 ### Migration History
 

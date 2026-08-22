@@ -4,13 +4,20 @@
 
 **Goal:** Make encrypted Core objects the canonical home for portable user-owned content, restrict SQLCipher to ANIMA's internal Soul, and keep PostgreSQL outside `.anima/` as a disposable runtime/indexing service.
 
-**Architecture:** animaOS remains the product; ANIMA CORE is its portable encrypted Soul-plus-CoreFS subsystem, while Runtime stays outside it. Rust owns reusable bounded file operations plus CoreFS encryption/catalog/atomic mutation; Python owns product domains, APIs, migrations, and runtime indexing through the existing `anima-core` native extension. Animus reuses the same file-operation contracts with an explicit HostFS backend. Build the Filesystem Root Key/per-object encryption and immutable catalog foundation first, then add progressive runtime indexing behind compatibility gates. Migrate diary/notes, conversations, assets/documents, and account/tasks/preferences as vertical slices. App-owned Soul tables remain read-only rollback material through the first cutover release; a separately approved later release performs physical cleanup after a stable observation window.
+**Architecture:** animaOS remains the product; ANIMA CORE is its portable encrypted Soul-plus-CoreFS subsystem, while Runtime stays outside it. Rust owns reusable bounded file operations plus CoreFS encryption/catalog/atomic mutation; Python owns product domains, APIs, greenfield bootstrap, and runtime indexing through the existing `anima-core` native extension. Animus reuses the same file-operation contracts with an explicit HostFS backend. The first supported release creates canonical Soul/CoreFS/Runtime state directly; unreleased database, browser, transcript, and archive layouts are not compatibility inputs.
 
 **Tech Stack:** Rust 2021 (`anima-file-tools`, `anima-corefs`, PyO3 via `anima-core`), Python 3.12, FastAPI, SQLAlchemy 2.0, Alembic, SQLCipher, embedded PostgreSQL/pgvector, Argon2id, AES-256-GCM, HKDF-SHA256, React/Vite/Tauri, TypeScript, pytest, Cargo, Bun/Nx.
 
 ---
 
 ## Planning Inputs
+
+> **Approved scope amendment (2026-08-16):** No supported installation predates
+> Portable Core. Remove all pre-release migration/fallback paths, plaintext
+> draft cleanup and its paid package gate, legacy Runtime/Soul recovery, and
+> V1/JSON archive import. Keep current-format crash recovery, transfer,
+> replacement rollback, retention, and cryptographic validation. Any later
+> compatibility commitment starts from the first released Portable Core format.
 
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Storage design: `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md`
@@ -30,8 +37,8 @@
 - Create an isolated worktree from the approved dependency head using `superpowers:using-git-worktrees`.
 - Suggested branch: `codex/portable-core-filesystem`.
 - Open and claim the matching `PCF-*` ticket before each task; update the parent tracker with every status change.
-- Keep compatibility reads until the vertical slice's parity, transfer, and rollback tests pass.
-- Tasks 2-7 build converters and validate an inactive shadow catalog only. App routes and agent mutators remain on legacy authority (or return `corefs_migration_write_frozen`) until PCF-008 globally accepts the migration and publishes the authenticated first-write marker. No slice may publish an unmarked authoritative `fs/HEAD` mutation.
+- Do not add compatibility reads for unreleased layouts. New accounts and test fixtures write canonical CoreFS authority directly.
+- Tasks 2-7 build the canonical formats and services. PCF-008 removes the now-obsolete shadow-converter/cutover scaffolding and validates greenfield authority.
 - Never stage unrelated files from the existing dirty worktree.
 
 ## Locked Decisions
@@ -544,7 +551,10 @@ Preserve existing response schemas and authorization checks so the desktop API c
 
 - [ ] **Step 5: Stage Journal drafts for encrypted CoreFS cutover**
 
-Define versioned encrypted Core draft objects with revision preconditions and include existing local drafts in the inactive validation catalog. Before PCF-008, keep legacy localStorage drafts available because interactive CoreFS mutation remains frozen. At cutover, remove a legacy localStorage draft only after its encrypted server migration/save is verified.
+Define versioned encrypted Core draft objects with revision preconditions. The
+first supported desktop release creates and updates drafts only through the
+encrypted Core API; it does not discover, import, retain, or delete an
+unreleased plaintext localStorage draft format.
 
 - [ ] **Step 6: Add note access through CoreFS**
 
@@ -842,76 +852,197 @@ git -c commit.gpgsign=false commit -m "core: separate portable account and app p
 **Ticket:** `PCF-008`  
 **Depends on:** `PCF-001` through `PCF-007`
 
-**Inherited signed-package gate:** Before the irreversible cutover event or any
-cleanup-capable first-release publication, separately authorize and run the
-triggerless protected desktop workflow against the final signed Windows,
-macOS, DEB, and RPM artifacts. Every replacement-install, launch-target,
-process-census, post-WebView capability, and source-first cleanup gate must
-pass, and the exact artifact digests/results must be recorded. Failure or
-missing evidence blocks PCF-008; it cannot be treated as a skipped CI check.
+**Greenfield release gate:** No supported installation predates Portable Core.
+Delete the legacy writer-exclusion/package workflow and every pre-release
+migration/import surface. Validate clean bootstrap and current-format transfer
+locally; ordinary release signing is outside this ticket and no paid
+cross-version package matrix is required.
 
 **Files:**
-- Create: `apps/server/src/anima_server/services/corefs/transfer.py`
-- Create: `apps/server/src/anima_server/schemas/corefs_transfer.py`
-- Create: `apps/server/src/anima_server/api/routes/corefs_transfer.py`
-- Modify: `apps/server/src/anima_server/services/corefs/migration.py`
-- Modify: `apps/server/src/anima_server/db/session.py`
-- Modify: `apps/server/src/anima_server/db/user_store.py`
-- Modify: `apps/server/src/anima_server/services/storage.py`
-- Modify: `apps/server/src/anima_server/services/vault.py`
-- Modify: `apps/server/src/anima_server/services/anima_core_bindings.py`
-- Modify: `apps/server/src/anima_server/api/routes/vault.py`
-- Modify: `apps/server/src/anima_server/schemas/vault.py`
-- Modify: `apps/server/src/anima_server/main.py`
-- Create: `packages/anima-core/src/core_archive.rs`
-- Modify: `packages/anima-core/src/capsule.rs` (legacy V1 import only)
-- Modify: `packages/anima-core/src/integrity.rs`
-- Modify: `packages/anima-core/src/ffi.rs`
-- Modify: `packages/anima-core/src/lib.rs`
-- Modify: `packages/api-client/src/client.ts`
-- Modify: `packages/api-client/src/types.ts`
-- Create: `apps/desktop/src/pages/settings/CoreTransferSettings.tsx`
-- Modify: `apps/desktop/src/pages/settings/VaultSettings.tsx` (redirect/deprecate legacy UI)
-- Modify: architecture/thesis/PRD docs listed in the design, including `docs/architecture/agent/document-processing.md` and `docs/architecture/agent/source-ingestion.md`
-- Modify: `.github/workflows/desktop-draft-cleanup-authority.yml`
-- Modify: `scripts/verify-desktop-release-contract.ts`
-- Test: `apps/desktop/tests/desktop-release-contract.test.ts`
-- Test: `apps/desktop/tests/journal-draft-cleanup-authority.test.ts`
-- Test: `apps/server/tests/test_corefs_cutover.py`
-- Test: `apps/server/tests/test_corefs_transfer.py`
-- Test: `apps/server/tests/test_corefs_authority.py`
-- Test: `apps/server/tests/test_corefs_soul_relocation.py`
-- Test: `apps/server/tests/test_vault.py`
-- Test: `apps/server/tests/test_health_integration.py`
-- Test: `apps/desktop/tests/corefs-transfer.test.ts`
+- Create: `apps/server/src/anima_server/services/corefs/{authority,greenfield,soul_store}.py`
+- Modify: `apps/server/src/anima_server/services/corefs/{archive_transfer,instance_registry,keyslots,logical,transfer_jobs}.py`
+- Modify: `apps/server/src/anima_server/{db/session.py,services/sessions.py,main.py}`
+- Modify: canonical account/content/asset/conversation/writing/task/preference authority adapters
+- Delete: pre-release cutover/orchestration/Soul-relocation/legacy-Runtime services and tests
+- Delete: V1 vault routes/schemas/UI/client contracts and capsule/JSON import behavior
+- Delete: plaintext draft migration, native package census/cleanup authority, installer hooks, release scripts, and paid workflow
+- Modify: `packages/anima-corefs/src/logical/mutation*` and `packages/anima-core/src/ffi.rs`
+- Modify: `packages/api-client` and `apps/desktop` to expose only current-format transfer and encrypted drafts
+- Modify: architecture, PRD, spec, plan, parent, and PCF-008 ticket artifacts
+- Test: greenfield authority/bootstrap, native logical activation, V2 archive/transfer, domain authority, desktop/API-client, and unsupported-input rejection
 
-- [ ] **Step 1: Write failing cutover-state tests**
+- [x] **Step 1: Write failing greenfield-authority tests**
 
-Cover `migrating-write-frozen`, `corefs-validation-readonly`, `corefs-approved-pending-first-write`, authenticated first-write cutover marker, crash before manifest finalization, and forward-only rejection of legacy rollback.
+Cover first-release manifest identity, prepared-catalog activation before session
+publication, authenticated native authority, crash reconciliation, idempotent
+replay, content-preserving activation, and fail-closed rejection of pre-release
+manifests.
 
-- [ ] **Step 2: Write failing transfer tests**
+- [x] **Step 2: Write failing transfer tests**
+
+Progress (2026-08-13): live Soul-bearing capture now checkpoints WAL, pins one
+SQLite/SQLCipher read snapshot, writes an independently verified encrypted
+online-backup database, and uses its private inventory hash as the
+preflight-to-export fence. Full/CoreFS capture freezes `fs/HEAD`, rechecks the
+native generation/catalog/source inventory after Soul capture, and binds the
+native streaming session to that exact authenticated catalog while retaining
+the object lease. WAL inclusion, temporary cleanup, concurrent catalog change,
+and real SQLCipher-at-rest regressions pass. Multipart-set and backward-V1
+cases were completed by the later 2026-08-14 milestones below.
+
+Multipart progress (2026-08-14): native volumes now share one KDF salt and
+nonce prefix while reserving disjoint ordinal blocks in the one 64-bit set
+nonce space. The encrypted `core.anima` controller commits ordered part names,
+archive IDs, lengths, hashes, counters, payload kind, Core/owner identity, and
+coherent generations. Set import rejects missing, extra, reordered,
+foreign-set, tampered, truncated, and appended inputs before returning staging,
+then validates aggregate path uniqueness and full payload completeness. The
+the current-format set is complete.
+
+The unreleased V1/JSON/capsule compatibility implementation that originally
+followed this milestone is superseded and deleted by the greenfield amendment.
+Unsupported earlier bytes are rejected before staging or mutation.
 
 Cover closed cold copy; live write-barrier snapshots; SQLCipher checkpoint; catalog/GC pinning; reachable-object selection; no Runtime inclusion; `full`, `soul`, and `fs` artifact/key allowlists, scoped credential replacement, and recovery states; fixed-header/profile bounds; exact normative AAD tuple; pre-archive record hash; global nonce ordinal; destination capacity/writable/single-file-limit preflight; <=8-MiB buffers and <=32-MiB aggregate transfer working set excluding the fixed Argon2 workspace; `.partial` cleanup; single-file and FAT32-like multipart output; failure at every part/controller/directory publication boundary; disconnect/cancel; missing/reordered/mixed/tampered volumes; same-volume import capacity/staging; final-directory and active-Core registry-pointer activation failures; V1 CoreFS-reattachment rejection; destination hash/decrypt verification; rejection of incoherent live raw copies; same-machine duplicate-Core instance handling; and binary objects larger than the legacy 16-MiB section limit.
 
-- [ ] **Step 3: Implement resumable migration orchestration and physical Soul relocation**
+- [x] **Step 3: Establish canonical greenfield Soul and bootstrap authority**
+
+The current implementation creates the single-owner Soul directly at
+`.anima/soul/soul.db`, prepares an empty/current-format CoreFS catalog, and
+publishes authenticated immutable authority before the first unlock session is
+visible. The migration/relocation implementation described below is historical
+work superseded by the greenfield amendment and is deleted from production.
+
+Completion progress (2026-08-14): the production migration API and desktop
+flow now run the durable coordinator against the unlocked Soul/Runtime pair,
+relocate the owner Soul before verified acceptance, and expose explicit
+prepare/accept/reject decisions. Acceptance fails closed without an
+authenticated active Soul relocation; rejection atomically restores legacy
+Soul routing before rolling back the validation catalog. Startup removes the
+verified legacy Soul copy only after forward-only authority. Zero-based owners,
+real SQLite relocation/routing, retry, every coordinator boundary, rollback,
+and both Soul-retirement crash seams pass. Plaintext Runtime progress no longer
+persists or exposes content-derived source/catalog digests.
 
 Preflight space/keys/schema; freeze writes; run all converters through the durable runtime migration journal; verify counts/hashes/references/API parity; build a separate fresh outside-Core runtime; expose accept/reject state. Close every SQLCipher engine and use copy-verify-flip to relocate the single-owner legacy `users/<legacy-id>/anima.db` (including a clean WAL checkpoint) to `.anima/soul/soul.db`. Atomically publish the new manifest path only after schema, page-integrity, decryptability, and deterministic retained-table hashes pass. Preserve the old encrypted file for rollback until the authenticated first CoreFS mutation; after the forward-only marker, remove the legacy `users/` database copy and prove no service can recreate it.
 
-- [ ] **Step 4: Implement the single irreversible cutover event**
+- [x] **Step 4: Activate first-release authority without a content mutation**
 
-The first accepted mutation writes the authenticated catalog marker and publishes `fs/HEAD`. Startup finalizes manifest forward-only state if it crashes immediately afterward.
+Activate the already verified catalog through one native logical mutation
+before session publication. The operation changes only authenticated catalog
+authority, carries no content mutation, is idempotent, and reconciles the crash
+seam between native publication and manifest repair.
 
-- [ ] **Step 5: Secure and retire the legacy PostgreSQL source after the marker**
+- [x] **Step 5: Remove the unreleased Runtime/Soul migration bridge**
+
+The first supported release starts with machine-local Runtime and canonical
+Soul paths, so production contains no legacy PostgreSQL recovery bundle,
+source-retirement state machine, or old Soul relocation path. The previous
+implementation notes below are retained only as historical execution evidence.
+
+Progress (2026-08-13): a machine-local recovery primitive now inventories the
+stopped relocated legacy PostgreSQL tree twice, encrypts paths and contents in
+bounded chunks under an OS-credential-held random key, authenticates the exact
+inventory/footer with one monotonic nonce sequence, publishes create-only
+outside the portable Core, and re-verifies the final bundle. Durable partial
+publication resumes without overwrite. Plaintext retirement independently
+requires forward-only CoreFS authority, stopped PostgreSQL, the authenticated
+bundle, and a present fresh Runtime database. On the next startup after the
+marker, embedded Runtime recovery runs before PostgreSQL selection, starts the
+fresh data directory instead of the retained source, verifies its instance
+binding and schema, and only then retires plaintext; an explicitly configured
+fresh Runtime follows the same post-binding gate.
+
+Completion progress (2026-08-14): acceptance now requires a restart before the
+first irreversible mutation. Pending startup creates or refreshes the exact
+stopped-source encrypted recovery bundle; the first mutation is blocked until
+that bundle authenticates, and its response signals an immediate second
+restart while all later portable mutations remain blocked. Forward-only
+startup refreshes a stopped source through a crash-safe authenticated
+previous/current swap, starts and verifies the fresh Runtime, then retires only
+the exact plaintext source. Repeated pre-cutover restarts, credential failure,
+source drift, both refresh replacement seams, first-write gating, and the
+post-marker transition pass focused tests.
 
 Before enabling writes, create and verify an authenticated encrypted recovery bundle of `legacy-runtime-source` outside `.anima/` while retaining plaintext rollback source. After the marked first mutation makes rollback forward-only, stop the legacy server, switch to the fresh runtime, delete the plaintext legacy directory, and retain only the encrypted recovery bundle for the later cleanup release. A moved Core never includes either runtime form.
 
-- [ ] **Step 6: Add exact transfer API and desktop flow**
+- [x] **Step 6: Add exact transfer API and desktop flow**
+
+Progress (2026-08-13): export plus non-activating restore staging are wired
+through the authenticated API client and desktop UI. Restore rechecks the exact
+archive/capacity/staging inputs at consumption, authenticates the complete
+native inventory into a create-only same-volume sibling, and cleans every
+failed/cancelled partial. Active-Core registry activation and retained-Core
+rollback are now both exposed as authenticated restart-only intents, with
+explicit rollback confirmation and no machine paths in the status contract.
+CoreFS-only attachment attempts now return the stable V1
+`corefs_reattachment_not_supported` conflict through the authenticated API and
+client. Completed CoreFS-only imports now also expose bounded authenticated
+stat/list/read browsing against the exact staged generation. One-request
+compartment-limited unlocks authenticate retained wrappers under their original
+source-scope AAD, forbid every foreign-purpose wrapper, and recheck authenticated
+control-record hashes without persisting a recovery session or exposing the
+staging path. A pre-cutover snapshot gets a serialized byte-exact temporary
+validation-pointer alias from its authenticated HEAD, removed on every exit.
+The desktop cannot attach or activate this recovery Core. A separately
+confirmed replacement request now authenticates one current source wrapper,
+unwraps only the FS compartment, creates fresh FS-scoped password and recovery
+generations, independently reopens both before publication, and returns the
+new recovery phrase once without retaining any request credential or phrase.
+Keyslot inventory publishes before manifest authority and ordinary failures
+restore both original control files byte-for-byte; a process crash can only
+invalidate the disposable, non-activatable staging copy. Recovery-only
+re-export now opens a credential-bound staged native context, uses only the
+explicit archive-authenticated staged root and manifest, pins the filesystem
+generation/object lease, rechecks control authority around streaming, and
+publishes through the verified cancellable `.partial` flow without attachment
+or activation. FAT-like probes now execute that same product flow as a verified
+controller-last multipart set, report the set path/bytes/volume count through
+the existing operation status, and import `core.anima` only after preflighting
+all sibling parts. Focused server/API/product coverage passes `79`; this step is
+complete.
 
 Implement `corefs_transfer` schemas/routes for local destination probe, estimate, prepare, progress, cancel, verify, import, and completion. Wire `packages/api-client` and `CoreTransferSettings.tsx` to present **Export ANIMA CORE** and **Restore ANIMA CORE** as the primary flow, with **Soul only** and **CoreFS only** under Advanced Recovery. Show write-barrier/checkpoint state, selected artifact kind, required/available export bytes, required/available same-volume import-staging bytes, detected single-file limit, single/multipart decision, bounded streaming progress, verification, and safe destination result. Soul-only recovery clearly labels degraded `filesystem_missing`; CoreFS-only recovery exposes authenticated browse/export and returns `corefs_reattachment_not_supported` for V1 attach attempts. Do not instruct users to drag-copy a live Core or run the live Core from removable media.
 
-- [ ] **Step 7: Implement scalable vault/export/import**
+- [x] **Step 7: Implement scalable current-format archive transfer**
 
-Implement `anima_core_v2` in Rust as one streaming container with authenticated payload kind `full`, `soul`, or `fs`; keep `capsule.rs` only for backward V1 `anima_capsule` import. A full artifact includes manifest, active Soul, committed content catalogs/objects, required keyslots/recovery material, and the coherent `(soulGeneration, filesystemGeneration)` pair. Soul-only and CoreFS-only artifacts enforce compartment-specific record/key allowlists and restore respectively to `filesystem_missing` and restricted recovery/export mode. Every kind excludes Runtime, device config, and OS credentials.
+Progress (2026-08-13): single-file V2 export/import primitives are in place,
+including payload-kind record allowlists and key-material-scoped transient
+manifest snapshots. Soul artifacts cannot carry FRK wrappers or filesystem
+authority; CoreFS-only artifacts cannot carry SQLCipher root wrappers. Live
+Soul is captured through a verified encrypted online backup, and full/CoreFS
+streaming is bound to a frozen authenticated `fs/HEAD` plus exact native
+generation/catalog hash under the object lease. Native multipart-set
+authentication were completed by the later 2026-08-14 milestones below.
+
+Multipart progress (2026-08-14): Rust now writes and authenticates one
+controller-bound volume set with shared KDF material and a globally
+non-repeating nonce space, and extracts the exact complete set into a single
+create-only staging Core. Python prepares one stable source inventory, writes,
+reopens, and verifies each bounded part, publishes the encrypted controller
+last, and imports only the controller-authenticated aggregate.
+
+The deprecated JSON/capsule reader built during development is deleted. Core
+Transfer accepts authenticated `anima_core_v2` only and rejects unsupported
+earlier formats before source mutation.
+
+Startup progress (2026-08-13): the machine-local active-Core registry is now
+authenticated by an OS-credential-held key, resolved before the Core lock and
+database bootstrap, and able to recover an interrupted full-restore pointer
+swap while retaining the prior Core. Partial recovery artifacts are
+structurally ineligible for activation. Product activation and rollback
+commands are now restart-only and deliberately cannot change live resources.
+
+Activation progress (2026-08-13): verified full restores can now create a
+machine-local authenticated activation intent while the running pointer remains
+unchanged. The next pre-resource startup consumes that intent through the
+journaled rename/pointer/completion protocol and retains the old Core. Partial
+artifacts remain ineligible. Retained-Core rollback now uses a separate
+authenticated, explicitly confirmed restart intent; it exposes only identifier
+metadata, re-verifies both selected Cores before the pointer transaction, and is
+idempotent across a crash after the rollback pointer write.
+
+Implement `anima_core_v2` in Rust as one streaming container with authenticated payload kind `full`, `soul`, or `fs`. A full artifact includes manifest, active Soul, committed content catalogs/objects, required keyslots/recovery material, and the coherent `(soulGeneration, filesystemGeneration)` pair. Soul-only and CoreFS-only artifacts enforce compartment-specific record/key allowlists and restore respectively to `filesystem_missing` and restricted recovery/export mode. Every kind excludes Runtime, device config, and OS credentials.
 
 Write a small typed encrypted manifest followed by a 64-bit-length, chunked sequence of selected encrypted records and an authenticated complete-inventory footer. Every implementation uses this exact derivation:
 
@@ -930,27 +1061,109 @@ Probe local destination capacity, writability, path safety, and maximum single-f
 
 Import preflights capacity for a complete same-volume sibling staging Core plus margin while retaining any existing Core. It streams/authenticates into staging and activates a new destination by fsync + directory rename. Replacement never overwrites in place: lock, verify/fsync the new sibling, atomically swap the machine-local active-Core registry pointer, record completion, and retain the old Core for rollback. Startup recovers interrupted activation from the last authenticated registry generation. Inject failures at every staging/rename/pointer/completion boundary. V2 has no 16-MiB total content-section ceiling. Until Task 9, the encrypted Soul file may still contain read-only legacy rollback tables, but no active app service treats them as authority.
 
-- [ ] **Step 8: Disable legacy authority without deleting recovery sources**
+- [x] **Step 8: Delete pre-release authority and compatibility surfaces**
+
+Production routes use authenticated CoreFS authority for every migrated
+content family. Pre-release database writers/readers, transcript fallback,
+browser draft migration, vault/capsule import, package writer exclusion, and
+legacy recovery sources are removed rather than retained. The development
+milestone notes below record how canonical domain coverage was established;
+their references to retained legacy sources are superseded.
+
+Progress (2026-08-13): authenticated forward-only task CRUD, portable-
+preference patches, and presence preference GET/PUT now commit/read only
+through native authenticated CoreFS authority. Background presence/initiative/
+dream consent checks follow the same canonical object and fail closed without
+an unlocked CoreFS session instead of consulting retained SQL. Account
+identity/demographic updates, login hydration, onboarding completion, and
+identity-override checks now use the authenticated account-profile object;
+retained SQL account/setup rows are not changed and the unsafe directory-only
+delete path fails closed pending restart-safe whole-Core deletion.
+Task bodies and caller-bound opaque catalog IDs publish atomically, task API
+IDs no longer depend on the legacy SQL allocator, delete targets a stable
+`core.trash` recovery root, local session authority generations advance after
+each trusted native result, and focused tests prove these routes do not touch
+their retained legacy write paths. Restart-safe account deletion, conversation/
+diary/asset/document writers, and the full raw Runtime/cache/log/index
+plaintext scan remain open, so this step is intentionally not checked complete.
+Canonical thread lifecycle is now also active: list/read, create/reuse,
+reset/clear, close, and delete authenticate one bounded CoreFS snapshot and
+commit only native optimistic mutations, including atomic close-plus-create
+and thread-plus-segment trash. Retained Runtime thread/message rows remain
+unchanged. Ordinary blocking and streaming agent turns now append visible
+user/assistant bodies only as canonical CoreFS message events, rebuild prompt
+history from that authority, and retain only null-body CoreFS references in
+fresh Runtime rows. Approval checkpoints remain unlock-sealed operational
+Runtime state, and resumed visible responses return only to CoreFS with
+collision-free Runtime/step metadata. Visible message edit/delete now append
+optimistic immutable CoreFS events with exact prior-version fences and terminal
+deletion semantics. Diary entry/folder CRUD and monotonic legacy-draft handoff
+now read and mutate only authenticated CoreFS, including recoverable trash and
+resumable unfile/move behavior. Diary binary uploads now publish bounded,
+reopened, hash/type-verified attachment objects beneath `core.gallery`, link
+their metadata into the canonical diary body, support authenticated download
+and cover selection, and leave the retained Soul attachment table unchanged.
+Agent-avatar upload, authenticated streaming, replacement, profile/biography
+projection, and recoverable deletion now use a stable canonical gallery object
+without mutating or falling back to retained profile metadata/plaintext files.
+Chat-image uploads now publish unique canonical attachment objects, bind their
+URIs to optimistic message events, feed providers from bounded authenticated
+bytes, project into canonical history, and unlink through message revision plus
+recoverable trash without new Runtime asset/link rows or host plaintext.
+PDF uploads now publish/deduplicate authenticated canonical originals, reject
+post-cutover legacy storage paths, and drive registration, parse/reparse, plus
+derived source synchronization from canonical bytes while retaining only
+sealed/rebuildable Runtime projections. Direct pasted text, Markdown, web,
+HTML, and offline re-extraction writers now preserve original plus normalized
+knowledge content in canonical CoreFS objects without Runtime knowledge rows.
+Migrated gallery reads, retention sidecars, and recoverable forget also use
+CoreFS authority. Bounded OKF import publishes stable idempotent canonical
+sources, while OKF export and lint derive only from authenticated projections.
+The bounded raw gate now reports zero seeded private markers across a real
+stopped embedded PostgreSQL data directory and exact instance cache/log/index
+roots while proving its detector with a deliberate control leak. Restart-safe
+whole-Core account deletion now publishes an authenticated restart intent,
+revokes every unlock session, and performs no live-resource deletion. The next
+pre-resource startup requires the exact machine-local Runtime binding to be
+stopped, journals the operation, then quarantines and removes the active Core,
+retained rollback Core, and exact Runtime instance before retiring their
+registries and credential. Every durable boundary resumes idempotently,
+tampered requests fail closed, a concurrently live process prevents deletion,
+zero-based owner IDs remain valid, and startup creates a fresh Core at the
+configured location without recreating old private data. Focused server and
+registry tests, client contracts, the desktop production build, full Server
+Ruff, and diff hygiene pass. No real Core was deleted.
 
 Assert app routes/services use CoreFS for migrated families and cannot write legacy Soul/runtime content tables. Scan the fresh active PostgreSQL and every instance-local cache/log/index path for seeded portable/message/chunk/OCR/source/candidate/pending-op plaintext; require zero hits. Verify sealed operational rows decrypt only while unlocked and that rebuildable plaintext exists only in process memory. Keep legacy SQLCipher tables/models read-only solely for rollback/recovery until Task 9's later cleanup release.
 
-- [ ] **Step 9: Update architecture documentation**
+- [x] **Step 9: Update architecture documentation**
+
+Completion progress (2026-08-14): the whitepaper, Portable Core and three-tier
+theses, architecture index, memory/document/source/schema references, and
+three-tier PRD now use the implemented Soul + CoreFS inside `.anima/` /
+machine-local Runtime boundary. They record canonical domain/route authority,
+the active paths and key hierarchy, resumable migration/rejection, both
+restart transitions, V2 single/multipart transfer and degraded recovery, plus
+restart-only activation/rollback/deletion. The obsolete JSONL Archive authority,
+Runtime-inside-Core layout, Runtime binary/source authority, plaintext index,
+and impossible discarded-key forward-secrecy claims were removed. The
+filesystem architecture remains deliberately marked `planned` only because
+the signed-package and irreversible first-release acceptance gate has not run.
 
 Update `docs/thesis/whitepaper.md`, `docs/thesis/portable-core.md`, `docs/thesis/three-tier-architecture.md`, `docs/architecture/README.md`, `docs/architecture/memory/memory-system.md`, `docs/architecture/system/database-schema.md`, and `docs/prds/three-tier-architecture.md` to describe the refined Core/Soul/CoreFS/Runtime boundary. Reconcile every node and edge in `docs/architecture/system/anima-core-filesystem.md` against the implemented routes, crates, storage paths, permission matrix, startup states, and transfer modes; remove its planned-status warning only after the complete cutover acceptance gate passes.
 
-- [ ] **Step 10: Run focused migration/transfer/authority tests**
+- [x] **Step 10: Run focused greenfield/transfer/authority tests**
 
 ```powershell
-$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_authority.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py -q
-bun test apps/desktop/tests/corefs-transfer.test.ts
-cargo test -p anima-core capsule
-cargo test -p anima-core core_archive
+$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_authority.py apps/server/tests/test_corefs_archive_transfer.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_transfer_api.py apps/server/tests/test_corefs_logical.py apps/server/tests/test_corefs_assets.py apps/server/tests/test_corefs_preferences.py apps/server/tests/test_diary_api.py apps/server/tests/test_documents_api.py apps/server/tests/test_knowledge_api.py apps/server/tests/test_tasks_api.py apps/server/tests/test_threads_api.py apps/server/tests/test_users.py -q
+bun test packages/api-client/tests/client.test.ts apps/desktop/tests/corefs-transfer.test.ts apps/desktop/tests/api-auth.test.ts apps/desktop/tests/settings-storage-classification.test.ts
+cargo test -p anima-corefs logical::mutation::tests --lib
+cargo check -p anima-corefs -p anima-core --all-targets
 ```
 
-Then, under separate funded execution authority, enable/dispatch the protected
-desktop package gate against the final signed MSI, notarized PKG, DEB, and RPM.
-Require all four native jobs to pass and record the exact package digests before
-Step 4 can publish the irreversible marker or Step 12 can publish a release.
+The prior migration/capsule/package matrix is historical evidence only. Replace
+it with clean-bootstrap, unsupported-input rejection, current-format V2
+transfer, and canonical-authority coverage after compatibility code is removed.
 
 - [ ] **Step 11: Run full validation**
 
@@ -962,13 +1175,28 @@ bun run build
 bun run db:server:current
 ```
 
+Local progress (2026-08-16): the complete server suite passes `3703` with `6`
+environment skips, the complete desktop suite passes `371`, and root lint plus
+build pass. A temporary database upgraded to Alembic head `20260812_0001`, and
+an isolated temporary Core/Runtime startup returned HTTP 200 from `/health`
+without reading or modifying the user's Core or credential store. Full-suite
+stress exposed a CoreFS index-rebuild worker racing Runtime-engine teardown;
+startup/shutdown now resume and drain those workers, and tests use separate
+file-backed SQLite connections for request/background concurrency. The focused
+drain, migration, creation, knowledge, security, and Runtime regressions pass.
+This step remains open for the new greenfield implementation and safe temporary
+fixture smoke operations listed below; no real user Core, pointer, or recovery
+activation may be used.
+
 Then start the app, verify `GET /health`, and smoke-test unlock/auth, chat, thread history, diary/drafts, notes through CoreFS, gallery, document upload/reindex, tasks, settings, memory promotion/provenance, lock, restart, Runtime deletion/rebuild, a full single-file transfer, FAT32-like multipart transfer, scoped credential replacement, degraded Soul-only `filesystem_missing` recovery, CoreFS-only recovery/export mode plus V1 reattachment rejection, interrupted removable-media export, interrupted active-Core pointer swap, rollback to the retained old Core, and clean-environment restore.
 
-- [ ] **Step 12: Commit first-release cutover**
+- [x] **Step 12: Commit the greenfield first-release authority**
+
+Review `git status --short`, `git diff --stat`, and `git diff --check`, then
+stage only the paths listed in this Task 8 scope before committing.
 
 ```powershell
-git add apps/server/src/anima_server/services/corefs apps/server/src/anima_server/schemas/corefs_transfer.py apps/server/src/anima_server/schemas/vault.py apps/server/src/anima_server/api/routes/corefs_transfer.py apps/server/src/anima_server/api/routes/vault.py apps/server/src/anima_server/db/session.py apps/server/src/anima_server/db/user_store.py apps/server/src/anima_server/services/storage.py apps/server/src/anima_server/services/vault.py apps/server/src/anima_server/services/anima_core_bindings.py apps/server/src/anima_server/main.py packages/anima-core/src/core_archive.rs packages/anima-core/src/capsule.rs packages/anima-core/src/integrity.rs packages/anima-core/src/ffi.rs packages/anima-core/src/lib.rs packages/api-client/src/client.ts packages/api-client/src/types.ts apps/desktop/src/pages/settings/CoreTransferSettings.tsx apps/desktop/src/pages/settings/VaultSettings.tsx apps/server/tests/test_corefs_cutover.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_corefs_authority.py apps/server/tests/test_corefs_soul_relocation.py apps/server/tests/test_vault.py apps/server/tests/test_health_integration.py apps/desktop/tests/corefs-transfer.test.ts docs
-git -c commit.gpgsign=false commit -m "core: cut over to CoreFS authority"
+git -c commit.gpgsign=false commit -m "corefs: establish greenfield authority"
 ```
 
 ## Task 9: Later-release Soul cleanup and legacy retirement

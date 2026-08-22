@@ -26,12 +26,15 @@ def test_validation_snapshot_and_read_wrappers_bind_selected_head() -> None:
         keys=keys,
     )
     assert selected == logical.CoreFsValidationSnapshot(generation=7, catalog_hash="abc123")
-    assert logical.stat_v1(
-        corefs_session=native_session,
-        keys=keys,
-        selected=selected,
-        path="Diary/today.md",
-    ) == b'{"version":"corefs-logical-v1","result":{}}'
+    assert (
+        logical.stat_v1(
+            corefs_session=native_session,
+            keys=keys,
+            selected=selected,
+            path="Diary/today.md",
+        )
+        == b'{"version":"corefs-logical-v1","result":{}}'
+    )
     assert calls == [
         ("snapshot", keys),
         ("stat", keys, 7, "abc123", "Diary/today.md"),
@@ -64,12 +67,15 @@ def test_validation_snapshot_and_read_use_one_resolved_native_session() -> None:
         corefs_session=native_session,
         keys=keys,
     )
-    assert logical.stat_v1(
-        corefs_session=native_session,
-        keys=keys,
-        selected=selected,
-        path="Diary/today.md",
-    ) == b'{"version":"corefs-logical-v1","result":{}}'
+    assert (
+        logical.stat_v1(
+            corefs_session=native_session,
+            keys=keys,
+            selected=selected,
+            path="Diary/today.md",
+        )
+        == b'{"version":"corefs-logical-v1","result":{}}'
+    )
     assert calls == [
         ("snapshot", keys),
         ("stat", keys, 7, "abc123", "Diary/today.md"),

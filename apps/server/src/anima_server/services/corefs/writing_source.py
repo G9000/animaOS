@@ -296,6 +296,7 @@ def build_writing_source_inventory(
     root = next((item for item in current_folders if item.parent_id is None), None)
     journal = preserved_roles.get("core.journal")
     notes = preserved_roles.get("core.notes")
+    trash = preserved_roles.get("core.trash")
     supplemental_roles = {item.role: item for item in supplemental_folders if item.role is not None}
     if len(supplemental_roles) != sum(item.role is not None for item in supplemental_folders):
         raise DiaryMigrationError("Supplemental source contains duplicate stable roles.")
@@ -326,6 +327,11 @@ def build_writing_source_inventory(
         if gallery is not None
         else migration_opaque_id("core-folder-role", "core.gallery")
     )
+    trash_id = (
+        trash.stable_id
+        if trash is not None
+        else migration_opaque_id("core-folder-role", "core.trash")
+    )
     folders: list[Any] = [
         InactiveFolder(
             stable_id=root_id,
@@ -353,6 +359,16 @@ def build_writing_source_inventory(
             name=notes.name if notes is not None else "Notes",
             order=1,
             role="core.notes",
+            owner="user",
+            agent_access="write",
+            policy="user-write",
+        ),
+        InactiveFolder(
+            stable_id=trash_id,
+            parent_id=trash.parent_id if trash is not None else root_id,
+            name=trash.name if trash is not None else "Trash",
+            order=4,
+            role="core.trash",
             owner="user",
             agent_access="write",
             policy="user-write",

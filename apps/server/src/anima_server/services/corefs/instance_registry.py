@@ -20,20 +20,6 @@ _REGISTRY_VERSION = 1
 _LEASE_TTL = timedelta(hours=24)
 _LEGACY_LOCK_TTL = timedelta(minutes=1)
 _REGISTRY_LOCK = threading.RLock()
-LEGACY_RUNTIME_MANIFEST_FIELDS = frozenset(
-    {
-        "runtime_database_engine",
-        "runtime_database_path",
-        "runtime_database_requested_engine",
-        "runtime_database_previous_engine",
-        "runtime_database_target_engine",
-        "runtime_database_requester",
-        "requested_runtime_database_engine",
-        "previous_runtime_database_engine",
-        "target_runtime_database_engine",
-        "runtime_migration_state",
-    }
-)
 
 
 class InstanceBindingCollision(RuntimeError):
@@ -77,19 +63,10 @@ class RuntimeInstanceBinding:
     core_path: Path
     instance_root: Path
     pg_data_dir: Path
-    legacy_pg_data_dir: Path
     indices_dir: Path
     health_log_dir: Path
-    migration_journal_path: Path
     filesystem_identity: str
     runtime_url_fingerprint: str | None = None
-
-    @property
-    def active_pg_data_dir(self) -> Path:
-        """Keep relocated legacy Runtime active until its converters finish."""
-        if self.legacy_pg_data_dir.is_dir():
-            return self.legacy_pg_data_dir
-        return self.pg_data_dir
 
 
 class RuntimeInstanceRegistry:
@@ -106,19 +83,13 @@ class RuntimeInstanceRegistry:
         self.app_data_root = app_data_root.expanduser().resolve()
         self._registry_path = self.app_data_root / "core-instance-registry.json"
         self._pid_is_alive = pid_is_alive or _pid_is_alive
-        self._process_start_identity = (
-            process_start_identity or _process_start_identity
-        )
+        self._process_start_identity = process_start_identity or _process_start_identity
         self._process_id = process_id if process_id is not None else os.getpid()
         self._now = now or (lambda: datetime.now(UTC))
         self._hostname = hostname or platform.node()
-        self._current_process_start_identity = self._process_start_identity(
-            self._process_id
-        )
+        self._current_process_start_identity = self._process_start_identity(self._process_id)
         if not self._current_process_start_identity:
-            raise InstanceBindingCollision(
-                "current process start identity is unavailable"
-            )
+            raise InstanceBindingCollision("current process start identity is unavailable")
 
     def resolve(
         self,
@@ -131,17 +102,13 @@ class RuntimeInstanceRegistry:
         canonical_core_path = core_path.expanduser().resolve(strict=True)
         core_id = _read_core_id(canonical_core_path)
         filesystem_identity = _filesystem_identity(canonical_core_path)
-        runtime_url_fingerprint = (
-            _runtime_url_fingerprint(runtime_url) if runtime_url else None
-        )
+        runtime_url_fingerprint = _runtime_url_fingerprint(runtime_url) if runtime_url else None
         now = self._now()
 
         with _REGISTRY_LOCK, self._locked_registry():
             registry = self._load_registry()
             records = cast(list[dict[str, object]], registry["instances"])
-            same_core = [
-                record for record in records if record.get("core_id") == core_id
-            ]
+            same_core = [record for record in records if record.get("core_id") == core_id]
 
             if runtime_url_fingerprint is not None:
                 self._reject_runtime_url_collision(
@@ -173,11 +140,7 @@ class RuntimeInstanceRegistry:
 
             if selected is None and not (fork or rebuild):
                 live_divergent = next(
-                    (
-                        record
-                        for record in same_core
-                        if self._record_is_live(record, now=now)
-                    ),
+                    (record for record in same_core if self._record_is_live(record, now=now)),
                     None,
                 )
                 if live_divergent is not None:
@@ -218,9 +181,7 @@ class RuntimeInstanceRegistry:
     ) -> None:
         expected = _runtime_url_fingerprint(runtime_url)
         with _REGISTRY_LOCK, self._locked_registry():
-            records = cast(
-                list[dict[str, object]], self._load_registry()["instances"]
-            )
+            records = cast(list[dict[str, object]], self._load_registry()["instances"])
             record = next(
                 (
                     item
@@ -239,58 +200,6 @@ class RuntimeInstanceRegistry:
                     "runtime URL is not atomically bound to this Core instance"
                 )
 
-    def record_legacy_manifest_state(
-        self,
-        binding: RuntimeInstanceBinding,
-        values: dict[str, object],
-    ) -> None:
-        """Copy and verify legacy device fields before manifest scrubbing."""
-        if set(values) - LEGACY_RUNTIME_MANIFEST_FIELDS:
-            raise InstanceBindingCollision("legacy manifest Runtime state is invalid")
-        if not values:
-            return
-        with _REGISTRY_LOCK, self._locked_registry():
-            registry = self._load_registry()
-            records = cast(list[dict[str, object]], registry["instances"])
-            record = next(
-                (
-                    item
-                    for item in records
-                    if item.get("local_instance_id") == binding.local_instance_id
-                ),
-                None,
-            )
-            if (
-                record is None
-                or record.get("core_id") != binding.core_id
-                or record.get("filesystem_identity") != binding.filesystem_identity
-            ):
-                raise InstanceBindingCollision(
-                    "legacy manifest Runtime state has no active instance binding"
-                )
-            previous = record.get("legacy_runtime_manifest_state")
-            if previous is not None and previous != values:
-                raise InstanceBindingCollision(
-                    "legacy manifest Runtime state conflicts with the local registry"
-                )
-            record["legacy_runtime_manifest_state"] = values
-            self._write_registry(registry)
-            verified = self._load_registry()
-            verified_record = next(
-                (
-                    item
-                    for item in cast(list[dict[str, object]], verified["instances"])
-                    if item.get("local_instance_id") == binding.local_instance_id
-                ),
-                None,
-            )
-            if verified_record is None or verified_record.get(
-                "legacy_runtime_manifest_state"
-            ) != values:
-                raise InstanceBindingCollision(
-                    "legacy manifest Runtime state failed registry verification"
-                )
-
     def release(self, binding: RuntimeInstanceBinding) -> None:
         """Mark this process lease stale without deleting instance identity."""
         with _REGISTRY_LOCK, self._locked_registry():
@@ -301,8 +210,7 @@ class RuntimeInstanceRegistry:
                     record.get("local_instance_id") == binding.local_instance_id
                     and record.get("pid") == self._process_id
                     and record.get("hostname") == self._hostname
-                    and record.get("process_start_identity")
-                    == self._current_process_start_identity
+                    and record.get("process_start_identity") == self._current_process_start_identity
                 ):
                     record["pid"] = None
                     record["process_start_identity"] = None
@@ -311,41 +219,120 @@ class RuntimeInstanceRegistry:
                     break
         binding.instance_root.joinpath("instance-lease.json").unlink(missing_ok=True)
 
-    def _binding_from_record(
-        self, record: dict[str, object]
+    def verify_account_deletion_binding(
+        self,
+        *,
+        core_id: str,
+        instance_root: Path,
+        require_current_process: bool,
+        allow_missing: bool = False,
+    ) -> None:
+        """Fail closed unless an exact Runtime binding is safe for Core deletion."""
+        with _REGISTRY_LOCK, self._locked_registry():
+            record = self._account_deletion_record(
+                self._load_registry(),
+                core_id=core_id,
+                instance_root=instance_root,
+                allow_missing=allow_missing,
+            )
+            if record is None:
+                return
+            if require_current_process:
+                if not self._record_is_owned_by_current_process(record):
+                    raise InstanceBindingCollision(
+                        "Runtime deletion target is not owned by this process"
+                    )
+            elif self._record_is_live(record, now=self._now()):
+                raise InstanceBindingCollision(
+                    "Runtime deletion target is still owned by a live process"
+                )
+
+    def current_process_binding(
+        self,
+        *,
+        core_id: str,
+        instance_root: Path,
     ) -> RuntimeInstanceBinding:
+        """Return the exact Runtime binding owned by the current process."""
+        with _REGISTRY_LOCK, self._locked_registry():
+            record = self._account_deletion_record(
+                self._load_registry(),
+                core_id=core_id,
+                instance_root=instance_root,
+                allow_missing=False,
+            )
+            assert record is not None
+            if not self._record_is_owned_by_current_process(record):
+                raise InstanceBindingCollision(
+                    "Runtime instance binding is not owned by this process"
+                )
+            return self._binding_from_record(record)
+
+    def retire_account_deletion_binding(
+        self,
+        *,
+        core_id: str,
+        instance_root: Path,
+        allow_missing: bool = False,
+    ) -> None:
+        """Remove one stopped exact binding after its Runtime data is quarantined."""
+        with _REGISTRY_LOCK, self._locked_registry():
+            registry = self._load_registry()
+            record = self._account_deletion_record(
+                registry,
+                core_id=core_id,
+                instance_root=instance_root,
+                allow_missing=allow_missing,
+            )
+            if record is None:
+                return
+            if self._record_is_live(record, now=self._now()):
+                raise InstanceBindingCollision(
+                    "Runtime deletion target is still owned by a live process"
+                )
+            records = cast(list[dict[str, object]], registry["instances"])
+            records.remove(record)
+            self._write_registry(registry)
+
+    def _account_deletion_record(
+        self,
+        registry: dict[str, object],
+        *,
+        core_id: str,
+        instance_root: Path,
+        allow_missing: bool,
+    ) -> dict[str, object] | None:
+        expected_root = instance_root.expanduser().resolve(strict=False)
+        records = cast(list[dict[str, object]], registry["instances"])
+        matches = [
+            record
+            for record in records
+            if record.get("core_id") == core_id
+            and self._binding_from_record(record).instance_root == expected_root
+        ]
+        if not matches and allow_missing:
+            return None
+        if len(matches) != 1:
+            raise InstanceBindingCollision("Runtime deletion target has no unique instance binding")
+        return matches[0]
+
+    def _binding_from_record(self, record: dict[str, object]) -> RuntimeInstanceBinding:
         core_id = str(record["core_id"])
         local_instance_id = str(record["local_instance_id"])
-        instance_root = (
-            self.app_data_root
-            / "cores"
-            / core_id
-            / "instances"
-            / local_instance_id
-        )
+        instance_root = self.app_data_root / "cores" / core_id / "instances" / local_instance_id
         return RuntimeInstanceBinding(
             core_id=core_id,
             local_instance_id=local_instance_id,
             core_path=Path(str(record["core_path"])),
             instance_root=instance_root,
             pg_data_dir=instance_root / "runtime" / "pg_data",
-            legacy_pg_data_dir=instance_root
-            / "legacy-runtime-source"
-            / "pg_data",
             indices_dir=instance_root / "cache" / "indices",
             health_log_dir=instance_root / "health-logs",
-            migration_journal_path=instance_root
-            / "migration"
-            / "corefs-migration-journal.json",
             filesystem_identity=str(record["filesystem_identity"]),
-            runtime_url_fingerprint=cast(
-                str | None, record.get("runtime_url_fingerprint")
-            ),
+            runtime_url_fingerprint=cast(str | None, record.get("runtime_url_fingerprint")),
         )
 
-    def _record_is_live(
-        self, record: dict[str, object], *, now: datetime
-    ) -> bool:
+    def _record_is_live(self, record: dict[str, object], *, now: datetime) -> bool:
         raw_updated = record.get("lease_updated_at")
         pid = record.get("pid")
         if not isinstance(raw_updated, str) or not isinstance(pid, int):
@@ -368,14 +355,11 @@ class RuntimeInstanceRegistry:
             return self._process_start_identity(pid) == expected_identity
         return now - updated <= _LEASE_TTL
 
-    def _record_is_owned_by_current_process(
-        self, record: dict[str, object]
-    ) -> bool:
+    def _record_is_owned_by_current_process(self, record: dict[str, object]) -> bool:
         return (
             record.get("hostname") == self._hostname
             and record.get("pid") == self._process_id
-            and record.get("process_start_identity")
-            == self._current_process_start_identity
+            and record.get("process_start_identity") == self._current_process_start_identity
         )
 
     def _reject_runtime_url_collision(
@@ -402,9 +386,7 @@ class RuntimeInstanceRegistry:
                 )
             # Even a stale explicit database can contain divergent state. It must
             # be explicitly rebuilt/rebound instead of silently mixed.
-            raise InstanceBindingCollision(
-                "runtime URL is already bound to another Core instance"
-            )
+            raise InstanceBindingCollision("runtime URL is already bound to another Core instance")
 
     def _load_registry(self) -> dict[str, object]:
         if not self._registry_path.exists():
@@ -412,9 +394,7 @@ class RuntimeInstanceRegistry:
         try:
             payload = json.loads(self._registry_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise InstanceBindingCollision(
-                "machine-local instance registry is unreadable"
-            ) from exc
+            raise InstanceBindingCollision("machine-local instance registry is unreadable") from exc
         if (
             not isinstance(payload, dict)
             or payload.get("version") != _REGISTRY_VERSION
@@ -429,9 +409,7 @@ class RuntimeInstanceRegistry:
         self._registry_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(self._registry_path, registry)
 
-    def _write_instance_lease(
-        self, binding: RuntimeInstanceBinding, *, now: datetime
-    ) -> None:
+    def _write_instance_lease(self, binding: RuntimeInstanceBinding, *, now: datetime) -> None:
         binding.instance_root.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(
             binding.instance_root / "instance-lease.json",
@@ -479,9 +457,7 @@ class RuntimeInstanceRegistry:
                     lock_payload = json.loads(lock_path.read_text(encoding="utf-8"))
                     lock_pid = int(lock_payload.get("pid", 0))
                     lock_host = str(lock_payload.get("hostname", ""))
-                    lock_process_identity = lock_payload.get(
-                        "process_start_identity"
-                    )
+                    lock_process_identity = lock_payload.get("process_start_identity")
                 except (OSError, ValueError, json.JSONDecodeError):
                     lock_metadata_valid = False
                     lock_pid = 0
@@ -496,13 +472,9 @@ class RuntimeInstanceRegistry:
                     # crash cannot block this machine forever.
                     lock_is_live = self._legacy_lock_is_fresh(lock_path)
                 elif self._pid_is_alive(lock_pid):
-                    if (
-                        isinstance(lock_process_identity, str)
-                        and lock_process_identity
-                    ):
+                    if isinstance(lock_process_identity, str) and lock_process_identity:
                         lock_is_live = (
-                            self._process_start_identity(lock_pid)
-                            == lock_process_identity
+                            self._process_start_identity(lock_pid) == lock_process_identity
                         )
                     else:
                         lock_is_live = self._legacy_lock_is_fresh(lock_path)
@@ -525,9 +497,7 @@ class RuntimeInstanceRegistry:
                     {
                         "pid": self._process_id,
                         "hostname": self._hostname,
-                        "process_start_identity": (
-                            self._current_process_start_identity
-                        ),
+                        "process_start_identity": (self._current_process_start_identity),
                         "owner_token": owner_token,
                     }
                 ).encode("utf-8"),
@@ -537,9 +507,7 @@ class RuntimeInstanceRegistry:
             if descriptor is not None:
                 os.close(descriptor)
                 try:
-                    current_payload = json.loads(
-                        lock_path.read_text(encoding="utf-8")
-                    )
+                    current_payload = json.loads(lock_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     current_payload = {}
                 if current_payload.get("owner_token") == owner_token:

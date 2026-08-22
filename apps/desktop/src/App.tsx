@@ -14,7 +14,7 @@ import Presence from "./pages/Presence";
 import Settings from "./pages/settings/Settings";
 import AiSettings from "./pages/settings/AiSettings";
 import SecuritySettings from "./pages/settings/SecuritySettings";
-import VaultSettings from "./pages/settings/VaultSettings";
+import CoreTransferSettings from "./pages/settings/CoreTransferSettings";
 import AdvancedSettings from "./pages/settings/AdvancedSettings";
 import AppearanceSettings from "./pages/settings/AppearanceSettings";
 import LanguageSettings from "./pages/settings/LanguageSettings";
@@ -119,7 +119,8 @@ function AppRoutes() {
         <Route path="ai" element={<AiSettings />} />
         <Route path="security" element={<SecuritySettings />} />
         <Route path="access" element={<CoreFSAccessSettings />} />
-        <Route path="vault" element={<VaultSettings />} />
+        <Route path="core-transfer" element={<CoreTransferSettings />} />
+        <Route path="vault" element={<Navigate to="../core-transfer" replace />} />
         <Route path="language" element={<LanguageSettings />} />
         <Route path="appearance" element={<AppearanceSettings />} />
         <Route path="daemon" element={<DaemonSettings />} />

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from anima_server.db.session import get_user_session_factory
-from anima_server.models import Task
 from anima_server.services.corefs.diary_migration import (
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
@@ -49,9 +47,10 @@ def test_tasks_crud_lifecycle() -> None:
             for item in read_prepared_writing_snapshot(session=session).objects
             if item.kind == "task"
         )
-        assert decode_task_document(
-            read_prepared_writing_body(session=session, item=prepared)
-        ).text == "Buy groceries"
+        assert (
+            decode_task_document(read_prepared_writing_body(session=session, item=prepared)).text
+            == "Buy groceries"
+        )
 
         resp = client.put(
             f"/api/tasks/{task_id}",
@@ -67,9 +66,10 @@ def test_tasks_crud_lifecycle() -> None:
             for item in read_prepared_writing_snapshot(session=session).objects
             if item.kind == "task"
         )
-        assert decode_task_document(
-            read_prepared_writing_body(session=session, item=prepared)
-        ).done is True
+        assert (
+            decode_task_document(read_prepared_writing_body(session=session, item=prepared)).done
+            is True
+        )
 
         resp = client.delete(f"/api/tasks/{task_id}", headers=headers)
         assert resp.status_code == 200
@@ -77,54 +77,8 @@ def test_tasks_crud_lifecycle() -> None:
         resp = client.get(f"/api/tasks?userId={user_id}", headers=headers)
         assert resp.json() == []
         assert not any(
-            item.kind == "task"
-            for item in read_prepared_writing_snapshot(session=session).objects
+            item.kind == "task" for item in read_prepared_writing_snapshot(session=session).objects
         )
-
-
-def test_global_cutover_marker_switches_task_reads_and_blocks_legacy_writes() -> None:
-    with managed_test_client("anima-tasks-corefs-authority-") as client:
-        reg = _register_user(client)
-        user_id = int(reg["id"])
-        headers = {"x-anima-unlock": str(reg["unlockToken"])}
-        created = client.post(
-            "/api/tasks",
-            headers=headers,
-            json={"userId": user_id, "text": "Encrypted authority", "priority": 4},
-        )
-        assert created.status_code == 201, created.text
-
-        session = unlock_session_store.resolve(str(reg["unlockToken"]))
-        assert session is not None
-        selected = session.corefs_session.validation_snapshot(session.corefs_keys)
-        with get_user_session_factory(user_id)() as db:
-            row = db.get(Task, int(created.json()["id"]))
-            assert row is not None
-            row.text = "Divergent legacy value"
-            db.commit()
-        object.__setattr__(
-            session,
-            "content_authority",
-            {
-                "version": 1,
-                "state": "cutover_complete",
-                "families": ["tasks"],
-                "generation": int(selected["generation"]),
-                "catalogHash": str(selected["catalogHash"]),
-            },
-        )
-
-        listed = client.get(f"/api/tasks?userId={user_id}", headers=headers)
-        assert listed.status_code == 200
-        assert [task["text"] for task in listed.json()] == ["Encrypted authority"]
-
-        blocked = client.post(
-            "/api/tasks",
-            headers=headers,
-            json={"userId": user_id, "text": "Must not reach SQL", "priority": 2},
-        )
-        assert blocked.status_code == 409
-        assert blocked.json()["details"]["code"] == "corefs_task_mutation_not_enabled"
 
 
 def test_tasks_require_auth() -> None:

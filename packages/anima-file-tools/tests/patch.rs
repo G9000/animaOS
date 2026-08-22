@@ -54,6 +54,25 @@ fn parser_rejects_oversized_patch_bodies_and_paths_before_accumulation() {
 }
 
 #[test]
+fn add_file_end_marker_preserves_a_missing_final_newline() {
+    let snapshot = MemorySnapshot::new(&[]);
+    let patch = parse_patch(
+        "*** Begin Patch\n\
+         *** Add File: canonical.json\n\
+         +{\"ok\":true}\n\
+         *** End of File\n\
+         *** End Patch",
+    )
+    .unwrap();
+
+    let plan = plan_patch(&snapshot, &patch, MutationAtomicity::BestEffort).unwrap();
+    let PlannedMutation::Write { content, .. } = &plan.mutations[0] else {
+        panic!("expected write");
+    };
+    assert_eq!(content, "{\"ok\":true}");
+}
+
+#[test]
 fn parser_rejects_empty_absolute_parent_and_malformed_patches() {
     for body in [
         "*** Begin Patch\n*** End Patch",

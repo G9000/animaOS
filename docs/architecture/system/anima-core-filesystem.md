@@ -1,14 +1,14 @@
 ---
-title: ANIMA CORE Filesystem Target Architecture
-description: End-to-end target architecture for Soul, CoreFS, Runtime, tools, permissions, indexing, and local transfer
+title: ANIMA CORE Filesystem Architecture
+description: Implemented end-to-end architecture for Soul, CoreFS, Runtime, tools, permissions, cutover, and local transfer
 category: architecture
 status: planned
-last_edited: 2026-07-12
+last_edited: 2026-08-14
 ---
 
-# ANIMA CORE Filesystem Target Architecture
+# ANIMA CORE Filesystem Architecture
 
-> **Status: planned target architecture.** These diagrams describe the approved Portable Core Filesystem design and implementation sequence. They do not claim that the migration is already implemented.
+> **Status: implementation complete, first-release activation gated.** The topology, domain adapters, migration coordinator, transfer/recovery paths, and restart transactions below are implemented and locally validated. The document intentionally retains `status: planned` until the mandatory final signed Windows/macOS/DEB/RPM package evidence passes and the separately authorized irreversible first-write cutover is exercised. No current release may infer that gate from local tests.
 
 **Normative sources:** [Portable Core Filesystem design](../../superpowers/specs/2026-07-12-portable-core-filesystem-design.md), [key hierarchy design](../../superpowers/specs/2026-07-12-portable-core-key-hierarchy-design.md), and [implementation plan](../../superpowers/plans/2026-07-12-portable-core-filesystem.md).
 
@@ -35,7 +35,7 @@ flowchart TB
     end
 
     subgraph Rust["Rust storage and file-operation layer"]
-        PyO3["Existing anima-core PyO3 extension"]
+        PyO3["anima-core PyO3 bridge"]
         CoreEngine["anima-corefs<br/>crypto, catalog, policy, transactions, trash"]
         FileTools["anima-file-tools<br/>walk, glob, grep, bounded read, patch plan"]
         HostBackend["Explicit HostFS backend"]
@@ -52,7 +52,7 @@ flowchart TB
     end
 
     subgraph Local["Machine-local and rebuildable state"]
-        Runtime["Embedded PostgreSQL<br/>runs, jobs, checkpoints, safe indexes"]
+        Runtime["Embedded PostgreSQL<br/>runs, jobs, approvals, sealed projections, checkpoints"]
         PlainIndex["Unlock-scoped memory<br/>plaintext search and embeddings"]
         Grants["Authenticated client grants<br/>Core, instance, package, folder, scope"]
         Credentials["OS credential store<br/>provider, connector, daemon secrets"]
@@ -118,6 +118,21 @@ There is deliberately no CoreFS-to-host-files edge and no Runtime-to-canonical-c
 | Client executable grants and machine configuration | authenticated platform app data | no | yes or reapproved |
 | Provider, connector, and daemon secrets | OS credential store | no | reconfigured |
 
+### Implemented domain and route authority
+
+| Product surface | Canonical authority | Runtime role |
+|---|---|---|
+| `/api/auth`, account/profile, onboarding | manifest keyslots → SQLCipher Soul unlock → encrypted CoreFS account profile | session/index binding only |
+| `/api/threads`, `/api/chat`, visible edit/delete | CoreFS thread objects and immutable message events | runs, steps, approvals, null-body CoreFS references |
+| `/api/diary`, notes/folders/drafts | CoreFS writing objects, stable roles, attachments, encrypted trash | no retained content authority |
+| gallery, avatar, chat images | bounded CoreFS binary objects plus canonical content links | rebuildable annotations/embeddings only |
+| documents, sources, OKF | CoreFS originals plus normalized/canonical source bodies | parsing, spans, compiler/search projections |
+| `/api/tasks`, portable preferences/presence | CoreFS optimistic JSON mutations | no retained app-row authority |
+| memory, claims, episodes, self-model | SQLCipher Soul through the Soul Writer/consolidation boundary | candidates, promotion journal, retrieval caches |
+| `/api/corefs/transfer` | pinned Soul/CoreFS snapshot and authenticated V2 archive | operation progress only; paths/passphrases excluded |
+
+Legacy Soul/Runtime app rows remain physically available only for reversible migration or rebuild inputs. Once the authenticated first-write marker commits, every migrated route fails closed rather than falling back to them.
+
 ## 2. Unlock, Startup, and Progressive Reindexing
 
 The Core becomes navigable before full-text and semantic indexing complete. A missing Runtime is a rebuild event, not data loss.
@@ -166,6 +181,57 @@ sequenceDiagram
 
     Note over Auth,Index: Lock, logout, expiry, or shutdown revokes streams and clears FRKs, DEKs, plaintext indexes, vectors, and query state.
 ```
+
+### Reversible migration and restart-coordinated cutover
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant UI as Core Transfer settings
+    participant API as Migration API/coordinator
+    participant Legacy as Legacy Soul + Runtime sources
+    participant Core as Validation CoreFS
+    participant Manifest as Core manifest/cutover state
+    participant Startup as Pre-resource startup
+
+    User->>UI: Prepare migration
+    UI->>API: POST migration/run
+    API->>Manifest: legacy-authoritative → migrating-write-frozen
+    API->>Legacy: Collect exact portable sources
+    API->>Core: Resume preparation and publish validation catalog
+    API->>Legacy: WAL checkpoint + copy/verify Soul to soul/soul.db
+    API->>Manifest: Publish active Soul route + validation-readonly
+    API-->>UI: Awaiting explicit acceptance
+
+    alt Reject before first write
+        User->>UI: Reject
+        UI->>API: confirmed rejection
+        API->>Manifest: Restore legacy Soul route
+        API->>Core: Roll back validation authority
+        API-->>UI: legacy-authoritative
+    else Accept
+        User->>UI: Accept
+        UI->>API: confirmed acceptance
+        API->>Manifest: approved-pending-first-write
+        API-->>UI: Restart required
+        User->>Startup: Restart
+        Startup->>Legacy: PostgreSQL stopped; create/refresh encrypted recovery bundle
+        Startup-->>UI: First write ready
+        UI->>Core: Next authored mutation
+        Core->>Core: Publish objects + catalog + HEAD + cutover markers atomically
+        Core->>Manifest: Reconcile forward-only authority
+        Core-->>UI: x-anima-restart-required: corefs-cutover
+        Note over Core,UI: Further portable writes fail closed.
+        User->>Startup: Restart immediately
+        Startup->>Legacy: Refresh exact stopped-source recovery bundle
+        Startup->>Manifest: Verify active Soul; remove only verified legacy Soul copy
+        Startup->>Startup: Start/schema-bind fresh Runtime
+        Startup->>Legacy: Remove exact plaintext legacy Runtime source
+    end
+```
+
+The runtime migration journal stores state, count, and typed error class only. Content-derived source/catalog digests, body hashes, paths, and exception text are not persisted or returned. A repeated pending restart can refresh a valid stale encrypted Runtime bundle through an authenticated previous/current swap without ever leaving no recovery copy.
 
 ## 3. Explicit HostFS and CoreFS Tool Routing
 
@@ -350,6 +416,8 @@ Normal deletion moves content into encrypted trash. `purge(trash_id, expected_tr
 
 One versioned streaming container supports complete, Soul-only, and CoreFS-only local artifacts. Cloud upload and sync remain out of scope.
 
+The V2 exporter pins one coherent Soul/CoreFS snapshot, streams at most 8 MiB per source/ciphertext buffer, and excludes Runtime, device state, grants, credentials, and host paths. A destination probe chooses a verified single file or an authenticated controller-last multipart set. Import never activates directly: full restore and retained-Core rollback create authenticated restart intents consumed before Core locks, databases, or Runtime start. Legacy JSON and `ANMA` V1 readers are import-only and refuse every non-legacy cutover state before decrypting or mutating.
+
 ```mermaid
 flowchart TD
     Live["Unlocked live ANIMA CORE"] --> Barrier["Short write barrier<br/>pin Soul and CoreFS generations"]
@@ -394,6 +462,8 @@ flowchart TD
     FreshRuntime --> Reindex["Catalog ready, then text and semantic rebuild"]
 ```
 
+Whole-account deletion follows the same restart-only principle. The live API validates the canonical owner and complete active/retained Cores, records an authenticated intent, and revokes unlock sessions without deleting storage. Pre-resource startup requires the exact Runtime binding to be stopped, journals each active-Core/retained-Core/Runtime quarantine and removal boundary, retires registry pointers and credentials, then creates a new empty Core. It never recursively targets a broad home/workspace path and never deletes a running Runtime.
+
 ## 7. Cross-Graph Invariants
 
 1. SQLCipher Soul contains ANIMA's internal continuity, not canonical app-feature records.
@@ -408,3 +478,6 @@ flowchart TD
 10. Memory promotion from CoreFS into Soul occurs only through the existing candidate, consolidation, and Soul Writer boundary with stable provenance.
 11. The transfer container derives an archive-specific key from bounded KDF parameters; it never reuses the Soul key, FRK, catalog key, or Object DEKs as its archive payload key.
 12. FRK activation publishes one complete next catalog/HEAD generation; old FRKs remain decrypt-only until authenticated retention and backup gates permit PCF-010 retirement.
+13. Reversible migration keeps legacy Soul/Runtime sources until authenticated first-write authority; rejection restores both Soul routing and legacy catalog authority.
+14. The first irreversible write requires a verified stopped-source Runtime recovery bundle, signals restart, and blocks later portable writes until fresh Runtime transition completes.
+15. Whole-Core activation, retained-Core rollback, and whole-account deletion are restart-only authenticated transactions; live requests cannot swap or delete active resources.

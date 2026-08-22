@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-02
 **Status:** Approved — independent review and user approval complete
-**Draft-cleanup addendum:** Approved — independent review and renewed user approval complete 2026-08-13
+**Draft-cleanup addendum:** Superseded by the approved greenfield-release scope on 2026-08-16
 **Scope:** Add a bounded-memory, crash-resumable preparation protocol for large inactive CoreFS validation catalogs without weakening single-generation atomic publication
 **Parent design:** [Portable Core Filesystem Design](2026-07-12-portable-core-filesystem-design.md)
 **PRD:** [Portable Core Filesystem v1](../../prds/portable-core-filesystem-v1.md)
@@ -20,6 +20,11 @@ The user approved this persistent protocol instead of either:
 
 - an in-memory-only preparation handle, which would restart large migrations and strand untracked objects after every crash; or
 - multiple visible validation generations, which would violate the all-or-nothing migration contract.
+
+The 2026-08-16 greenfield-release amendment removes every plaintext
+localStorage migration and packaged writer-exclusion requirement. Preparation
+remains a bounded encrypted primitive for current-format bulk creation/import;
+it is not an upgrade bridge for unreleased application data.
 
 ## 2. Goals
 
@@ -45,11 +50,11 @@ The user approved this persistent protocol instead of either:
 4. Every persisted preparation snapshot and prepared object is encrypted and authenticated before its pointer becomes durable.
 5. A missing, corrupt, stale, wrong-Core, wrong-FRK, or replayed preparation pointer fails closed; it is never treated as an empty preparation.
 6. A prepared object is unusable unless its authenticated descriptor, encrypted file, source fingerprint, and final catalog intent all agree.
-7. A crash may leave unreachable encrypted files, but it cannot expose a partial logical graph or lose legacy authority.
+7. A crash may leave unreachable encrypted files, but it cannot expose a partial logical graph or replace committed current-format authority.
 8. FRK activation cannot proceed while an active preparation references the current FRK generation.
 9. Session close waits only for the currently bounded native call. No required correctness state exists solely in process memory between calls.
 10. Finalization may stream each encrypted envelope to recheck its ciphertext hash, but it never decrypts or materializes plaintext bodies.
-11. The source inventory generation and digest are rechecked while a SQLCipher write fence excludes every legacy writing mutation through validation-pointer publication.
+11. The source inventory generation and digest are rechecked while the caller's current-format source fence excludes mutation through validation-pointer publication.
 
 ## 5. Physical Layout
 
@@ -231,7 +236,12 @@ Targeted object-key rotation ignores unreachable prepared objects. Once an objec
 - One active preparation per Core avoids ambiguous ownership. Exact pointer CAS rejects concurrent draft import, unlock migration, or retry races; the caller reloads, merges source state, and retries.
 - A callback failure after durable snapshot publication reports committed progress rather than rolling back the pointer in memory.
 
-### 11.1 Packaged-desktop writer exclusion for plaintext draft cleanup
+### 11.1 Historical packaged-desktop writer exclusion (superseded; non-normative)
+
+This subsection is retained only to preserve the reviewed decision history.
+The 2026-08-16 greenfield-release amendment removes this entire product and
+release surface: production code, tests, installers, and workflows must not
+implement or depend on it.
 
 The durable completion token proves that one exact draft revision is encrypted
 in CoreFS, but localStorage cannot atomically compare and delete its source key.

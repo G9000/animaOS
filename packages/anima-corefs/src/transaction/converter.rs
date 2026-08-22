@@ -35,11 +35,12 @@ const ACCOUNT_PROFILE_CONTENT_TYPE: &str = "application/vnd.anima.account-profil
 const PREFERENCES_CONTENT_TYPE: &str = "application/vnd.anima.preferences+json;version=1";
 const TASK_CONTENT_TYPE: &str = "application/vnd.anima.task+json;version=1";
 const REQUIRED_WRITING_ROLES: [&str; 2] = ["core.journal", "core.notes"];
-const ALLOWED_ROLES: [&str; 4] = [
+const ALLOWED_ROLES: [&str; 5] = [
     "core.journal",
     "core.notes",
     "core.conversations",
     "core.gallery",
+    "core.trash",
 ];
 pub const MAX_WRITING_BODY_CHARS: usize = 20_000_000;
 // Canonical HTML and JSON can expand one public source scalar to six ASCII
@@ -208,6 +209,31 @@ struct ValidatedObject {
     metadata: CatalogClientMetadata,
 }
 
+fn resolve_role_in_catalog(
+    catalog: &CatalogGeneration,
+    generation: u64,
+    catalog_hash: &str,
+    role: &str,
+) -> Result<Option<ResolvedValidationRole>, ValidationBatchError> {
+    let mut matches = catalog.entries().iter().filter(|entry| {
+        entry
+            .common_for_internal_mutation()
+            .role_for_internal_mutation()
+            .is_some_and(|value| value.as_str() == role)
+    });
+    let Some(entry) = matches.next() else {
+        return Ok(None);
+    };
+    if matches.next().is_some() {
+        return Err(ValidationBatchError::Invalid("duplicate stable role"));
+    }
+    Ok(Some(ResolvedValidationRole {
+        generation,
+        catalog_hash: catalog_hash.to_owned(),
+        stable_id: entry.stable_id().as_str().to_owned(),
+    }))
+}
+
 impl CoreCommitCoordinator {
     /// Converts one complete writing graph into at most one validation generation.
     ///
@@ -302,26 +328,25 @@ impl CoreCommitCoordinator {
         if !ALLOWED_ROLES.contains(&role) {
             return Err(ValidationBatchError::Invalid("unsupported stable role"));
         }
+        if let Some(committed) = self.load_committed(keys)? {
+            if committed.catalog().cutover_marker().is_some() {
+                return resolve_role_in_catalog(
+                    committed.catalog(),
+                    committed.head().generation(),
+                    committed.head().catalog_hash(),
+                    role,
+                );
+            }
+        }
         let Some(snapshot) = self.load_validation_snapshot(keys)? else {
             return Ok(None);
         };
-        let mut matches = snapshot.catalog().entries().iter().filter(|entry| {
-            entry
-                .common_for_internal_mutation()
-                .role_for_internal_mutation()
-                .is_some_and(|value| value.as_str() == role)
-        });
-        let Some(entry) = matches.next() else {
-            return Ok(None);
-        };
-        if matches.next().is_some() {
-            return Err(ValidationBatchError::Invalid("duplicate stable role"));
-        }
-        Ok(Some(ResolvedValidationRole {
-            generation: snapshot.head().generation(),
-            catalog_hash: snapshot.head().catalog_hash().to_owned(),
-            stable_id: entry.stable_id().as_str().to_owned(),
-        }))
+        resolve_role_in_catalog(
+            snapshot.catalog(),
+            snapshot.head().generation(),
+            snapshot.head().catalog_hash(),
+            role,
+        )
     }
 
     fn prepare_validation_graph(
@@ -608,6 +633,7 @@ fn validate_batch(
         .any(|role| role_counts.get(role).copied() != Some(1))
         || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
         || role_counts.get("core.gallery").copied().unwrap_or(0) > 1
+        || role_counts.get("core.trash").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -729,6 +755,7 @@ pub(super) fn build_prepared_validation_catalog(
         .any(|role| role_counts.get(role).copied() != Some(1))
         || role_counts.get("core.conversations").copied().unwrap_or(0) > 1
         || role_counts.get("core.gallery").copied().unwrap_or(0) > 1
+        || role_counts.get("core.trash").copied().unwrap_or(0) > 1
     {
         return Err(ValidationBatchError::Invalid(
             "core.journal and core.notes must each be bound exactly once",
@@ -895,7 +922,7 @@ fn validate_stable_root_policy(
     match (role, policy) {
         (None, _) => Ok(()),
         (
-            Some("core.journal" | "core.notes" | "core.gallery"),
+            Some("core.journal" | "core.notes" | "core.gallery" | "core.trash"),
             ValidationBatchPolicy::UserWrite,
         )
         | (Some("core.conversations"), ValidationBatchPolicy::SharedManage) => Ok(()),

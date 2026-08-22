@@ -6,17 +6,28 @@ import json
 import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from threading import RLock
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from anima_server.services.corefs import logical
+from anima_server.services.corefs.content_authority import (
+    authenticated_content_authority,
+    invalidate_active_catalog_indexes,
+    publish_content_authority_after_mutation,
+)
 from anima_server.services.corefs.diary_migration import (
     DiaryMigrationError,
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
 )
-from anima_server.services.corefs.formats import decode_preferences_document
+from anima_server.services.corefs.formats import (
+    PREFERENCES_CONTENT_TYPE,
+    decode_preferences_document,
+    encode_preferences_document,
+)
 from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 
 PORTABLE_PREFERENCE_KEYS = frozenset(
@@ -41,6 +52,30 @@ class PortablePreferenceError(RuntimeError):
     pass
 
 
+def portable_preference_corefs_authority_active(session: object) -> bool:
+    marker = getattr(session, "content_authority", None)
+    return (
+        isinstance(marker, dict)
+        and marker.get("version") == 1
+        and marker.get("state") == "authoritative"
+        and isinstance(marker.get("families"), list)
+        and "preferences" in marker["families"]
+    )
+
+
+def active_preference_authority_session(user_id: int) -> object | None:
+    from anima_server.services.sessions import active_unlock_sessions
+
+    return next(
+        (
+            session
+            for session in reversed(active_unlock_sessions(user_id))
+            if portable_preference_corefs_authority_active(session)
+        ),
+        None,
+    )
+
+
 @contextmanager
 def portable_preference_lock(user_id: int) -> Iterator[None]:
     with _locks_guard:
@@ -53,9 +88,7 @@ def validate_portable_preference_patch(values: Mapping[str, Any]) -> dict[str, A
     patch = dict(values)
     unknown = sorted(set(patch) - PORTABLE_PREFERENCE_KEYS)
     if unknown:
-        raise PortablePreferenceError(
-            "Unsupported portable preference keys: " + ", ".join(unknown)
-        )
+        raise PortablePreferenceError("Unsupported portable preference keys: " + ", ".join(unknown))
     try:
         encoded = json.dumps(
             patch,
@@ -80,9 +113,7 @@ def validate_portable_preference_patch(values: Mapping[str, Any]) -> dict[str, A
         raise PortablePreferenceError("Translation language is invalid.")
     if "ascii" in patch and not isinstance(patch["ascii"], dict):
         raise PortablePreferenceError("ASCII preferences must be an object.")
-    if "dashboardNodePositions" in patch and not isinstance(
-        patch["dashboardNodePositions"], dict
-    ):
+    if "dashboardNodePositions" in patch and not isinstance(patch["dashboardNodePositions"], dict):
         raise PortablePreferenceError("Dashboard positions must be an object.")
     closed = patch.get("dashboardClosedNodes")
     if closed is not None and (
@@ -140,6 +171,29 @@ def read_portable_preferences(*, session: Any) -> dict[str, Any]:
     return dict(decoded.values)
 
 
+def read_canonical_preferences(*, session: Any) -> dict[str, Any]:
+    marker = authenticated_content_authority(session, family="preferences")
+    if marker is None:
+        raise PortablePreferenceError("CoreFS preference authority is not active.")
+    return read_portable_preferences(session=session)
+
+
+def read_canonical_presence_values(*, session: Any) -> Any:
+    from anima_server.services.presence_config import presence_config_values_from_mapping
+
+    preferences = read_canonical_preferences(session=session)
+    presence = preferences.get("presence")
+    if not isinstance(presence, dict):
+        raise PortablePreferenceError("Canonical presence preferences are unavailable.")
+    try:
+        return presence_config_values_from_mapping(
+            user_id=int(session.user_id),
+            values=presence,
+        )
+    except ValueError as exc:
+        raise PortablePreferenceError("Canonical presence preferences are invalid.") from exc
+
+
 def update_portable_preferences(
     *,
     session: Any,
@@ -162,3 +216,110 @@ def update_portable_preferences(
     if any(current.get(key) != value for key, value in patch.items()):
         raise PortablePreferenceError("Encrypted preference verification failed.")
     return current
+
+
+def update_canonical_preferences(
+    *,
+    session: Any,
+    values: Mapping[str, Any],
+) -> dict[str, Any]:
+    patch = validate_portable_preference_patch(values)
+    return _update_canonical_preferences(session=session, patch=patch)
+
+
+def update_canonical_presence_preferences(
+    *,
+    session: Any,
+    values: Any,
+) -> Any:
+    from anima_server.services.presence_config import (
+        presence_config_values_from_mapping,
+        presence_config_values_to_mapping,
+    )
+
+    verified = _update_canonical_preferences(
+        session=session,
+        patch={"presence": presence_config_values_to_mapping(values)},
+    )
+    presence = verified.get("presence")
+    if not isinstance(presence, dict):
+        raise PortablePreferenceError("Canonical presence preferences are unavailable.")
+    try:
+        return presence_config_values_from_mapping(
+            user_id=int(session.user_id),
+            values=presence,
+        )
+    except ValueError as exc:
+        raise PortablePreferenceError("Canonical presence preferences are invalid.") from exc
+
+
+def _update_canonical_preferences(
+    *,
+    session: Any,
+    patch: Mapping[str, Any],
+) -> dict[str, Any]:
+    with portable_preference_lock(int(session.user_id)):
+        marker = authenticated_content_authority(session, family="preferences")
+        if marker is None:
+            raise PortablePreferenceError("CoreFS preference authority is not active.")
+        selected = logical.CoreFsValidationSnapshot(
+            int(marker["generation"]),
+            str(marker["catalogHash"]),
+        )
+        try:
+            objects = read_prepared_writing_snapshot(session=session).objects
+        except (DiaryMigrationError, ValueError) as exc:
+            raise PortablePreferenceError("Encrypted preferences could not be opened.") from exc
+        matches = [item for item in objects if item.kind == "preferences"]
+        if len(matches) != 1:
+            raise PortablePreferenceError("Core contains conflicting preference objects.")
+        item = matches[0]
+        try:
+            current = decode_preferences_document(
+                read_prepared_writing_body(session=session, item=item)
+            )
+        except (DiaryMigrationError, ValueError) as exc:
+            raise PortablePreferenceError("Encrypted preferences failed authentication.") from exc
+        merged = dict(current.values)
+        merged.update(patch)
+        body = encode_preferences_document(
+            stable_id=current.stable_id,
+            owner_id=current.owner_id,
+            values=merged,
+            updated_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        )
+        result = logical.execute_mutation_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=selected,
+            principal="user",
+            mutation={
+                "operation": "write_file",
+                "target": {"stableId": current.stable_id},
+                "expectedRevision": item.revision,
+                "contentType": PREFERENCES_CONTENT_TYPE,
+                "bodyEncoding": "utf-8",
+            },
+            body=body,
+            invalidate=lambda _generation, _catalog_hash: invalidate_active_catalog_indexes(
+                int(session.user_id)
+            ),
+        )
+        changes = result.get("changes")
+        if (
+            not isinstance(changes, list)
+            or len(changes) != 1
+            or not isinstance(changes[0], dict)
+            or changes[0].get("stableId") != current.stable_id
+            or changes[0].get("revision") != item.revision + 1
+        ):
+            raise PortablePreferenceError("Native CoreFS preference mutation result is invalid.")
+        publish_content_authority_after_mutation(
+            session,
+            generation=int(result["generation"]),
+            catalog_hash=str(result["catalogHash"]),
+        )
+        verified = read_canonical_preferences(session=session)
+    if any(verified.get(key) != value for key, value in patch.items()):
+        raise PortablePreferenceError("Encrypted preference verification failed.")
+    return verified

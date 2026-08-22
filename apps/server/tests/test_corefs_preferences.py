@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import pytest
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import PresenceConfig
 from anima_server.services.corefs.diary_migration import (
     migration_opaque_id,
     read_prepared_writing_body,
@@ -11,8 +13,10 @@ from anima_server.services.corefs.formats import (
     decode_preferences_document,
     encode_preferences_document,
 )
+from anima_server.services.presence_config import get_presence_config_values
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
+from sqlalchemy import select
 
 
 def test_preferences_are_canonical_json_and_round_trip_portable_values() -> None:
@@ -133,14 +137,54 @@ def test_portable_preference_api_rejects_host_media_and_unknown_keys() -> None:
             headers=headers,
             json={"values": {"background": {"type": "image", "value": "private.png"}}},
         )
-        assert host_media.status_code == 422
+        assert host_media.status_code == 409
 
         unknown = client.patch(
             f"/api/preferences/{user_id}",
             headers=headers,
             json={"values": {"providerApiKey": "must-not-persist"}},
         )
-        assert unknown.status_code == 422
+        assert unknown.status_code == 409
+
+
+def test_authoritative_preference_patch_writes_only_corefs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with managed_test_client("anima-preferences-corefs-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "preference-corefs",
+                "password": "pw123456",
+                "name": "Preference CoreFS",
+            },
+        )
+        payload = registered.json()
+        user_id = int(payload["id"])
+        token = str(payload["unlockToken"])
+        headers = {"x-anima-unlock": token}
+        initial = client.patch(
+            f"/api/preferences/{user_id}",
+            headers=headers,
+            json={"values": {"theme": "dark"}},
+        )
+        assert initial.status_code == 200, initial.text
+
+        def reject_legacy_preparation(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("authoritative preferences touched the preparation path")
+
+        monkeypatch.setattr(
+            "anima_server.services.corefs.preferences.prepare_writing_source_catalog",
+            reject_legacy_preparation,
+        )
+        updated = client.patch(
+            f"/api/preferences/{user_id}",
+            headers=headers,
+            json={"values": {"theme": "light", "clockFormat": "24h"}},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["values"]["theme"] == "light"
+        assert updated.json()["values"]["clockFormat"] == "24h"
 
 
 def test_presence_update_refreshes_encrypted_preference_shadow() -> None:
@@ -177,3 +221,73 @@ def test_presence_update_refreshes_encrypted_preference_shadow() -> None:
         )
         assert decoded.values["presence"]["taskNudgesEnabled"] is False
         assert decoded.values["presence"]["customInstruction"] == "Be concise"
+
+
+def test_authoritative_presence_uses_only_canonical_preferences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with managed_test_client("anima-presence-corefs-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "presence-corefs",
+                "password": "pw123456",
+                "name": "Presence CoreFS",
+            },
+        )
+        payload = registered.json()
+        user_id = int(payload["id"])
+        token = str(payload["unlockToken"])
+        headers = {"x-anima-unlock": token}
+        initial = client.put(
+            f"/api/presence/{user_id}",
+            headers=headers,
+            json={"enabled": False, "customInstruction": "Initial value"},
+        )
+        assert initial.status_code == 200, initial.text
+
+        session = unlock_session_store.resolve(token)
+        assert session is not None
+
+        def reject_legacy_write(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("authoritative presence touched fallback persistence")
+
+        monkeypatch.setattr(
+            "anima_server.api.routes.presence.update_presence_config",
+            reject_legacy_write,
+        )
+        monkeypatch.setattr(
+            "anima_server.api.routes.presence.prepare_writing_source_catalog",
+            reject_legacy_write,
+        )
+        updated = client.put(
+            f"/api/presence/{user_id}",
+            headers=headers,
+            json={"enabled": True, "customInstruction": "Canonical value"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["enabled"] is True
+        assert updated.json()["customInstruction"] == "Canonical value"
+
+        fetched = client.get(f"/api/presence/{user_id}", headers=headers)
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["enabled"] is True
+        assert fetched.json()["customInstruction"] == "Canonical value"
+
+        with get_user_session_factory(user_id)() as db:
+            legacy = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
+            assert legacy is None
+            background_values = get_presence_config_values(db, user_id)
+        assert background_values.enabled is True
+        assert background_values.custom_instruction == "Canonical value"
+
+        item = next(
+            candidate
+            for candidate in read_prepared_writing_snapshot(session=session).objects
+            if candidate.kind == "preferences"
+        )
+        decoded = decode_preferences_document(
+            read_prepared_writing_body(session=session, item=item)
+        )
+        assert decoded.values["presence"]["enabled"] is True
+        assert decoded.values["presence"]["customInstruction"] == "Canonical value"

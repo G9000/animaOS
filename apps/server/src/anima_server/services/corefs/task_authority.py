@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.content_authority import authenticated_content_authority
 from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.formats import TaskDocument, decode_task_document
 
@@ -32,8 +33,22 @@ class TaskAuthoritySelection:
         return logical.CoreFsValidationSnapshot(self.generation, self.catalog_hash)
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalTaskRecord:
+    document: TaskDocument
+    path: str
+    revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class CanonicalTaskCatalog:
+    selection: TaskAuthoritySelection
+    tasks: tuple[CanonicalTaskRecord, ...]
+    trash_folder_stable_id: str
+
+
 def task_authority_selection(session: object) -> TaskAuthoritySelection | None:
-    """Accept only the authenticated global cutover marker owned by PCF-008."""
+    """Accept only the authenticated global authority marker owned by PCF-008."""
     marker = getattr(session, "content_authority", None)
     if not isinstance(marker, dict):
         return None
@@ -42,7 +57,7 @@ def task_authority_selection(session: object) -> TaskAuthoritySelection | None:
     catalog_hash = marker.get("catalogHash")
     if (
         marker.get("version") != 1
-        or marker.get("state") != "cutover_complete"
+        or marker.get("state") != "authoritative"
         or not isinstance(families, list)
         or "tasks" not in families
         or isinstance(generation, bool)
@@ -62,10 +77,25 @@ def task_corefs_authority_active(session: object) -> bool:
 
 
 def list_canonical_tasks(*, session: Any) -> tuple[TaskDocument, ...]:
-    selection = task_authority_selection(session)
+    return tuple(record.document for record in read_canonical_task_catalog(session=session).tasks)
+
+
+def read_canonical_task_catalog(*, session: Any) -> CanonicalTaskCatalog:
+    try:
+        marker = authenticated_content_authority(session, family="tasks")
+    except RuntimeError as exc:
+        raise TaskAuthorityError("CoreFS task authority could not be refreshed.") from exc
+    selection = task_authority_selection(session) if marker is not None else None
     if selection is None:
         raise TaskAuthorityError("CoreFS task authority is not active.")
-    entries = _walk_all(session=session, selection=selection)
+    entries = _walk_all(session=session, selection=selection, include_directories=True)
+    trash_ids = [
+        entry.get("stableId")
+        for entry in entries
+        if entry.get("kind") == "directory" and entry.get("role") == "core.trash"
+    ]
+    if len(trash_ids) != 1 or not isinstance(trash_ids[0], str):
+        raise TaskAuthorityError("Canonical CoreFS trash authority is unavailable.")
     task_entries = [
         entry
         for entry in entries
@@ -74,33 +104,42 @@ def list_canonical_tasks(*, session: Any) -> tuple[TaskDocument, ...]:
     if len(task_entries) > _MAX_TASKS:
         raise TaskAuthorityError("Canonical task inventory exceeds its bound.")
 
-    tasks: list[TaskDocument] = []
+    tasks: list[CanonicalTaskRecord] = []
     for entry in task_entries:
         path = entry.get("path")
         stable_id = entry.get("stableId")
-        if not isinstance(path, str) or not isinstance(stable_id, str):
-            raise TaskAuthorityError("Canonical task identity is invalid.")
-        document = decode_task_document(
-            _read_all(session=session, selection=selection, path=path)
-        )
+        revision = entry.get("revision")
         if (
-            document.stable_id != stable_id
-            or document.stable_id != migration_opaque_id("task", str(document.legacy_id))
+            not isinstance(path, str)
+            or not isinstance(stable_id, str)
+            or isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 1
+        ):
+            raise TaskAuthorityError("Canonical task identity is invalid.")
+        document = decode_task_document(_read_all(session=session, selection=selection, path=path))
+        if document.stable_id != stable_id or document.stable_id != migration_opaque_id(
+            "task", str(document.legacy_id)
         ):
             raise TaskAuthorityError("Canonical task body does not match its catalog identity.")
-        tasks.append(document)
+        tasks.append(CanonicalTaskRecord(document=document, path=path, revision=revision))
 
-    tasks.sort(key=lambda task: task.stable_id)
-    tasks.sort(key=lambda task: task.created_at or "", reverse=True)
-    tasks.sort(key=lambda task: task.priority, reverse=True)
-    tasks.sort(key=lambda task: task.done)
-    return tuple(tasks)
+    tasks.sort(key=lambda task: task.document.stable_id)
+    tasks.sort(key=lambda task: task.document.created_at or "", reverse=True)
+    tasks.sort(key=lambda task: task.document.priority, reverse=True)
+    tasks.sort(key=lambda task: task.document.done)
+    return CanonicalTaskCatalog(
+        selection=selection,
+        tasks=tuple(tasks),
+        trash_folder_stable_id=trash_ids[0],
+    )
 
 
 def _walk_all(
     *,
     session: Any,
     selection: TaskAuthoritySelection,
+    include_directories: bool = False,
 ) -> list[dict[str, object]]:
     entries: list[dict[str, object]] = []
     cursor: str | None = None
@@ -114,7 +153,7 @@ def _walk_all(
                 root="",
                 cursor_after=cursor,
                 page_size=100,
-                include_directories=False,
+                include_directories=include_directories,
             ),
             selection=selection,
         )

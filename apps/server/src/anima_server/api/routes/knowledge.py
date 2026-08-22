@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import zipfile
 from pathlib import Path
+from stat import S_IFDIR, S_IFMT, S_IFREG
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 from fastapi import (
@@ -34,6 +36,15 @@ from anima_server.models.runtime import (
     RuntimeSourceSpan,
 )
 from anima_server.services.agent.embeddings import generate_embedding
+from anima_server.services.corefs.asset_authority import asset_authority_selection
+from anima_server.services.corefs.asset_mutations import AssetMutationError
+from anima_server.services.corefs.diary_migration import migration_opaque_id
+from anima_server.services.corefs.knowledge_authority import (
+    CanonicalKnowledgeDocument,
+    canonical_knowledge_document,
+    canonical_knowledge_view,
+    publish_canonical_knowledge_source,
+)
 from anima_server.services.ingestion.adapters.text import (
     ingest_markdown_content,
     ingest_text_content,
@@ -46,8 +57,16 @@ from anima_server.services.ingestion.adapters.web import (
 from anima_server.services.ingestion.document_compiler import (
     compile_source_knowledge_auto,
 )
+from anima_server.services.ingestion.html_extract import extract_html_article
 from anima_server.services.ingestion.lint import lint_knowledge_bundle
-from anima_server.services.ingestion.okf import export_okf_bundle, import_okf_bundle
+from anima_server.services.ingestion.okf import (
+    PortableOKFConcept,
+    export_okf_bundle,
+    export_portable_okf_bundle,
+    import_okf_bundle,
+    read_portable_okf_bundle,
+)
+from anima_server.services.ingestion.structured import parse_markdown_structure
 from anima_server.services.ingestion.web_fetch import (
     UnsafeFetchUrlError,
     WebFetchDisabledError,
@@ -142,7 +161,21 @@ async def ingest_text_source(
     payload: TextSourceRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, payload.userId)
+    session = await require_unlocked_user_async(request, payload.userId)
+    if len(payload.content.encode("utf-8")) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Text source is too large.",
+        )
+    if asset_authority_selection(session) is not None:
+        projection = publish_canonical_knowledge_source(
+            session=session,
+            document=_canonical_text_document(payload, kind="text"),
+        )
+        return _canonical_source_write_response(
+            projection,
+            compile_requested=payload.compile,
+        )
     _require_legacy_knowledge_mutation_allowed(payload.userId)
     try:
         source, artifacts, spans = ingest_text_content(
@@ -171,7 +204,21 @@ async def ingest_markdown_source(
     payload: TextSourceRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, payload.userId)
+    session = await require_unlocked_user_async(request, payload.userId)
+    if len(payload.content.encode("utf-8")) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Markdown source is too large.",
+        )
+    if asset_authority_selection(session) is not None:
+        projection = publish_canonical_knowledge_source(
+            session=session,
+            document=_canonical_text_document(payload, kind="markdown"),
+        )
+        return _canonical_source_write_response(
+            projection,
+            compile_requested=payload.compile,
+        )
     _require_legacy_knowledge_mutation_allowed(payload.userId)
     try:
         source, artifacts, spans = ingest_markdown_content(
@@ -200,8 +247,7 @@ async def ingest_web_capture_source(
     payload: WebCaptureRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, payload.userId)
-    _require_legacy_knowledge_mutation_allowed(payload.userId)
+    session = await require_unlocked_user_async(request, payload.userId)
     url = payload.url
     html = payload.html
     if payload.fetch:
@@ -234,6 +280,22 @@ async def ingest_web_capture_source(
                 f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
             ),
         )
+    if asset_authority_selection(session) is not None:
+        document = _canonical_web_document(
+            url=url,
+            readable_text=payload.readableText,
+            html=html,
+            title=payload.title,
+        )
+        projection = publish_canonical_knowledge_source(
+            session=session,
+            document=document,
+        )
+        return _canonical_source_write_response(
+            projection,
+            compile_requested=payload.compile,
+        )
+    _require_legacy_knowledge_mutation_allowed(payload.userId)
     try:
         source, artifacts, spans = ingest_web_capture(
             runtime_db,
@@ -270,8 +332,7 @@ async def ingest_html_source(
     file: UploadFile = File(...),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, userId)
-    _require_legacy_knowledge_mutation_allowed(userId)
+    session = await require_unlocked_user_async(request, userId)
     filename = file.filename or "page.html"
     content_type = (file.content_type or "").split(";")[0].strip().lower()
     has_html_extension = filename.lower().endswith((".html", ".htm"))
@@ -283,7 +344,7 @@ async def ingest_html_source(
             detail="Only HTML uploads are supported.",
         )
 
-    data = await file.read()
+    data = await file.read(settings.diary_attachment_max_size_bytes + 1)
     if not data.strip():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -297,6 +358,28 @@ async def ingest_html_source(
                 f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
             ),
         )
+
+    if asset_authority_selection(session) is not None:
+        try:
+            html = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="HTML upload must be valid UTF-8.",
+            ) from exc
+        projection = publish_canonical_knowledge_source(
+            session=session,
+            document=_canonical_html_document(
+                html=html,
+                filename=filename,
+                title=title,
+            ),
+        )
+        return _canonical_source_write_response(
+            projection,
+            compile_requested=compileKnowledge,
+        )
+    _require_legacy_knowledge_mutation_allowed(userId)
 
     try:
         source, artifacts, spans = ingest_html_content(
@@ -326,7 +409,52 @@ async def reextract_source(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, userId)
+    session = await require_unlocked_user_async(request, userId)
+    if asset_authority_selection(session) is not None:
+        selected = canonical_knowledge_document(
+            session=session,
+            source_id=source_id,
+        )
+        if selected is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source not found.",
+            )
+        stable_id, document = selected
+        if document.source_media_type != "text/html":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Only captured HTML sources can be re-extracted.",
+            )
+        extraction_url = (
+            document.source_uri
+            if document.source_uri.startswith(("http://", "https://"))
+            else None
+        )
+        extraction = extract_html_article(
+            document.original_content,
+            url=extraction_url,
+        )
+        refreshed = CanonicalKnowledgeDocument(
+            source_kind=document.source_kind,
+            source_uri=document.source_uri,
+            source_title=document.source_title or extraction.title,
+            source_media_type=document.source_media_type,
+            filename=document.filename,
+            artifact_kind="structured_markdown",
+            content=parse_markdown_structure(extraction.markdown).to_markdown(),
+            original_content=document.original_content,
+        )
+        projection = publish_canonical_knowledge_source(
+            session=session,
+            document=refreshed,
+            stable_id=stable_id,
+            replace_existing=True,
+        )
+        return _canonical_source_write_response(
+            projection,
+            compile_requested=True,
+        )
     _require_legacy_knowledge_mutation_allowed(userId)
     # Checked before re-extraction: replacing spans cascades citation rows,
     # so an already-compiled source must be recompiled afterwards or its
@@ -498,7 +626,24 @@ async def compile_source(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, userId)
+    session = await require_unlocked_user_async(request, userId)
+    if asset_authority_selection(session) is not None:
+        projection = next(
+            (
+                item
+                for item in canonical_knowledge_view(
+                    session=session
+                ).knowledge_source_projections()
+                if item.source_id == source_id
+            ),
+            None,
+        )
+        if projection is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Source not found.",
+            )
+        return {"compileRun": _canonical_compile_run(projection)}
     _require_legacy_knowledge_mutation_allowed(userId)
     source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
     run = await _compile_source_now(
@@ -603,10 +748,36 @@ async def export_knowledge(
     userId: int,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> Response:
-    await require_unlocked_user_async(request, userId)
+    session = await require_unlocked_user_async(request, userId)
     with tempfile.TemporaryDirectory(prefix="anima-okf-export-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
-        export_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+        if asset_authority_selection(session) is not None:
+            concepts = canonical_knowledge_view(
+                session=session
+            ).knowledge_concept_projections()
+            export_portable_okf_bundle(
+                concepts=tuple(
+                    PortableOKFConcept(
+                        slug=concept.slug,
+                        concept_type=concept.concept_type,
+                        title=concept.title,
+                        description=concept.description,
+                        body_markdown=concept.body_markdown,
+                        frontmatter_json={
+                            "anima": {
+                                "source_id": concept.source_id,
+                                "derived": True,
+                            }
+                        },
+                        original_markdown="",
+                        linked_slugs=(),
+                    )
+                    for concept in concepts
+                ),
+                bundle_dir=bundle_dir,
+            )
+        else:
+            export_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
         archive_path = Path(temp_dir) / "knowledge-bundle.zip"
         with zipfile.ZipFile(
             archive_path,
@@ -632,9 +803,13 @@ async def import_knowledge(
     file: UploadFile = File(...),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, userId)
-    _require_legacy_knowledge_mutation_allowed(userId)
-    content = await file.read()
+    session = await require_unlocked_user_async(request, userId)
+    content = await file.read(settings.diary_attachment_max_size_bytes + 1)
+    if len(content) > settings.diary_attachment_max_size_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="OKF bundle is too large.",
+        )
     with tempfile.TemporaryDirectory(prefix="anima-okf-import-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
         bundle_dir.mkdir(parents=True, exist_ok=True)
@@ -648,6 +823,47 @@ async def import_knowledge(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle zip.",
             ) from exc
+        if asset_authority_selection(session) is not None:
+            try:
+                concepts = read_portable_okf_bundle(bundle_dir=bundle_dir)
+                for concept in concepts:
+                    publish_canonical_knowledge_source(
+                        session=session,
+                        stable_id=migration_opaque_id(
+                            "knowledge-okf-source",
+                            concept.slug,
+                        ),
+                        replace_existing=True,
+                        document=CanonicalKnowledgeDocument(
+                            source_kind="okf",
+                            source_uri=f"okf://{concept.slug}.md",
+                            source_title=concept.title,
+                            source_media_type="text/markdown",
+                            filename=f"{concept.slug}.md",
+                            artifact_kind="structured_markdown",
+                            content=concept.body_markdown,
+                            original_content=concept.original_markdown,
+                        ),
+                    )
+            except (ValueError, yaml.YAMLError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invalid OKF bundle contents.",
+                ) from exc
+            except AssetMutationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Canonical OKF import failed.",
+                ) from exc
+            imported_slugs = {concept.slug for concept in concepts}
+            link_count = sum(
+                1
+                for concept in concepts
+                for linked_slug in set(concept.linked_slugs)
+                if linked_slug in imported_slugs and linked_slug != concept.slug
+            )
+            return {"conceptCount": len(concepts), "linkCount": link_count}
+        _require_legacy_knowledge_mutation_allowed(userId)
         try:
             result = import_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
         except (ValueError, yaml.YAMLError) as exc:
@@ -665,7 +881,15 @@ async def lint_knowledge(
     payload: KnowledgeLintRequest,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, payload.userId)
+    session = await require_unlocked_user_async(request, payload.userId)
+    if asset_authority_selection(session) is not None:
+        return {
+            "findings": _canonical_lint_findings(
+                session=session,
+                source_id=payload.sourceId,
+                concept_id=payload.conceptId,
+            )
+        }
     findings = lint_knowledge_bundle(
         runtime_db,
         user_id=payload.userId,
@@ -819,7 +1043,158 @@ def _active_knowledge_index(user_id: int) -> Any | None:
     )
 
     session = active_asset_authority_session(user_id)
-    return getattr(session, "runtime_index", None) if session is not None else None
+    return canonical_knowledge_view(session=session) if session is not None else None
+
+
+def _canonical_text_document(
+    payload: TextSourceRequest,
+    *,
+    kind: str,
+) -> CanonicalKnowledgeDocument:
+    content = payload.content.strip()
+    default_name = "knowledge.md" if kind == "markdown" else "knowledge.txt"
+    filename = _canonical_source_filename(payload.filename, default=default_name)
+    normalized = (
+        parse_markdown_structure(content).to_markdown()
+        if kind == "markdown"
+        else content
+    )
+    return CanonicalKnowledgeDocument(
+        source_kind=kind,
+        source_uri=f"{kind}://{filename}",
+        source_title=payload.title or filename,
+        source_media_type="text/markdown" if kind == "markdown" else "text/plain",
+        filename=filename,
+        artifact_kind="structured_markdown" if kind == "markdown" else "plain_text",
+        content=normalized,
+        original_content=content,
+    )
+
+
+def _canonical_web_document(
+    *,
+    url: str,
+    readable_text: str | None,
+    html: str | None,
+    title: str | None,
+) -> CanonicalKnowledgeDocument:
+    source_uri = _canonical_http_url(url)
+    if html is None:
+        content = (readable_text or "").strip()
+        return CanonicalKnowledgeDocument(
+            source_kind="web_capture",
+            source_uri=source_uri,
+            source_title=title,
+            source_media_type="text/plain",
+            filename="web-capture.txt",
+            artifact_kind="readable_text",
+            content=content,
+            original_content=content,
+        )
+    extraction = extract_html_article(html.strip(), url=source_uri)
+    markdown = parse_markdown_structure(extraction.markdown).to_markdown()
+    return CanonicalKnowledgeDocument(
+        source_kind="web_capture",
+        source_uri=source_uri,
+        source_title=title or extraction.title,
+        source_media_type="text/html",
+        filename="web-capture.html",
+        artifact_kind="structured_markdown",
+        content=markdown,
+        original_content=html.strip(),
+    )
+
+
+def _canonical_html_document(
+    *,
+    html: str,
+    filename: str,
+    title: str | None,
+) -> CanonicalKnowledgeDocument:
+    safe_name = _canonical_source_filename(filename, default="page.html")
+    original = html.strip()
+    extraction = extract_html_article(original)
+    markdown = parse_markdown_structure(extraction.markdown).to_markdown()
+    return CanonicalKnowledgeDocument(
+        source_kind="html",
+        source_uri=f"html://{safe_name}",
+        source_title=title or extraction.title or safe_name,
+        source_media_type="text/html",
+        filename=safe_name,
+        artifact_kind="structured_markdown",
+        content=markdown,
+        original_content=original,
+    )
+
+
+def _canonical_source_filename(value: str | None, *, default: str) -> str:
+    candidate = Path(value or default).name.strip()
+    if not candidate:
+        return default
+    return candidate[:255]
+
+
+def _canonical_http_url(value: str) -> str:
+    normalized = value.strip()
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or any(
+        character.isspace() for character in normalized
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="url must be an absolute http(s) URL",
+        )
+    return normalized
+
+
+def _canonical_source_write_response(
+    projection: Any,
+    *,
+    compile_requested: bool,
+) -> dict[str, Any]:
+    response = _corefs_source_response((projection,))
+    if compile_requested:
+        response["compileRun"] = _canonical_compile_run(projection)
+    return response
+
+
+def _canonical_compile_run(projection: Any) -> dict[str, Any]:
+    return {
+        "id": projection.source_id,
+        "status": "completed",
+        "runType": "compile:derived",
+        "sourceId": projection.source_id,
+    }
+
+
+def _canonical_lint_findings(
+    *,
+    session: Any,
+    source_id: int | None,
+    concept_id: int | None,
+) -> list[dict[str, Any]]:
+    view = canonical_knowledge_view(session=session)
+    concepts = tuple(
+        concept
+        for concept in view.knowledge_concept_projections()
+        if (source_id is None or concept.source_id == source_id)
+        and (concept_id is None or concept.concept_id == concept_id)
+    )
+    title_counts: dict[str, int] = {}
+    for concept in view.knowledge_concept_projections():
+        title_counts[concept.title] = title_counts.get(concept.title, 0) + 1
+    return [
+        {
+            "code": "duplicate_concept_title",
+            "severity": "warning",
+            "message": f"Concept title {concept.title!r} is duplicated.",
+            "conceptId": concept.concept_id,
+            "sourceId": concept.source_id,
+            "linkId": None,
+        }
+        for concept in concepts
+        if title_counts[concept.title] > 1
+    ]
 
 
 def _require_legacy_knowledge_mutation_allowed(user_id: int) -> None:
@@ -1050,9 +1425,23 @@ def _contains_text(needle: str, *values: str | None) -> bool:
 
 def _extract_zip_safely(archive: zipfile.ZipFile, target_dir: Path) -> None:
     target_root = target_dir.resolve()
-    for member in archive.infolist():
+    members = archive.infolist()
+    if len(members) > 1_000 or sum(member.file_size for member in members) > (
+        settings.diary_attachment_max_size_bytes
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Expanded OKF bundle is too large.",
+        )
+    for member in members:
         destination = (target_root / member.filename).resolve()
-        if target_root not in destination.parents and destination != target_root:
+        unix_mode = member.external_attr >> 16
+        unsafe_type = unix_mode and S_IFMT(unix_mode) not in {0, S_IFDIR, S_IFREG}
+        if (
+            (target_root not in destination.parents and destination != target_root)
+            or member.flag_bits & 0x1
+            or unsafe_type
+        ):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle path.",

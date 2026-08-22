@@ -81,9 +81,12 @@ def ensure_per_user_databases_ready() -> None:
 def list_user_ids() -> list[int]:
     ensure_per_user_databases_ready()
     users_root = settings.data_dir / "users"
-    user_ids: list[int] = []
+    user_ids: set[int] = set()
+    owner_user_id = get_owner_user_id()
+    if owner_user_id is not None and get_user_database_path(owner_user_id).is_file():
+        user_ids.add(owner_user_id)
     if not users_root.is_dir():
-        return user_ids
+        return sorted(user_ids)
     for child in users_root.iterdir():
         if not child.is_dir():
             continue
@@ -92,7 +95,7 @@ def list_user_ids() -> list[int]:
         except ValueError:
             continue
         if get_user_database_path(user_id).is_file():
-            user_ids.append(user_id)
+            user_ids.add(user_id)
     return sorted(user_ids)
 
 

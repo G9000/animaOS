@@ -127,7 +127,8 @@ def test_browser_secrets_and_private_profile_are_never_portable_destinations() -
     assert local["anima_unlock_token"] == "remove-legacy-session"
     assert local["anima_user"] == "remove-private-profile-cache"
     assert local["anima_last_user"] == "remove-private-profile-cache"
-    assert local["legacy-journal-draft:*"] == "corefs-object"
+    assert "legacy-journal-draft:*" not in local
+    assert "anima:diary:draft-migration-state:v1:*" not in local
 
 
 def test_mod_secret_sources_have_explicit_credential_destinations() -> None:
@@ -142,3 +143,4 @@ def test_machine_local_registry_files_have_explicit_nonportable_destinations() -
     assert files["integration-links.json"] == "device-integration-registry"
     assert files["regeneration.json"] == "device-runtime-state"
     assert files["corefs-client-access.json"] == "device-client-grants"
+    assert "legacy-draft-cleanup-v1.lock" not in files

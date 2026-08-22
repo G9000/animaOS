@@ -11,7 +11,6 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any
 
 import uuid_utils as uuid
 
@@ -57,34 +56,6 @@ def update_core_manifest(
         update(manifest)
         _write_manifest(manifest)
         return manifest
-
-
-def migrate_legacy_manifest_runtime_state(
-    registry: Any,
-    binding: Any,
-) -> None:
-    """Move obsolete machine/runtime fields into the local instance registry."""
-    from anima_server.services.corefs.instance_registry import (
-        LEGACY_RUNTIME_MANIFEST_FIELDS,
-    )
-
-    manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-    values = {
-        key: manifest[key]
-        for key in sorted(LEGACY_RUNTIME_MANIFEST_FIELDS)
-        if key in manifest
-    }
-    if not values:
-        return
-    registry.record_legacy_manifest_state(binding, values)
-
-    def scrub(current: dict[str, object]) -> None:
-        for key, expected in values.items():
-            if key in current and current[key] != expected:
-                raise RuntimeError("legacy manifest Runtime state changed during migration")
-            current.pop(key, None)
-
-    update_core_manifest(scrub)
 
 
 def get_sqlcipher_kdf_salt() -> bytes:

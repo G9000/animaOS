@@ -234,6 +234,37 @@ def test_fresh_runtime_disk_contains_none_of_the_seeded_private_markers(
     for marker in markers.values():
         assert marker not in raw_runtime
 
+    from anima_server.services.corefs.privacy_validation import scan_private_markers
+
+    instance_root = managed_tmp_path / "instance"
+    scan_roots = {
+        "runtime": runtime_file,
+        "cache": instance_root / "cache",
+        "logs": instance_root / "health-logs",
+        "index": instance_root / "cache" / "indices",
+    }
+    scan_roots["cache"].mkdir(parents=True)
+    scan_roots["logs"].mkdir(parents=True)
+    scan_roots["index"].mkdir(parents=True)
+    (scan_roots["cache"] / "checkpoint.json").write_text(
+        '{"generation":1,"status":"ready"}',
+        encoding="utf-8",
+    )
+    (scan_roots["logs"] / "health.jsonl").write_text(
+        '{"event":"runtime_ready"}\n',
+        encoding="utf-8",
+    )
+    (scan_roots["index"] / "opaque.bin").write_bytes(hashlib.sha256(b"index").digest())
+    assert scan_private_markers(roots=scan_roots, markers=markers) == ()
+
+    leak_path = scan_roots["logs"] / "release-gate-control.bin"
+    leak_path.write_bytes(b"prefix-" + markers["ocr"] + b"-suffix")
+    hits = scan_private_markers(roots=scan_roots, markers=markers)
+    assert [(hit.root_label, hit.relative_path, hit.marker_label) for hit in hits] == [
+        ("logs", "release-gate-control.bin", "ocr")
+    ]
+    leak_path.unlink()
+
 
 def test_production_document_image_and_source_writers_seal_private_text(
     monkeypatch,

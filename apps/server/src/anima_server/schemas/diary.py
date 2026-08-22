@@ -134,35 +134,6 @@ class DiaryFolderResponse(BaseModel):
     createdAt: datetime | None = None
 
 
-class DiaryDraftImportRequest(BaseModel):
-    userId: int = Field(ge=0)
-    draftId: str = Field(min_length=1, max_length=256)
-    clientRevision: int = Field(ge=1)
-    contentSha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    targetEntryId: int | None = Field(default=None, ge=0)
-    html: str = Field(max_length=DIARY_BODY_MAX_LENGTH)
-    title: str = Field(default="", max_length=200)
-    mood: str = Field(default="", max_length=80)
-    entryDate: str = Field(min_length=10, max_length=10)
-    updatedAt: datetime
-
-
-class DiaryDraftCompletionToken(BaseModel):
-    draftId: str
-    clientRevision: int
-    contentSha256: str
-
-
-class DiaryDraftImportResponse(BaseModel):
-    stableId: str
-    revision: int
-    generation: int
-    catalogHash: str
-    completionToken: DiaryDraftCompletionToken
-    verified: bool = True
-    authoritative: bool = False
-
-
 class DiaryCorefsPreparedResponse(BaseModel):
     generation: int
     catalogHash: str

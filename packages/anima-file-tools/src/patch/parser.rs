@@ -156,9 +156,17 @@ pub fn parse_patch(input: &str) -> Result<Patch, PatchError> {
             if content.is_empty() {
                 return Err(parse_error(line, "add-file operation is empty"));
             }
+            let trailing_newline = lines.get(index).copied() != Some(END_OF_FILE);
+            if !trailing_newline {
+                index += 1;
+            }
             operations.push(PatchOperation::Add {
                 path,
-                content: format!("{}\n", content.join("\n")),
+                content: if trailing_newline {
+                    format!("{}\n", content.join("\n"))
+                } else {
+                    content.join("\n")
+                },
             });
             continue;
         }

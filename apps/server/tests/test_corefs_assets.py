@@ -18,6 +18,7 @@ from anima_server.models.runtime import (
     RuntimeSource,
     RuntimeSourceArtifact,
 )
+from anima_server.services.core import ensure_core_manifest, update_core_manifest
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.asset_authority import CoreFsSourceError
 from anima_server.services.corefs.asset_migration import (
@@ -26,6 +27,7 @@ from anima_server.services.corefs.asset_migration import (
     build_portable_asset_shadow,
     collect_portable_asset_shadow,
 )
+from anima_server.services.corefs.authority import activate_content_authority
 from anima_server.services.corefs.conversation_migration import (
     build_conversation_shadow_catalog,
 )
@@ -33,6 +35,11 @@ from anima_server.services.corefs.diary_migration import (
     migration_opaque_id,
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
+)
+from anima_server.services.corefs.image_authority import (
+    canonical_image_projection,
+    forget_canonical_image,
+    set_canonical_image_retention,
 )
 from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
 from anima_server.services.corefs.messages import decode_message_segment
@@ -119,9 +126,7 @@ def test_gallery_reference_map_reconciles_message_attachment_links(tmp_path: Pat
     assert shadow.resolve_reference({"id": "message-attachment-9"}) == (
         f"corefs://object/{expected_id}"
     )
-    assert shadow.resolve_reference({"sha256": digest}) == (
-        f"corefs://object/{expected_id}"
-    )
+    assert shadow.resolve_reference({"sha256": digest}) == (f"corefs://object/{expected_id}")
     assert shadow.resolve_reference({"storagePath": str(image)}) is None
 
 
@@ -225,17 +230,14 @@ def test_runtime_collector_keeps_originals_and_excludes_derived_families(
     }
     assert sum(item.descriptor.kind == "gallery-asset" for item in shadow.objects) == 2
     assert any(
-        item.descriptor.metadata.get("origin") == "identity-avatar"
-        for item in shadow.objects
+        item.descriptor.metadata.get("origin") == "identity-avatar" for item in shadow.objects
     )
     assert not any(
         key in repr(item.descriptor.metadata)
         for item in shadow.objects
         for key in (str(tmp_path), "must-not-survive", "/private/report.pdf")
     )
-    knowledge = next(
-        item for item in shadow.objects if item.descriptor.kind == "knowledge-source"
-    )
+    knowledge = next(item for item in shadow.objects if item.descriptor.kind == "knowledge-source")
     assert knowledge.body == source_text.encode()
 
 
@@ -258,13 +260,13 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     tmp_path: Path,
     monkeypatch: object,
 ) -> None:
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        "anima_server.services.core.update_core_manifest", lambda _update: None
-    )
-    monkeypatch.setattr(  # type: ignore[attr-defined]
-        "anima_server.services.core.get_manifest_path",
-        lambda: tmp_path / "missing-manifest.json",
-    )
+    monkeypatch.setattr(settings, "data_dir", tmp_path / ".anima")  # type: ignore[attr-defined]
+    ensure_core_manifest()
+
+    def mark_first_release(manifest: dict[str, object]) -> None:
+        manifest["portable_core_release"] = 1
+
+    update_core_manifest(mark_first_release)
     engine = create_engine(f"sqlite:///{(tmp_path / 'source.db').as_posix()}")
     Base.metadata.create_all(engine)
     native = anima_core.CorefsSession(
@@ -350,6 +352,12 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
             supplemental_objects=(*conversations.objects, *assets.objects),
         )
     assert first.published is True
+    authority = activate_content_authority(
+        corefs_session=native,
+        keys=keys,
+        generation=first.generation,
+        catalog_hash=first.catalog_hash,
+    )
     prepared = read_prepared_writing_snapshot(session=session)
     assert {folder.role for folder in prepared.folders} >= {
         "core.conversations",
@@ -369,9 +377,7 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
         expected_previous_segment_id=None,
         expected_previous_sha256=None,
     )
-    assert segment.events[0].attachment_uris == (
-        f"corefs://object/{prepared_asset.stable_id}",
-    )
+    assert segment.events[0].attachment_uris == (f"corefs://object/{prepared_asset.stable_id}",)
     index = CoreFSProgressiveIndex("combined-gallery")
     index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
     session.runtime_index = index
@@ -417,9 +423,7 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
         0,
     )
     rebuild_unlocked_search(session)
-    assert index.search_text("offline canonical source") == (
-        prepared_source.stable_id,
-    )
+    assert index.search_text("offline canonical source") == (prepared_source.stable_id,)
     knowledge_projection = index.knowledge_source_projections()
     assert len(knowledge_projection) == 1
     assert knowledge_projection[0].source_id == 41
@@ -429,16 +433,14 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     assert image_projection is not None
     assert image_projection.stable_id == prepared_asset.stable_id
     assert image_projection.filename == "original.png"
-    session.content_authority = {
-        "version": 1,
-        "state": "cutover_complete",
-        "families": ["assets", "documents", "knowledge"],
-        "generation": selected.generation,
-        "catalogHash": selected.catalog_hash,
-    }
+    session.content_authority = authority
     monkeypatch.setattr(  # type: ignore[attr-defined]
         "anima_server.services.corefs.asset_authority.active_asset_authority_session",
         lambda user_id: session if user_id == 7 else None,
+    )
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "anima_server.services.corefs.asset_authority.authenticated_content_authority",
+        lambda current, *, family: current.content_authority,
     )
     projected_source = resolve_projected_image_byte_source(
         user_id=7,
@@ -474,3 +476,20 @@ def test_combined_native_publication_references_gallery_and_survives_restart_rer
     assert {item.stable_id for item in after.objects} == {
         item.stable_id for item in prepared.objects
     }
+    restarted_session.content_authority = authority
+    direct_projection = canonical_image_projection(
+        session=restarted_session,
+        image_asset_id=8,
+    )
+    assert direct_projection is not None
+    assert direct_projection.stable_id == prepared_asset.stable_id
+    assert (
+        set_canonical_image_retention(
+            session=restarted_session,
+            image_asset_id=8,
+            retention_state="durable",
+        )
+        == "durable"
+    )
+    assert forget_canonical_image(session=restarted_session, image_asset_id=8) is True
+    assert canonical_image_projection(session=restarted_session, image_asset_id=8) is None

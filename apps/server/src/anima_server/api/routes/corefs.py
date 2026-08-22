@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from contextlib import suppress
 from dataclasses import dataclass
@@ -57,6 +59,12 @@ _WRITE_OPERATIONS = {
     "trash",
     "restore",
 }
+_MAX_MUTATION_BODY_BYTES = 16 * 1024 * 1024
+
+# This flips only after every PCF-008 content-family adapter and the funded
+# signed-package gate are evidenced. Keeping the dispatch path testable while
+# this is false prevents a local build from consuming the irreversible marker.
+CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,7 +232,7 @@ def _require_path(payload: CoreFsOperationRequest, *, field: str = "path") -> st
     value = getattr(payload, field)
     if value is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": "corefs_path_required", "field": field},
         )
     return str(value)
@@ -259,6 +267,14 @@ def _client_grant_required(principal: CoreFsPrincipal) -> NoReturn:
 
 
 def _client_logical_path(payload: CoreFsOperationRequest) -> str | None:
+    if payload.operation in {"apply_patch", "move", "trash", "restore"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "corefs_client_multi_target_mutation_unavailable",
+                "message": "Client structural mutations require atomic authorization of every target.",
+            },
+        )
     if payload.operation in {"walk", "glob", "grep"}:
         return _require_path(payload, field="root")
     if payload.operation == "search_readiness":
@@ -328,6 +344,31 @@ def _validate_cursor_generation(
 
 def _logical_http_exception(exc: ValueError) -> HTTPException | None:
     message = str(exc)
+    mutation_mappings = {
+        "corefs_mutation_invalid_path": status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "corefs_mutation_invalid_content": status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "corefs_mutation_invalid_patch": status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "corefs_mutation_size_limit": status.HTTP_413_CONTENT_TOO_LARGE,
+        "corefs_mutation_not_found": status.HTTP_404_NOT_FOUND,
+        "corefs_mutation_wrong_entry_kind": status.HTTP_409_CONFLICT,
+        "corefs_mutation_collision": status.HTTP_409_CONFLICT,
+        "corefs_mutation_revision_conflict": status.HTTP_409_CONFLICT,
+        "corefs_mutation_role_collision": status.HTTP_409_CONFLICT,
+        "corefs_mutation_invalid_lifecycle": status.HTTP_409_CONFLICT,
+        "corefs_mutation_source_descendant": status.HTTP_409_CONFLICT,
+        "corefs_mutation_missing_expected_revision": status.HTTP_409_CONFLICT,
+        "corefs_mutation_optimistic_conflict": status.HTTP_409_CONFLICT,
+        "corefs_mutation_policy_denied": status.HTTP_403_FORBIDDEN,
+        "corefs_mutation_policy_boundary_mismatch": status.HTTP_403_FORBIDDEN,
+        "corefs_mutation_reserved_role_requires_user": status.HTTP_403_FORBIDDEN,
+        "corefs_mutation_prepare_failed": status.HTTP_503_SERVICE_UNAVAILABLE,
+        "corefs_mutation_storage_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
+    }
+    if message in mutation_mappings:
+        return HTTPException(
+            status_code=mutation_mappings[message],
+            detail={"code": message},
+        )
     mappings = (
         (
             "CoreFS validation snapshot is missing",
@@ -384,6 +425,138 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
             detail={"code": "corefs_cursor_cannot_advance", "message": message},
         )
     return None
+
+
+def _mutation_target(payload: CoreFsOperationRequest) -> dict[str, str]:
+    if payload.stableId is not None:
+        return {"stableId": payload.stableId}
+    return {"path": _require_path(payload)}
+
+
+def _mutation_trash_folder(payload: CoreFsOperationRequest) -> dict[str, str]:
+    if payload.trashFolderStableId is not None:
+        return {"stableId": payload.trashFolderStableId}
+    if payload.trashFolderPath is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_trash_folder_required"},
+        )
+    return {"path": payload.trashFolderPath}
+
+
+def _decode_mutation_body(payload: CoreFsOperationRequest) -> bytes:
+    if payload.contentBase64 is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_mutation_body_required"},
+        )
+    try:
+        body = base64.b64decode(payload.contentBase64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_mutation_body_invalid"},
+        ) from exc
+    if base64.b64encode(body).decode("ascii") != payload.contentBase64:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_mutation_body_noncanonical"},
+        )
+    if len(body) > _MAX_MUTATION_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail={"code": "corefs_mutation_body_too_large"},
+        )
+    return body
+
+
+def _dispatch_write(
+    payload: CoreFsOperationRequest,
+    *,
+    context: CoreFsRequestContext,
+    selected: logical.CoreFsValidationSnapshot,
+    principal: CoreFsPrincipal,
+) -> dict[str, object]:
+    mutation: dict[str, object]
+    body: bytes | None = None
+    if payload.operation == "mkdir":
+        mutation = {"operation": "mkdir", "path": _require_path(payload)}
+        if payload.reservedRole is not None:
+            if principal.kind != "user":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"code": "corefs_reserved_role_requires_user"},
+                )
+            mutation["reservedRole"] = payload.reservedRole
+    elif payload.operation == "create_file":
+        body = _decode_mutation_body(payload)
+        mutation = {
+            "operation": "create_file",
+            "path": _require_path(payload),
+            "kind": payload.kind,
+            "contentType": payload.contentType,
+            "bodyEncoding": payload.bodyEncoding,
+        }
+    elif payload.operation == "write_file":
+        body = _decode_mutation_body(payload)
+        mutation = {
+            "operation": "write_file",
+            "target": _mutation_target(payload),
+            "expectedRevision": payload.expectedRevision,
+            "contentType": payload.contentType,
+            "bodyEncoding": payload.bodyEncoding,
+        }
+    elif payload.operation == "apply_patch":
+        mutation = {
+            "operation": "apply_patch",
+            "patch": payload.patch,
+            "expectedRevisions": payload.expectedRevisions,
+            "addFormats": {
+                path: value.model_dump() for path, value in (payload.addFormats or {}).items()
+            },
+            "trashFolder": _mutation_trash_folder(payload),
+        }
+    elif payload.operation == "move":
+        mutation = {
+            "operation": "move",
+            "source": _mutation_target(payload),
+            "destination": payload.destination,
+            "expectedRevision": payload.expectedRevision,
+        }
+    elif payload.operation == "trash":
+        mutation = {
+            "operation": "trash",
+            "target": _mutation_target(payload),
+            "trashFolder": _mutation_trash_folder(payload),
+            "expectedRevision": payload.expectedRevision,
+        }
+    elif payload.operation == "restore":
+        mutation = {
+            "operation": "restore",
+            "target": _mutation_target(payload),
+            "destination": payload.destination,
+            "expectedRevision": payload.expectedRevision,
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "corefs_unknown_write_operation"},
+        )
+
+    invalidate = (
+        (lambda _generation, _catalog_hash: context.runtime_index.begin_catalog())
+        if context.runtime_index is not None
+        else None
+    )
+    return logical.execute_mutation_v1(
+        corefs_session=context.corefs_session,
+        keys=context.keys,
+        selected=selected,
+        principal=principal.kind,  # type: ignore[arg-type]
+        mutation=mutation,
+        body=body,
+        invalidate=invalidate,
+    )
 
 
 def _dispatch_read(
@@ -575,7 +748,7 @@ def run_corefs_operation(
         _client_grant_required(principal)
 
     context = _resolve_request_context(session)
-    if is_write_operation and principal.kind != "client":
+    if is_write_operation and not CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY:
         return CoreFsOperationResponse(
             principal=principal.to_response(),
             operation=payload.operation,
@@ -609,13 +782,14 @@ def run_corefs_operation(
             )
             client_authorization = (identity, folders, logical_path, required_scope)
         if is_write_operation:
-            return CoreFsOperationResponse(
-                principal=principal.to_response(),
-                operation=payload.operation,
-                selected=None,
-                result=logical.frozen_mutation_result(payload.operation),
+            result = _dispatch_write(
+                payload,
+                context=context,
+                selected=selected,
+                principal=principal,
             )
-        result = _dispatch_read(payload, context=context, selected=selected)
+        else:
+            result = _dispatch_read(payload, context=context, selected=selected)
         if client_authorization is not None:
             identity, folders, logical_path, required_scope = client_authorization
             authorize_client_path(
@@ -629,6 +803,20 @@ def run_corefs_operation(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "corefs_client_grant_required", "message": str(exc)},
+        ) from exc
+    except logical.CoreFsMutationUnavailable as exc:
+        code = str(exc)
+        raise HTTPException(
+            status_code=(
+                status.HTTP_503_SERVICE_UNAVAILABLE
+                if code
+                in {
+                    "corefs_native_mutation_unavailable",
+                    "corefs_native_mutation_result_invalid",
+                }
+                else status.HTTP_409_CONFLICT
+            ),
+            detail={"code": code},
         ) from exc
     except ValueError as exc:
         http_error = _logical_http_exception(exc)
