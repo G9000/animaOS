@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from io import BytesIO
 
+from anima_server.services.documents.models import DocumentInput
 from anima_server.services.documents.parsing_pack import (
     ParsingPackStatus,
     ensure_parsing_pack,
@@ -49,12 +51,13 @@ class ExtractionOutcome:
     parse_quality: str
 
 
-def extract_document_text(path: str) -> ExtractionOutcome:
+def extract_document_text(source: DocumentInput) -> ExtractionOutcome:
+    label = _source_label(source)
     prior_status: ParsingPackStatus | None = None
     if parsing_pack_ready():
         try:
             return ExtractionOutcome(
-                pages=_docling_pages(path), parse_quality=PARSE_QUALITY_DOCLING
+                pages=_docling_pages(source), parse_quality=PARSE_QUALITY_DOCLING
             )
         except DocumentParsingError:
             raise
@@ -62,7 +65,7 @@ def extract_document_text(path: str) -> ExtractionOutcome:
             # Spec §Error handling: a Docling crash must not fail the ingest —
             # fall back to preview quality (visible via parse_quality) so the
             # document stays usable and reparse can retry later.
-            logger.warning("Docling parse failed for %s; using preview", path, exc_info=True)
+            logger.warning("Docling parse failed for %s; using preview", label, exc_info=True)
     else:
         # Snapshot status BEFORE triggering the retry below. ensure_parsing_pack()
         # clears any recorded download error and starts a fresh attempt, so if we
@@ -73,9 +76,9 @@ def extract_document_text(path: str) -> ExtractionOutcome:
         # not let it erase the evidence of the failure it's about to retry.
         prior_status = pack_status()
         ensure_parsing_pack()
-        logger.info("Parsing pack not ready; extracting preview text for %s", path)
+        logger.info("Parsing pack not ready; extracting preview text for %s", label)
     try:
-        pages = extract_pdf_text(path)
+        pages = extract_pdf_text(source)
     except RuntimeError as exc:
         if "no extractable text" in str(exc) and not parsing_pack_ready():
             # Use the pre-retry snapshot, not a fresh pack_status() call: by now
@@ -131,8 +134,8 @@ def extract_document_text(path: str) -> ExtractionOutcome:
     return ExtractionOutcome(pages=pages, parse_quality=PARSE_QUALITY_PREVIEW)
 
 
-def _docling_pages(path: str) -> list[PageText]:
-    markdown = _convert_with_docling(path)
+def _docling_pages(source: DocumentInput) -> list[PageText]:
+    markdown = _convert_with_docling(source)
     pages = [
         PageText(page_number=index, text=page_text.strip())
         for index, page_text in enumerate(markdown.split(_DOCLING_PAGE_BREAK), start=1)
@@ -140,19 +143,19 @@ def _docling_pages(path: str) -> list[PageText]:
     non_empty = [page for page in pages if page.text]
     if not non_empty:
         raise DocumentParsingError(
-            f"Docling could not extract any text from {path}."
+            f"Docling could not extract any text from {_source_label(source)}."
         )
     return non_empty
 
 
-def _convert_with_docling(path: str) -> str:
+def _convert_with_docling(source: DocumentInput) -> str:
     """The only Docling-touching function; imports lazily, OCR enabled.
 
     Models load per call and are released afterwards so the quality tier has
     no resident memory cost between ingestions.
     """
     try:
-        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.base_models import DocumentStream, InputFormat
         from docling.datamodel.pipeline_options import PdfPipelineOptions
         from docling.document_converter import DocumentConverter, PdfFormatOption
     except ImportError as exc:  # pragma: no cover - guarded by parsing_pack_ready
@@ -166,11 +169,23 @@ def _convert_with_docling(path: str) -> str:
             InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
         }
     )
-    result = converter.convert(path)
+    docling_source = (
+        source
+        if isinstance(source, str)
+        else DocumentStream(
+            name=source.name,
+            stream=BytesIO(source.read_all(max_bytes=100 * 1024 * 1024)),
+        )
+    )
+    result = converter.convert(docling_source)
     return result.document.export_to_markdown(
         page_break_placeholder=_DOCLING_PAGE_BREAK,
         traverse_pictures=True,
     )
+
+
+def _source_label(source: DocumentInput) -> str:
+    return source if isinstance(source, str) else f"CoreFS object {source.name}"
 
 
 __all__ = [

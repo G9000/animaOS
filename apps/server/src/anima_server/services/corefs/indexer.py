@@ -85,6 +85,79 @@ class RuntimeEmbeddingSearchHit:
     similarity: float
 
 
+@dataclass(frozen=True, slots=True)
+class CoreFSDocumentChunkProjection:
+    chunk_index: int
+    content_text: str
+    page_start: int | None
+    page_end: int | None
+    section_title: str | None
+    metadata_json: dict[str, object] | None
+
+
+@dataclass(frozen=True, slots=True)
+class CoreFSDocumentProjection:
+    document_id: int
+    stable_id: str
+    filename: str
+    mime_type: str
+    content_sha256: str
+    chunks: tuple[CoreFSDocumentChunkProjection, ...]
+
+    @property
+    def id(self) -> int:
+        return self.document_id
+
+
+@dataclass(frozen=True, slots=True)
+class CoreFSImageProjection:
+    image_asset_id: int
+    stable_id: str
+    filename: str
+    mime_type: str
+    content_sha256: str
+    size: int
+
+    @property
+    def id(self) -> int:
+        return self.image_asset_id
+
+
+@dataclass(frozen=True, slots=True)
+class CoreFSKnowledgeSourceProjection:
+    stable_id: str
+    source_id: int
+    artifact_id: int
+    artifact_kind: str
+    source_kind: str
+    source_uri: str
+    source_title: str | None
+    source_media_type: str | None
+    filename: str
+    content_text: str
+    content_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class CoreFSKnowledgeConceptProjection:
+    concept_id: int
+    source_id: int
+    stable_id: str
+    artifact_id: int
+    artifact_kind: str
+    slug: str
+    title: str
+    description: str
+    concept_type: str
+    body_markdown: str
+    source_uri: str
+    content_sha256: str
+
+    @property
+    def id(self) -> int:
+        return self.concept_id
+
+
 class CoreFSProgressiveIndex:
     """Unlock-scoped progressive text and semantic index for one Core."""
 
@@ -98,6 +171,14 @@ class CoreFSProgressiveIndex:
         self._catalog_generation: int | None = None
         self._families: dict[str, FamilyReadiness] = {}
         self._documents: dict[str, tuple[str, str, str]] = {}
+        self._document_projections: dict[int, CoreFSDocumentProjection] = {}
+        self._image_projections: dict[int, CoreFSImageProjection] = {}
+        self._knowledge_source_projections: dict[
+            str, CoreFSKnowledgeSourceProjection
+        ] = {}
+        self._knowledge_concept_projections: dict[
+            int, CoreFSKnowledgeConceptProjection
+        ] = {}
         self._vectors: dict[str, tuple[float, ...]] = {}
         self._runtime_embeddings: dict[
             tuple[str, int],
@@ -176,6 +257,10 @@ class CoreFSProgressiveIndex:
         with self._lock:
             self._require_unlocked()
             self._documents.clear()
+            self._document_projections.clear()
+            self._image_projections.clear()
+            self._knowledge_source_projections.clear()
+            self._knowledge_concept_projections.clear()
             self._vectors.clear()
             self._semantic_fingerprint = None
             self._pending_semantic_fingerprint = None
@@ -503,6 +588,239 @@ class CoreFSProgressiveIndex:
                 for object_id, (revision, family, text) in self._documents.items()
             )
 
+    def replace_document_projection(self, projection: CoreFSDocumentProjection) -> None:
+        if projection.document_id <= 0 or not projection.stable_id or not projection.chunks:
+            raise ValueError("CoreFS document projection identity is invalid")
+        with self._lock:
+            self._require_unlocked()
+            self._document_projections[projection.document_id] = projection
+
+    def document_projection(self, document_id: int) -> CoreFSDocumentProjection | None:
+        with self._lock:
+            self._require_unlocked()
+            return self._document_projections.get(document_id)
+
+    def document_projections(self) -> tuple[CoreFSDocumentProjection, ...]:
+        with self._lock:
+            self._require_unlocked()
+            return tuple(
+                self._document_projections[key]
+                for key in sorted(self._document_projections)
+            )
+
+    def search_document_projections(
+        self,
+        query: str,
+        *,
+        document_ids: frozenset[int] | None = None,
+        limit: int = 8,
+    ) -> tuple[tuple[CoreFSDocumentProjection, CoreFSDocumentChunkProjection, float], ...]:
+        normalized = query.casefold().strip()
+        if not normalized or limit <= 0:
+            return ()
+        terms = tuple(dict.fromkeys(normalized.split()))
+        with self._lock:
+            self._require_unlocked()
+            ranked: list[
+                tuple[float, CoreFSDocumentProjection, CoreFSDocumentChunkProjection]
+            ] = []
+            for projection in self._document_projections.values():
+                if document_ids is not None and projection.document_id not in document_ids:
+                    continue
+                for chunk in projection.chunks:
+                    text = chunk.content_text.casefold()
+                    matches = sum(text.count(term) for term in terms)
+                    if matches:
+                        score = matches / max(1, len(terms))
+                        ranked.append((score, projection, chunk))
+            ranked.sort(
+                key=lambda item: (
+                    -item[0],
+                    item[1].document_id,
+                    item[2].chunk_index,
+                )
+            )
+            return tuple(
+                (projection, chunk, score)
+                for score, projection, chunk in ranked[:limit]
+            )
+
+    def replace_image_projection(self, projection: CoreFSImageProjection) -> None:
+        if (
+            projection.image_asset_id <= 0
+            or not projection.stable_id
+            or not projection.filename
+            or not projection.mime_type
+            or projection.size < 1
+        ):
+            raise ValueError("CoreFS image projection identity is invalid")
+        with self._lock:
+            self._require_unlocked()
+            self._image_projections[projection.image_asset_id] = projection
+
+    def image_projection(self, image_asset_id: int) -> CoreFSImageProjection | None:
+        with self._lock:
+            self._require_unlocked()
+            return self._image_projections.get(image_asset_id)
+
+    def replace_knowledge_source_projection(
+        self,
+        projection: CoreFSKnowledgeSourceProjection,
+    ) -> None:
+        if (
+            not projection.stable_id
+            or projection.source_id <= 0
+            or projection.artifact_id <= 0
+            or not projection.artifact_kind
+            or not projection.source_kind
+            or not projection.source_uri
+            or not projection.filename
+            or not projection.content_text
+        ):
+            raise ValueError("CoreFS knowledge projection identity is invalid")
+        with self._lock:
+            self._require_unlocked()
+            self._knowledge_source_projections[projection.stable_id] = projection
+            priority = {
+                "structured_markdown": 0,
+                "markdown": 1,
+                "readable_text": 2,
+                "plain_text": 3,
+                "raw_html": 4,
+            }
+            current = self._knowledge_concept_projections.get(projection.source_id)
+            current_priority = (
+                priority.get(current.artifact_kind, 10) if current is not None else 11
+            )
+            candidate_priority = priority.get(projection.artifact_kind, 10)
+            if current is None or (candidate_priority, projection.artifact_id) < (
+                current_priority,
+                current.artifact_id,
+            ):
+                compact = " ".join(projection.content_text.split())
+                title = projection.source_title or projection.filename
+                self._knowledge_concept_projections[projection.source_id] = (
+                    CoreFSKnowledgeConceptProjection(
+                        concept_id=projection.source_id,
+                        source_id=projection.source_id,
+                        stable_id=projection.stable_id,
+                        artifact_id=projection.artifact_id,
+                        artifact_kind=projection.artifact_kind,
+                        slug=f"corefs-source-{projection.source_id}",
+                        title=title,
+                        description=compact[:240],
+                        concept_type="source_summary",
+                        body_markdown=projection.content_text,
+                        source_uri=projection.source_uri,
+                        content_sha256=projection.content_sha256,
+                    )
+                )
+
+    def knowledge_source_projections(
+        self,
+    ) -> tuple[CoreFSKnowledgeSourceProjection, ...]:
+        with self._lock:
+            self._require_unlocked()
+            return tuple(
+                sorted(
+                    self._knowledge_source_projections.values(),
+                    key=lambda item: (
+                        item.source_id,
+                        item.artifact_kind,
+                        item.artifact_id,
+                    ),
+                )
+            )
+
+    def search_knowledge_source_projections(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> tuple[CoreFSKnowledgeSourceProjection, ...]:
+        normalized = query.casefold().strip()
+        if not normalized or limit <= 0:
+            return ()
+        terms = tuple(dict.fromkeys(normalized.split()))
+        priority = {
+            "structured_markdown": 0,
+            "markdown": 1,
+            "readable_text": 2,
+            "plain_text": 3,
+            "raw_html": 4,
+        }
+        with self._lock:
+            self._require_unlocked()
+            ranked: list[tuple[int, int, int, CoreFSKnowledgeSourceProjection]] = []
+            for projection in self._knowledge_source_projections.values():
+                searchable = "\n".join(
+                    value
+                    for value in (
+                        projection.source_title,
+                        projection.source_uri,
+                        projection.content_text,
+                    )
+                    if value
+                ).casefold()
+                matches = sum(searchable.count(term) for term in terms)
+                if matches:
+                    ranked.append(
+                        (
+                            -matches,
+                            priority.get(projection.artifact_kind, 10),
+                            projection.artifact_id,
+                            projection,
+                        )
+                    )
+            ranked.sort(key=lambda item: item[:3])
+            return tuple(item[3] for item in ranked[:limit])
+
+    def knowledge_concept_projections(
+        self,
+    ) -> tuple[CoreFSKnowledgeConceptProjection, ...]:
+        with self._lock:
+            self._require_unlocked()
+            return tuple(
+                self._knowledge_concept_projections[key]
+                for key in sorted(self._knowledge_concept_projections)
+            )
+
+    def knowledge_concept_projection(
+        self,
+        concept_id: int,
+    ) -> CoreFSKnowledgeConceptProjection | None:
+        with self._lock:
+            self._require_unlocked()
+            return self._knowledge_concept_projections.get(concept_id)
+
+    def search_knowledge_concept_projections(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> tuple[CoreFSKnowledgeConceptProjection, ...]:
+        normalized = query.casefold().strip()
+        if not normalized or limit <= 0:
+            return ()
+        terms = tuple(dict.fromkeys(normalized.split()))
+        with self._lock:
+            self._require_unlocked()
+            ranked: list[tuple[int, int, CoreFSKnowledgeConceptProjection]] = []
+            for projection in self._knowledge_concept_projections.values():
+                searchable = "\n".join(
+                    (
+                        projection.title,
+                        projection.description,
+                        projection.body_markdown,
+                        projection.slug,
+                    )
+                ).casefold()
+                matches = sum(searchable.count(term) for term in terms)
+                if matches:
+                    ranked.append((-matches, projection.concept_id, projection))
+            ranked.sort(key=lambda item: item[:2])
+            return tuple(item[2] for item in ranked[:limit])
+
     def has_vector(self, object_id: str) -> bool:
         with self._lock:
             self._require_unlocked()
@@ -798,6 +1116,14 @@ class CoreFSProgressiveIndex:
         with self._lock:
             return {
                 "documents": len(self._documents),
+                "document_projections": len(self._document_projections),
+                "image_projections": len(self._image_projections),
+                "knowledge_source_projections": len(
+                    self._knowledge_source_projections
+                ),
+                "knowledge_concept_projections": len(
+                    self._knowledge_concept_projections
+                ),
                 "vectors": len(self._vectors) + len(self._runtime_embeddings),
                 "queries": len(self._queries),
                 "blind_tokens": sum(
@@ -815,6 +1141,10 @@ class CoreFSProgressiveIndex:
                 del revision, family, text
                 self._documents.pop(object_id, None)
             self._vectors.clear()
+            self._document_projections.clear()
+            self._image_projections.clear()
+            self._knowledge_source_projections.clear()
+            self._knowledge_concept_projections.clear()
             self._runtime_embeddings.clear()
             self._runtime_embedding_fingerprint = None
             self._pending_runtime_embedding_fingerprint = None

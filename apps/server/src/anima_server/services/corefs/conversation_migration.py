@@ -186,7 +186,7 @@ def build_conversation_shadow_catalog(
                 _body(
                     stable_id=segment.segment_id,
                     parent_id=folder.stable_id,
-                    name=f"segment-{segment.index:08d}.jsonl",
+                    name=f"segment-{thread_id}-{segment.index:08d}.jsonl",
                     kind="message-segment",
                     content_type=MESSAGE_SEGMENT_CONTENT_TYPE,
                     data=segment.data,
@@ -373,6 +373,7 @@ def collect_conversation_shadow_sources(
     transcripts_dir: Path,
     dek: bytes | None,
     attachment_resolver: Callable[[object], str | None] | None = None,
+    include_runtime_attachment_objects: bool = True,
 ) -> ConversationShadowCatalog:
     """Read all three legacy source families into one inactive snapshot."""
     from anima_server.models.agent_runtime import AgentMessage, AgentThread
@@ -410,11 +411,19 @@ def collect_conversation_shadow_sources(
         user_id=user_id,
         dek=dek,
     )
-    attachment_objects, resolved_attachment = _collect_runtime_message_attachments(
-        runtime_db=runtime_db,
-        user_id=user_id,
-        messages=[*active_messages, *archived.messages, *legacy_messages],
-    )
+    if include_runtime_attachment_objects:
+        attachment_objects, resolved_attachment = _collect_runtime_message_attachments(
+            runtime_db=runtime_db,
+            user_id=user_id,
+            messages=[*active_messages, *archived.messages, *legacy_messages],
+        )
+    else:
+        if attachment_resolver is None:
+            raise ValueError("External attachment inventory requires a resolver.")
+        attachment_objects = ()
+
+        def resolved_attachment(_value: object) -> str | None:
+            return None
 
     def resolve_attachment(value: object) -> str | None:
         if attachment_resolver is not None:

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 import anima_core
 
 CORE_FS_MIGRATION_WRITE_FROZEN = "corefs_migration_write_frozen"
 CoreFsSearchState = Literal["missing", "building", "ready", "degraded"]
+
+
+class CoreFsMutationUnavailable(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,9 +50,7 @@ def select_validation_snapshot(
     corefs_session: Any,
     keys: object,
 ) -> CoreFsValidationSnapshot:
-    return CoreFsValidationSnapshot.from_native(
-        corefs_session.validation_snapshot(keys)
-    )
+    return CoreFsValidationSnapshot.from_native(corefs_session.validation_snapshot(keys))
 
 
 def stat_v1(
@@ -218,6 +223,82 @@ def frozen_mutation_result(operation: str) -> dict[str, object]:
         "operation": operation,
         "code": CORE_FS_MIGRATION_WRITE_FROZEN,
     }
+
+
+def execute_mutation_v1(
+    *,
+    corefs_session: Any,
+    keys: object,
+    selected: CoreFsValidationSnapshot,
+    principal: Literal["user", "anima", "client"],
+    mutation: dict[str, object],
+    body: bytes | None = None,
+    invalidate: Callable[[int, str], None] | None = None,
+) -> dict[str, object]:
+    """Commit one native logical mutation under authenticated CoreFS authority."""
+    from anima_server.services.corefs.authority import reconcile_content_authority
+
+    native = getattr(corefs_session, "logical_mutate_v1", None)
+    if not callable(native):
+        raise CoreFsMutationUnavailable("corefs_native_mutation_unavailable")
+
+    authority = reconcile_content_authority(corefs_session=corefs_session, keys=keys)
+    if (
+        authority is None
+        or authority.get("generation") != selected.generation
+        or authority.get("catalogHash") != selected.catalog_hash
+    ):
+        raise CoreFsMutationUnavailable("corefs_authoritative_snapshot_stale")
+
+    now = datetime.now(UTC)
+    request: dict[str, object] = {
+        "version": 1,
+        "principal": principal,
+        "commitMode": "normal",
+        "selectedGeneration": selected.generation,
+        "selectedCatalogHash": selected.catalog_hash,
+        "timestampMs": int(now.timestamp() * 1000),
+        "timestamp": now.isoformat().replace("+00:00", "Z"),
+        "mutation": mutation,
+    }
+    raw = native(
+        keys,
+        json.dumps(request, separators=(",", ":"), sort_keys=True),
+        body,
+    )
+    if not isinstance(raw, dict):
+        raise CoreFsMutationUnavailable("corefs_native_mutation_result_invalid")
+    required = {
+        "ok",
+        "generation",
+        "catalogHash",
+        "atomic",
+        "cutoverCommitted",
+        "recoveryPending",
+        "invalidationDelivered",
+        "changes",
+    }
+    if set(raw) != required or raw.get("ok") is not True or raw.get("atomic") is not True:
+        raise CoreFsMutationUnavailable("corefs_native_mutation_result_invalid")
+
+    generation = raw.get("generation")
+    catalog_hash = raw.get("catalogHash")
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation <= selected.generation
+        or not isinstance(catalog_hash, str)
+        or len(catalog_hash) != 64
+    ):
+        raise CoreFsMutationUnavailable("corefs_native_mutation_result_invalid")
+
+    if raw.get("recoveryPending") is True:
+        reconcile_content_authority(corefs_session=corefs_session, keys=keys)
+    if raw.get("invalidationDelivered") is not True and invalidate is not None:
+        invalidate(generation, catalog_hash)
+        raw = dict(raw)
+        raw["invalidationDelivered"] = True
+    return dict(raw)
 
 
 def mkdir(*args: object, **kwargs: object) -> dict[str, object]:

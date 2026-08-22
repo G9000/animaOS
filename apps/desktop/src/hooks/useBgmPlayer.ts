@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { saveAudioFile, loadAudioFile, deleteAudioFile } from "../lib/audioDb";
+import {
+  DEVICE_BGM_TRACKS_KEY,
+  getPortablePreference,
+  PORTABLE_PREFERENCES_CHANGED_EVENT,
+  setPortablePreference,
+} from "../lib/portablePreferences";
 
 export interface BgmTrack {
   id: string;
@@ -22,8 +28,6 @@ export const BUILT_IN_TRACKS: BgmTrack[] = [
   { id: "builtin-rebel-path",  name: "THE REBEL PATH", trackNum: "1.03", src: "/bgm.mp3",    builtIn: true },
 ];
 
-const STATE_KEY = "anima_bgm_state";
-
 const DEFAULT_STATE: PersistedState = {
   currentId: BUILT_IN_TRACKS[1].id, // default: Rebel Path
   muted: false,
@@ -31,14 +35,56 @@ const DEFAULT_STATE: PersistedState = {
 };
 
 function loadState(): PersistedState {
+  const portable = getPortablePreference<Partial<PersistedState>>("bgm", {});
+  let userTracks: SavedUserTrack[] = [];
+  let deviceCurrentId: string | undefined;
   try {
-    const raw = localStorage.getItem(STATE_KEY);
-    return raw ? { ...DEFAULT_STATE, ...JSON.parse(raw) } : DEFAULT_STATE;
-  } catch { return DEFAULT_STATE; }
+    const raw = localStorage.getItem(DEVICE_BGM_TRACKS_KEY);
+    if (raw) {
+      const device = JSON.parse(raw) as
+        | SavedUserTrack[]
+        | { currentId?: unknown; userTracks?: unknown };
+      if (Array.isArray(device)) userTracks = device;
+      else {
+        if (Array.isArray(device.userTracks)) {
+          userTracks = device.userTracks as SavedUserTrack[];
+        }
+        if (typeof device.currentId === "string") deviceCurrentId = device.currentId;
+      }
+    }
+  } catch {}
+  return {
+    ...DEFAULT_STATE,
+    ...portable,
+    ...(deviceCurrentId ? { currentId: deviceCurrentId } : {}),
+    userTracks,
+  };
 }
 
 function saveState(s: PersistedState) {
-  try { localStorage.setItem(STATE_KEY, JSON.stringify(s)); } catch {}
+  const currentId = s.currentId.startsWith("builtin-") ? s.currentId : undefined;
+  const previous = getPortablePreference<Partial<PersistedState>>("bgm", {});
+  setPortablePreference("bgm", {
+    ...(currentId
+      ? { currentId }
+      : previous.currentId
+        ? { currentId: previous.currentId }
+        : {}),
+    muted: s.muted,
+  });
+  try {
+    if (s.userTracks.length > 0) {
+      localStorage.setItem(
+        DEVICE_BGM_TRACKS_KEY,
+        JSON.stringify({
+          currentId: currentId ? null : s.currentId,
+          userTracks: s.userTracks,
+        }),
+      );
+    } else {
+      localStorage.removeItem(DEVICE_BGM_TRACKS_KEY);
+    }
+  } catch {}
 }
 
 export function useBgmPlayer(volume = 0.35) {
@@ -100,6 +146,31 @@ export function useBgmPlayer(volume = 0.35) {
       blobUrlsRef.current.forEach(url => URL.revokeObjectURL(url));
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const refreshPortableState = () => {
+      const state = loadState();
+      setMuted(state.muted);
+      if (state.currentId.startsWith("builtin-") && state.currentId !== currentId) {
+        const track = tracksRef.current.find((item) => item.id === state.currentId);
+        if (track && audioRef.current) {
+          audioRef.current.src = track.src;
+          audioRef.current.load();
+          audioRef.current.play().catch(() => {});
+          setCurrentId(state.currentId);
+        }
+      }
+    };
+    globalThis.addEventListener(
+      PORTABLE_PREFERENCES_CHANGED_EVENT,
+      refreshPortableState,
+    );
+    return () =>
+      globalThis.removeEventListener(
+        PORTABLE_PREFERENCES_CHANGED_EVENT,
+        refreshPortableState,
+      );
+  }, [currentId]);
 
   // ── Sync muted ────────────────────────────────────────────────────────────
   useEffect(() => {

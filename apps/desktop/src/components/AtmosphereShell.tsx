@@ -2,6 +2,7 @@ import { Outlet } from "react-router-dom";
 import { AsciiBackground } from "@anima/ascii-motion";
 import { AsciiSettingsProvider, useAsciiSettings } from "../context/AsciiSettingsContext";
 import { AtmosphereControls } from "./atmosphere/AtmosphereControls";
+import { useAuth } from "../context/AuthContext";
 
 function AtmosphereBackground() {
   const { settings, srcOverride, srcOverrideType } = useAsciiSettings();
@@ -21,11 +22,12 @@ function AtmosphereBackground() {
 }
 
 export function AtmosphereShell() {
+  const { isAuthenticated } = useAuth();
   return (
     <AsciiSettingsProvider>
       <AtmosphereBackground />
       <Outlet />
-      <AtmosphereControls />
+      {isAuthenticated && <AtmosphereControls />}
     </AsciiSettingsProvider>
   );
 }

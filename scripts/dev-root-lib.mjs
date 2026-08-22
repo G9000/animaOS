@@ -33,7 +33,7 @@ export function createDevSessionContinuity({
   });
 }
 
-export function buildTargetEnvironment(name, baseEnv, serverEnv) {
+export function buildTargetEnvironment(name, baseEnv, serverEnv, brokerSecret = "") {
   const sanitizedBaseEnv = { ...baseEnv };
   for (const key of Object.keys(sanitizedBaseEnv)) {
     const normalizedKey = key.toUpperCase();
@@ -45,7 +45,14 @@ export function buildTargetEnvironment(name, baseEnv, serverEnv) {
     }
   }
   if (name === "server") {
-    return { ...sanitizedBaseEnv, ...serverEnv };
+    return {
+      ...sanitizedBaseEnv,
+      ...serverEnv,
+      ...(brokerSecret ? { ANIMA_CREDENTIAL_BROKER_SECRET: brokerSecret } : {}),
+    };
+  }
+  if (name === "anima-mod" && brokerSecret) {
+    return { ...sanitizedBaseEnv, ANIMA_CREDENTIAL_BROKER_SECRET: brokerSecret };
   }
   return sanitizedBaseEnv;
 }

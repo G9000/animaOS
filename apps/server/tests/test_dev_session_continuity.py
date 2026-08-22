@@ -249,7 +249,11 @@ def test_session_store_does_not_restore_session_that_had_corefs_keys(
     tmp_path: Path,
 ) -> None:
     snapshot = DevSessionSnapshot(path=tmp_path / "state.bin", key=b"s" * 32)
-    store = UnlockSessionStore(snapshot=snapshot)
+    native_session = SimpleNamespace(begin_close=lambda: None, close=lambda: None)
+    store = UnlockSessionStore(
+        snapshot=snapshot,
+        corefs_session_factory=lambda: native_session,
+    )
     store.set_sqlcipher_key(b"q" * 32)
     token = store.create(
         7,

@@ -4,6 +4,7 @@ members = [
     "packages/anima-core",
     "packages/anima-corefs",
     "packages/anima-file-tools",
+    "packages/anima-credential-store",
     "apps/local-runtime-daemon",
     "apps/desktop/src-tauri",
     "apps/animus",
@@ -30,4 +31,5 @@ bincode = { version = "2.0" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
 blake3 = "=1.5.5"
+keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 uuid = { version = "=1.10.0", features = ["v4", "serde"] }

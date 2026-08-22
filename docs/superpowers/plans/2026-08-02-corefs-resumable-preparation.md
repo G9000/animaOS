@@ -1,5 +1,14 @@
 # CoreFS Resumable Preparation Implementation Plan
 
+> **First-release supersession (2026-08-16):** The resumable native preparation
+> primitive remains part of CoreFS, but all pre-release browser-draft handoff,
+> plaintext cleanup, legacy SQL/runtime migration, and release-package census
+> work below is historical. No supported ANIMA desktop release or user data
+> predates portable Core release 1, so the supported product starts greenfield
+> and establishes CoreFS authority before publishing the first unlock session.
+> Removed files and commands in Tasks 8 and 10 must not be restored as release
+> requirements. Compatibility begins with the first supported release.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace PCF-004's aggregate in-memory validation-batch transport with an authenticated, encrypted, crash-resumable preparation protocol that handles writing corpora larger than 1 GiB while preserving one exact-CAS inactive-catalog publication, then remove imported plaintext browser drafts only after native packaged-desktop writer exclusion is proven.
@@ -11,6 +20,14 @@
 **Plan Review:** Approved on 2026-08-02 after three focused independent passes; all consequential findings were corrected before execution handoff.
 
 **Draft-cleanup revision:** Independently reviewed and explicitly approved by the user on 2026-08-13; Task 10 is cleared for implementation.
+
+**Evidence sequencing revision:** Explicitly approved by the user on
+2026-08-13. PCF-004 closes on completed implementation, local validation, and
+independent review. PCF-008 inherits the protected final signed Windows,
+macOS, DEB, and RPM replacement-install executions plus artifact-digest
+recording as a mandatory pre-cutover and first-release gate. The requirement is
+deferred, not waived; the paid workflow remains triggerless until separately
+authorized during PCF-008.
 
 ---
 
@@ -516,7 +533,7 @@ independent review and the user explicitly approves it. Both gates completed on
 - Modify: `tickets/portable-core-filesystem/PCF-004-diary-notes.md`
 - Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 
-- [ ] **Step 1: Lock the supported release-package contract with failing tests**
+- [x] **Step 1: Lock the supported release-package contract with failing tests**
 
 Add source-contract tests plus native release-package verification fixtures that
 require exactly one cleanup-capable target: MSI major upgrade with stable
@@ -540,7 +557,7 @@ pinned in the binary. Missing, writable, symlinked, stale, extra, wrong-key, or
 tampered manifest/target files fail closed; old-to-current upgrade replaces the
 manifest atomically. Standard dpkg metadata alone is not a signature oracle.
 
-- [ ] **Step 2: Implement and verify replacement-only desktop packaging**
+- [x] **Step 2: Implement replacement-only desktop packaging and its verifier**
 
 Replace `targets: "all"` and the generic package commands with the supported
 platform matrix only. Extend release preparation and CI so each native runner
@@ -549,8 +566,9 @@ enumerates package-owned files and OS launch registrations, and blocks release
 publication on any alternate launchable residue. The verifier must rerun against
 the exact final signed/notarized artifacts. Installer failure to stop ANIMA or
 remove/make-unlaunchable every managed prior/staging executable must abort before
-registering the new target. No cleanup-capable release artifact exists until
-this step is green on Windows, macOS, Debian, and RPM runners.
+registering the new target. No cleanup-capable release artifact may be
+published until PCF-008 runs this verifier successfully on Windows, macOS,
+Debian, and RPM against the final signed artifacts and records their digests.
 
 For the first cleanup-capable release only, the protected workflow may build an
 unpublished predecessor from the exact protected candidate source after it
@@ -559,7 +577,7 @@ prior MSI/PKG/DEB/RPM release asset. Future releases must consume an immutable
 real predecessor and carry/test its signed host-identity key; the bootstrap path
 must fail once any installer-managed desktop artifact has been published.
 
-- [ ] **Step 3: Write failing native authority and lifecycle tests**
+- [x] **Step 3: Write failing native authority and lifecycle tests**
 
 Extract platform adapters plus pure classification/transition helpers. Unit
 tests cover the domain-separated length-delimited installed-identity digest;
@@ -579,7 +597,7 @@ any requested/effective TTL above five seconds, expiry, replay, response loss,
 and concurrent double-consume all fail closed. Assert capabilities/digests never
 enter the epoch, filesystem, logs, tracing, metrics, or crash metadata.
 
-- [ ] **Step 4: Implement the packaged Tauri cleanup authority**
+- [x] **Step 4: Implement the packaged Tauri cleanup authority**
 
 Add `fs4` as a direct desktop-host dependency. During Tauri setup, open and
 retain an owner-only exclusive kernel lock on the stable app-local cleanup lease
@@ -602,7 +620,7 @@ successful consumption, and exclude all sensitive values from display/debug,
 logging, tracing, metrics, persistence, and crash reporting. Native never
 receives the storage key, completion-token fields, content hash, or draft body.
 
-- [ ] **Step 5: Write failing desktop cleanup and crash regressions**
+- [x] **Step 5: Write failing desktop cleanup and crash regressions**
 
 Test that browser/debug/no-authority contexts retain plaintext, the arming run
 and same-boot restart retain plaintext, and a later-boot authorized run deletes
@@ -624,7 +642,7 @@ the same post-reboot authorized critical section after verified source absence,
 never first while a source exists. Rejected/stale server revisions cannot strand
 plaintext indefinitely.
 
-- [ ] **Step 6: Consume authority at the exact handoff boundary**
+- [x] **Step 6: Consume authority at the exact handoff boundary**
 
 Keep the current non-destructive digest/revision sidecar. After a matching
 durable completion, acquire native cleanup authority, reread and renormalize the
@@ -641,7 +659,7 @@ and require a fresh exact import before another cleanup attempt. An absent sourc
 on startup leaves the orphan sidecar intact; only the authorized critical
 section that removed and verified the source may best-effort remove its sidecar.
 
-- [ ] **Step 7: Run platform, Tauri, desktop, and repository gates**
+- [x] **Step 7: Run local Tauri, desktop, and repository gates**
 
 ```powershell
 cargo test -p desktop --lib
@@ -654,24 +672,33 @@ bun run check:repo
 git diff --check
 ```
 
-The dedicated Windows, macOS, Debian, and RPM workflow must also pass real
-package upgrade/registration verification and native subprocess launch/lock/
-census tests. Record artifact digests and exact workflow results; pure helper
-tests or a single host-OS Cargo run cannot satisfy this gate.
+The local gates above are complete. PCF-008 inherits the dedicated Windows,
+macOS, Debian, and RPM workflow, which must pass real package upgrade/
+registration verification and native subprocess launch/lock/census tests
+before cutover or release publication. It records artifact digests and exact
+workflow results; pure helper tests or a single host-OS Cargo run cannot satisfy
+that inherited gate.
 
 Record exact results. If strict desktop Clippy exposes untouched baseline
 warnings, record their exact locations and run a diff-scoped no-new-warning
 gate without weakening repository lints.
 
-- [ ] **Step 8: Obtain independent implementation review and close PCF-004**
+- [x] **Step 8: Obtain independent implementation review and close the PCF-004 implementation slice**
 
 Review actual release-package replacement invariants, platform identity/process
 adapters, kernel launch-gate lifetime, reboot epoch, issue/consume census races,
 capability canonicalization/TTL/replay, source-first crash behavior, frontend
 raw-value recheck, browser/debug fail-closed behavior, and absence of private
-native state. Resolve substantive findings test-first. Mark PCF-004 done only
-after the reviewer confirms both no-loss and plaintext-removal acceptance, all
-four platform package gates are evidenced, and child/parent tracking is synced.
+native state. Resolve substantive findings test-first. Mark PCF-004 done after
+the reviewer confirms the no-loss/plaintext-removal implementation and local
+gates, and child/parent tracking is synced. PCF-008 must remain blocked from
+cutover and release publication until all four final signed-package gates are
+evidenced with exact artifact digests.
+
+Task 10 implementation and independent review completed on 2026-08-13. The
+user subsequently approved the evidence-sequencing change above: PCF-004 may
+close, while the cost-bearing final package executions remain a mandatory
+PCF-008 first-release gate.
 
 ## Stop conditions
 

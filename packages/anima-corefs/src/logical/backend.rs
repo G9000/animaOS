@@ -22,7 +22,9 @@ use crate::envelope::{
     EnvelopeMetadata, ENVELOPE_VERSION,
 };
 use crate::rotation::FrkKeyring;
-use crate::transaction::{open_regular_file_in, CoreCommitCoordinator, ValidationSnapshot};
+use crate::transaction::{
+    open_regular_file_in, CommittedCatalog, CoreCommitCoordinator, ValidationSnapshot,
+};
 
 use super::{LogicalPath, LogicalPathError};
 
@@ -121,8 +123,39 @@ impl CoreFsReadSnapshot {
         selected: &ValidationSnapshot,
         keyring: &FrkKeyring<'_>,
     ) -> Result<Self, LogicalError> {
-        let catalog = selected.catalog();
-        if selected.head().generation() != catalog.generation() {
+        Self::open_catalog(
+            coordinator,
+            selected.head().generation(),
+            selected.catalog(),
+            keyring,
+        )
+    }
+
+    /// Opens the authenticated catalog selected by authoritative `fs/HEAD`.
+    ///
+    /// Inactive migration reads remain pinned to `VALIDATION_HEAD`; callers
+    /// use this constructor only after the authenticated cutover marker makes
+    /// the committed catalog the forward-only content authority.
+    pub fn open_committed(
+        coordinator: &CoreCommitCoordinator,
+        selected: &CommittedCatalog,
+        keyring: &FrkKeyring<'_>,
+    ) -> Result<Self, LogicalError> {
+        Self::open_catalog(
+            coordinator,
+            selected.head().generation(),
+            selected.catalog(),
+            keyring,
+        )
+    }
+
+    fn open_catalog(
+        coordinator: &CoreCommitCoordinator,
+        selected_generation: u64,
+        catalog: &CatalogGeneration,
+        keyring: &FrkKeyring<'_>,
+    ) -> Result<Self, LogicalError> {
+        if selected_generation != catalog.generation() {
             return Err(LogicalError::StorageUnavailable);
         }
         let objects_dir = coordinator

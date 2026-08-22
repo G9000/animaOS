@@ -23,18 +23,27 @@ from anima_server.services.agent.embedding_resolution import (
     configured_embedding_fingerprint,
 )
 from anima_server.services.corefs import logical
-from anima_server.services.corefs.indexer import CoreFSProgressiveIndex, ReadinessState
+from anima_server.services.corefs.indexer import (
+    CoreFSDocumentChunkProjection,
+    CoreFSDocumentProjection,
+    CoreFSImageProjection,
+    CoreFSKnowledgeSourceProjection,
+    CoreFSProgressiveIndex,
+    ReadinessState,
+)
 from anima_server.services.sessions import UnlockSession
 
 _INDEX_READ_CHUNK_BYTES = 64 * 1024
 _MAX_INDEXABLE_OBJECT_BYTES = 16 * 1024 * 1024
 _INDEX_VERSION = 1
 _BLIND_CHECKPOINT_FAMILY = "__blind__"
+_BINARY_OBJECT_FAMILIES = frozenset({"attachment", "gallery-asset"})
 logger = logging.getLogger(__name__)
 
 _rebuild_workers_lock = Lock()
 _rebuild_workers: WeakKeyDictionary[CoreFSProgressiveIndex, Thread] = WeakKeyDictionary()
 _rebuild_pending: WeakKeyDictionary[CoreFSProgressiveIndex, bool] = WeakKeyDictionary()
+_rebuilds_accepting = True
 
 
 class _NonIndexableCoreFSObject(ValueError):
@@ -227,6 +236,48 @@ def rebuild_unlocked_search(
             continue
         if durable_key in completed_entries:
             continue
+        if entry["family"] in _BINARY_OBJECT_FAMILIES:
+            projection_error: Exception | None = None
+            if entry["family"] == "attachment":
+                try:
+                    _rebuild_document_projection(
+                        session=session,
+                        selected=selected,
+                        index=index,
+                        entry=entry,
+                    )
+                except _NonIndexableCoreFSObject as exc:
+                    projection_error = exc
+                    index.mark_family_failure(
+                        family=entry["family"],
+                        object_id=entry["stable_id"],
+                    )
+            elif entry["family"] == "gallery-asset":
+                try:
+                    _rebuild_image_projection(index=index, entry=entry)
+                except _NonIndexableCoreFSObject as exc:
+                    projection_error = exc
+                    index.mark_family_failure(
+                        family=entry["family"],
+                        object_id=entry["stable_id"],
+                    )
+            index.skip_text(
+                family=entry["family"],
+                object_id=entry["stable_id"],
+                revision=entry["revision"],
+            )
+            if runtime_db is not None:
+                _record_text_progress(
+                    runtime_db,
+                    index=index,
+                    generation=selected.generation,
+                    entry=entry,
+                    total=family_counts[entry["family"]],
+                    status="text_skipped",
+                    error=projection_error,
+                )
+                completed_entries.add(durable_key)
+            continue
         try:
             text = _read_authenticated_text(
                 corefs_session=session.corefs_session,
@@ -234,6 +285,12 @@ def rebuild_unlocked_search(
                 selected=selected,
                 path=entry["path"],
             )
+            if entry["family"] == "knowledge-source":
+                _rebuild_knowledge_source_projection(
+                    index=index,
+                    entry=entry,
+                    text=text,
+                )
         except _NonIndexableCoreFSObject as exc:
             index.skip_text(
                 family=entry["family"],
@@ -366,6 +423,8 @@ def schedule_unlocked_rebuild(
     if index is None:
         raise ValueError("CoreFS rebuild requires an unlocked Runtime index")
     with _rebuild_workers_lock:
+        if not _rebuilds_accepting:
+            return False
         current = _rebuild_workers.get(index)
         if current is not None and current.is_alive():
             if rerun_if_active:
@@ -381,6 +440,31 @@ def schedule_unlocked_rebuild(
         _rebuild_workers[index] = worker
         worker.start()
     return True
+
+
+def resume_unlocked_rebuilds() -> None:
+    """Allow workers for a newly started application/test lifecycle."""
+    global _rebuilds_accepting
+    with _rebuild_workers_lock:
+        _rebuilds_accepting = True
+
+
+def drain_unlocked_rebuilds() -> None:
+    """Stop accepting rebuilds and join every worker before Runtime teardown."""
+    global _rebuilds_accepting
+    while True:
+        with _rebuild_workers_lock:
+            _rebuilds_accepting = False
+            _rebuild_pending.clear()
+            workers = tuple(
+                worker for worker in _rebuild_workers.values() if worker.is_alive()
+            )
+        if not workers:
+            return
+        for worker in workers:
+            if worker is current_thread():
+                raise RuntimeError("CoreFS rebuild worker cannot drain itself")
+            worker.join()
 
 
 def initialize_catalog_if_idle(
@@ -781,8 +865,8 @@ def _walk_authenticated_files(
     corefs_session: Any,
     keys: object,
     selected: logical.CoreFsValidationSnapshot,
-) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
-    entries: list[dict[str, str]] = []
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    entries: list[dict[str, Any]] = []
     failures: list[dict[str, str]] = []
     cursor: str | None = None
     while True:
@@ -807,6 +891,13 @@ def _walk_authenticated_files(
             stable_id = value.get("stableId")
             revision = value.get("revision")
             family = value.get("objectKind")
+            content_hash = value.get("contentHash")
+            raw_metadata = value.get("metadata")
+            metadata = (
+                _migration_client_metadata(raw_metadata)
+                if raw_metadata is not None
+                else {}
+            )
             if (
                 not isinstance(path, str)
                 or not path
@@ -817,6 +908,9 @@ def _walk_authenticated_files(
                 or revision <= 0
                 or not isinstance(family, str)
                 or not family
+                or not isinstance(content_hash, str)
+                or len(content_hash) != 64
+                or not isinstance(metadata, dict)
             ):
                 raise ValueError("invalid CoreFS walk entry")
             entries.append(
@@ -825,6 +919,8 @@ def _walk_authenticated_files(
                     "stable_id": stable_id,
                     "revision": str(revision),
                     "family": family,
+                    "content_hash": content_hash,
+                    "metadata": metadata,
                 }
             )
         for value in page_errors:
@@ -848,6 +944,230 @@ def _walk_authenticated_files(
             raise ValueError("invalid CoreFS walk cursor")
         cursor = after
     return entries, failures
+
+
+def _migration_client_metadata(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("invalid CoreFS walk metadata")
+    normalized: dict[str, Any] = {}
+    prefix = "client:pcf004:"
+    for key, child in value.items():
+        if not isinstance(key, str):
+            raise ValueError("invalid CoreFS walk metadata key")
+        normalized_key = key.removeprefix(prefix) if key.startswith(prefix) else key
+        if normalized_key in normalized:
+            raise ValueError("duplicate CoreFS walk metadata key")
+        normalized[normalized_key] = child
+    return normalized
+
+
+def _rebuild_document_projection(
+    *,
+    session: UnlockSession,
+    selected: logical.CoreFsValidationSnapshot,
+    index: CoreFSProgressiveIndex,
+    entry: dict[str, Any],
+) -> None:
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("origin") != "document":
+        return
+    legacy_id = metadata.get("legacyId")
+    filename = metadata.get("originalName")
+    if (
+        not isinstance(legacy_id, str)
+        or not legacy_id.isdigit()
+        or int(legacy_id) <= 0
+        or not isinstance(filename, str)
+        or not filename
+    ):
+        raise _NonIndexableCoreFSObject("Canonical document metadata is invalid")
+    stat = _wire_result(
+        logical.stat_v1(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+            selected=selected,
+            path=entry["path"],
+        ),
+        selected.generation,
+    )
+    size = stat.get("size")
+    content_type = stat.get("contentType")
+    if (
+        stat.get("stableId") != entry["stable_id"]
+        or stat.get("contentHash") != entry["content_hash"]
+        or stat.get("objectKind") != "attachment"
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size < 1
+        or size > 100 * 1024 * 1024
+        or not isinstance(content_type, str)
+        or not content_type
+    ):
+        raise _NonIndexableCoreFSObject("Canonical document object is invalid")
+    from anima_server.services.corefs.asset_authority import (
+        AssetAuthoritySelection,
+        CoreFsByteSource,
+    )
+    from anima_server.services.documents.chunking import chunk_pages_structured
+    from anima_server.services.documents.parsing import (
+        DocumentParsingError,
+        extract_document_text,
+    )
+
+    source = CoreFsByteSource(
+        session=session,
+        selection=AssetAuthoritySelection(selected.generation, selected.catalog_hash),
+        stable_id=entry["stable_id"],
+        path=entry["path"],
+        size=size,
+        content_sha256=entry["content_hash"],
+        content_type=content_type,
+        object_kind="attachment",
+    )
+    try:
+        outcome = extract_document_text(source)
+    except (DocumentParsingError, RuntimeError, ValueError) as exc:
+        raise _NonIndexableCoreFSObject("Canonical document could not be parsed") from exc
+    chunks = chunk_pages_structured(outcome.pages)
+    if not chunks:
+        raise _NonIndexableCoreFSObject("Canonical document produced no text projection")
+    index.replace_document_projection(
+        CoreFSDocumentProjection(
+            document_id=int(legacy_id),
+            stable_id=entry["stable_id"],
+            filename=filename,
+            mime_type=content_type,
+            content_sha256=entry["content_hash"],
+            chunks=tuple(
+                CoreFSDocumentChunkProjection(
+                    chunk_index=chunk.chunk_index,
+                    content_text=chunk.content_text,
+                    page_start=chunk.page_start,
+                    page_end=chunk.page_end,
+                    section_title=chunk.section_title,
+                    metadata_json=chunk.metadata_json,
+                )
+                for chunk in chunks
+            ),
+        )
+    )
+
+
+def _rebuild_image_projection(
+    *,
+    index: CoreFSProgressiveIndex,
+    entry: dict[str, Any],
+) -> None:
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, dict) or metadata.get("origin") != "image-asset":
+        return
+    legacy_id = metadata.get("legacyId")
+    filename = metadata.get("originalName")
+    mime_type = metadata.get("mimeType")
+    size = metadata.get("sizeBytes")
+    if (
+        not isinstance(legacy_id, str)
+        or not legacy_id.isdigit()
+        or int(legacy_id) <= 0
+        or not isinstance(filename, str)
+        or not filename
+        or not isinstance(mime_type, str)
+        or not mime_type.startswith("image/")
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size < 1
+        or size > 100 * 1024 * 1024
+        or metadata.get("sha256") != entry["content_hash"]
+    ):
+        raise _NonIndexableCoreFSObject("Canonical image metadata is invalid")
+    index.replace_image_projection(
+        CoreFSImageProjection(
+            image_asset_id=int(legacy_id),
+            stable_id=entry["stable_id"],
+            filename=filename,
+            mime_type=mime_type,
+            content_sha256=entry["content_hash"],
+            size=size,
+        )
+    )
+
+
+def _rebuild_knowledge_source_projection(
+    *,
+    index: CoreFSProgressiveIndex,
+    entry: dict[str, Any],
+    text: str,
+) -> None:
+    metadata = entry.get("metadata")
+    if metadata == {}:
+        from anima_server.services.corefs.knowledge_authority import (
+            decode_knowledge_document,
+            knowledge_projection_from_document,
+        )
+
+        try:
+            document = decode_knowledge_document(text.encode("utf-8"))
+        except ValueError as exc:
+            raise _NonIndexableCoreFSObject(
+                "Canonical knowledge document is invalid"
+            ) from exc
+        index.replace_knowledge_source_projection(
+            knowledge_projection_from_document(
+                stable_id=entry["stable_id"],
+                filename=entry["path"].rsplit("/", 1)[-1],
+                document=document,
+                content_sha256=entry["content_hash"],
+            )
+        )
+        return
+    if not isinstance(metadata, dict):
+        raise _NonIndexableCoreFSObject("Canonical knowledge metadata is invalid")
+    source_id = metadata.get("sourceId")
+    artifact_id = metadata.get("artifactId")
+    artifact_kind = metadata.get("artifactKind")
+    source_kind = metadata.get("sourceKind")
+    source_uri = metadata.get("sourceUri")
+    source_title = metadata.get("sourceTitle")
+    source_media_type = metadata.get("sourceMediaType")
+    filename = metadata.get("originalName")
+    if (
+        isinstance(source_id, bool)
+        or not isinstance(source_id, int)
+        or source_id <= 0
+        or isinstance(artifact_id, bool)
+        or not isinstance(artifact_id, int)
+        or artifact_id <= 0
+        or not isinstance(artifact_kind, str)
+        or not artifact_kind
+        or not isinstance(source_kind, str)
+        or not source_kind
+        or not isinstance(source_uri, str)
+        or not source_uri
+        or (source_title is not None and not isinstance(source_title, str))
+        or (
+            source_media_type is not None
+            and not isinstance(source_media_type, str)
+        )
+        or not isinstance(filename, str)
+        or not filename
+        or metadata.get("sha256") != entry["content_hash"]
+    ):
+        raise _NonIndexableCoreFSObject("Canonical knowledge metadata is invalid")
+    index.replace_knowledge_source_projection(
+        CoreFSKnowledgeSourceProjection(
+            stable_id=entry["stable_id"],
+            source_id=source_id,
+            artifact_id=artifact_id,
+            artifact_kind=artifact_kind,
+            source_kind=source_kind,
+            source_uri=source_uri,
+            source_title=source_title,
+            source_media_type=source_media_type,
+            filename=filename,
+            content_text=text,
+            content_sha256=entry["content_hash"],
+        )
+    )
 
 
 def _read_authenticated_text(

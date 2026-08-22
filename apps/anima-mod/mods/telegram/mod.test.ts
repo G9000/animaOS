@@ -41,6 +41,11 @@ describe("Telegram Module", () => {
         delete: async () => {},
         has: async () => false,
       },
+      secrets: {
+        get: async () => null,
+        set: async () => {},
+        delete: async () => {},
+      },
       dispatch: {
         sendToUser: async () => {},
         sendToChannel: async () => {},

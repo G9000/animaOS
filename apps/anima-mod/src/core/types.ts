@@ -6,6 +6,7 @@
  */
 
 import type { AnyElysia } from "elysia";
+import type { SecretStore } from "../security/credential-broker.js";
 
 /** Module context - services provided to all modules */
 export interface ModContext {
@@ -23,6 +24,9 @@ export interface ModContext {
 
   /** Module-private key-value store (SQLite-backed) */
   store: ModStore;
+
+  /** Dedicated OS-backed secret store; never persists values in mod SQLite. */
+  secrets: SecretStore;
 
   /** Message dispatch bus for cross-module communication */
   dispatch: DispatchBus;

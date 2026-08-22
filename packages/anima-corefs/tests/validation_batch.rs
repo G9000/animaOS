@@ -264,7 +264,7 @@ fn conversation_root_and_canonical_objects_use_shared_manage_validation_policy()
     assert_eq!(moved.snapshot().head().generation(), 2);
     drop(coordinator);
 
-    let reopened = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let reopened = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let conversations = reopened
         .resolve_validation_role(&keys, "core.conversations")
         .unwrap()
@@ -274,6 +274,102 @@ fn conversation_root_and_canonical_objects_use_shared_manage_validation_policy()
         native_id("folder", "conversations")
     );
     assert_eq!(conversations.generation, 2);
+}
+
+#[test]
+fn gallery_root_and_original_sources_publish_move_and_reopen() {
+    let (root, coordinator) = fixture("gallery");
+    let keys = keys();
+    let mut batch = initial_batch();
+    let gallery_folder = native_id("folder", "gallery");
+    batch.folders.push(ValidationBatchFolder {
+        stable_id: gallery_folder.clone(),
+        parent_id: Some(native_id("folder", "root")),
+        name: "Gallery".into(),
+        role: Some("core.gallery".into()),
+        policy: ValidationBatchPolicy::UserWrite,
+        metadata: Default::default(),
+    });
+    let image_id = native_id("gallery-asset", "1");
+    let source_id = native_id("knowledge-source", "1");
+    batch.objects.push(ValidationBatchObject {
+        stable_id: image_id.clone(),
+        parent_id: gallery_folder.clone(),
+        name: "original.png".into(),
+        kind: ObjectKind::GalleryAsset,
+        content_type: "image/png".into(),
+        body_encoding: BodyEncoding::Binary,
+        content: b"portable-original-image".to_vec(),
+        created_at: "2026-08-13T00:00:00Z".into(),
+        updated_at: "2026-08-13T00:00:00Z".into(),
+        source_character_count: None,
+        expected_revision: None,
+        references: vec![],
+        policy: ValidationBatchPolicy::Inherit,
+        metadata: Default::default(),
+    });
+    batch.objects.push(ValidationBatchObject {
+        stable_id: source_id.clone(),
+        parent_id: gallery_folder.clone(),
+        name: "capture.raw.html".into(),
+        kind: ObjectKind::KnowledgeSource,
+        content_type: "text/html; charset=utf-8".into(),
+        body_encoding: BodyEncoding::Utf8,
+        content: b"<p>portable source</p>".to_vec(),
+        created_at: "2026-08-13T00:00:00Z".into(),
+        updated_at: "2026-08-13T00:00:00Z".into(),
+        source_character_count: None,
+        expected_revision: None,
+        references: vec![],
+        policy: ValidationBatchPolicy::Inherit,
+        metadata: Default::default(),
+    });
+
+    let outcome = coordinator
+        .apply_validation_batch(&keys, batch.clone())
+        .unwrap();
+    assert!(outcome.published());
+    for (id, kind) in [
+        (&image_id, ObjectKind::GalleryAsset),
+        (&source_id, ObjectKind::KnowledgeSource),
+    ] {
+        let entry = outcome
+            .snapshot()
+            .catalog()
+            .entries()
+            .iter()
+            .find(|entry| entry.stable_id().as_str() == id)
+            .unwrap();
+        assert_eq!(entry.object_payload().unwrap().kind(), kind);
+    }
+
+    let first_head = outcome.snapshot().head().clone();
+    batch.mode = ValidationBatchMode::Expect {
+        generation: first_head.generation(),
+        catalog_hash: first_head.catalog_hash().to_owned(),
+    };
+    for object in &mut batch.objects {
+        object.expected_revision = Some(1);
+    }
+    let gallery = batch
+        .folders
+        .iter_mut()
+        .find(|folder| folder.role.as_deref() == Some("core.gallery"))
+        .unwrap();
+    gallery.name = "Private Originals".into();
+    gallery.parent_id = Some(native_id("folder", "notes"));
+    let moved = coordinator.apply_validation_batch(&keys, batch).unwrap();
+    assert!(moved.published());
+    assert_eq!(moved.snapshot().head().generation(), 2);
+    drop(coordinator);
+
+    let reopened = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
+    let gallery = reopened
+        .resolve_validation_role(&keys, "core.gallery")
+        .unwrap()
+        .unwrap();
+    assert_eq!(gallery.stable_id, gallery_folder);
+    assert_eq!(gallery.generation, 2);
 }
 
 #[test]
@@ -348,7 +444,7 @@ fn identical_rerun_is_idempotent_and_roles_survive_reopen() {
     assert_eq!(moved.snapshot().head().generation(), 2);
 
     drop(coordinator);
-    let reopened = CoreCommitCoordinator::new(&root, CORE_ID).unwrap();
+    let reopened = CoreCommitCoordinator::new(root, CORE_ID).unwrap();
     let journal = reopened
         .resolve_validation_role(&keys, "core.journal")
         .unwrap()

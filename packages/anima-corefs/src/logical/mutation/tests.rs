@@ -16,8 +16,9 @@ use crate::transaction::{CoreCommitCoordinator, PreparedObjectRevision, Validati
 use super::executor::CoreFsShadowMutator;
 use super::{
     ContentFormatValidator, ContentValidationError, ConverterMutationAuthority, ConverterPrincipal,
-    CoreFsMutationFacade, LogicalMutation, MutationError, MutationStamp, MutationTarget,
-    PatchAddFormat, PublicMutationError, ValidatedContent, CORE_FS_MIGRATION_WRITE_FROZEN,
+    CoreFsMutationExecutor, CoreFsMutationFacade, LogicalMutation, MutationCommitMode,
+    MutationError, MutationPrincipal, MutationStamp, MutationTarget, PatchAddFormat,
+    PublicMutationError, ValidatedContent, CORE_FS_MIGRATION_WRITE_FROZEN,
 };
 
 const CORE_ID: &str = "mutation-core";
@@ -26,6 +27,7 @@ const NOTES_ID: &str = "01J10000000000000000000001";
 const TRASH_ID: &str = "01J10000000000000000000002";
 const EXISTING_ID: &str = "01J10000000000000000000003";
 const VAULT_ID: &str = "01J10000000000000000000004";
+const CREATED_ID: &str = "01J10000000000000000000005";
 
 struct IdentityValidator;
 
@@ -87,6 +89,129 @@ fn public_mutation_facade_is_frozen_before_touching_storage() {
 }
 
 #[test]
+fn approved_first_mutation_publishes_cutover_then_normal_mutations_use_head() {
+    let fixture = fixture("public-cutover", AnimaAccess::Manage);
+    let executor = CoreFsMutationExecutor::new(&fixture.coordinator, &fixture.keys);
+    let first = executor
+        .execute(
+            MutationPrincipal::User,
+            fixture.selected.head().generation(),
+            fixture.selected.head().catalog_hash(),
+            MutationCommitMode::FirstMutation { cutover_epoch: 77 },
+            LogicalMutation::Mkdir {
+                path: "Notes/Projects".to_string(),
+                reserved_role: None,
+            },
+            stamp(),
+            &IdentityValidator,
+        )
+        .unwrap();
+    assert_eq!(first.generation, 2);
+    assert!(first.cutover_committed);
+    assert!(!first.recovery_pending);
+    assert!(!first.invalidation_delivered);
+    assert!(fixture.coordinator.cutover_receipt_path().is_file());
+    assert!(fixture.coordinator.cutover_complete_path().is_file());
+
+    let committed = fixture
+        .coordinator
+        .load_committed(&fixture.keys)
+        .unwrap()
+        .unwrap();
+    assert_eq!(committed.catalog().cutover_marker().unwrap().epoch(), 77);
+    assert_eq!(committed.head().catalog_hash(), first.catalog_hash);
+    let normal = executor
+        .execute(
+            MutationPrincipal::Anima,
+            committed.head().generation(),
+            committed.head().catalog_hash(),
+            MutationCommitMode::Normal,
+            LogicalMutation::Create {
+                path: "Notes/Projects/one.md".to_string(),
+                stable_id: None,
+                kind: ObjectKind::Note,
+                content_type: "text/markdown".to_string(),
+                bytes: b"one\n".to_vec(),
+            },
+            stamp(),
+            &IdentityValidator,
+        )
+        .unwrap();
+    assert_eq!(normal.generation, 3);
+    assert!(!normal.cutover_committed);
+    assert_eq!(normal.changes.len(), 1);
+
+    let stale = executor.execute(
+        MutationPrincipal::User,
+        first.generation,
+        &first.catalog_hash,
+        MutationCommitMode::Normal,
+        LogicalMutation::Mkdir {
+            path: "Notes/Stale".to_string(),
+            reserved_role: None,
+        },
+        stamp(),
+        &IdentityValidator,
+    );
+    assert!(matches!(stale, Err(MutationError::OptimisticConflict)));
+    assert_eq!(
+        fixture
+            .coordinator
+            .load_committed(&fixture.keys)
+            .unwrap()
+            .unwrap()
+            .head()
+            .generation(),
+        3
+    );
+}
+
+#[test]
+fn greenfield_activation_publishes_authority_without_changing_catalog_entries() {
+    let fixture = fixture("greenfield-activation", AnimaAccess::Manage);
+    let executor = CoreFsMutationExecutor::new(&fixture.coordinator, &fixture.keys);
+    let activated = executor
+        .execute(
+            MutationPrincipal::User,
+            fixture.selected.head().generation(),
+            fixture.selected.head().catalog_hash(),
+            MutationCommitMode::FirstMutation { cutover_epoch: 91 },
+            LogicalMutation::ActivateAuthority,
+            stamp(),
+            &IdentityValidator,
+        )
+        .unwrap();
+
+    assert_eq!(
+        activated.generation,
+        fixture.selected.head().generation() + 1
+    );
+    assert!(activated.cutover_committed);
+    assert!(activated.changes.is_empty());
+    let committed = fixture
+        .coordinator
+        .load_committed(&fixture.keys)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        committed.catalog().entries(),
+        fixture.selected.catalog().entries()
+    );
+    assert_eq!(committed.catalog().cutover_marker().unwrap().epoch(), 91);
+
+    let replay = executor.execute(
+        MutationPrincipal::User,
+        committed.head().generation(),
+        committed.head().catalog_hash(),
+        MutationCommitMode::Normal,
+        LogicalMutation::ActivateAuthority,
+        stamp(),
+        &IdentityValidator,
+    );
+    assert!(matches!(replay, Err(MutationError::InvalidLifecycle)));
+}
+
+#[test]
 fn mkdir_create_write_and_move_each_advance_exactly_one_validation_generation() {
     let fixture = fixture("basic", AnimaAccess::Manage);
     let authority = ConverterMutationAuthority::new();
@@ -123,6 +248,7 @@ fn mkdir_create_write_and_move_each_advance_exactly_one_validation_generation() 
             &selected,
             LogicalMutation::Create {
                 path: "Notes/Projects/one.md".to_string(),
+                stable_id: Some(CREATED_ID.to_string()),
                 kind: ObjectKind::Note,
                 content_type: "text/markdown".to_string(),
                 bytes: b"one\n".to_vec(),
@@ -135,12 +261,27 @@ fn mkdir_create_write_and_move_each_advance_exactly_one_validation_generation() 
     assert_eq!(create.changes[0].revision, Some(1));
     assert!(create.changes[0].content_hash.is_some());
     let created_id = create.changes[0].stable_id.clone();
+    assert_eq!(created_id, CREATED_ID);
 
     let selected = fixture
         .coordinator
         .load_validation_snapshot(&fixture.keys)
         .unwrap()
         .unwrap();
+    let duplicate_id = mutator.execute(
+        ConverterPrincipal::User,
+        &selected,
+        LogicalMutation::Create {
+            path: "Notes/Projects/two.md".to_string(),
+            stable_id: Some(CREATED_ID.to_string()),
+            kind: ObjectKind::Note,
+            content_type: "text/markdown".to_string(),
+            bytes: b"two\n".to_vec(),
+        },
+        stamp(),
+        &validator,
+    );
+    assert!(matches!(duplicate_id, Err(MutationError::Collision)));
     let write = mutator
         .execute(
             ConverterPrincipal::Anima,
@@ -307,6 +448,7 @@ fn shared_patch_plan_commits_all_files_once_and_deletes_to_recoverable_trash() {
     add_formats.insert(
         "Notes/new.md".to_string(),
         PatchAddFormat {
+            stable_id: Some("01J1000000000000000000000A".to_string()),
             kind: ObjectKind::Note,
             content_type: "text/markdown".to_string(),
         },
@@ -329,6 +471,10 @@ fn shared_patch_plan_commits_all_files_once_and_deletes_to_recoverable_trash() {
     assert!(result.atomic);
     assert_eq!(result.generation, 2);
     assert_eq!(result.changes.len(), 2);
+    assert!(result
+        .changes
+        .iter()
+        .any(|change| change.stable_id == "01J1000000000000000000000A"));
     assert_eq!(
         result
             .changes
@@ -516,12 +662,14 @@ fn cross_policy_moves_restores_and_patch_moves_fail_before_advancing_or_preparin
 
 fn all_operations() -> Vec<LogicalMutation> {
     vec![
+        LogicalMutation::ActivateAuthority,
         LogicalMutation::Mkdir {
             path: "x".into(),
             reserved_role: None,
         },
         LogicalMutation::Create {
             path: "x".into(),
+            stable_id: None,
             kind: ObjectKind::Note,
             content_type: "text/plain".into(),
             bytes: vec![],

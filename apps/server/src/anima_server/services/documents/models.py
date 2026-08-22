@@ -1,6 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
+
+
+class DocumentByteSource(Protocol):
+    name: str
+    size: int
+
+    def read_all(self, *, max_bytes: int) -> bytes: ...
+
+
+type DocumentInput = str | DocumentByteSource
 
 
 @dataclass(frozen=True, slots=True)

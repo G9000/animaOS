@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import UTC, datetime
 
 import pytest
+from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.models import (
     ForesightSignal,
@@ -29,11 +31,22 @@ from anima_server.services.agent.forgetting import (
 )
 from anima_server.services.agent.provenance import add_memory_item_evidence
 from anima_server.services.data_crypto import df
+from anima_server.services.regeneration_work import regeneration_work_ids
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 _FAKE_DEK = b"0123456789abcdef0123456789abcdef"
+
+
+@pytest.fixture(autouse=True)
+def _runtime_work_root(managed_tmp_path) -> Generator[None, None, None]:  # type: ignore[no-untyped-def]
+    previous = settings.runtime_instance_data_dir
+    settings.runtime_instance_data_dir = str(managed_tmp_path / "runtime-instance")
+    try:
+        yield
+    finally:
+        settings.runtime_instance_data_dir = previous
 
 
 @pytest.fixture()
@@ -217,8 +230,10 @@ class TestSuppressMemory:
         # Verify flags set
         db.refresh(ep)
         db.refresh(block)
-        assert ep.needs_regeneration is True
-        assert block.needs_regeneration is True
+        assert ep.needs_regeneration is False
+        assert block.needs_regeneration is False
+        assert ep.id in regeneration_work_ids(user_id=1, kind="memory_episode")
+        assert block.id in regeneration_work_ids(user_id=1, kind="self_model_block")
 
     def test_suppress_creates_audit_log(self, db: Session):
         item = _make_item(db, content="some fact")
@@ -524,7 +539,8 @@ class TestForgetMemory:
         assert deletes == []
         assert result.derived_refs_affected == 2
         db.refresh(episode)
-        assert episode.needs_regeneration is True
+        assert episode.needs_regeneration is False
+        assert episode.id in regeneration_work_ids(user_id=1, kind="memory_episode")
         assert db.get(MemoryItem, pattern_id) is None
         # The dream built on the derived pattern item is scrubbed.
         assert result.dream_journal_scrubbed == 1
@@ -764,8 +780,10 @@ class TestRedactDerivedReferences:
         assert count == 2
         db.refresh(ep)
         db.refresh(block)
-        assert ep.needs_regeneration is True
-        assert block.needs_regeneration is True
+        assert ep.needs_regeneration is False
+        assert block.needs_regeneration is False
+        assert ep.id in regeneration_work_ids(user_id=1, kind="memory_episode")
+        assert block.id in regeneration_work_ids(user_id=1, kind="self_model_block")
 
     def test_immediate_redact(self, db: Session):
         block = _make_self_model_block(

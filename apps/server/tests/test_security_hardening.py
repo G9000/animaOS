@@ -39,21 +39,37 @@ def _register_user(client: TestClient) -> dict[str, object]:
 
 
 def _create_test_app() -> tuple[object, object, object]:
-    from anima_server import main as main_module
-    from anima_server.services.core import ensure_core_manifest, release_core_lock
-
     temp_root = create_managed_temp_dir("anima-sec-app-")
     original_data_dir = settings.data_dir
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
     settings.data_dir = temp_root / "anima-data"
-    ensure_core_manifest()
-    main_module._start_embedded_pg = lambda: None
-    release_core_lock()
+    settings.runtime_app_data_dir = str(temp_root / "runtime-app-data")
     try:
+        # Import only after both portable and machine-local roots are isolated.
+        # ``anima_server.main`` constructs a module-level app on first import,
+        # and active-Core discovery must never consult a developer installation.
+        from anima_server import main as main_module
+        from anima_server.services.core import ensure_core_manifest, release_core_lock
+
+        ensure_core_manifest()
+        main_module._start_embedded_pg = lambda: None
+        release_core_lock()
         return main_module.create_app(), original_data_dir, temp_root
     except Exception:
         settings.data_dir = original_data_dir
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
         shutil.rmtree(temp_root, ignore_errors=True)
         raise
+
+
+@pytest.fixture(autouse=True)
+def _restore_runtime_app_data_dir() -> object:
+    """Keep standalone app-construction tests out of real machine state."""
+    original = settings.runtime_app_data_dir
+    try:
+        yield
+    finally:
+        settings.runtime_app_data_dir = original
 
 
 def _cors_allow_origins(app: object) -> list[str]:
@@ -201,23 +217,21 @@ def test_db_tables_allowed_in_sqlite_mode() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# /api/vault/import blocked in shared-DB mode
+# Pre-release vault import API is absent
 # --------------------------------------------------------------------------- #
 
 
-def test_vault_import_blocked_in_shared_mode() -> None:
+def test_pre_release_vault_import_api_is_absent() -> None:
     with managed_test_client("anima-sec-test-") as client:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        with patch("anima_server.api.deps.db_mode.is_sqlite_mode", return_value=False):
-            resp = client.post(
-                "/api/vault/import",
-                headers=headers,
-                json={"passphrase": "testpassphrase", "vault": '{"version":2}'},
-            )
-            assert resp.status_code == 403
-            assert "shared-database" in resp.json()["error"].lower()
+        resp = client.post(
+            "/api/vault/import",
+            headers=headers,
+            json={"passphrase": "testpassphrase", "vault": '{"version":2}'},
+        )
+        assert resp.status_code == 404
 
 
 # --------------------------------------------------------------------------- #
@@ -440,6 +454,7 @@ def test_create_app_refuses_to_bootstrap_when_core_lock_is_unavailable(
 
     original_data_dir = settings.data_dir
     settings.data_dir = managed_tmp_path / "locked-core"
+    settings.runtime_app_data_dir = str(managed_tmp_path / "runtime-app-data")
     sys.modules.pop("anima_server.main", None)
     try:
         main_module = importlib.import_module("anima_server.main")

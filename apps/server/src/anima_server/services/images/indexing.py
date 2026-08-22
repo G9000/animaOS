@@ -17,7 +17,7 @@ from anima_server.services.corefs.sealed_runtime import (
 from anima_server.services.documents.indexing import _run_embedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.extractors import ImageCaptioner, ImageTextExtractor
-from anima_server.services.images.store import resolve_image_storage_path
+from anima_server.services.images.store import resolve_image_byte_source
 from anima_server.services.ingestion.adapters.images import sync_image_source
 
 EmbeddingResult = list[float] | None
@@ -56,7 +56,7 @@ def index_image_asset(
         )
 
     capabilities = capabilities or ImageProcessingCapabilities()
-    image_path = resolve_image_storage_path(asset.storage_path, user_id=user_id)
+    image_source = resolve_image_byte_source(asset, user_id=user_id)
 
     annotation_inputs = [
         (
@@ -72,12 +72,12 @@ def index_image_asset(
     ]
 
     if capabilities.vision_caption and caption_fn is not None:
-        caption = _safe_extract(caption_fn, image_path, asset)
+        caption = _safe_extract(caption_fn, image_source, asset)
         if caption:
             annotation_inputs.append(("vision_caption", caption.strip(), None))
 
     if capabilities.image_text_extraction and text_extraction_fn is not None:
-        extracted_text = _safe_extract(text_extraction_fn, image_path, asset)
+        extracted_text = _safe_extract(text_extraction_fn, image_source, asset)
         if extracted_text:
             annotation_inputs.append(("ocr_text", extracted_text.strip(), None))
 

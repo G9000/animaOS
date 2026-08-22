@@ -73,6 +73,31 @@ def search_documents(
             )
 
     max_results = _parse_bounded_int(limit, default=8, low=1, high=_MAX_SEARCH_LIMIT)
+    corefs_index = _active_document_index(ctx)
+    if corefs_index is not None:
+        matches = corefs_index.search_document_projections(
+            query_stripped,
+            document_ids=frozenset(allowed_ids) if allowed_ids is not None else None,
+            limit=max_results,
+        )
+        if not matches:
+            return f"No document matches for: {query_stripped}"
+        lines = [f"Found {len(matches)} document chunk matches for: {query_stripped}"]
+        for document, chunk, score in matches:
+            _record_citation(ctx, document.document_id, document.filename)
+            location = _format_pages(chunk.page_start, chunk.page_end)
+            section = f' section "{chunk.section_title}"' if chunk.section_title else ""
+            excerpt = _clean_excerpt(chunk.content_text, _SEARCH_EXCERPT_CHARS)
+            lines.append(
+                f"- doc:{document.document_id} {document.filename} "
+                f"chunk:{chunk.chunk_index}{location}{section} "
+                f"(score={score:.2f}): {excerpt}"
+            )
+        lines.append(
+            "Use read_document_section(document_id, section_path=...) to read a full section."
+        )
+        return _emit_within_budget(ctx, "\n".join(lines))
+
     results = documents_rag.search_document_chunks(
         ctx.runtime_db,
         ctx.user_id,
@@ -287,6 +312,14 @@ def _record_citation(ctx: Any, document_id: int, filename: str) -> None:
 def _owned_documents(ctx: Any, document_ids: Sequence[int]) -> list[Any]:
     from anima_server.services.documents.store import get_document_for_user
 
+    corefs_index = _active_document_index(ctx)
+    if corefs_index is not None:
+        return [
+            projection
+            for document_id in document_ids
+            if (projection := corefs_index.document_projection(document_id)) is not None
+        ]
+
     owned = []
     for document_id in document_ids:
         document = get_document_for_user(
@@ -327,6 +360,12 @@ def _load_owned_document_chunks(
     parsed_id = _parse_optional_int(document_id)
     if parsed_id is None or parsed_id <= 0:
         return None, [], "Please provide a valid document_id."
+    corefs_index = _active_document_index(ctx)
+    if corefs_index is not None:
+        projection = corefs_index.document_projection(parsed_id)
+        if projection is None:
+            return None, [], f"Document {parsed_id} does not exist in your library."
+        return projection, list(projection.chunks), None
     document = get_document_for_user(
         ctx.runtime_db, user_id=ctx.user_id, document_id=parsed_id
     )
@@ -336,6 +375,16 @@ def _load_owned_document_chunks(
     if not chunks:
         return None, [], f"doc:{document.id} {document.filename} has no indexed content."
     return document, chunks, None
+
+
+def _active_document_index(ctx: Any) -> Any | None:
+    from anima_server.services.corefs.asset_authority import (
+        active_asset_authority_session,
+    )
+
+    session = active_asset_authority_session(ctx.user_id)
+    index = getattr(session, "runtime_index", None) if session is not None else None
+    return index
 
 
 def _chunk_section_paths(chunk: Any) -> list[str]:

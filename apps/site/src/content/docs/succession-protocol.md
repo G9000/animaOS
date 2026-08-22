@@ -357,18 +357,18 @@ Response: { status: "claimed", message }
 
 ## 9. Relationship to Existing Systems
 
-### Vault Export
+### Portable Core archive
 
-The existing vault export system (`POST /api/vault/export`) already provides encrypted full backup with a separate passphrase. Succession does not replace it — it extends the concept. The difference:
+The supported V2 Core archive flow provides authenticated backup and transfer of the portable Core. The pre-release V1 JSON vault endpoints are not part of the first supported release. Succession does not replace portable archives; it adds a separately configured continuity path. The difference:
 
-|                                            | Vault Export                      | Succession                            |
+|                                            | Portable Core archive             | Succession                            |
 | ------------------------------------------ | --------------------------------- | ------------------------------------- |
 | Trigger                                    | Manual, on-demand                 | Automatic after inactivity            |
 | Who initiates                              | Owner                             | System (owner pre-configures)         |
 | Requires owner participation at claim time | Yes (owner must share vault file) | No (beneficiary claims independently) |
 | AI awareness                               | None                              | Full — the AI knows and participates  |
 
-A pragmatic user can use both: vault export as a manual backup strategy, succession as the automated dead man switch.
+A pragmatic user can use both: a Core archive as a manual backup strategy, succession as the automated dead man switch.
 
 ### Encrypted Core
 

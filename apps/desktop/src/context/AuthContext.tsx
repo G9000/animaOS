@@ -14,6 +14,10 @@ import {
 } from "../lib/api";
 import { purgeGreetingStorage } from "../lib/greetingCache";
 import { getDaemonStatus, refreshDaemonRuntimeNonce, startDaemon } from "../lib/daemon";
+import {
+  clearPortablePreferences,
+  hydratePortablePreferences,
+} from "../lib/portablePreferences";
 
 interface AuthContextType {
   user: User | null;
@@ -26,14 +30,14 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-const STORAGE_KEY = "anima_user";
 const HEALTH_BOOT_RETRIES = 20;
 const HEALTH_BOOT_RETRY_MS = 500;
 const DAEMON_STARTUP_RETRIES = 90;
 
 function purgeLegacyStoredUser(): void {
   try {
-    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem("anima_user");
+    localStorage.removeItem("anima_last_user");
   } catch {
     // Ignore storage failures.
   }
@@ -103,6 +107,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         const me = await api.auth.me();
+        await hydratePortablePreferences(me.id);
         if (!cancelled) setUser(me);
       } catch (error) {
         if (!isNetworkError(error)) {
@@ -124,6 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Decrypted greeting/dream handoffs must not outlive the unlock
       // session (PR #130 review).
       purgeGreetingStorage();
+      clearPortablePreferences();
       setUser(null);
     };
 
@@ -141,12 +147,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     clearUnlockToken();
     purgeGreetingStorage();
+    clearPortablePreferences();
     setUser(null);
   };
 
   const handleSetUser = (u: User | null) => {
+    const shouldHydrate = u !== null && user?.id !== u.id;
     setUser(u);
-    if (u) setIsProvisioned(true);
+    if (u) {
+      setIsProvisioned(true);
+      if (shouldHydrate) {
+        void hydratePortablePreferences(u.id).catch(() => {
+          // Exact legacy keys remain for retry when migration cannot be verified.
+        });
+      }
+    } else {
+      clearPortablePreferences();
+    }
   };
 
   return (
