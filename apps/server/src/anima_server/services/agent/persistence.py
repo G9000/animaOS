@@ -18,6 +18,7 @@ from anima_server.models.runtime import (
 from anima_server.services.agent.compaction import estimate_message_tokens
 from anima_server.services.agent.retrieval_feedback import record_retrieval_feedback
 from anima_server.services.agent.runtime_types import StepTrace, ToolCall, UsageStats
+from anima_server.services.agent.sequencing import reserve_message_sequences
 from anima_server.services.agent.state import (
     AgentResult,
     StoredAttachment,
@@ -28,6 +29,7 @@ from anima_server.services.agent.state import (
     deserialize_stored_attachments,
     serialize_agent_retrieval,
 )
+from anima_server.services.corefs.messages import ReducedMessage
 from anima_server.services.corefs.sealed_runtime import (
     runtime_index_for_sensitive_write,
     seal_runtime_fields,
@@ -38,12 +40,22 @@ logger = logging.getLogger(__name__)
 TERMINAL_RUN_STATUSES = ("cancelled", "failed")
 
 
+def _reject_legacy_conversation_mutation(user_id: int) -> None:
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user_id) is not None:
+        raise RuntimeError("Legacy conversation mutation is disabled after CoreFS cutover.")
+
+
 def _refresh_run_status(db: Session, run: RuntimeRun) -> str:
     db.refresh(run, attribute_names=["status"])
     return run.status
 
 
 def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
+    _reject_legacy_conversation_mutation(user_id)
     thread = db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.user_id == user_id,
@@ -65,6 +77,21 @@ def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
 def load_thread_history(
     db: Session, thread_id: int, *, user_id: int | None = None
 ) -> list[StoredMessage]:
+    if user_id is not None:
+        from anima_server.services.corefs.conversation_authority import (
+            active_conversation_authority_session,
+            get_canonical_thread,
+        )
+
+        session = active_conversation_authority_session(user_id)
+        if session is not None:
+            view = get_canonical_thread(session=session, thread_id=thread_id)
+            if view is None:
+                return []
+            return [
+                StoredMessage(role=message.role, content=message.content)
+                for message in view.messages
+            ]
     rows = db.scalars(
         select(RuntimeMessage)
         .where(
@@ -162,6 +189,7 @@ def close_thread(db: Session, *, thread_id: int) -> bool:
     thread = db.get(RuntimeThread, thread_id)
     if thread is None or thread.status == "closed":
         return False
+    _reject_legacy_conversation_mutation(int(thread.user_id))
 
     thread.status = "closed"
     thread.closed_at = datetime.now(UTC)
@@ -218,6 +246,64 @@ def append_user_message(
     )
     link_message_image_assets(db, message=message, attachments=attachments)
     return message
+
+
+def ensure_runtime_thread_reference(
+    db: Session,
+    *,
+    user_id: int,
+    thread_id: int,
+) -> RuntimeThread:
+    thread = db.get(RuntimeThread, thread_id)
+    if thread is not None:
+        if int(thread.user_id) != user_id:
+            raise ValueError("Runtime thread reference belongs to another user")
+        return thread
+    thread = RuntimeThread(id=thread_id, user_id=user_id, status="active")
+    db.add(thread)
+    db.flush()
+    return thread
+
+
+def append_corefs_message_reference(
+    db: Session,
+    *,
+    thread: RuntimeThread,
+    message: ReducedMessage,
+    run_id: int | None,
+    step_id: int | None = None,
+    source: str | None = None,
+    transient_content_json: dict[str, object] | None = None,
+) -> RuntimeMessage:
+    runtime_sequence_id = reserve_message_sequences(
+        db,
+        thread_id=thread.id,
+        count=1,
+    )
+    reference = RuntimeMessage(
+        thread_id=thread.id,
+        user_id=thread.user_id,
+        run_id=run_id,
+        step_id=step_id,
+        sequence_id=runtime_sequence_id,
+        role=message.role,
+        content_text=None,
+        content_json=None,
+        token_estimate=estimate_message_tokens(
+            content_text=message.content,
+            content_json=transient_content_json,
+            tool_name=None,
+        ),
+        source=source,
+        corefs_message_id=message.message_id,
+        corefs_event_id=message.current_event_id,
+        corefs_sequence_id=message.sequence,
+    )
+    db.add(reference)
+    db.flush()
+    set_committed_value(reference, "content_text", message.content)
+    set_committed_value(reference, "content_json", transient_content_json)
+    return reference
 
 
 def link_message_image_assets(
@@ -448,7 +534,7 @@ def save_approval_checkpoint(
     """
     from dataclasses import asdict
 
-    approval_msg = append_message(
+    approval_msg = _append_runtime_message(
         db,
         thread=thread,
         run_id=run.id,
@@ -530,6 +616,42 @@ def count_messages_by_role(db: Session, thread_id: int, role: str) -> int:
 
 
 def append_message(
+    db: Session,
+    *,
+    thread: RuntimeThread,
+    run_id: int | None,
+    step_id: int | None,
+    sequence_id: int,
+    role: str,
+    content_text: str | None,
+    content_json: dict[str, object] | None = None,
+    tool_name: str | None = None,
+    tool_call_id: str | None = None,
+    tool_args_json: dict[str, object] | None = None,
+    source: str | None = None,
+    is_in_context: bool = True,
+    is_archived_history: bool = False,
+) -> RuntimeMessage:
+    _reject_legacy_conversation_mutation(int(thread.user_id))
+    return _append_runtime_message(
+        db,
+        thread=thread,
+        run_id=run_id,
+        step_id=step_id,
+        sequence_id=sequence_id,
+        role=role,
+        content_text=content_text,
+        content_json=content_json,
+        tool_name=tool_name,
+        tool_call_id=tool_call_id,
+        tool_args_json=tool_args_json,
+        source=source,
+        is_in_context=is_in_context,
+        is_archived_history=is_archived_history,
+    )
+
+
+def _append_runtime_message(
     db: Session,
     *,
     thread: RuntimeThread,
@@ -740,6 +862,7 @@ def list_threads(db: Session, user_id: int) -> list[tuple[RuntimeThread, str | N
 
 def create_thread(db: Session, user_id: int) -> RuntimeThread:
     """Create a new active thread, closing any existing active thread first."""
+    _reject_legacy_conversation_mutation(user_id)
     existing = db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.user_id == user_id,

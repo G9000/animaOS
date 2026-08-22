@@ -273,13 +273,16 @@ def redact_derived_references(
     """
     count = 0
     pattern_cleanup_ids_by_user: dict[int, list[int]] = {}
+    regeneration_items: set[tuple[int, str, int]] = set()
 
     for ep_ref in refs.episodes:
         episode = db.get(MemoryEpisode, ep_ref.record_id)
         if episode is None:
             continue
         if strategy == "flag_for_regeneration":
-            episode.needs_regeneration = True
+            regeneration_items.add(
+                (int(episode.user_id), "memory_episode", int(episode.id))
+            )
         # immediate_redact not needed for episodes (flag is sufficient)
         count += 1
 
@@ -288,7 +291,9 @@ def redact_derived_references(
         if block is None:
             continue
         if strategy == "flag_for_regeneration":
-            block.needs_regeneration = True
+            regeneration_items.add(
+                (int(block.user_id), "self_model_block", int(block.id))
+            )
         elif strategy == "immediate_redact":
             from anima_server.services.agent.soul_blocks import full_replace_soul_block
 
@@ -315,6 +320,10 @@ def redact_derived_references(
         db.delete(item)
         count += 1
 
+    if regeneration_items:
+        from anima_server.services.regeneration_work import mark_regeneration_work
+
+        mark_regeneration_work(regeneration_items)
     if count > 0:
         db.flush()
     for user_id, item_ids in pattern_cleanup_ids_by_user.items():

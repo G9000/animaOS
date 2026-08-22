@@ -8,9 +8,10 @@ mod wire;
 
 pub use backend::{CoreFsReadSnapshot, LogicalError};
 pub use mutation::{
-    ContentFormatValidator, ContentValidationError, CoreFsMutationFacade, LogicalMutation,
-    MutationChange, MutationError, MutationResult, MutationStamp, MutationTarget, PatchAddFormat,
-    PublicMutationError, ValidatedContent, CORE_FS_MIGRATION_WRITE_FROZEN,
+    ContentFormatValidator, ContentValidationError, CoreFsMutationExecutor, CoreFsMutationFacade,
+    LogicalMutation, MutationChange, MutationCommitMode, MutationError, MutationPrincipal,
+    MutationResult, MutationStamp, MutationTarget, PatchAddFormat, PublicMutationError,
+    ValidatedContent, CORE_FS_MIGRATION_WRITE_FROZEN,
 };
 pub use path::{map_migration_component, LogicalPath, LogicalPathError};
 pub use service::{

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import hashlib
 import json
 import logging
@@ -99,7 +98,6 @@ _PORTABLE_MANIFEST_AUTHORITY_FIELDS = (
     "owner_id",
     "owner_user_id",
     "owner_binding",
-    "user_index",
     "sqlcipher_kdf_salt",
     "wrapped_sqlcipher_key",
     "recovery_sqlcipher_key",
@@ -286,9 +284,7 @@ def _re_encrypt_field_value(
 
 def _validate_vault_format(transfer_format: str) -> str:
     if transfer_format not in {VAULT_FORMAT_JSON, VAULT_FORMAT_CAPSULE}:
-        raise ValueError(
-            "Unsupported vault format. Expected 'vault_json' or 'anima_capsule'."
-        )
+        raise ValueError("Unsupported vault format. Expected 'vault_json' or 'anima_capsule'.")
     return transfer_format
 
 
@@ -353,26 +349,19 @@ def _payload_to_capsule_sections(payload: dict[str, Any]) -> dict[str, bytes]:
 
     sections: dict[str, bytes] = {
         "cards": _serialize_capsule_section(
-            {
-                "database": {
-                    table: database.get(table, [])
-                    for table in sorted(_CAPSULE_CARD_TABLES)
-                }
-            }
+            {"database": {table: database.get(table, []) for table in sorted(_CAPSULE_CARD_TABLES)}}
         ),
         "frames": _serialize_capsule_section(
             {
                 "database": {
-                    table: database.get(table, [])
-                    for table in sorted(_CAPSULE_FRAME_TABLES)
+                    table: database.get(table, []) for table in sorted(_CAPSULE_FRAME_TABLES)
                 }
             }
         ),
         "graph": _serialize_capsule_section(
             {
                 "database": {
-                    table: database.get(table, [])
-                    for table in sorted(_CAPSULE_GRAPH_TABLES)
+                    table: database.get(table, []) for table in sorted(_CAPSULE_GRAPH_TABLES)
                 }
             }
         ),
@@ -403,15 +392,11 @@ def _capsule_sections_to_payload(sections: dict[str, bytes]) -> dict[str, Any]:
 
         section_database = section_payload.get("database", section_payload)
         if not isinstance(section_database, dict):
-            raise ValueError(
-                f"Capsule section '{section_name}' is missing a database payload."
-            )
+            raise ValueError(f"Capsule section '{section_name}' is missing a database payload.")
 
         for table_name, table_payload in section_database.items():
             if table_name in database:
-                raise ValueError(
-                    f"Capsule contains duplicate table data for '{table_name}'."
-                )
+                raise ValueError(f"Capsule contains duplicate table data for '{table_name}'.")
             database[table_name] = table_payload
 
     return {
@@ -426,9 +411,7 @@ def _capsule_sections_to_payload(sections: dict[str, bytes]) -> dict[str, Any]:
 
 def _write_capsule_bytes(sections: dict[str, bytes], passphrase: str) -> bytes:
     if _anima_core_write_capsule is None:
-        raise ValueError(
-            "anima_core capsule export is unavailable in this environment."
-        )
+        raise ValueError("anima_core capsule export is unavailable in this environment.")
 
     try:
         capsule = _anima_core_write_capsule(
@@ -436,9 +419,7 @@ def _write_capsule_bytes(sections: dict[str, bytes], passphrase: str) -> bytes:
             password=passphrase.encode("utf-8"),
         )
     except TypeError as exc:
-        raise ValueError(
-            "Installed anima_core does not support encrypted capsule export."
-        ) from exc
+        raise ValueError("Installed anima_core does not support encrypted capsule export.") from exc
     except Exception as exc:
         raise ValueError("Failed to build anima capsule.") from exc
 
@@ -450,9 +431,7 @@ def _write_capsule_bytes(sections: dict[str, bytes], passphrase: str) -> bytes:
 
 def _read_capsule_sections(data: bytes, passphrase: str) -> dict[str, bytes]:
     if _anima_core_read_capsule is None:
-        raise ValueError(
-            "anima_core capsule import is unavailable in this environment."
-        )
+        raise ValueError("anima_core capsule import is unavailable in this environment.")
 
     try:
         sections = _anima_core_read_capsule(
@@ -460,13 +439,9 @@ def _read_capsule_sections(data: bytes, passphrase: str) -> dict[str, bytes]:
             password=passphrase.encode("utf-8"),
         )
     except TypeError as exc:
-        raise ValueError(
-            "Installed anima_core does not support encrypted capsule import."
-        ) from exc
+        raise ValueError("Installed anima_core does not support encrypted capsule import.") from exc
     except Exception as exc:
-        raise ValueError(
-            "Failed to read anima capsule. Check the passphrase and payload."
-        ) from exc
+        raise ValueError("Failed to read anima capsule. Check the passphrase and payload.") from exc
 
     if not isinstance(sections, dict):
         raise ValueError("anima_core returned an invalid capsule payload.")
@@ -538,9 +513,7 @@ def _clear_runtime_proactive_state(
             runtime_db.query(PendingInitiative).filter(
                 PendingInitiative.user_id == user_id
             ).delete()
-            runtime_db.query(DriveStateRow).filter(
-                DriveStateRow.user_id == user_id
-            ).delete()
+            runtime_db.query(DriveStateRow).filter(DriveStateRow.user_id == user_id).delete()
             runtime_db.commit()
     except Exception:
         vault_logger.warning(
@@ -558,103 +531,10 @@ def import_vault(
     user_id: int | None = None,
     transfer_format: str = VAULT_FORMAT_JSON,
 ) -> dict[str, Any]:
-    """Import an encrypted vault into the current database context."""
-    transfer_format = _validate_vault_format(transfer_format)
-
-    if transfer_format == VAULT_FORMAT_CAPSULE:
-        try:
-            capsule = base64.b64decode(vault, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError("Capsule payload is not valid base64.") from exc
-
-        payload = _capsule_sections_to_payload(
-            _read_capsule_sections(capsule, passphrase)
-        )
-    else:
-        try:
-            envelope = json.loads(vault)
-        except json.JSONDecodeError as exc:
-            raise ValueError("Vault payload is not valid JSON.") from exc
-
-        plaintext = decrypt_string(envelope, passphrase)
-
-        try:
-            payload = json.loads(plaintext)
-        except json.JSONDecodeError as exc:
-            raise ValueError("Vault payload is not valid JSON.") from exc
-
-    payload = _migrate_payload(payload)
-
-    database = payload.get("database")
-    if not isinstance(database, dict):
-        raise ValueError("Vault payload is missing the database snapshot.")
-
-    user_files = payload.get("userFiles")
-    if user_files is None:
-        user_files = {}
-    if not isinstance(user_files, dict):
-        raise ValueError("Vault payload user files are invalid.")
-
-    vault_scope = payload.get("scope", "full")
-
-    vault_manifest = payload.get("manifest")
-    current_manifest = _read_manifest_snapshot()
-    rebind_to_current_hierarchy = (
-        user_id is not None
-        and (
-            not isinstance(vault_manifest, dict)
-            or not _manifest_key_hierarchy_matches(current_manifest, vault_manifest)
-        )
+    del db, vault, passphrase, user_id, transfer_format
+    raise ValueError(
+        "Pre-release vault imports are unsupported; use an authenticated V2 Core archive."
     )
-    if rebind_to_current_hierarchy:
-        _rebind_snapshot_key_hierarchy(
-            db,
-            database,
-            user_id=user_id,
-            current_manifest=current_manifest,
-        )
-
-    # Re-encrypt plaintext fields with importing user's DEK before restoring
-    if user_id is not None:
-        _re_encrypt_snapshot_fields(database, user_id)
-
-    restore_database_snapshot(db, database, scope=vault_scope)
-    # The restore replaced the soul-store InitiativeLog rows, but IL3 also has
-    # RUNTIME-tier proactive state (PendingInitiative — the pollable message
-    # text + its initiative_log_id — and DriveStateRow pressures) that the
-    # vault deliberately treats as ephemeral and never imports. Left in place,
-    # a pre-import PendingInitiative could still be served by the /initiatives
-    # endpoint after reauth, pointing at provenance that no longer exists or at
-    # a restored, unrelated log. Clear that runtime proactive state so it can't
-    # outlive the import. Guarded: cold/headless transfers may have no runtime
-    # store initialized, and it's rebuildable, so a failure here is non-fatal.
-    if user_id is not None:
-        _clear_runtime_proactive_state(user_id)
-    write_data_snapshot(user_files, user_id=user_id)
-
-    # Cold transfers and exact same-hierarchy restores carry the exported
-    # manifest authority. Authenticated imports into another hierarchy keep
-    # the destination authority that was used to re-encrypt the snapshot.
-    if isinstance(vault_manifest, dict) and not rebind_to_current_hierarchy:
-        _restore_manifest_identity(vault_manifest)
-
-    # Rebuild vector index from imported embeddings
-    _rebuild_vector_indices(db, database)
-    _invalidate_restored_memory_indexes(database, fallback_user_id=user_id)
-
-    restored_memory_files = sum(
-        1
-        for path in user_files
-        if isinstance(path, str) and "/memory/" in path and path.endswith(".md")
-    )
-    restored_users = len(database.get("users", []))
-
-    return {
-        "restoredUsers": restored_users,
-        "restoredMemoryFiles": restored_memory_files,
-        "requiresReauth": True,
-        "format": transfer_format,
-    }
 
 
 def _invalidate_restored_memory_indexes(
@@ -692,7 +572,9 @@ def _invalidate_restored_memory_indexes(
         for restored_user_id in user_ids:
             invalidate_memory_retrieval_indexes(restored_user_id)
     except Exception:
-        vault_logger.debug("Memory retrieval invalidation skipped during vault import", exc_info=True)
+        vault_logger.debug(
+            "Memory retrieval invalidation skipped during vault import", exc_info=True
+        )
 
 
 def encrypt_string(
@@ -852,8 +734,7 @@ def export_database_snapshot(
         for user_key in db.scalars(_scoped(select(UserKey), UserKey)).all()
     ]
     soul_keyslots = [
-        serialize_soul_keyslot_record(keyslot)
-        for keyslot in db.scalars(select(SoulKeyslot)).all()
+        serialize_soul_keyslot_record(keyslot) for keyslot in db.scalars(select(SoulKeyslot)).all()
     ]
     memory_items = [
         serialize_memory_item_record(item, deks=deks)
@@ -976,15 +857,11 @@ def export_database_snapshot(
     ]
     tendency_contributions = [
         serialize_tendency_contribution_record(row)
-        for row in db.scalars(
-            _scoped(select(TendencyContribution), TendencyContribution)
-        ).all()
+        for row in db.scalars(_scoped(select(TendencyContribution), TendencyContribution)).all()
     ]
     reconsolidation_log = [
         serialize_reconsolidation_log_record(row)
-        for row in db.scalars(
-            _scoped(select(ReconsolidationLog), ReconsolidationLog)
-        ).all()
+        for row in db.scalars(_scoped(select(ReconsolidationLog), ReconsolidationLog)).all()
     ]
     initiative_log = [
         serialize_initiative_log_record(row, deks=deks)
@@ -1584,9 +1461,7 @@ def restore_database_snapshot(
                     source_evidence_id=coerce_optional_int(record.get("source_evidence_id")),
                     source_claim_evidence_id=None,
                     superseded_by_id=None,
-                    first_observed_at=parse_optional_datetime(
-                        record.get("first_observed_at")
-                    ),
+                    first_observed_at=parse_optional_datetime(record.get("first_observed_at")),
                     last_observed_at=parse_optional_datetime(record.get("last_observed_at")),
                     created_at=parse_optional_datetime(record.get("created_at")),
                     updated_at=parse_optional_datetime(record.get("updated_at")),
@@ -1655,12 +1530,8 @@ def restore_database_snapshot(
             if not isinstance(record, dict):
                 continue
             relation_id = int(record["id"])
-            supersedes_relation_id = coerce_optional_int(
-                record.get("supersedes_relation_id")
-            )
-            evolves_from_relation_id = coerce_optional_int(
-                record.get("evolves_from_relation_id")
-            )
+            supersedes_relation_id = coerce_optional_int(record.get("supersedes_relation_id"))
+            evolves_from_relation_id = coerce_optional_int(record.get("evolves_from_relation_id"))
             restored_kg_relation_ids.add(relation_id)
             kg_relation_self_links.append(
                 (relation_id, supersedes_relation_id, evolves_from_relation_id)
@@ -1679,9 +1550,7 @@ def restore_database_snapshot(
                     valid_from=parse_optional_datetime(record.get("valid_from")),
                     valid_to=parse_optional_datetime(record.get("valid_to")),
                     confidence=float(
-                        record.get("confidence")
-                        if record.get("confidence") is not None
-                        else 1.0
+                        record.get("confidence") if record.get("confidence") is not None else 1.0
                     ),
                     status=str(record.get("status") or "active"),
                     supersedes_relation_id=None,
@@ -1693,9 +1562,7 @@ def restore_database_snapshot(
 
         db.flush()
 
-        for relation_id, supersedes_relation_id, evolves_from_relation_id in (
-            kg_relation_self_links
-        ):
+        for relation_id, supersedes_relation_id, evolves_from_relation_id in kg_relation_self_links:
             relation = db.get(KGRelation, relation_id)
             if relation is None:
                 continue
@@ -3012,9 +2879,7 @@ def _re_encrypt_snapshot_fields(
         refs = dream.get("source_refs")
         if isinstance(refs, dict) and isinstance(refs.get("latent_topic_keys"), list):
             refs["latent_topic_keys"] = [
-                _re_encrypt_field_value(
-                    k, user_id, table="dream_journal", field="source_refs"
-                )
+                _re_encrypt_field_value(k, user_id, table="dream_journal", field="source_refs")
                 for k in refs["latent_topic_keys"]
             ]
 

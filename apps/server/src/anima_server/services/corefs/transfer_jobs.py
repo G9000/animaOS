@@ -1,0 +1,983 @@
+from __future__ import annotations
+
+import shutil
+import threading
+from dataclasses import dataclass, field
+from enum import StrEnum
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from anima_server.services.core import get_core_dir
+from anima_server.services.corefs.archive_transfer import (
+    CoreArchiveExportResult,
+    CoreArchiveImportResult,
+    CoreArchiveInventory,
+    CoreArchiveMultipartExportResult,
+    CoreArchivePayloadKind,
+    CoreArchiveTransferError,
+    _is_multipart_controller,
+    export_core_archive_multipart_v2,
+    export_core_archive_v2,
+    inspect_core_archive_v2,
+    stage_core_archive_v2,
+    verify_core_archive_v2,
+)
+from anima_server.services.corefs.authority import AuthorityState, read_authority_record
+from anima_server.services.corefs.recovery_access import (
+    ControlRecord,
+    CoreFsRecoveryAccessError,
+    CoreFsRecoveryBrowseResult,
+    CoreFsRecoveryCredentialResult,
+    CoreFsRecoveryExportContext,
+    RecoveryBrowseOperation,
+    StageIdentity,
+    _validation_pointer_alias,
+    browse_staged_corefs,
+    open_staged_corefs_export,
+    replace_staged_corefs_credentials,
+    staged_core_identity,
+)
+from anima_server.services.corefs.transfer import (
+    DestinationProbe,
+    ImportCapacityProbe,
+    PublicationMode,
+    TransferCancelled,
+    TransferError,
+    TransferEstimate,
+    estimate_transfer,
+    probe_import_staging,
+    probe_local_destination,
+    publish_single_file,
+)
+from anima_server.services.corefs.types import WrappingPath
+
+_MAX_OPERATIONS = 32
+
+
+def _multipart_set_name(final_name: str) -> str:
+    lowered = final_name.casefold()
+    for suffix in (".anima-core", ".anima"):
+        if lowered.endswith(suffix) and len(final_name) > len(suffix):
+            return final_name[: -len(suffix)]
+    return final_name
+
+
+def _import_source_bytes(archive: Path) -> int:
+    if not _is_multipart_controller(archive):
+        return archive.stat().st_size
+    if archive.name != "core.anima":
+        raise TransferError("multipart ANIMA CORE controller filename is invalid")
+    volumes: list[tuple[int, int]] = []
+    total = archive.stat().st_size
+    for child in archive.parent.iterdir():
+        if child == archive:
+            continue
+        if child.is_symlink() or not child.is_file():
+            raise TransferError("multipart ANIMA CORE directory is invalid")
+        name = child.name
+        prefix = "volume-"
+        suffix = ".anima-part"
+        ordinal_text = name[len(prefix) : -len(suffix)]
+        if (
+            not name.startswith(prefix)
+            or not name.endswith(suffix)
+            or len(ordinal_text) < 4
+            or not ordinal_text.isascii()
+            or not ordinal_text.isdigit()
+        ):
+            raise TransferError("multipart ANIMA CORE directory is invalid")
+        volumes.append((int(ordinal_text), child.stat().st_size))
+        if len(volumes) > 100_000:
+            raise TransferError("multipart ANIMA CORE volume count exceeds its bound")
+    volumes.sort()
+    if len(volumes) < 2 or [ordinal for ordinal, _ in volumes] != list(range(1, len(volumes) + 1)):
+        raise TransferError("multipart ANIMA CORE volume inventory is incomplete")
+    return total + sum(length for _, length in volumes)
+
+
+class TransferOperationState(StrEnum):
+    PREPARED = "prepared"
+    RUNNING = "running"
+    VERIFYING = "verifying"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class CorefsReattachmentNotSupported(TransferError):
+    """V1 deliberately cannot combine a CoreFS-only recovery with a Soul."""
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedTransfer:
+    inventory: CoreArchiveInventory
+    estimate: TransferEstimate
+    probe: DestinationProbe
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedImport:
+    archive_path: Path
+    archive_bytes: int
+    probe: ImportCapacityProbe
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedRecoveryCredentialReplacement:
+    operation: ImportOperation
+    result: CoreFsRecoveryCredentialResult
+
+
+@dataclass(slots=True)
+class TransferOperation:
+    operation_id: str
+    user_id: int
+    prepared: PreparedTransfer
+    state: TransferOperationState = TransferOperationState.PREPARED
+    phase: str = "prepared"
+    bytes_published: int = 0
+    progress_percent: int = 0
+    result_path: Path | None = None
+    archive_id: str | None = None
+    error_code: str | None = None
+    cancel: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    def public(self) -> dict[str, object]:
+        return {
+            "operationId": self.operation_id,
+            "payloadKind": self.prepared.inventory.payload_kind.value,
+            "state": self.state.value,
+            "phase": self.phase,
+            "selectedBytes": self.prepared.inventory.selected_bytes,
+            "bytesPublished": self.bytes_published,
+            "progressPercent": self.progress_percent,
+            "publicationMode": self.prepared.probe.publication_mode.value,
+            "declaredVolumeCount": self.prepared.probe.declared_volume_count,
+            "resultPath": str(self.result_path) if self.result_path is not None else None,
+            "archiveId": self.archive_id,
+            "errorCode": self.error_code,
+        }
+
+
+@dataclass(slots=True)
+class ImportOperation:
+    operation_id: str
+    user_id: int
+    prepared: PreparedImport
+    state: TransferOperationState = TransferOperationState.PREPARED
+    phase: str = "prepared"
+    bytes_processed: int = 0
+    progress_percent: int = 0
+    payload_kind: CoreArchivePayloadKind | None = None
+    core_id: str | None = field(default=None, repr=False)
+    recovery_state: str | None = None
+    staging_path: Path | None = None
+    staging_identity: StageIdentity | None = field(default=None, repr=False)
+    control_records: tuple[ControlRecord, ...] = field(default=(), repr=False)
+    filesystem_generation: int | None = field(default=None, repr=False)
+    archive_id: str | None = None
+    activation_id: str | None = None
+    restart_required: bool = False
+    credentials_replaced: bool = False
+    recovery_export_operation_id: str | None = None
+    error_code: str | None = None
+    cancel: threading.Event = field(default_factory=threading.Event, repr=False)
+    recovery_access_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def public(self) -> dict[str, object]:
+        return {
+            "operationId": self.operation_id,
+            "state": self.state.value,
+            "phase": self.phase,
+            "archiveBytes": self.prepared.archive_bytes,
+            "bytesProcessed": self.bytes_processed,
+            "progressPercent": self.progress_percent,
+            "payloadKind": self.payload_kind.value if self.payload_kind is not None else None,
+            "recoveryState": self.recovery_state,
+            "archiveId": self.archive_id,
+            "activationId": self.activation_id,
+            "restartRequired": self.restart_required,
+            "credentialsReplaced": self.credentials_replaced,
+            "recoveryExportOperationId": self.recovery_export_operation_id,
+            "errorCode": self.error_code,
+        }
+
+
+class CoreTransferOperationManager:
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._operations: dict[str, TransferOperation] = {}
+
+    def inspect(
+        self,
+        *,
+        session: Any,
+        payload_kind: CoreArchivePayloadKind,
+        destination: Path | None = None,
+    ) -> PreparedTransfer | tuple[CoreArchiveInventory, TransferEstimate]:
+        soul_generation = _coherent_soul_generation(payload_kind)
+        inventory = inspect_core_archive_v2(
+            session=session,
+            payload_kind=payload_kind,
+            soul_generation=soul_generation,
+        )
+        estimate = estimate_transfer(
+            selected_bytes=inventory.selected_bytes,
+            record_count=inventory.record_count,
+        )
+        if destination is None:
+            return inventory, estimate
+        probe = probe_local_destination(
+            destination,
+            estimate,
+            forbidden_roots=(get_core_dir(),),
+        )
+        return PreparedTransfer(inventory=inventory, estimate=estimate, probe=probe)
+
+    def start_export(
+        self,
+        *,
+        user_id: int,
+        session: Any,
+        destination: Path,
+        final_name: str,
+        passphrase: str,
+        payload_kind: CoreArchivePayloadKind,
+    ) -> TransferOperation:
+        prepared = self.inspect(
+            session=session,
+            payload_kind=payload_kind,
+            destination=destination,
+        )
+        assert isinstance(prepared, PreparedTransfer)
+        operation = TransferOperation(
+            operation_id=str(uuid4()),
+            user_id=user_id,
+            prepared=prepared,
+        )
+        with self._lock:
+            self._prune_locked()
+            if len(self._operations) >= _MAX_OPERATIONS:
+                raise TransferError("too many transfer operations are retained")
+            self._operations[operation.operation_id] = operation
+        worker = threading.Thread(
+            target=self._run_export,
+            kwargs={
+                "operation": operation,
+                "session": session,
+                "destination": prepared.probe.destination,
+                "final_name": final_name,
+                "passphrase": passphrase,
+            },
+            name=f"anima-core-export-{operation.operation_id[:8]}",
+            daemon=True,
+        )
+        worker.start()
+        return operation
+
+    def get(self, operation_id: str, *, user_id: int) -> TransferOperation:
+        with self._lock:
+            operation = self._operations.get(operation_id)
+            if operation is None or operation.user_id != user_id:
+                raise KeyError(operation_id)
+            return operation
+
+    def request_cancel(self, operation_id: str, *, user_id: int) -> TransferOperation:
+        operation = self.get(operation_id, user_id=user_id)
+        operation.cancel.set()
+        return operation
+
+    def register_prepared(
+        self,
+        *,
+        user_id: int,
+        prepared: PreparedTransfer,
+    ) -> TransferOperation:
+        operation = TransferOperation(
+            operation_id=str(uuid4()),
+            user_id=user_id,
+            prepared=prepared,
+        )
+        with self._lock:
+            self._prune_locked()
+            if len(self._operations) >= _MAX_OPERATIONS:
+                raise TransferError("too many transfer operations are retained")
+            self._operations[operation.operation_id] = operation
+        return operation
+
+    def _run_export(
+        self,
+        *,
+        operation: TransferOperation,
+        session: Any,
+        destination: Path,
+        final_name: str,
+        passphrase: str,
+    ) -> None:
+        result: CoreArchiveExportResult | CoreArchiveMultipartExportResult | None = None
+
+        def update(
+            state: TransferOperationState,
+            phase: str,
+            progress: int,
+        ) -> None:
+            with self._lock:
+                operation.state = state
+                operation.phase = phase
+                operation.progress_percent = progress
+
+        def producer(partial: Path) -> None:
+            nonlocal result
+            update(TransferOperationState.RUNNING, "streaming", 25)
+            result = export_core_archive_v2(
+                session=session,
+                output_path=partial,
+                passphrase=passphrase,
+                payload_kind=operation.prepared.inventory.payload_kind,
+                soul_generation=operation.prepared.inventory.soul_generation,
+            )
+            if result.inventory != operation.prepared.inventory:
+                raise CoreArchiveTransferError(
+                    "archive inventory changed after destination preflight"
+                )
+
+        def verifier(partial: Path) -> None:
+            update(TransferOperationState.VERIFYING, "verifying", 75)
+            verify_core_archive_v2(
+                partial,
+                passphrase=passphrase,
+                expected=operation.prepared.inventory,
+            )
+
+        try:
+            update(TransferOperationState.RUNNING, "starting", 5)
+            if operation.prepared.probe.publication_mode is PublicationMode.MULTIPART:
+                part_limit = operation.prepared.probe.part_limit_bytes
+                if part_limit is None:
+                    raise TransferError("multipart destination has no part limit")
+                update(TransferOperationState.RUNNING, "streaming", 25)
+                result = export_core_archive_multipart_v2(
+                    session=session,
+                    destination=destination,
+                    set_name=_multipart_set_name(final_name),
+                    passphrase=passphrase,
+                    payload_kind=operation.prepared.inventory.payload_kind,
+                    soul_generation=operation.prepared.inventory.soul_generation,
+                    part_limit_bytes=part_limit,
+                    declared_volume_count=(operation.prepared.probe.declared_volume_count),
+                    cancel_requested=operation.cancel.is_set,
+                )
+                if result.inventory != operation.prepared.inventory:
+                    raise CoreArchiveTransferError(
+                        "archive inventory changed after destination preflight"
+                    )
+                publication_path = result.publication_path
+                published_bytes = result.bytes_published
+            else:
+                publication = publish_single_file(
+                    destination,
+                    final_name,
+                    producer=producer,
+                    verifier=verifier,
+                    cancel_requested=operation.cancel.is_set,
+                )
+                publication_path = publication.path
+                published_bytes = publication.bytes_published
+            if result is None:
+                raise CoreArchiveTransferError("archive export produced no result")
+            with self._lock:
+                operation.state = TransferOperationState.COMPLETED
+                operation.phase = "completed"
+                operation.progress_percent = 100
+                operation.bytes_published = published_bytes
+                operation.result_path = publication_path
+                operation.archive_id = result.archive_id
+        except TransferCancelled:
+            update(TransferOperationState.CANCELLED, "cancelled", operation.progress_percent)
+        except (CoreArchiveTransferError, TransferError):
+            with self._lock:
+                operation.state = TransferOperationState.FAILED
+                operation.phase = "failed"
+                operation.error_code = "core_transfer_failed"
+        except Exception:
+            with self._lock:
+                operation.state = TransferOperationState.FAILED
+                operation.phase = "failed"
+                operation.error_code = "core_transfer_internal_failure"
+
+    def _prune_locked(self) -> None:
+        terminal = [
+            operation_id
+            for operation_id, operation in self._operations.items()
+            if operation.state
+            in {
+                TransferOperationState.COMPLETED,
+                TransferOperationState.CANCELLED,
+                TransferOperationState.FAILED,
+            }
+        ]
+        while len(self._operations) >= _MAX_OPERATIONS and terminal:
+            self._operations.pop(terminal.pop(0), None)
+
+
+class CoreImportOperationManager:
+    def __init__(
+        self,
+        transfer_operations: CoreTransferOperationManager | None = None,
+    ) -> None:
+        self._lock = threading.RLock()
+        self._operations: dict[str, ImportOperation] = {}
+        self._transfer_operations = transfer_operations or CoreTransferOperationManager()
+
+    def inspect(
+        self,
+        *,
+        archive_path: Path,
+        staging_parent: Path,
+    ) -> PreparedImport:
+        candidate = archive_path.expanduser()
+        if candidate.is_symlink():
+            raise TransferError("ANIMA CORE import source must be a regular file")
+        archive = candidate.resolve(strict=True)
+        active = get_core_dir().expanduser().resolve(strict=True)
+        if not archive.is_file() or archive.is_relative_to(active):
+            raise TransferError("ANIMA CORE import source is invalid")
+        archive_bytes = _import_source_bytes(archive)
+        if archive_bytes <= 0:
+            raise TransferError("ANIMA CORE import source is empty")
+        probe = probe_import_staging(
+            staging_parent,
+            restored_core_bytes=archive_bytes,
+            active_core_path=active,
+        )
+        return PreparedImport(
+            archive_path=archive,
+            archive_bytes=archive_bytes,
+            probe=probe,
+        )
+
+    def start_import(
+        self,
+        *,
+        user_id: int,
+        archive_path: Path,
+        staging_parent: Path,
+        passphrase: str,
+    ) -> ImportOperation:
+        prepared = self.inspect(
+            archive_path=archive_path,
+            staging_parent=staging_parent,
+        )
+        operation = ImportOperation(
+            operation_id=str(uuid4()),
+            user_id=user_id,
+            prepared=prepared,
+        )
+        with self._lock:
+            self._prune_locked()
+            if len(self._operations) >= _MAX_OPERATIONS:
+                raise TransferError("too many import operations are retained")
+            self._operations[operation.operation_id] = operation
+        worker = threading.Thread(
+            target=self._run_import,
+            kwargs={"operation": operation, "passphrase": passphrase},
+            name=f"anima-core-import-{operation.operation_id[:8]}",
+            daemon=True,
+        )
+        worker.start()
+        return operation
+
+    def get(self, operation_id: str, *, user_id: int) -> ImportOperation:
+        with self._lock:
+            operation = self._operations.get(operation_id)
+            if operation is None or operation.user_id != user_id:
+                raise KeyError(operation_id)
+            return operation
+
+    def request_cancel(self, operation_id: str, *, user_id: int) -> ImportOperation:
+        operation = self.get(operation_id, user_id=user_id)
+        operation.cancel.set()
+        return operation
+
+    def request_corefs_reattachment(
+        self,
+        operation_id: str,
+        *,
+        user_id: int,
+    ) -> ImportOperation:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FS
+                or operation.recovery_state != "recovery_only"
+            ):
+                raise TransferError("CoreFS recovery operation is not attachable")
+        raise CorefsReattachmentNotSupported("CoreFS-to-Soul reattachment is not supported in V1")
+
+    def browse_corefs_recovery(
+        self,
+        operation_id: str,
+        *,
+        user_id: int,
+        credential: str,
+        wrapping_path: WrappingPath,
+        browse_operation: RecoveryBrowseOperation,
+        logical_path: str,
+        cursor_after: str | None = None,
+        cursor_generation: int | None = None,
+        limit: int = 100,
+        offset: int = 0,
+        max_bytes: int = 65_536,
+        response_bytes: int | None = None,
+    ) -> CoreFsRecoveryBrowseResult:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FS
+                or operation.recovery_state != "recovery_only"
+                or operation.staging_path is None
+                or operation.staging_identity is None
+                or operation.filesystem_generation is None
+                or operation.core_id is None
+                or not operation.control_records
+            ):
+                raise TransferError("CoreFS recovery operation is not available for browsing")
+            staging_path = operation.staging_path
+            identity = operation.staging_identity
+            control_records = operation.control_records
+            filesystem_generation = operation.filesystem_generation
+            core_id = operation.core_id
+            access_lock = operation.recovery_access_lock
+        with access_lock:
+            return browse_staged_corefs(
+                staging_path=staging_path,
+                expected_core_id=core_id,
+                expected_generation=filesystem_generation,
+                expected_stage_identity=identity,
+                control_records=control_records,
+                credential=credential,
+                wrapping_path=wrapping_path,
+                operation=browse_operation,
+                logical_path=logical_path,
+                cursor_after=cursor_after,
+                cursor_generation=cursor_generation,
+                limit=limit,
+                offset=offset,
+                max_bytes=max_bytes,
+                response_bytes=response_bytes,
+            )
+
+    def replace_corefs_recovery_credentials(
+        self,
+        operation_id: str,
+        *,
+        user_id: int,
+        source_credential: str,
+        source_wrapping_path: WrappingPath,
+        new_password: str,
+    ) -> CompletedRecoveryCredentialReplacement:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FS
+                or operation.recovery_state != "recovery_only"
+                or operation.staging_path is None
+                or operation.staging_identity is None
+                or operation.core_id is None
+                or not operation.control_records
+            ):
+                raise TransferError("CoreFS recovery operation cannot replace credentials")
+            staging_path = operation.staging_path
+            identity = operation.staging_identity
+            core_id = operation.core_id
+            control_records = operation.control_records
+            access_lock = operation.recovery_access_lock
+        with access_lock:
+            result = replace_staged_corefs_credentials(
+                staging_path=staging_path,
+                expected_core_id=core_id,
+                expected_stage_identity=identity,
+                control_records=control_records,
+                source_credential=source_credential,
+                source_wrapping_path=source_wrapping_path,
+                new_password=new_password,
+            )
+            with self._lock:
+                operation.control_records = result.control_records
+                operation.credentials_replaced = True
+                operation.phase = "staged_recovery_ready"
+        return CompletedRecoveryCredentialReplacement(
+            operation=operation,
+            result=result,
+        )
+
+    def start_corefs_recovery_export(
+        self,
+        operation_id: str,
+        *,
+        user_id: int,
+        credential: str,
+        wrapping_path: WrappingPath,
+        destination: Path,
+        final_name: str,
+        passphrase: str,
+    ) -> TransferOperation:
+        if not 8 <= len(passphrase) <= 1024:
+            raise TransferError("archive passphrase must be between 8 and 1024 characters")
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            previous_export: TransferOperation | None = None
+            if operation.recovery_export_operation_id is not None:
+                try:
+                    previous_export = self._transfer_operations.get(
+                        operation.recovery_export_operation_id,
+                        user_id=user_id,
+                    )
+                except KeyError:
+                    operation.recovery_export_operation_id = None
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FS
+                or operation.recovery_state != "recovery_only"
+                or operation.staging_path is None
+                or operation.staging_identity is None
+                or operation.core_id is None
+                or not operation.control_records
+                or (
+                    previous_export is not None
+                    and previous_export.state
+                    not in {
+                        TransferOperationState.COMPLETED,
+                        TransferOperationState.CANCELLED,
+                        TransferOperationState.FAILED,
+                    }
+                )
+            ):
+                raise TransferError("CoreFS recovery export is not available")
+            staging_path = operation.staging_path
+            identity = operation.staging_identity
+            core_id = operation.core_id
+            control_records = operation.control_records
+            access_lock = operation.recovery_access_lock
+
+        with access_lock:
+            context = open_staged_corefs_export(
+                staging_path=staging_path,
+                expected_core_id=core_id,
+                expected_stage_identity=identity,
+                control_records=control_records,
+                credential=credential,
+                wrapping_path=wrapping_path,
+            )
+            try:
+                with _validation_pointer_alias(staging_path, control_records):
+                    inventory = inspect_core_archive_v2(
+                        session=context,
+                        payload_kind=CoreArchivePayloadKind.FS,
+                        soul_generation=None,
+                        core_root=context.core_root,
+                        manifest=context.manifest,
+                    )
+                estimate = estimate_transfer(
+                    selected_bytes=inventory.selected_bytes,
+                    record_count=inventory.record_count,
+                )
+                probe = probe_local_destination(
+                    destination,
+                    estimate,
+                    forbidden_roots=(get_core_dir(), staging_path),
+                )
+                export = self._transfer_operations.register_prepared(
+                    user_id=user_id,
+                    prepared=PreparedTransfer(
+                        inventory=inventory,
+                        estimate=estimate,
+                        probe=probe,
+                    ),
+                )
+                with self._lock:
+                    operation.recovery_export_operation_id = export.operation_id
+                    operation.phase = "staged_recovery_exporting"
+                worker = threading.Thread(
+                    target=self._run_corefs_recovery_export,
+                    kwargs={
+                        "source_operation": operation,
+                        "export_operation": export,
+                        "context": context,
+                        "access_lock": access_lock,
+                        "final_name": final_name,
+                        "passphrase": passphrase,
+                    },
+                    name=f"anima-core-recovery-export-{export.operation_id[:8]}",
+                    daemon=True,
+                )
+                try:
+                    worker.start()
+                except BaseException:
+                    with self._transfer_operations._lock:
+                        self._transfer_operations._operations.pop(
+                            export.operation_id,
+                            None,
+                        )
+                    with self._lock:
+                        operation.recovery_export_operation_id = None
+                        operation.phase = "staged_recovery_ready"
+                    raise
+                return export
+            except BaseException:
+                context.close()
+                raise
+
+    def _run_corefs_recovery_export(
+        self,
+        *,
+        source_operation: ImportOperation,
+        export_operation: TransferOperation,
+        context: CoreFsRecoveryExportContext,
+        access_lock: threading.Lock,
+        final_name: str,
+        passphrase: str,
+    ) -> None:
+        result: CoreArchiveExportResult | CoreArchiveMultipartExportResult | None = None
+
+        def update(state: TransferOperationState, phase: str, progress: int) -> None:
+            with self._transfer_operations._lock:
+                export_operation.state = state
+                export_operation.phase = phase
+                export_operation.progress_percent = progress
+
+        def producer(partial: Path) -> None:
+            nonlocal result
+            update(TransferOperationState.RUNNING, "streaming", 25)
+            context.verify_authority()
+            with _validation_pointer_alias(context.core_root, context.control_records):
+                result = export_core_archive_v2(
+                    session=context,
+                    output_path=partial,
+                    passphrase=passphrase,
+                    payload_kind=CoreArchivePayloadKind.FS,
+                    soul_generation=None,
+                    core_root=context.core_root,
+                    manifest=context.manifest,
+                )
+            context.verify_authority()
+            if result.inventory != export_operation.prepared.inventory:
+                raise CoreArchiveTransferError(
+                    "recovery archive inventory changed after destination preflight"
+                )
+
+        def verifier(partial: Path) -> None:
+            update(TransferOperationState.VERIFYING, "verifying", 75)
+            verify_core_archive_v2(
+                partial,
+                passphrase=passphrase,
+                expected=export_operation.prepared.inventory,
+            )
+
+        try:
+            with access_lock:
+                update(TransferOperationState.RUNNING, "starting", 5)
+                if export_operation.prepared.probe.publication_mode is PublicationMode.MULTIPART:
+                    part_limit = export_operation.prepared.probe.part_limit_bytes
+                    if part_limit is None:
+                        raise TransferError("multipart destination has no part limit")
+                    update(TransferOperationState.RUNNING, "streaming", 25)
+                    context.verify_authority()
+                    with _validation_pointer_alias(
+                        context.core_root,
+                        context.control_records,
+                    ):
+                        result = export_core_archive_multipart_v2(
+                            session=context,
+                            destination=export_operation.prepared.probe.destination,
+                            set_name=_multipart_set_name(final_name),
+                            passphrase=passphrase,
+                            payload_kind=CoreArchivePayloadKind.FS,
+                            soul_generation=None,
+                            part_limit_bytes=part_limit,
+                            declared_volume_count=(
+                                export_operation.prepared.probe.declared_volume_count
+                            ),
+                            cancel_requested=export_operation.cancel.is_set,
+                            core_root=context.core_root,
+                            manifest=context.manifest,
+                        )
+                    context.verify_authority()
+                    if result.inventory != export_operation.prepared.inventory:
+                        raise CoreArchiveTransferError(
+                            "recovery archive inventory changed after destination preflight"
+                        )
+                    publication_path = result.publication_path
+                    published_bytes = result.bytes_published
+                else:
+                    publication = publish_single_file(
+                        export_operation.prepared.probe.destination,
+                        final_name,
+                        producer=producer,
+                        verifier=verifier,
+                        cancel_requested=export_operation.cancel.is_set,
+                    )
+                    publication_path = publication.path
+                    published_bytes = publication.bytes_published
+                if result is None:
+                    raise CoreArchiveTransferError("CoreFS recovery export produced no result")
+                with self._transfer_operations._lock:
+                    export_operation.state = TransferOperationState.COMPLETED
+                    export_operation.phase = "completed"
+                    export_operation.progress_percent = 100
+                    export_operation.bytes_published = published_bytes
+                    export_operation.result_path = publication_path
+                    export_operation.archive_id = result.archive_id
+        except TransferCancelled:
+            update(
+                TransferOperationState.CANCELLED,
+                "cancelled",
+                export_operation.progress_percent,
+            )
+        except (CoreArchiveTransferError, CoreFsRecoveryAccessError, TransferError):
+            with self._transfer_operations._lock:
+                export_operation.state = TransferOperationState.FAILED
+                export_operation.phase = "failed"
+                export_operation.error_code = "corefs_recovery_export_failed"
+        except Exception:
+            with self._transfer_operations._lock:
+                export_operation.state = TransferOperationState.FAILED
+                export_operation.phase = "failed"
+                export_operation.error_code = "core_transfer_internal_failure"
+        finally:
+            context.close()
+            with self._lock:
+                source_operation.phase = "staged_recovery_ready"
+
+    def schedule_activation(self, operation_id: str, *, user_id: int) -> ImportOperation:
+        operation = self.get(operation_id, user_id=user_id)
+        with self._lock:
+            if (
+                operation.state is not TransferOperationState.COMPLETED
+                or operation.payload_kind is not CoreArchivePayloadKind.FULL
+                or operation.staging_path is None
+                or operation.core_id is None
+            ):
+                raise TransferError("only a completed full restore can schedule activation")
+            if operation.activation_id is not None:
+                return operation
+        from anima_server.services.corefs.active_core_registry import (
+            schedule_full_restore_activation,
+        )
+
+        scheduled = schedule_full_restore_activation(
+            operation.staging_path,
+            core_id=operation.core_id,
+        )
+        with self._lock:
+            operation.phase = "activation_scheduled"
+            operation.activation_id = scheduled.activation_id
+            operation.restart_required = True
+        return operation
+
+    def _run_import(self, *, operation: ImportOperation, passphrase: str) -> None:
+        staging = (
+            operation.prepared.probe.staging_parent
+            / f".anima-restore-{operation.operation_id}.partial"
+        )
+
+        def update(state: TransferOperationState, phase: str, progress: int) -> None:
+            with self._lock:
+                operation.state = state
+                operation.phase = phase
+                operation.progress_percent = progress
+
+        try:
+            if operation.cancel.is_set():
+                raise TransferCancelled("ANIMA CORE import was cancelled")
+            refreshed = self.inspect(
+                archive_path=operation.prepared.archive_path,
+                staging_parent=operation.prepared.probe.staging_parent,
+            )
+            if (
+                refreshed.archive_path != operation.prepared.archive_path
+                or refreshed.archive_bytes != operation.prepared.archive_bytes
+                or refreshed.probe.staging_parent != operation.prepared.probe.staging_parent
+            ):
+                raise TransferError("ANIMA CORE import inputs changed after preflight")
+            update(TransferOperationState.RUNNING, "authenticating", 10)
+            result: CoreArchiveImportResult = stage_core_archive_v2(
+                operation.prepared.archive_path,
+                passphrase=passphrase,
+                staging_path=staging,
+            )
+            if operation.cancel.is_set():
+                raise TransferCancelled("ANIMA CORE import was cancelled")
+            recovery_state = {
+                CoreArchivePayloadKind.FULL: "complete",
+                CoreArchivePayloadKind.SOUL: "filesystem_missing",
+                CoreArchivePayloadKind.FS: "recovery_only",
+            }[result.inventory.payload_kind]
+            with self._lock:
+                operation.state = TransferOperationState.COMPLETED
+                operation.phase = (
+                    "staged_restart_required"
+                    if result.inventory.payload_kind is CoreArchivePayloadKind.FULL
+                    else "staged_credential_required"
+                )
+                operation.bytes_processed = operation.prepared.archive_bytes
+                operation.progress_percent = 100
+                operation.payload_kind = result.inventory.payload_kind
+                operation.core_id = result.inventory.core_id
+                operation.recovery_state = recovery_state
+                operation.staging_path = result.staging_path
+                operation.staging_identity = staged_core_identity(result.staging_path)
+                operation.control_records = result.control_records
+                operation.filesystem_generation = result.inventory.filesystem_generation
+                operation.archive_id = result.archive_id
+        except TransferCancelled:
+            shutil.rmtree(staging, ignore_errors=True)
+            update(TransferOperationState.CANCELLED, "cancelled", operation.progress_percent)
+        except (CoreArchiveTransferError, TransferError, OSError):
+            shutil.rmtree(staging, ignore_errors=True)
+            with self._lock:
+                operation.state = TransferOperationState.FAILED
+                operation.phase = "failed"
+                operation.error_code = "core_import_failed"
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            with self._lock:
+                operation.state = TransferOperationState.FAILED
+                operation.phase = "failed"
+                operation.error_code = "core_import_internal_failure"
+
+    def _prune_locked(self) -> None:
+        terminal = [
+            operation_id
+            for operation_id, operation in self._operations.items()
+            if operation.state
+            in {
+                TransferOperationState.COMPLETED,
+                TransferOperationState.CANCELLED,
+                TransferOperationState.FAILED,
+            }
+        ]
+        while len(self._operations) >= _MAX_OPERATIONS and terminal:
+            self._operations.pop(terminal.pop(0), None)
+
+
+def _coherent_soul_generation(payload_kind: CoreArchivePayloadKind) -> int | None:
+    if payload_kind is CoreArchivePayloadKind.FS:
+        return None
+    authority = read_authority_record()
+    generation = (
+        authority.authoritative_generation
+        if authority.state is AuthorityState.AUTHORITATIVE
+        else None
+    )
+    if generation is None or generation <= 0:
+        raise TransferError("ANIMA CORE has no coherent Soul/filesystem transfer checkpoint")
+    return generation
+
+
+core_transfer_operations = CoreTransferOperationManager()
+core_import_operations = CoreImportOperationManager(core_transfer_operations)

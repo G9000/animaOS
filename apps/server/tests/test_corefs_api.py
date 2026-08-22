@@ -315,6 +315,70 @@ def test_authenticated_client_requires_grant_before_any_dispatch(
     assert corefs_client._corefs_calls == []  # type: ignore[attr-defined]
 
 
+def test_one_shot_client_capability_is_folder_checked_before_and_after_dispatch(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = logical.CoreFsValidationSnapshot(generation=9, catalog_hash="catalog-hash")
+    identity = corefs_route.ClientCapabilityIdentity(
+        installation_id="installation-1",
+        client_id="notes-extension",
+        package_id="com.example.notes",
+        install_digest=f"sha256:{'a' * 64}",
+        user_id=42,
+    )
+    folders = (corefs_route.CoreFsFolderGrantTarget("folder-notes", "Notes", "core.notes"),)
+    authorizations: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        corefs_route.client_capability_broker,
+        "consume",
+        lambda **kwargs: (
+            identity
+            if kwargs["token"] == "one-shot-capability"
+            else pytest.fail("unexpected capability")
+        ),
+    )
+    monkeypatch.setattr(corefs_route.logical, "select_validation_snapshot", lambda **_: selected)
+    monkeypatch.setattr(
+        corefs_route,
+        "list_corefs_grant_folders",
+        lambda _session, *, selected: folders,
+    )
+    monkeypatch.setattr(
+        corefs_route,
+        "authorize_client_path",
+        lambda _identity, **kwargs: authorizations.append(kwargs) or "folder-notes",
+    )
+    monkeypatch.setattr(
+        corefs_route.logical,
+        "stat_v1",
+        lambda **_: b'{"version":"corefs-logical-v1","result":{"path":"Notes/today.md"}}',
+    )
+
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers={
+            **_unlock_headers(),
+            "x-anima-corefs-client-capability": "one-shot-capability",
+        },
+        json={"operation": "stat", "path": "Notes/today.md"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["principal"] == {
+        "kind": "client",
+        "id": "notes-extension",
+        "userId": 42,
+        "installDigest": f"sha256:{'a' * 64}",
+        "installationId": "installation-1",
+        "packageId": "com.example.notes",
+    }
+    assert [item.get("record_use", False) for item in authorizations] == [False, True]
+    assert all(item["logical_path"] == "Notes/today.md" for item in authorizations)
+    assert all(item["required_scope"] == "read" for item in authorizations)
+
+
 def test_caller_cannot_supply_client_identity(corefs_client: TestClient) -> None:
     response = corefs_client.post(
         "/api/corefs/operation",
@@ -751,6 +815,92 @@ def test_write_operations_are_frozen_before_native_mutators(
             "code": logical.CORE_FS_MIGRATION_WRITE_FROZEN,
         },
     }
+
+
+def test_ready_mutation_adapter_decodes_exact_body_and_dispatches_selected_snapshot(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = logical.CoreFsValidationSnapshot(generation=9, catalog_hash="a" * 64)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(corefs_route, "CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY", True)
+    monkeypatch.setattr(corefs_route.logical, "select_validation_snapshot", lambda **_: selected)
+
+    def fake_mutation(**kwargs: object) -> dict[str, object]:
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "generation": 10,
+            "catalogHash": "b" * 64,
+            "atomic": True,
+            "cutoverCommitted": True,
+            "recoveryPending": False,
+            "invalidationDelivered": True,
+            "changes": [{"stableId": "01J10000000000000000000009", "revision": 1}],
+        }
+
+    monkeypatch.setattr(corefs_route.logical, "execute_mutation_v1", fake_mutation)
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={
+            "operation": "create_file",
+            "path": "Notes/one.md",
+            "kind": "note",
+            "contentType": "text/markdown",
+            "bodyEncoding": "utf-8",
+            "contentBase64": "b25lCg==",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["selected"] == {
+        "generation": 9,
+        "catalogHash": "a" * 64,
+    }
+    assert calls[0]["selected"] == selected
+    assert calls[0]["principal"] == "user"
+    assert calls[0]["body"] == b"one\n"
+    assert calls[0]["mutation"] == {
+        "operation": "create_file",
+        "path": "Notes/one.md",
+        "kind": "note",
+        "contentType": "text/markdown",
+        "bodyEncoding": "utf-8",
+    }
+
+
+def test_ready_mutation_adapter_rejects_noncanonical_base64_before_native_dispatch(
+    corefs_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(corefs_route, "CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY", True)
+    monkeypatch.setattr(
+        corefs_route.logical,
+        "select_validation_snapshot",
+        lambda **_: logical.CoreFsValidationSnapshot(9, "a" * 64),
+    )
+    monkeypatch.setattr(
+        corefs_route.logical,
+        "execute_mutation_v1",
+        lambda **_: pytest.fail("invalid body must not reach native mutation"),
+    )
+
+    response = corefs_client.post(
+        "/api/corefs/operation",
+        headers=_unlock_headers(),
+        json={
+            "operation": "create_file",
+            "path": "Notes/one.md",
+            "kind": "note",
+            "contentType": "text/markdown",
+            "bodyEncoding": "utf-8",
+            "contentBase64": "b25lCg",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "corefs_mutation_body_invalid"
 
 
 def test_rejects_host_filesystem_paths(corefs_client: TestClient) -> None:

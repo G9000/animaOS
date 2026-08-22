@@ -147,6 +147,10 @@ def test_clear_unlocked_state_revokes_search_keys_vectors_and_queries() -> None:
     before = index.sensitive_buffer_counts()
     assert before == {
         "documents": 1,
+        "document_projections": 0,
+        "image_projections": 0,
+        "knowledge_source_projections": 0,
+        "knowledge_concept_projections": 0,
         "vectors": 1,
         "queries": 1,
         "blind_tokens": 0,
@@ -159,6 +163,10 @@ def test_clear_unlocked_state_revokes_search_keys_vectors_and_queries() -> None:
     assert index.snapshot().state is ReadinessState.LOCKED
     assert index.sensitive_buffer_counts() == {
         "documents": 0,
+        "document_projections": 0,
+        "image_projections": 0,
+        "knowledge_source_projections": 0,
+        "knowledge_concept_projections": 0,
         "vectors": 0,
         "queries": 0,
         "blind_tokens": 0,

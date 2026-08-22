@@ -143,6 +143,25 @@ export function AsciiBackground({
       if (data) paintFrame(cv, data, fiRef.current, optsRef.current);
     }
 
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+    function applyMotionPreference() {
+      const data = dataRef.current;
+      const canvas = cvRef.current;
+      if (!data || !canvas) return;
+      if (reducedMotion.matches) {
+        if (rafRef.current) cancelAnimationFrame(rafRef.current);
+        rafRef.current = 0;
+        fiRef.current = 0;
+        paintFrame(canvas, data, 0, optsRef.current);
+        return;
+      }
+      if (!rafRef.current) {
+        tRef.current = performance.now();
+        rafRef.current = requestAnimationFrame(tick);
+      }
+    }
+
     function tick(now: number) {
       const data = dataRef.current;
       const canvas = cvRef.current;
@@ -167,17 +186,19 @@ export function AsciiBackground({
       if (cancelled) return;
       dataRef.current = data;
       syncSize();
-      tRef.current = performance.now();
-      rafRef.current = requestAnimationFrame(tick);
+      applyMotionPreference();
     }).catch(() => { /* silent fail — parent bg-black shows through */ });
 
     const ro = new ResizeObserver(syncSize);
     ro.observe(wrap);
+    reducedMotion.addEventListener("change", applyMotionPreference);
 
     return () => {
       cancelled = true;
       ro.disconnect();
+      reducedMotion.removeEventListener("change", applyMotionPreference);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = 0;
     };
   }, [src, cols, mediaType]);
 

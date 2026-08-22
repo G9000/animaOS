@@ -48,8 +48,12 @@ import { dashboardNodeTypes, type DashboardNode } from "./nodes";
 import { buildInitialNodes } from "./layout";
 import { useNodePositions } from "./useNodePositions";
 import { AuthImage } from "../../components/AuthImage";
+import {
+  getPortablePreference,
+  PORTABLE_PREFERENCES_CHANGED_EVENT,
+  setPortablePreference,
+} from "../../lib/portablePreferences";
 
-const CLOSED_NODES_KEY = "anima_dashboard_closed_nodes";
 
 function relativeSession(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -97,11 +101,9 @@ export default function Dashboard() {
     index: number;
   } | null>(null);
   const [closedNodeIds, setClosedNodeIds] = useState<Set<string>>(() => {
-    try {
-      const raw = localStorage.getItem(CLOSED_NODES_KEY);
-      if (raw) return new Set(JSON.parse(raw));
-    } catch {}
-    return new Set<string>();
+    return new Set(
+      getPortablePreference<string[]>("dashboardClosedNodes", []),
+    );
   });
   const [previewThreadId, setPreviewThreadId] = useState<number | null>(null);
   const [presenceConfig, setPresenceConfig] = useState<PresenceConfig | null>(
@@ -587,15 +589,24 @@ export default function Dashboard() {
         if (current.has(id)) return current;
         const next = new Set(current);
         next.add(id);
-        try {
-          localStorage.setItem(CLOSED_NODES_KEY, JSON.stringify([...next]));
-        } catch {}
+        setPortablePreference("dashboardClosedNodes", [...next]);
         return next;
       });
       setNodes((current) => current.filter((n) => n.id !== id));
     },
     [setNodes],
   );
+
+  useEffect(() => {
+    const refresh = () => {
+      setClosedNodeIds(
+        new Set(getPortablePreference<string[]>("dashboardClosedNodes", [])),
+      );
+    };
+    globalThis.addEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+    return () =>
+      globalThis.removeEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+  }, []);
 
   const handleViewAllEntries = useCallback(() => {
     navigate("/journal");
@@ -761,10 +772,8 @@ export default function Dashboard() {
   }, [hydratedNodes, setNodes]);
 
   const handleResetDashboard = useCallback(() => {
-    try {
-      localStorage.removeItem("anima_dashboard_node_positions");
-      localStorage.removeItem(CLOSED_NODES_KEY);
-    } catch {}
+    setPortablePreference("dashboardNodePositions", {});
+    setPortablePreference("dashboardClosedNodes", []);
     setClosedNodeIds(new Set<string>());
     if (hydratedNodes) {
       setNodes(hydratedNodes);

@@ -86,17 +86,32 @@ def sample_pattern_episodes(
     if limit <= 0:
         return ()
 
-    episodes = list(
-        db.scalars(
-            select(MemoryEpisode)
-            .where(
-                MemoryEpisode.user_id == user_id,
-                MemoryEpisode.needs_regeneration.is_(False),
-            )
-            .order_by(MemoryEpisode.created_at.desc(), MemoryEpisode.id.desc())
-            .limit(max(limit * 8, 64))
-        ).all()
-    )
+    from anima_server.services.regeneration_work import regeneration_work_ids
+
+    stale_ids = regeneration_work_ids(user_id=user_id, kind="memory_episode")
+    sample_size = max(limit * 8, 64)
+    batch_size = max(sample_size, 256)
+    episodes: list[MemoryEpisode] = []
+    offset = 0
+    while len(episodes) < sample_size:
+        batch = list(
+            db.scalars(
+                select(MemoryEpisode)
+                .where(MemoryEpisode.user_id == user_id)
+                .order_by(MemoryEpisode.created_at.desc(), MemoryEpisode.id.desc())
+                .offset(offset)
+                .limit(batch_size)
+            ).all()
+        )
+        if not batch:
+            break
+        offset += len(batch)
+        episodes.extend(
+            episode for episode in batch if int(episode.id) not in stale_ids
+        )
+        if len(batch) < batch_size:
+            break
+    episodes = episodes[:sample_size]
     if len(episodes) <= limit:
         return tuple(_sort_sample_for_prompt(episodes))
 

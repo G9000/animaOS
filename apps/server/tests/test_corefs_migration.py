@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -689,14 +689,12 @@ def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
         assert snapshot.state is ReadinessState.READY
         assert snapshot.processed_objects == 4
         assert snapshot.families["attachment"].processed == 1
-        assert snapshot.families["attachment"].failed == 1
-        assert snapshot.families["attachment"].degraded is True
+        assert snapshot.families["attachment"].failed == 0
+        assert snapshot.families["attachment"].degraded is False
         assert snapshot.families["note"].processed == 3
         assert snapshot.families["note"].failed == 1
         assert snapshot.families["note"].degraded is True
-        assert snapshot.families["attachment"].unavailable_object_ids == (
-            "attachment-binary",
-        )
+        assert snapshot.families["attachment"].unavailable_object_ids == ()
         assert snapshot.families["note"].unavailable_object_ids == (
             "note-oversized",
         )
@@ -713,10 +711,9 @@ def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
             )
         ).all()
         assert {checkpoint.status for checkpoint in checkpoints} == {
-            "ready_degraded"
+            "ready",
+            "ready_degraded",
         }
-        assert all(checkpoint.error_code is not None for checkpoint in checkpoints)
-        assert all(checkpoint.error_digest is not None for checkpoint in checkpoints)
         note_checkpoint = next(
             checkpoint for checkpoint in checkpoints if checkpoint.family == "note"
         )
@@ -724,6 +721,11 @@ def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
         assert note_checkpoint.error_digest == corefs_migration._digest(
             "CoreFS object exceeds the in-memory indexing limit"
         )
+        attachment_checkpoint = next(
+            checkpoint for checkpoint in checkpoints if checkpoint.family == "attachment"
+        )
+        assert attachment_checkpoint.error_code is None
+        assert attachment_checkpoint.error_digest is None
 
 
 def test_semantic_retry_rebuilds_all_vectors_after_embedding_config_changes() -> None:
@@ -877,6 +879,46 @@ def test_unlocked_rebuild_scheduler_allows_only_one_worker_per_index(
     assert len(calls) == 1
     assert calls[0][0] is session
     assert callable(calls[0][1])
+
+
+def test_unlocked_rebuild_drain_waits_and_blocks_new_workers(monkeypatch) -> None:
+    index = CoreFSProgressiveIndex("core-index")
+    index.unlock(sqlcipher_key=b"s" * 32, local_instance_id="instance-a")
+    session = SimpleNamespace(runtime_index=index)
+    started = Event()
+    release = Event()
+    drain_completed = Event()
+
+    def blocking_rebuild(current, *, embedder=None, runtime_db=None) -> None:
+        assert current is session
+        started.set()
+        assert release.wait(timeout=2)
+
+    monkeypatch.setattr(
+        corefs_migration,
+        "rebuild_unlocked_search",
+        blocking_rebuild,
+    )
+
+    assert schedule_unlocked_rebuild(session) is True
+    assert started.wait(timeout=2)
+
+    def drain() -> None:
+        corefs_migration.drain_unlocked_rebuilds()
+        drain_completed.set()
+
+    drain_thread = Thread(target=drain)
+    drain_thread.start()
+    try:
+        assert not drain_completed.wait(timeout=0.1)
+        assert schedule_unlocked_rebuild(session) is False
+        release.set()
+        assert drain_completed.wait(timeout=2)
+        assert schedule_unlocked_rebuild(session) is False
+    finally:
+        release.set()
+        drain_thread.join(timeout=2)
+        corefs_migration.resume_unlocked_rebuilds()
 
 
 def test_unlocked_rebuild_scheduler_queues_forced_refresh_after_active_worker(

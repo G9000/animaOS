@@ -134,9 +134,7 @@ def test_registry_places_runtime_outside_core_and_rebinds_a_moved_core(
         / "pg_data"
     )
     assert not rebound.pg_data_dir.is_relative_to(moved)
-    assert str(moved.resolve()) not in (moved / "manifest.json").read_text(
-        encoding="utf-8"
-    )
+    assert str(moved.resolve()) not in (moved / "manifest.json").read_text(encoding="utf-8")
 
 
 def test_registry_refuses_a_live_divergent_clone_and_rebuilds_after_stale_lease(
@@ -236,9 +234,7 @@ def test_registry_refuses_a_second_live_owner_for_the_same_core_path(
         (app_data / "core-instance-registry.json").read_text(encoding="utf-8")
     )
     lease_payload = json.loads(
-        (first_binding.instance_root / "instance-lease.json").read_text(
-            encoding="utf-8"
-        )
+        (first_binding.instance_root / "instance-lease.json").read_text(encoding="utf-8")
     )
     assert registry_payload["instances"][0]["pid"] == 100
     assert lease_payload["pid"] == 100

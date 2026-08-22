@@ -14,11 +14,12 @@ import Presence from "./pages/Presence";
 import Settings from "./pages/settings/Settings";
 import AiSettings from "./pages/settings/AiSettings";
 import SecuritySettings from "./pages/settings/SecuritySettings";
-import VaultSettings from "./pages/settings/VaultSettings";
+import CoreTransferSettings from "./pages/settings/CoreTransferSettings";
 import AdvancedSettings from "./pages/settings/AdvancedSettings";
 import AppearanceSettings from "./pages/settings/AppearanceSettings";
 import LanguageSettings from "./pages/settings/LanguageSettings";
 import DaemonSettings from "./pages/settings/DaemonSettings";
+import CoreFSAccessSettings from "./pages/settings/CoreFSAccessSettings";
 import AgentProfileSettings from "./pages/agent-customization/AgentCustomization";
 import Soul from "./pages/Soul";
 import Consciousness from "./pages/Consciousness";
@@ -117,7 +118,9 @@ function AppRoutes() {
         <Route index element={<Navigate to="ai" replace />} />
         <Route path="ai" element={<AiSettings />} />
         <Route path="security" element={<SecuritySettings />} />
-        <Route path="vault" element={<VaultSettings />} />
+        <Route path="access" element={<CoreFSAccessSettings />} />
+        <Route path="core-transfer" element={<CoreTransferSettings />} />
+        <Route path="vault" element={<Navigate to="../core-transfer" replace />} />
         <Route path="language" element={<LanguageSettings />} />
         <Route path="appearance" element={<AppearanceSettings />} />
         <Route path="daemon" element={<DaemonSettings />} />

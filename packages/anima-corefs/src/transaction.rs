@@ -12,6 +12,8 @@ mod object_lease;
 pub use converter::{
     ResolvedValidationRole, ValidationBatch, ValidationBatchError, ValidationBatchFolder,
     ValidationBatchMode, ValidationBatchObject, ValidationBatchOutcome, ValidationBatchPolicy,
+    MAX_ACCOUNT_PROFILE_BYTES, MAX_GALLERY_ASSET_BYTES, MAX_KNOWLEDGE_SOURCE_BYTES,
+    MAX_MESSAGE_SEGMENT_BYTES, MAX_PREFERENCES_BYTES, MAX_TASK_BYTES, MAX_THREAD_DOCUMENT_BYTES,
     MAX_WRITING_ATTACHMENT_BYTES, MAX_WRITING_BODY_CHARS, MAX_WRITING_DOCUMENT_BYTES,
 };
 
@@ -1864,6 +1866,7 @@ fn preparation_reconciliation_page_v1(
 fn validation_policy_name(value: ValidationBatchPolicy) -> &'static str {
     match value {
         ValidationBatchPolicy::UserWrite => "user-write",
+        ValidationBatchPolicy::SharedManage => "shared-manage",
         ValidationBatchPolicy::Inherit => "inherit",
         ValidationBatchPolicy::Deny => "deny",
     }
@@ -2717,6 +2720,7 @@ impl CoreCommitCoordinator {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn prepare_plaintext_object_revision_with_hook<R, H>(
         &self,
         keys: &FrkSubkeys,

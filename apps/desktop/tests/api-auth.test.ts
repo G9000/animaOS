@@ -71,4 +71,5 @@ describe("runtime auth handling", () => {
       globalThis.removeEventListener(UNLOCK_SESSION_LOCKED_EVENT, onLocked);
     }
   });
+
 });

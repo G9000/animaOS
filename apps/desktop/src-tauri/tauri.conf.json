@@ -1,7 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ANIMA",
-  "mainBinaryName": "anima",
   "version": "0.1.0",
   "identifier": "com.leoca.anima",
   "build": {
@@ -29,14 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": [],
-    "windows": {
-      "wix": {
-        "upgradeCode": "f0493d57-7a66-504b-ac04-60f1cb1cfb52",
-        "fragmentPaths": ["install/windows/close-anima.wxs"],
-        "componentRefs": ["AnimaUpgradeCloseGuard"]
-      }
-    },
+    "targets": "all",
     "resources": {
       "resources/runtime/": "runtime/"
     },

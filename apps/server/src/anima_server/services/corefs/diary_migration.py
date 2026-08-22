@@ -50,6 +50,11 @@ def _portable_name_base(value: str, *, stable_id: str) -> str:
     return str(native(value, stable_id))
 
 
+def portable_catalog_component(value: str, *, stable_id: str) -> str:
+    """Return one native portable component for post-cutover catalog writes."""
+    return _portable_name_base(value, stable_id=stable_id)
+
+
 def _portable_catalog_names(
     folders: list[InactiveFolder],
     objects: list[InactiveObject],
@@ -779,6 +784,7 @@ class PreparedWritingFolder:
     path: str
     name: str
     role: str | None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -813,16 +819,21 @@ def read_prepared_writing_objects(*, session: Any) -> tuple[PreparedWritingObjec
     return read_prepared_writing_snapshot(session=session).objects
 
 
-def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
+def read_prepared_writing_snapshot(
+    *,
+    session: Any,
+    selected: Any | None = None,
+) -> PreparedWritingSnapshot:
     """Read authenticated inactive folders and writing objects at one generation."""
     from anima_server.services.corefs import logical
 
     if session.corefs_session is None or session.corefs_keys is None:
         raise DiaryMigrationError("CoreFS prepared access requires an unlocked session.")
-    selected = logical.select_validation_snapshot(
-        corefs_session=session.corefs_session,
-        keys=session.corefs_keys,
-    )
+    if selected is None:
+        selected = logical.select_validation_snapshot(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
     values: list[PreparedWritingObject] = []
     root = _wire_result(
         logical.stat_v1(
@@ -843,6 +854,7 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
             path="",
             name="Core",
             role=None,
+            metadata={},
         )
     ]
     cursor: str | None = None
@@ -868,11 +880,15 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
             if entry.get("kind") == "directory":
                 parent_id = entry.get("parentId")
                 role = entry.get("role")
+                metadata = entry.get("metadata")
+                if metadata is None:
+                    metadata = {}
                 if (
                     not isinstance(path, str)
                     or not isinstance(stable_id, str)
                     or (parent_id is not None and not isinstance(parent_id, str))
                     or (role is not None and not isinstance(role, str))
+                    or not isinstance(metadata, dict)
                 ):
                     raise DiaryMigrationError("Invalid prepared CoreFS directory entry.")
                 folders.append(
@@ -882,6 +898,7 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
                         path=path,
                         name=path.rsplit("/", 1)[-1] if path else "Core",
                         role=role,
+                        metadata=dict(metadata),
                     )
                 )
                 continue
@@ -953,16 +970,22 @@ def read_prepared_writing_snapshot(*, session: Any) -> PreparedWritingSnapshot:
     return PreparedWritingSnapshot(folders=tuple(folders), objects=tuple(values))
 
 
-def read_prepared_writing_body(*, session: Any, item: PreparedWritingObject) -> bytes:
+def read_prepared_writing_body(
+    *,
+    session: Any,
+    item: PreparedWritingObject,
+    selected: Any | None = None,
+) -> bytes:
     """Read and verify exactly one inactive writing body."""
     from anima_server.services.corefs import logical
 
     if session.corefs_session is None or session.corefs_keys is None:
         raise DiaryMigrationError("CoreFS prepared access requires an unlocked session.")
-    selected = logical.select_validation_snapshot(
-        corefs_session=session.corefs_session,
-        keys=session.corefs_keys,
-    )
+    if selected is None:
+        selected = logical.select_validation_snapshot(
+            corefs_session=session.corefs_session,
+            keys=session.corefs_keys,
+        )
     content = _read_prepared_bytes(session=session, selected=selected, path=item.path)
     if len(content) != item.body_length or hashlib.sha256(content).hexdigest() != item.content_hash:
         raise DiaryMigrationError("Prepared object body did not verify.")
@@ -1064,6 +1087,14 @@ def _write_checkpoint(
         if completion_token is not None:
             checkpoint["completionToken"] = completion_token
         checkpoints[f"pcf004:{user_id}"] = checkpoint
+        if source_counts.get("conversationRoot") == 1:
+            checkpoints[f"pcf005:{user_id}"] = {
+                **checkpoint,
+                "sourceCounts": {
+                    "threads": source_counts.get("threads", 0),
+                    "messageSegments": source_counts.get("messageSegments", 0),
+                },
+            }
 
     update_core_manifest(update)
 

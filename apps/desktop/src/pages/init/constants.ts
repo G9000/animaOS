@@ -68,22 +68,6 @@ export const TEMPLATES: PersonaCardData[] = [
   },
 ];
 
-export const GREETINGS = [
-  "hello",    // en
-  "hola",     // es
-  "bonjour",  // fr
-  "hallo",    // de
-  "ciao",     // it
-  "привет",   // ru
-  "merhaba",  // tr
-  "namaste",  // hi
-  "こんにちは",  // ja
-  "안녕",      // ko
-  "你好",      // zh
-  "sawubona", // zu
-  "مرحبا",    // ar
-];
-
 export const HINTS: Partial<Record<number, string>> = {
   [0]: "your real name — just between us",
   [1]: "lowercase, at least 2 characters",

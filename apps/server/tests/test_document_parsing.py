@@ -35,6 +35,29 @@ def test_falls_back_to_preview_and_triggers_pack_download(monkeypatch, tmp_path:
     assert ensured == [True]
 
 
+def test_preview_parser_consumes_bounded_authenticated_bytes_without_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: False)
+    monkeypatch.setattr(parsing, "ensure_parsing_pack", lambda: None)
+    pdf_path = tmp_path / "source.pdf"
+    write_text_pdf(pdf_path, "canonical CoreFS bytes")
+    data = pdf_path.read_bytes()
+
+    class Source:
+        name = "source.pdf"
+        size = len(data)
+
+        def read_all(self, *, max_bytes: int) -> bytes:
+            assert len(data) <= max_bytes
+            return data
+
+    outcome = parsing.extract_document_text(Source())
+
+    assert outcome.parse_quality == "preview"
+    assert outcome.pages == [PageText(page_number=1, text="canonical CoreFS bytes")]
+
+
 def test_docling_crash_falls_back_to_preview(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(parsing, "parsing_pack_ready", lambda: True)
 

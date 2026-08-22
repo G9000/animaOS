@@ -62,6 +62,11 @@ def forget_image_asset(
     user_id: int,
     image_asset_id: int,
 ) -> ForgetImageResult:
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
     asset = runtime_db.scalar(
         select(RuntimeImageAsset).where(
             RuntimeImageAsset.id == image_asset_id,
@@ -144,6 +149,11 @@ def remove_message_image_link(
     message_id: int,
     attachment_id: str,
 ) -> RemoveImageLinkResult:
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
     message = runtime_db.scalar(
         select(RuntimeMessage).where(
             RuntimeMessage.id == message_id,
@@ -192,6 +202,11 @@ def delete_thread_with_image_cleanup(
     user_id: int,
     thread_id: int,
 ) -> DeleteThreadImageCleanupResult:
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
     thread = runtime_db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.id == thread_id,
@@ -320,6 +335,11 @@ def set_image_retention_state(
     image_asset_id: int,
     retention_state: str,
 ) -> RuntimeImageAsset | None:
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
     normalized = retention_state.strip().lower()
     if normalized not in {"transient", "retained", "durable"}:
         raise ValueError("retention_state must be transient, retained, or durable")

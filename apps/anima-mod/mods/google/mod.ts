@@ -265,7 +265,7 @@ export default {
           const tokens = await exchangeCode(config.clientId, config.clientSecret, getRedirectUri(), code);
           const email = await getUserEmail(tokens.accessToken);
 
-          await modCtx.store.set(`google:tokens:${authState.userId}`, {
+          await modCtx.secrets.set(`google:tokens:${authState.userId}`, {
             email,
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
@@ -293,7 +293,10 @@ export default {
           return { error: "Missing or invalid userId" };
         }
 
-        const tokens = await modCtx.store.get<{ email: string }>(`google:tokens:${userId}`);
+        const tokens = await modCtx.secrets.get<{ email: string }>(
+          `google:tokens:${userId}`,
+          userId,
+        );
         return {
           connected: !!tokens,
           email: tokens?.email ?? null,
@@ -308,15 +311,16 @@ export default {
           return { error: "Missing or invalid userId" };
         }
 
-        const tokens = await modCtx.store.get<{ refreshToken: string }>(
+        const tokens = await modCtx.secrets.get<{ refreshToken: string }>(
           `google:tokens:${userId}`,
+          userId,
         );
         if (tokens?.refreshToken) {
           try {
             await revokeToken(tokens.refreshToken);
           } catch { /* ignore */ }
         }
-        await modCtx.store.delete(`google:tokens:${userId}`);
+        await modCtx.secrets.delete(`google:tokens:${userId}`);
         return { success: true };
       })
 

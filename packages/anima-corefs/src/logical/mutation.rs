@@ -16,6 +16,8 @@ mod preparation;
 
 pub const CORE_FS_MIGRATION_WRITE_FROZEN: &str = "corefs_migration_write_frozen";
 
+pub use executor::CoreFsMutationExecutor;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MutationTarget {
     Path(String),
@@ -24,18 +26,21 @@ pub enum MutationTarget {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PatchAddFormat {
+    pub stable_id: Option<String>,
     pub kind: ObjectKind,
     pub content_type: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LogicalMutation {
+    ActivateAuthority,
     Mkdir {
         path: String,
         reserved_role: Option<String>,
     },
     Create {
         path: String,
+        stable_id: Option<String>,
         kind: ObjectKind,
         content_type: String,
         bytes: Vec<u8>,
@@ -67,6 +72,18 @@ pub enum LogicalMutation {
         destination: Option<String>,
         expected_revision: Option<u64>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationPrincipal {
+    User,
+    Anima,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MutationCommitMode {
+    FirstMutation { cutover_epoch: u64 },
+    Normal,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -155,8 +172,12 @@ pub struct MutationChange {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MutationResult {
     pub generation: u64,
+    pub catalog_hash: String,
     pub changes: Vec<MutationChange>,
     pub atomic: bool,
+    pub cutover_committed: bool,
+    pub recovery_pending: bool,
+    pub invalidation_delivered: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -197,6 +218,31 @@ pub enum MutationError {
     PrepareFailed,
     #[error("CoreFS logical mutation storage is unavailable")]
     Storage,
+}
+
+impl MutationError {
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::InvalidPath => "corefs_mutation_invalid_path",
+            Self::NotFound => "corefs_mutation_not_found",
+            Self::WrongEntryKind => "corefs_mutation_wrong_entry_kind",
+            Self::Collision => "corefs_mutation_collision",
+            Self::RevisionConflict => "corefs_mutation_revision_conflict",
+            Self::PolicyDenied => "corefs_mutation_policy_denied",
+            Self::PolicyBoundaryMismatch => "corefs_mutation_policy_boundary_mismatch",
+            Self::ReservedRoleRequiresUser => "corefs_mutation_reserved_role_requires_user",
+            Self::RoleCollision => "corefs_mutation_role_collision",
+            Self::InvalidLifecycle => "corefs_mutation_invalid_lifecycle",
+            Self::SourceDescendant => "corefs_mutation_source_descendant",
+            Self::Format(_) => "corefs_mutation_invalid_content",
+            Self::SizeLimit => "corefs_mutation_size_limit",
+            Self::Patch(_) => "corefs_mutation_invalid_patch",
+            Self::MissingExpectedRevision => "corefs_mutation_missing_expected_revision",
+            Self::OptimisticConflict => "corefs_mutation_optimistic_conflict",
+            Self::PrepareFailed => "corefs_mutation_prepare_failed",
+            Self::Storage => "corefs_mutation_storage_unavailable",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

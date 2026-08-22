@@ -247,7 +247,20 @@ pub(super) fn plan_patch_mutation(
                         draft
                             .preconditions
                             .push(index.vacancy_precondition(&destination)?);
-                        let id = OpaqueId::generate().map_err(|_| MutationError::Storage)?;
+                        let id = match &format.stable_id {
+                            Some(value) => {
+                                OpaqueId::parse(value).map_err(|_| MutationError::InvalidPath)?
+                            }
+                            None => OpaqueId::generate().map_err(|_| MutationError::Storage)?,
+                        };
+                        if index.entry(&id).is_some()
+                            || draft
+                                .pending
+                                .iter()
+                                .any(|pending| pending.common.stable_id() == &id)
+                        {
+                            return Err(MutationError::Collision);
+                        }
                         let parent_common = parent.common_for_internal_mutation();
                         let validated = validate_content(
                             validator,

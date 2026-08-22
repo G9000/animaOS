@@ -2,8 +2,11 @@ import { appDataDir, join } from "@tauri-apps/api/path";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { mkdir, open, BaseDirectory } from "@tauri-apps/plugin-fs";
 import { dispatchBackgroundChanged } from "./events";
-
-const BACKGROUND_CONFIG_KEY = "anima-background-config";
+import {
+  DEVICE_BACKGROUND_MEDIA_KEY,
+  getPortablePreference,
+  setPortablePreference,
+} from "./portablePreferences";
 
 export type BackgroundType = "default" | "color" | "gradient" | "image" | "video";
 
@@ -34,32 +37,43 @@ function isTauri(): boolean {
 
 export function getBackgroundConfig(): BackgroundConfig {
   try {
-    const raw = localStorage.getItem(BACKGROUND_CONFIG_KEY);
-    if (!raw) return DEFAULT_BACKGROUND;
-    const parsed = JSON.parse(raw) as BackgroundConfig;
-    return {
-      ...DEFAULT_BACKGROUND,
-      ...parsed,
-      dim: Math.max(0, Math.min(1, parsed.dim ?? 0)),
-      blur: Math.max(0, Math.min(64, parsed.blur ?? 0)),
-    };
-  } catch {
-    return DEFAULT_BACKGROUND;
-  }
+    const raw = localStorage.getItem(DEVICE_BACKGROUND_MEDIA_KEY);
+    if (raw) return normalizeBackground(JSON.parse(raw) as BackgroundConfig);
+  } catch {}
+  const portable = getPortablePreference<BackgroundConfig | null>("background", null);
+  return portable ? normalizeBackground(portable) : DEFAULT_BACKGROUND;
+}
+
+function normalizeBackground(config: BackgroundConfig): BackgroundConfig {
+  return {
+    ...DEFAULT_BACKGROUND,
+    ...config,
+    dim: Math.max(0, Math.min(1, config.dim ?? 0)),
+    blur: Math.max(0, Math.min(64, config.blur ?? 0)),
+  };
 }
 
 export function saveBackgroundConfig(config: BackgroundConfig): void {
-  try {
-    localStorage.setItem(
-      BACKGROUND_CONFIG_KEY,
-      JSON.stringify({
-        ...config,
-        dim: Math.max(0, Math.min(1, config.dim ?? 0)),
-        blur: Math.max(0, Math.min(64, config.blur ?? 0)),
-      }),
-    );
-  } catch {
-    // Ignore storage failures.
+  const normalized = normalizeBackground(config);
+  const portableMedia =
+    (normalized.type === "image" || normalized.type === "video") &&
+    normalized.value?.startsWith("corefs://object/");
+  if (
+    normalized.type === "default" ||
+    normalized.type === "color" ||
+    normalized.type === "gradient" ||
+    portableMedia
+  ) {
+    setPortablePreference("background", normalized);
+    try {
+      localStorage.removeItem(DEVICE_BACKGROUND_MEDIA_KEY);
+    } catch {}
+  } else {
+    try {
+      localStorage.setItem(DEVICE_BACKGROUND_MEDIA_KEY, JSON.stringify(normalized));
+    } catch {
+      // Device-local host media may be unavailable in browser privacy modes.
+    }
   }
   dispatchBackgroundChanged();
 }
@@ -141,12 +155,9 @@ export async function saveBackgroundFile(file: File): Promise<string> {
     }
   }
 
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () => reject(new Error("Failed to read file"));
-    reader.readAsDataURL(file);
-  });
+  throw new Error(
+    "Background media persistence requires the desktop host; browser data URLs are not stored.",
+  );
 }
 
 /**
