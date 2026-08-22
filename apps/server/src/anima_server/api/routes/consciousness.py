@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
@@ -11,9 +12,47 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
+from anima_server.services.corefs.account_profile import (
+    AccountProfileAuthorityError,
+    account_profile_corefs_authority_active,
+    authoritative_setup_complete,
+    update_canonical_account_profile,
+)
+from anima_server.services.corefs.asset_authority import (
+    CoreFsSourceError,
+    asset_authority_selection,
+    open_corefs_byte_source,
+    read_canonical_asset_catalog,
+)
+from anima_server.services.corefs.asset_mutations import (
+    AssetMutationError,
+    trash_canonical_asset,
+    upsert_canonical_binary_asset,
+)
+from anima_server.services.corefs.diary_migration import migration_opaque_id
+from anima_server.services.corefs.logical import CoreFsMutationUnavailable
+from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/consciousness", tags=["consciousness"])
+logger = logging.getLogger(__name__)
+
+_AGENT_AVATAR_STABLE_ID = migration_opaque_id("identity-avatar", "agent-profile")
+
+
+def _agent_avatar_url(user_id: int) -> str:
+    return f"/consciousness/{user_id}/agent-profile/avatar"
+
+
+def _canonical_agent_avatar_url(*, session: object, user_id: int) -> str | None:
+    catalog = read_canonical_asset_catalog(session=session)
+    if any(
+        record.stable_id == _AGENT_AVATAR_STABLE_ID
+        and record.object_kind == "gallery-asset"
+        for record in catalog.assets
+    ):
+        return _agent_avatar_url(user_id)
+    return None
 
 
 def _get_optional_runtime_db():
@@ -681,7 +720,7 @@ async def update_self_model_section(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> SelfModelSectionResponse:
     """User edits a self-model section. Treated as highest-confidence evidence."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.self_model import (
         ALL_SECTIONS,
@@ -708,9 +747,16 @@ async def update_self_model_section(
 
         profile = db.query(AgentProfile).filter(
             AgentProfile.user_id == user_id).first()
+        try:
+            setup_complete = authoritative_setup_complete(
+                session=session,
+                legacy_value=bool(profile.setup_complete) if profile is not None else False,
+            )
+        except AccountProfileAuthorityError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
         if (
             profile is not None
-            and profile.setup_complete
+            and setup_complete
             and not payload.allowIdentityOverride
         ):
             raise HTTPException(
@@ -790,7 +836,7 @@ async def get_agent_profile(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Get the agent profile for this user."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.agent.thinking_monologue import (
@@ -811,15 +857,31 @@ async def get_agent_profile(
             "thinkingMonologue": list(DEFAULT_THINKING_MONOLOGUE),
             "setupComplete": False,
         }
+    try:
+        setup_complete = authoritative_setup_complete(
+            session=session,
+            legacy_value=bool(profile.setup_complete),
+        )
+    except AccountProfileAuthorityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    avatar_url = profile.avatar_url
+    if asset_authority_selection(session) is not None:
+        try:
+            avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
+        except CoreFsSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
     return {
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
         "personaTemplate": "default",
         "agentType": profile.agent_type,
-        "avatarUrl": profile.avatar_url,
+        "avatarUrl": avatar_url,
         "agentBirthday": _effective_agent_birthday(profile),
         "thinkingMonologue": parse_thinking_monologue(profile.thinking_monologue_json),
-        "setupComplete": profile.setup_complete,
+        "setupComplete": setup_complete,
     }
 
 
@@ -831,7 +893,7 @@ async def get_agent_biography_preview(
     runtime_db: Session = Depends(_get_optional_runtime_db),
 ) -> AgentBiographyPreviewResponse:
     """Get a compiled preview of the backend context shaping this agent."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     from anima_server.services.agent.biography_preview import build_agent_biography_preview
 
@@ -840,6 +902,17 @@ async def get_agent_biography_preview(
         user_id=user_id,
         runtime_db=runtime_db,
     )
+    if asset_authority_selection(session) is not None:
+        try:
+            preview["avatarUrl"] = _canonical_agent_avatar_url(
+                session=session,
+                user_id=user_id,
+            )
+        except CoreFsSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
     return AgentBiographyPreviewResponse(
         **{
             **preview,
@@ -859,7 +932,7 @@ async def update_agent_profile(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Update the agent's profile - name, relationship, persona template."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     from anima_server.models import AgentProfile
     from anima_server.services.agent.profile_memory import (
@@ -879,12 +952,20 @@ async def update_agent_profile(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
+    try:
+        setup_complete = authoritative_setup_complete(
+            session=session,
+            legacy_value=bool(profile.setup_complete),
+        )
+    except AccountProfileAuthorityError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
     old_agent_name = profile.agent_name
     name_changed = False
     if payload.agentName is not None:
         next_agent_name = payload.agentName.strip() or "Anima"
         if (
-            profile.setup_complete
+            setup_complete
             and next_agent_name != old_agent_name
             and not payload.allowIdentityOverride
         ):
@@ -900,7 +981,7 @@ async def update_agent_profile(
     if payload.relationship is not None:
         next_relationship = payload.relationship.strip()
         if (
-            profile.setup_complete
+            setup_complete
             and next_relationship != old_relationship
             and not payload.allowIdentityOverride
         ):
@@ -915,7 +996,7 @@ async def update_agent_profile(
         next_agent_birthday = _parse_agent_birthday(payload.agentBirthday)
         next_agent_birthday_text = _iso_seconds(next_agent_birthday)
         if (
-            profile.setup_complete
+            setup_complete
             and next_agent_birthday_text != _effective_agent_birthday(profile)
             and not payload.allowIdentityOverride
         ):
@@ -930,7 +1011,8 @@ async def update_agent_profile(
             payload.thinkingMonologue,
         )
 
-    profile.setup_complete = True
+    if not account_profile_corefs_authority_active(session):
+        profile.setup_complete = True
 
     if name_changed:
         origin_content = render_origin_block(
@@ -1002,12 +1084,48 @@ async def update_agent_profile(
         )
 
     db.commit()
+    if account_profile_corefs_authority_active(session):
+        try:
+            update_canonical_account_profile(session=session, setup_complete=True)
+        except (
+            AccountProfileAuthorityError,
+            CoreFsMutationUnavailable,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": str(exc)},
+            ) from exc
+    else:
+        try:
+            prepare_writing_source_catalog(session=session, db=db)
+        except Exception as exc:
+            logger.exception("Encrypted account profile shadow validation failed")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "corefs_account_shadow_validation_failed",
+                    "message": (
+                        "The agent profile was saved, but its encrypted account shadow "
+                        "needs retry."
+                    ),
+                },
+            ) from exc
 
+    avatar_url = profile.avatar_url
+    if asset_authority_selection(session) is not None:
+        try:
+            avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
+        except CoreFsSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
     return {
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
         "agentType": profile.agent_type,
-        "avatarUrl": profile.avatar_url,
+        "avatarUrl": avatar_url,
         "agentBirthday": _effective_agent_birthday(profile),
         "thinkingMonologue": parse_thinking_monologue(profile.thinking_monologue_json),
         "setupComplete": True,
@@ -1043,12 +1161,7 @@ async def upload_agent_avatar(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Upload a custom avatar image for the agent."""
-    await require_unlocked_user_async(request, user_id)
-    from anima_server.services.corefs.asset_authority import (
-        require_legacy_asset_mutation_allowed,
-    )
-
-    require_legacy_asset_mutation_allowed(user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
     if file.content_type not in ALLOWED_AVATAR_TYPES:
         raise HTTPException(
@@ -1057,7 +1170,12 @@ async def upload_agent_avatar(
             f"Allowed: {', '.join(sorted(ALLOWED_AVATAR_TYPES))}",
         )
 
-    data = await file.read()
+    data = await file.read(MAX_AVATAR_SIZE + 1)
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Avatar file is empty.",
+        )
     if len(data) > MAX_AVATAR_SIZE:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -1072,6 +1190,39 @@ async def upload_agent_avatar(
     if profile is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+
+    avatar_url = _agent_avatar_url(user_id)
+    if asset_authority_selection(session) is not None:
+        ext_map = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/gif": ".gif",
+            "image/webp": ".webp",
+            "image/svg+xml": ".svg",
+        }
+        ext = ext_map.get(file.content_type, ".png")
+        try:
+            upsert_canonical_binary_asset(
+                session=session,
+                stable_id=_AGENT_AVATAR_STABLE_ID,
+                name=f"agent-profile-avatar{ext}",
+                object_kind="gallery-asset",
+                content_type=file.content_type,
+                data=data,
+                replace_existing=True,
+            )
+        except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        return {"avatarUrl": avatar_url}
+
+    from anima_server.services.corefs.asset_authority import (
+        require_legacy_asset_mutation_allowed,
+    )
+
+    require_legacy_asset_mutation_allowed(user_id)
 
     ext_map = {
         "image/png": ".png",
@@ -1092,7 +1243,6 @@ async def upload_agent_avatar(
 
     avatar_path.write_bytes(data)
 
-    avatar_url = f"/consciousness/{user_id}/agent-profile/avatar"
     profile.avatar_url = avatar_url
     db.commit()
 
@@ -1106,13 +1256,29 @@ async def get_agent_avatar(
     db: Session = Depends(get_db),
 ) -> Response:
     """Serve the agent's avatar image."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
 
-    from anima_server.services.images.store import resolve_identity_avatar_byte_source
     from anima_server.services.storage import get_user_data_dir
 
-    core_source = resolve_identity_avatar_byte_source(user_id=user_id)
-    if core_source is not None:
+    if asset_authority_selection(session) is not None:
+        try:
+            if _canonical_agent_avatar_url(session=session, user_id=user_id) is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No avatar found",
+                )
+            core_source = open_corefs_byte_source(
+                session=session,
+                object_uri=f"corefs://object/{_AGENT_AVATAR_STABLE_ID}",
+                expected_kinds=frozenset({"gallery-asset"}),
+            )
+        except HTTPException:
+            raise
+        except CoreFsSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
         return StreamingResponse(
             core_source.iter_chunks(),
             media_type=core_source.content_type,
@@ -1145,7 +1311,21 @@ async def delete_agent_avatar(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     """Delete the agent's custom avatar, reverting to default."""
-    await require_unlocked_user_async(request, user_id)
+    session = await require_unlocked_user_async(request, user_id)
+
+    if asset_authority_selection(session) is not None:
+        try:
+            trash_canonical_asset(
+                session=session,
+                stable_id=_AGENT_AVATAR_STABLE_ID,
+            )
+        except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+        return {"avatarUrl": None}
+
     from anima_server.services.corefs.asset_authority import (
         require_legacy_asset_mutation_allowed,
     )

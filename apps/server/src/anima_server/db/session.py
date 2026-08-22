@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from anima_server.config import settings
 from anima_server.db.url import ensure_database_directory
 from anima_server.services.sessions import get_sqlcipher_key, unlock_session_store
-from anima_server.services.storage import get_user_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +128,7 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
         ),
         (
             "emotional_salience",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN emotional_salience FLOAT NOT NULL DEFAULT 0.0",
+            "ALTER TABLE memory_items ADD COLUMN emotional_salience FLOAT NOT NULL DEFAULT 0.0",
         ),
         (
             "stability_class",
@@ -144,13 +142,11 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
         ),
         (
             "relationship_proximity",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN relationship_proximity FLOAT NOT NULL DEFAULT 0.0",
+            "ALTER TABLE memory_items ADD COLUMN relationship_proximity FLOAT NOT NULL DEFAULT 0.0",
         ),
         (
             "evidence_strength",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN evidence_strength FLOAT NOT NULL DEFAULT 0.8",
+            "ALTER TABLE memory_items ADD COLUMN evidence_strength FLOAT NOT NULL DEFAULT 0.8",
         ),
         (
             "evolves_from_item_id",
@@ -284,8 +280,7 @@ def _repair_legacy_presence_schema(connection: Connection) -> None:
     for column_name, ddl in (
         (
             "initiative_enabled",
-            "ALTER TABLE presence_configs "
-            "ADD COLUMN initiative_enabled BOOLEAN NOT NULL DEFAULT 0",
+            "ALTER TABLE presence_configs ADD COLUMN initiative_enabled BOOLEAN NOT NULL DEFAULT 0",
         ),
         (
             "quiet_hours_start",
@@ -497,8 +492,9 @@ def get_session_factory(database_url: str) -> sessionmaker[Session]:
         return factory
 
 
-def get_user_database_path(user_id: int):
-    return get_user_data_dir(user_id) / "anima.db"
+def get_user_database_path(user_id: int) -> Path:
+    del user_id
+    return settings.data_dir / "soul" / "soul.db"
 
 
 def is_sqlite_mode() -> bool:

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, HTTPException, Request, status
 
@@ -15,6 +17,15 @@ from anima_server.schemas.corefs import (
     CoreFsSelectedSnapshotResponse,
 )
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.client_access import (
+    ClientAccessError,
+    ClientCapabilityIdentity,
+    ClientScope,
+    CoreFsFolderGrantTarget,
+    authorize_client_path,
+    client_capability_broker,
+    list_corefs_grant_folders,
+)
 from anima_server.services.corefs.indexer import (
     CoreFSProgressiveIndex,
     CoreFSRuntimeLocked,
@@ -48,6 +59,12 @@ _WRITE_OPERATIONS = {
     "trash",
     "restore",
 }
+_MAX_MUTATION_BODY_BYTES = 16 * 1024 * 1024
+
+# This flips only after every PCF-008 content-family adapter and the funded
+# signed-package gate are evidenced. Keeping the dispatch path testable while
+# this is false prevents a local build from consuming the irreversible marker.
+CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +73,8 @@ class CoreFsPrincipal:
     id: str
     user_id: int
     install_digest: str | None = None
+    installation_id: str | None = None
+    package_id: str | None = None
 
     def to_response(self) -> CoreFsPrincipalResponse:
         return CoreFsPrincipalResponse(
@@ -63,6 +82,8 @@ class CoreFsPrincipal:
             id=self.id,
             userId=self.user_id,
             installDigest=self.install_digest,
+            installationId=self.installation_id,
+            packageId=self.package_id,
         )
 
 
@@ -100,6 +121,32 @@ def _principal_from_authenticated_broker(
     session: UnlockSession,
 ) -> CoreFsPrincipal | None:
     principal = getattr(request.state, "corefs_principal", None)
+    capability = request.headers.get("x-anima-corefs-client-capability")
+    if principal is not None and capability is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "corefs_conflicting_broker_principals"},
+        )
+    if capability is not None:
+        try:
+            identity = client_capability_broker.consume(
+                token=capability,
+                user_id=session.user_id,
+                session=session,
+            )
+        except ClientAccessError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"code": "corefs_client_capability_invalid", "message": str(exc)},
+            ) from exc
+        return CoreFsPrincipal(
+            kind="client",
+            id=identity.client_id,
+            user_id=identity.user_id,
+            install_digest=identity.install_digest,
+            installation_id=identity.installation_id,
+            package_id=identity.package_id,
+        )
     if principal is None:
         return None
     if not isinstance(principal, CoreFsPrincipal):
@@ -185,7 +232,7 @@ def _require_path(payload: CoreFsOperationRequest, *, field: str = "path") -> st
     value = getattr(payload, field)
     if value is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": "corefs_path_required", "field": field},
         )
     return str(value)
@@ -209,13 +256,61 @@ def _decode_logical_response(raw: bytes | None) -> dict[str, Any] | None:
     return decoded
 
 
-def _client_grant_required(principal: CoreFsPrincipal) -> None:
+def _client_grant_required(principal: CoreFsPrincipal) -> NoReturn:
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail={
             "code": "corefs_client_grant_required",
             "principal": principal.to_response().model_dump(exclude_none=True),
         },
+    )
+
+
+def _client_logical_path(payload: CoreFsOperationRequest) -> str | None:
+    if payload.operation in {"apply_patch", "move", "trash", "restore"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "corefs_client_multi_target_mutation_unavailable",
+                "message": "Client structural mutations require atomic authorization of every target.",
+            },
+        )
+    if payload.operation in {"walk", "glob", "grep"}:
+        return _require_path(payload, field="root")
+    if payload.operation == "search_readiness":
+        return None
+    if payload.operation == "search":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "corefs_client_search_not_folder_scoped",
+                "message": "Client search is unavailable until results can be filtered by grant.",
+            },
+        )
+    return _require_path(payload)
+
+
+def _client_required_scope(operation: str) -> ClientScope:
+    if operation in {"move", "trash", "restore"}:
+        return "manage"
+    if operation in _WRITE_OPERATIONS:
+        return "write"
+    return "read"
+
+
+def _client_identity(principal: CoreFsPrincipal) -> ClientCapabilityIdentity:
+    if (
+        principal.installation_id is None
+        or principal.install_digest is None
+        or principal.package_id is None
+    ):
+        _client_grant_required(principal)
+    return ClientCapabilityIdentity(
+        installation_id=principal.installation_id,
+        client_id=principal.id,
+        package_id=principal.package_id,
+        install_digest=principal.install_digest,
+        user_id=principal.user_id,
     )
 
 
@@ -249,6 +344,31 @@ def _validate_cursor_generation(
 
 def _logical_http_exception(exc: ValueError) -> HTTPException | None:
     message = str(exc)
+    mutation_mappings = {
+        "corefs_mutation_invalid_path": status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "corefs_mutation_invalid_content": status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "corefs_mutation_invalid_patch": status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "corefs_mutation_size_limit": status.HTTP_413_CONTENT_TOO_LARGE,
+        "corefs_mutation_not_found": status.HTTP_404_NOT_FOUND,
+        "corefs_mutation_wrong_entry_kind": status.HTTP_409_CONFLICT,
+        "corefs_mutation_collision": status.HTTP_409_CONFLICT,
+        "corefs_mutation_revision_conflict": status.HTTP_409_CONFLICT,
+        "corefs_mutation_role_collision": status.HTTP_409_CONFLICT,
+        "corefs_mutation_invalid_lifecycle": status.HTTP_409_CONFLICT,
+        "corefs_mutation_source_descendant": status.HTTP_409_CONFLICT,
+        "corefs_mutation_missing_expected_revision": status.HTTP_409_CONFLICT,
+        "corefs_mutation_optimistic_conflict": status.HTTP_409_CONFLICT,
+        "corefs_mutation_policy_denied": status.HTTP_403_FORBIDDEN,
+        "corefs_mutation_policy_boundary_mismatch": status.HTTP_403_FORBIDDEN,
+        "corefs_mutation_reserved_role_requires_user": status.HTTP_403_FORBIDDEN,
+        "corefs_mutation_prepare_failed": status.HTTP_503_SERVICE_UNAVAILABLE,
+        "corefs_mutation_storage_unavailable": status.HTTP_503_SERVICE_UNAVAILABLE,
+    }
+    if message in mutation_mappings:
+        return HTTPException(
+            status_code=mutation_mappings[message],
+            detail={"code": message},
+        )
     mappings = (
         (
             "CoreFS validation snapshot is missing",
@@ -305,6 +425,138 @@ def _logical_http_exception(exc: ValueError) -> HTTPException | None:
             detail={"code": "corefs_cursor_cannot_advance", "message": message},
         )
     return None
+
+
+def _mutation_target(payload: CoreFsOperationRequest) -> dict[str, str]:
+    if payload.stableId is not None:
+        return {"stableId": payload.stableId}
+    return {"path": _require_path(payload)}
+
+
+def _mutation_trash_folder(payload: CoreFsOperationRequest) -> dict[str, str]:
+    if payload.trashFolderStableId is not None:
+        return {"stableId": payload.trashFolderStableId}
+    if payload.trashFolderPath is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_trash_folder_required"},
+        )
+    return {"path": payload.trashFolderPath}
+
+
+def _decode_mutation_body(payload: CoreFsOperationRequest) -> bytes:
+    if payload.contentBase64 is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_mutation_body_required"},
+        )
+    try:
+        body = base64.b64decode(payload.contentBase64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_mutation_body_invalid"},
+        ) from exc
+    if base64.b64encode(body).decode("ascii") != payload.contentBase64:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "corefs_mutation_body_noncanonical"},
+        )
+    if len(body) > _MAX_MUTATION_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail={"code": "corefs_mutation_body_too_large"},
+        )
+    return body
+
+
+def _dispatch_write(
+    payload: CoreFsOperationRequest,
+    *,
+    context: CoreFsRequestContext,
+    selected: logical.CoreFsValidationSnapshot,
+    principal: CoreFsPrincipal,
+) -> dict[str, object]:
+    mutation: dict[str, object]
+    body: bytes | None = None
+    if payload.operation == "mkdir":
+        mutation = {"operation": "mkdir", "path": _require_path(payload)}
+        if payload.reservedRole is not None:
+            if principal.kind != "user":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail={"code": "corefs_reserved_role_requires_user"},
+                )
+            mutation["reservedRole"] = payload.reservedRole
+    elif payload.operation == "create_file":
+        body = _decode_mutation_body(payload)
+        mutation = {
+            "operation": "create_file",
+            "path": _require_path(payload),
+            "kind": payload.kind,
+            "contentType": payload.contentType,
+            "bodyEncoding": payload.bodyEncoding,
+        }
+    elif payload.operation == "write_file":
+        body = _decode_mutation_body(payload)
+        mutation = {
+            "operation": "write_file",
+            "target": _mutation_target(payload),
+            "expectedRevision": payload.expectedRevision,
+            "contentType": payload.contentType,
+            "bodyEncoding": payload.bodyEncoding,
+        }
+    elif payload.operation == "apply_patch":
+        mutation = {
+            "operation": "apply_patch",
+            "patch": payload.patch,
+            "expectedRevisions": payload.expectedRevisions,
+            "addFormats": {
+                path: value.model_dump() for path, value in (payload.addFormats or {}).items()
+            },
+            "trashFolder": _mutation_trash_folder(payload),
+        }
+    elif payload.operation == "move":
+        mutation = {
+            "operation": "move",
+            "source": _mutation_target(payload),
+            "destination": payload.destination,
+            "expectedRevision": payload.expectedRevision,
+        }
+    elif payload.operation == "trash":
+        mutation = {
+            "operation": "trash",
+            "target": _mutation_target(payload),
+            "trashFolder": _mutation_trash_folder(payload),
+            "expectedRevision": payload.expectedRevision,
+        }
+    elif payload.operation == "restore":
+        mutation = {
+            "operation": "restore",
+            "target": _mutation_target(payload),
+            "destination": payload.destination,
+            "expectedRevision": payload.expectedRevision,
+        }
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"code": "corefs_unknown_write_operation"},
+        )
+
+    invalidate = (
+        (lambda _generation, _catalog_hash: context.runtime_index.begin_catalog())
+        if context.runtime_index is not None
+        else None
+    )
+    return logical.execute_mutation_v1(
+        corefs_session=context.corefs_session,
+        keys=context.keys,
+        selected=selected,
+        principal=principal.kind,  # type: ignore[arg-type]
+        mutation=mutation,
+        body=body,
+        invalidate=invalidate,
+    )
 
 
 def _dispatch_read(
@@ -492,24 +744,80 @@ def run_corefs_operation(
             detail={"code": "corefs_unknown_operation"},
         )
 
-    if principal.kind == "client":
+    if principal.kind == "client" and principal.installation_id is None:
         _client_grant_required(principal)
 
     context = _resolve_request_context(session)
-    if is_write_operation:
+    if is_write_operation and not CORE_FS_PUBLIC_MUTATION_ADAPTERS_READY:
         return CoreFsOperationResponse(
             principal=principal.to_response(),
             operation=payload.operation,
             selected=None,
             result=logical.frozen_mutation_result(payload.operation),
         )
-
     try:
         selected = logical.select_validation_snapshot(
             corefs_session=context.corefs_session,
             keys=context.keys,
         )
-        result = _dispatch_read(payload, context=context, selected=selected)
+        client_authorization: (
+            tuple[
+                ClientCapabilityIdentity,
+                tuple[CoreFsFolderGrantTarget, ...],
+                str | None,
+                ClientScope,
+            ]
+            | None
+        ) = None
+        if principal.kind == "client":
+            identity = _client_identity(principal)
+            folders = list_corefs_grant_folders(session, selected=selected)
+            logical_path = _client_logical_path(payload)
+            required_scope = _client_required_scope(payload.operation)
+            authorize_client_path(
+                identity,
+                folders=folders,
+                logical_path=logical_path,
+                required_scope=required_scope,
+            )
+            client_authorization = (identity, folders, logical_path, required_scope)
+        if is_write_operation:
+            result = _dispatch_write(
+                payload,
+                context=context,
+                selected=selected,
+                principal=principal,
+            )
+        else:
+            result = _dispatch_read(payload, context=context, selected=selected)
+        if client_authorization is not None:
+            identity, folders, logical_path, required_scope = client_authorization
+            authorize_client_path(
+                identity,
+                folders=folders,
+                logical_path=logical_path,
+                required_scope=required_scope,
+                record_use=True,
+            )
+    except ClientAccessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "corefs_client_grant_required", "message": str(exc)},
+        ) from exc
+    except logical.CoreFsMutationUnavailable as exc:
+        code = str(exc)
+        raise HTTPException(
+            status_code=(
+                status.HTTP_503_SERVICE_UNAVAILABLE
+                if code
+                in {
+                    "corefs_native_mutation_unavailable",
+                    "corefs_native_mutation_result_invalid",
+                }
+                else status.HTTP_409_CONFLICT
+            ),
+            detail={"code": code},
+        ) from exc
     except ValueError as exc:
         http_error = _logical_http_exception(exc)
         if http_error is None:

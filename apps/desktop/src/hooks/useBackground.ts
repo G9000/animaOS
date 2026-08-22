@@ -9,6 +9,7 @@ import {
   type BackgroundType,
 } from "../lib/background";
 import { BACKGROUND_CHANGED_EVENT } from "../lib/events";
+import { PORTABLE_PREFERENCES_CHANGED_EVENT } from "../lib/portablePreferences";
 
 export { DEFAULT_BACKGROUND, type BackgroundConfig, type BackgroundType };
 
@@ -38,7 +39,11 @@ export function useBackground(): UseBackgroundResult {
   useEffect(() => {
     const handler = () => setConfigState(getBackgroundConfig());
     window.addEventListener(BACKGROUND_CHANGED_EVENT, handler);
-    return () => window.removeEventListener(BACKGROUND_CHANGED_EVENT, handler);
+    globalThis.addEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, handler);
+    return () => {
+      window.removeEventListener(BACKGROUND_CHANGED_EVENT, handler);
+      globalThis.removeEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, handler);
+    };
   }, []);
 
   const set = (next: BackgroundConfig) => {

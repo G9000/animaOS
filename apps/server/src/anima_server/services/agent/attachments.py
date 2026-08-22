@@ -6,7 +6,9 @@ import hashlib
 import re
 import secrets
 from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,12 +38,109 @@ class AttachmentReadError(RuntimeError):
 
 
 def read_attachment_bytes(path: str) -> bytes:
+    corefs_match = _COREFS_PROVIDER_PATH.fullmatch(path)
+    if corefs_match is not None:
+        from anima_server.services.corefs.asset_authority import (
+            CoreFsSourceError,
+            active_asset_authority_session,
+            open_corefs_byte_source,
+        )
+
+        user_id = int(corefs_match.group(1))
+        stable_id = corefs_match.group(2)
+        session = active_asset_authority_session(user_id)
+        if session is None:
+            raise AttachmentReadError("Canonical image attachment is unavailable.")
+        try:
+            return open_corefs_byte_source(
+                session=session,
+                object_uri=f"corefs://object/{stable_id}",
+                expected_kinds=frozenset({"attachment", "gallery-asset"}),
+            ).read_all(max_bytes=settings.chat_image_max_size_bytes)
+        except CoreFsSourceError as exc:
+            raise AttachmentReadError("Canonical image attachment is unavailable.") from exc
     try:
         return Path(path).read_bytes()
     except OSError as exc:
         raise AttachmentReadError(
             "Unable to read image attachment; the saved file is missing or unreadable."
         ) from exc
+
+
+def prepare_corefs_chat_attachments(
+    *,
+    session: Any,
+    attachments: Sequence[ChatRequestAttachment],
+) -> tuple[StoredAttachment, ...]:
+    from anima_server.services.corefs.asset_authority import CoreFsSourceError
+    from anima_server.services.corefs.asset_mutations import (
+        AssetMutationError,
+        trash_canonical_asset,
+        upsert_canonical_binary_asset,
+    )
+    from anima_server.services.corefs.diary_migration import migration_opaque_id
+
+    decoded = _decode_and_validate_attachments(attachments)
+    stored: list[StoredAttachment] = []
+    created_ids: list[str] = []
+    try:
+        for request_attachment, data, ext in decoded:
+            stable_id = migration_opaque_id("chat-attachment", _new_attachment_id())
+            filename = _sanitize_filename(request_attachment.filename)
+            normalized_mime = _normalize_mime_type(request_attachment.mimeType)
+            upsert_canonical_binary_asset(
+                session=session,
+                stable_id=stable_id,
+                name=filename or f"chat-image.{ext}",
+                object_kind="attachment",
+                content_type=normalized_mime,
+                data=data,
+            )
+            created_ids.append(stable_id)
+            stored.append(
+                StoredAttachment(
+                    id=stable_id,
+                    kind="image",
+                    mime_type=normalized_mime,
+                    path=_corefs_provider_path(int(session.user_id), stable_id),
+                    filename=filename,
+                    size_bytes=len(data),
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    storage_path=f"corefs://object/{stable_id}",
+                    delete_on_error=False,
+                )
+            )
+    except (AssetMutationError, CoreFsSourceError, ValueError):
+        for stable_id in reversed(created_ids):
+            with suppress(AssetMutationError, CoreFsSourceError, ValueError):
+                trash_canonical_asset(session=session, stable_id=stable_id)
+        raise
+    return tuple(stored)
+
+
+def resolve_corefs_chat_attachment(*, session: Any, object_uri: str) -> StoredAttachment:
+    from anima_server.services.corefs.asset_authority import open_corefs_byte_source
+
+    source = open_corefs_byte_source(
+        session=session,
+        object_uri=object_uri,
+        expected_kinds=frozenset({"attachment", "gallery-asset"}),
+    )
+    if (
+        source.content_type not in ALLOWED_IMAGE_MIME_TYPES
+        or source.size > settings.chat_image_max_size_bytes
+    ):
+        raise AttachmentReadError("Canonical chat attachment is not a supported image.")
+    return StoredAttachment(
+        id=source.stable_id,
+        kind="image",
+        mime_type=source.content_type,
+        path=_corefs_provider_path(int(session.user_id), source.stable_id),
+        size_bytes=source.size,
+        sha256=source.content_sha256,
+        storage_path=object_uri,
+        delete_on_error=False,
+    )
 
 
 def validate_chat_attachment_inputs(
@@ -232,3 +331,12 @@ def _sanitize_filename(filename: str | None) -> str | None:
 
 def _new_attachment_id() -> str:
     return f"img_{secrets.token_hex(8)}"
+
+
+_COREFS_PROVIDER_PATH = re.compile(
+    r"corefs-user://([0-9]+)/object/([0-7][0-9A-HJKMNP-TV-Z]{25})"
+)
+
+
+def _corefs_provider_path(user_id: int, stable_id: str) -> str:
+    return f"corefs-user://{user_id}/object/{stable_id}"

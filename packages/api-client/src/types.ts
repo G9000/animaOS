@@ -59,10 +59,32 @@ export interface ConfirmRecoveryCredentialResponse
 export interface LoginRequest extends ContractLoginRequest {}
 export interface RegisterRequest extends ContractRegisterRequest {}
 export interface UserResponse extends ContractUserResponse {}
+export interface DeleteUserResponse {
+  message: string;
+  restartRequired: boolean;
+  deletionId: string | null;
+}
 export interface CreateAiChatRequest extends ContractCreateAiChatRequest {}
 export interface CreateAiChatResponse extends ContractCreateAiChatResponse {}
 
 export type CoreFsPrincipalKind = "user" | "anima" | "client";
+export type CoreFsObjectKind =
+  | "account-profile"
+  | "attachment"
+  | "diary"
+  | "draft"
+  | "gallery-asset"
+  | "knowledge-source"
+  | "message-segment"
+  | "note"
+  | "preferences"
+  | "task"
+  | "thread";
+
+export interface CoreFsPatchAddFormat {
+  kind: CoreFsObjectKind;
+  contentType: string;
+}
 
 export type CoreFsOperation =
   | "stat"
@@ -105,6 +127,19 @@ export interface CoreFsOperationRequest {
   responseBytes?: number | null;
   regex?: boolean;
   includeDirectories?: boolean;
+  stableId?: string | null;
+  destination?: string | null;
+  trashFolderPath?: string | null;
+  trashFolderStableId?: string | null;
+  reservedRole?: string | null;
+  kind?: CoreFsObjectKind | null;
+  contentType?: string | null;
+  bodyEncoding?: "utf-8" | "binary" | null;
+  contentBase64?: string | null;
+  expectedRevision?: number | null;
+  patch?: string | null;
+  expectedRevisions?: Record<string, number> | null;
+  addFormats?: Record<string, CoreFsPatchAddFormat> | null;
 }
 
 export interface CoreFsPrincipal {
@@ -112,6 +147,8 @@ export interface CoreFsPrincipal {
   id: string;
   userId: number;
   installDigest?: string | null;
+  installationId?: string | null;
+  packageId?: string | null;
 }
 
 export interface CoreFsSelectedSnapshot {
@@ -167,21 +204,174 @@ export interface CoreFSRotationResponse {
   resumed: boolean;
 }
 
-export type VaultTransferFormat = "vault_json" | "anima_capsule";
+export type CoreArchivePayloadKind = "full" | "soul" | "fs";
+export type CoreTransferPublicationMode = "single_file" | "multipart";
+export type CoreTransferOperationState =
+  | "prepared"
+  | "running"
+  | "verifying"
+  | "completed"
+  | "cancelled"
+  | "failed";
 
-export interface VaultExportResponse {
-  filename: string;
-  vault: string;
-  size: number;
-  format?: VaultTransferFormat;
+export interface CoreTransferEstimate {
+  payloadKind: CoreArchivePayloadKind;
+  selectedBytes: number;
+  recordCount: number;
+  archiveBytes: number;
+  requiredCapacityBytes: number;
+  soulGeneration: number | null;
+  filesystemGeneration: number | null;
 }
 
-export interface VaultImportResponse {
-  status: string;
-  restoredUsers: number;
-  restoredMemoryFiles: number;
-  requiresReauth?: boolean;
-  format?: VaultTransferFormat;
+export interface CoreTransferDestinationProbe extends CoreTransferEstimate {
+  destination: string;
+  availableBytes: number;
+  maximumSingleFileBytes: number | null;
+  publicationMode: CoreTransferPublicationMode;
+  partLimitBytes: number | null;
+  declaredVolumeCount: number;
+}
+
+export interface CoreTransferOperation {
+  operationId: string;
+  payloadKind: CoreArchivePayloadKind;
+  state: CoreTransferOperationState;
+  phase: string;
+  selectedBytes: number;
+  bytesPublished: number;
+  progressPercent: number;
+  publicationMode: CoreTransferPublicationMode;
+  declaredVolumeCount: number;
+  resultPath: string | null;
+  archiveId: string | null;
+  errorCode: string | null;
+}
+
+export interface CoreImportProbe {
+  archiveBytes: number;
+  stagingParent: string;
+  availableBytes: number;
+  requiredCapacityBytes: number;
+}
+
+export interface CoreImportOperation {
+  operationId: string;
+  state: CoreTransferOperationState;
+  phase: string;
+  archiveBytes: number;
+  bytesProcessed: number;
+  progressPercent: number;
+  payloadKind: CoreArchivePayloadKind | null;
+  recoveryState: "complete" | "filesystem_missing" | "recovery_only" | null;
+  archiveId: string | null;
+  activationId: string | null;
+  restartRequired: boolean;
+  credentialsReplaced: boolean;
+  recoveryExportOperationId: string | null;
+  errorCode: string | null;
+}
+
+export interface CoreFsRecoveryCredentialRequest {
+  sourceCredentialKind: "password" | "recovery";
+  sourceCredential: string;
+  newPassword: string;
+  confirmed: true;
+}
+
+export interface CoreFsRecoveryCredentialResponse {
+  scope: "fs";
+  recoveryPhrase: string;
+  passwordGeneration: number;
+  recoveryGeneration: number;
+  operation: CoreImportOperation;
+}
+
+export interface CoreFsRecoveryExportRequest {
+  destination: string;
+  finalName?: string;
+  passphrase: string;
+  credentialKind: "password" | "recovery";
+  credential: string;
+}
+
+export interface CoreFsRecoveryBrowseRequest {
+  operation: "stat" | "list" | "read";
+  credentialKind: "password" | "recovery";
+  credential: string;
+  path?: string;
+  cursorAfter?: string;
+  cursorGeneration?: number;
+  limit?: number;
+  offset?: number;
+  maxBytes?: number;
+  responseBytes?: number;
+}
+
+export interface CoreFsRecoveryBrowseResponse {
+  operation: "stat" | "list" | "read";
+  generation: number;
+  catalogHash: string;
+  result: Record<string, unknown> | null;
+}
+
+export interface CoreActiveStatus {
+  generation: number;
+  activeCoreId: string;
+  retainedCoreId: string | null;
+  activationId: string;
+  rollbackScheduled: boolean;
+}
+
+export type CoreFsClientScope = "none" | "read" | "write" | "manage";
+export type CoreFsClientInstallationStatus =
+  | "pending"
+  | "approved"
+  | "reapproval_required"
+  | "collision"
+  | "revoked";
+
+export interface CoreFsClientGrant {
+  folderStableId: string;
+  scope: Exclude<CoreFsClientScope, "none">;
+  approvedDigest: string;
+  generation: number;
+  updatedAt: string;
+  lastUsedAt: string | null;
+}
+
+export interface CoreFsClientInstallation {
+  installationId: string;
+  clientId: string;
+  packageId: string;
+  displayName: string;
+  packageVersion: string;
+  installDigest: string;
+  publisher: { identity: string; verified: boolean } | null;
+  declaredRoles: string[];
+  declaredMetadataKeys: string[];
+  status: CoreFsClientInstallationStatus;
+  approvedDigest: string | null;
+  grantGeneration: number;
+  verifiedAt: string;
+  approvedAt: string | null;
+  lastUsedAt: string | null;
+  grants: CoreFsClientGrant[];
+}
+
+export interface CoreFsGrantFolder {
+  stableId: string;
+  path: string;
+  role: string | null;
+}
+
+export interface CoreFsClientAccessState {
+  coreId: string;
+  localInstanceId: string;
+  deviceLocal: true;
+  reapprovalRequiredAfterTransfer: boolean;
+  installations: CoreFsClientInstallation[];
+  folders: CoreFsGrantFolder[];
 }
 
 export interface PersonaTemplateInfo {
@@ -678,6 +868,11 @@ export type PresenceConfigUpdate = Partial<
   Omit<PresenceConfig, "userId">
 >;
 
+export interface PortablePreferences {
+  userId: number;
+  values: Record<string, unknown>;
+}
+
 export interface PendingInitiative {
   id: number;
   drive: string;
@@ -913,34 +1108,6 @@ export interface DiaryEntryUpdateData {
   clearMood?: boolean;
   clearFolder?: boolean;
   clearCover?: boolean;
-}
-
-export interface DiaryDraftImportData {
-  draftId: string;
-  clientRevision: number;
-  contentSha256: string;
-  targetEntryId?: number | null;
-  html: string;
-  title: string;
-  mood: string;
-  entryDate: string;
-  updatedAt: string;
-}
-
-export interface DiaryDraftCompletionToken {
-  draftId: string;
-  clientRevision: number;
-  contentSha256: string;
-}
-
-export interface DiaryDraftImportResult {
-  stableId: string;
-  revision: number;
-  generation: number;
-  catalogHash: string;
-  completionToken: DiaryDraftCompletionToken;
-  verified: boolean;
-  authoritative: boolean;
 }
 
 export interface DiaryCorefsPreparedData {

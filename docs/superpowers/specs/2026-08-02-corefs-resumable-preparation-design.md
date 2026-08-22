@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-02
 **Status:** Approved — independent review and user approval complete
-**Draft-cleanup addendum:** Approved — independent review and renewed user approval complete 2026-08-13
+**Draft-cleanup addendum:** Superseded by the approved greenfield-release scope on 2026-08-16
 **Scope:** Add a bounded-memory, crash-resumable preparation protocol for large inactive CoreFS validation catalogs without weakening single-generation atomic publication
 **Parent design:** [Portable Core Filesystem Design](2026-07-12-portable-core-filesystem-design.md)
 **PRD:** [Portable Core Filesystem v1](../../prds/portable-core-filesystem-v1.md)
@@ -20,6 +20,11 @@ The user approved this persistent protocol instead of either:
 
 - an in-memory-only preparation handle, which would restart large migrations and strand untracked objects after every crash; or
 - multiple visible validation generations, which would violate the all-or-nothing migration contract.
+
+The 2026-08-16 greenfield-release amendment removes every plaintext
+localStorage migration and packaged writer-exclusion requirement. Preparation
+remains a bounded encrypted primitive for current-format bulk creation/import;
+it is not an upgrade bridge for unreleased application data.
 
 ## 2. Goals
 
@@ -45,11 +50,11 @@ The user approved this persistent protocol instead of either:
 4. Every persisted preparation snapshot and prepared object is encrypted and authenticated before its pointer becomes durable.
 5. A missing, corrupt, stale, wrong-Core, wrong-FRK, or replayed preparation pointer fails closed; it is never treated as an empty preparation.
 6. A prepared object is unusable unless its authenticated descriptor, encrypted file, source fingerprint, and final catalog intent all agree.
-7. A crash may leave unreachable encrypted files, but it cannot expose a partial logical graph or lose legacy authority.
+7. A crash may leave unreachable encrypted files, but it cannot expose a partial logical graph or replace committed current-format authority.
 8. FRK activation cannot proceed while an active preparation references the current FRK generation.
 9. Session close waits only for the currently bounded native call. No required correctness state exists solely in process memory between calls.
 10. Finalization may stream each encrypted envelope to recheck its ciphertext hash, but it never decrypts or materializes plaintext bodies.
-11. The source inventory generation and digest are rechecked while a SQLCipher write fence excludes every legacy writing mutation through validation-pointer publication.
+11. The source inventory generation and digest are rechecked while the caller's current-format source fence excludes mutation through validation-pointer publication.
 
 ## 5. Physical Layout
 
@@ -231,7 +236,12 @@ Targeted object-key rotation ignores unreachable prepared objects. Once an objec
 - One active preparation per Core avoids ambiguous ownership. Exact pointer CAS rejects concurrent draft import, unlock migration, or retry races; the caller reloads, merges source state, and retries.
 - A callback failure after durable snapshot publication reports committed progress rather than rolling back the pointer in memory.
 
-### 11.1 Packaged-desktop writer exclusion for plaintext draft cleanup (proposed)
+### 11.1 Historical packaged-desktop writer exclusion (superseded; non-normative)
+
+This subsection is retained only to preserve the reviewed decision history.
+The 2026-08-16 greenfield-release amendment removes this entire product and
+release surface: production code, tests, installers, and workflows must not
+implement or depend on it.
 
 The durable completion token proves that one exact draft revision is encrypted
 in CoreFS, but localStorage cannot atomically compare and delete its source key.
@@ -260,7 +270,12 @@ failing any item disables deletion without affecting import:
   through a package-owned path. NSIS, AppImage, direct `.dmg` execution, archives,
   copied app bundles, portable binaries, and side-by-side installs are not V1
   cleanup-capable release formats. They are removed from supported V1 release
-  outputs before PCF-004 can close.
+  outputs by the PCF-004 implementation contract. PCF-008 must prove that
+  exclusion against the final signed Windows, macOS, DEB, and RPM artifacts
+  before cutover or first-release publication. PCF-004 may close after the
+  implementation, local contract tests, and independent review pass; moving
+  the funded native-artifact run to PCF-008 changes sequencing, not the release
+  requirement.
 - Release-package verification installs an older fixture, performs the real
   replacement upgrade, and then enumerates every file and launch registration
   owned by the installer transaction. It proves there is one executable target,
@@ -275,6 +290,9 @@ failing any item disables deletion without affecting import:
   host identity must be carried in the signed cross-version identity keyring and
   tested from an immutable real predecessor artifact; a synthetic predecessor
   is forbidden once any installer-managed desktop release exists.
+  The protected four-platform execution results and exact artifact digests are
+  PCF-008 first-release evidence. The workflow stays triggerless until that
+  ticket is active and funded execution is separately authorized.
 - “Installed executable identity” is the tuple of bundle identifier, installer
   family, package version, canonical registered target, native file identity,
   and platform signing/package identity. Native file identity is Windows volume
@@ -434,7 +452,10 @@ Errors are safe to retry only when explicitly classified retryable. Corrupt or m
 
 ## 14. Validation
 
-Required tests include:
+Required tests include. PCF-004 owns implementation, platform-neutral/native
+contract coverage available locally, and independent review; PCF-008 owns the
+final signed-package executions required by items 18-20 before cutover or
+release publication:
 
 1. a logical corpus above 1 GiB prepared one bounded object at a time while peak retained body memory stays below the configured per-object ceiling;
 2. eleven individually valid maximum-size attachments accepted without aggregate rejection or whole-corpus materialization;
@@ -482,4 +503,8 @@ The preparation protocol is accepted only when:
 - session shutdown is bounded at per-call boundaries;
 - corrupted or conflicting state fails closed with typed recovery guidance; and
 - packaged plaintext-draft cleanup occurs only after the approved native writer-exclusion epoch and never in browser/debug/unpackaged contexts; and
-- the complete PCF-004 acceptance suite and required broader CoreFS/build gates pass.
+- the complete PCF-004 implementation acceptance suite and required broader
+  CoreFS/build gates pass; and
+- PCF-008 blocks cutover and release publication until the protected Windows,
+  macOS, DEB, and RPM replacement-install runs pass and their exact artifact
+  digests are recorded.

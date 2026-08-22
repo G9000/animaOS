@@ -21,6 +21,16 @@ from anima_server.models.runtime import (
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
 )
+from anima_server.services.corefs.asset_authority import (
+    CoreFsSourceError,
+    asset_authority_selection,
+    open_corefs_byte_source,
+)
+from anima_server.services.corefs.asset_mutations import (
+    AssetMutationError,
+    upsert_canonical_binary_asset,
+)
+from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.documents import (
     DocumentStoragePathError,
     resolve_document_storage_path,
@@ -36,6 +46,7 @@ from anima_server.services.documents.pdf_workflow import (
 )
 from anima_server.services.documents.rag import search_document_chunks
 from anima_server.services.documents.reparse import reparse_document
+from anima_server.services.documents.store import resolve_document_byte_source
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -119,7 +130,7 @@ async def upload_pdf_document(
     file: UploadFile = File(...),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, userId)
+    session = await require_unlocked_user_async(request, userId)
     if threadId is not None:
         _load_owned_thread(runtime_db, threadId, user_id=userId)
 
@@ -130,7 +141,7 @@ async def upload_pdf_document(
             detail="Only application/pdf documents are supported.",
         )
 
-    data = await file.read()
+    data = await file.read(settings.diary_attachment_max_size_bytes + 1)
     if not data:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -151,16 +162,52 @@ async def upload_pdf_document(
         )
 
     sha256 = hashlib.sha256(data).hexdigest()
-    storage_path = _document_storage_path(userId, filename)
-    try:
-        resolved_path = resolve_document_storage_path(storage_path, user_id=userId)
-    except DocumentStoragePathError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_path.write_bytes(data)
+    if asset_authority_selection(session) is not None:
+        existing = runtime_db.scalar(
+            select(RuntimeDocument).where(
+                RuntimeDocument.user_id == userId,
+                RuntimeDocument.sha256 == sha256,
+            )
+        )
+        try:
+            if existing is not None:
+                source = resolve_document_byte_source(existing, user_id=userId)
+                if isinstance(source, str):
+                    raise CoreFsSourceError("Canonical document source is unavailable.")
+                if (
+                    source.content_sha256 != sha256
+                    or source.size != len(data)
+                    or source.content_type != "application/pdf"
+                ):
+                    raise CoreFsSourceError("Canonical document source changed identity.")
+                storage_path = f"corefs://object/{source.stable_id}"
+            else:
+                stable_id = migration_opaque_id("document-upload", sha256)
+                upsert_canonical_binary_asset(
+                    session=session,
+                    stable_id=stable_id,
+                    name=filename,
+                    object_kind="attachment",
+                    content_type="application/pdf",
+                    data=data,
+                )
+                storage_path = f"corefs://object/{stable_id}"
+        except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
+    else:
+        storage_path = _document_storage_path(userId, filename)
+        try:
+            resolved_path = resolve_document_storage_path(storage_path, user_id=userId)
+        except DocumentStoragePathError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_path.write_bytes(data)
 
     run = start_pdf_ingestion_workflow(
         runtime_db,
@@ -196,14 +243,36 @@ async def start_pdf_workflow(
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
-    await require_unlocked_user_async(request, payload.userId)
-    try:
-        resolve_document_storage_path(payload.storagePath, user_id=payload.userId)
-    except DocumentStoragePathError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
+    session = await require_unlocked_user_async(request, payload.userId)
+    if asset_authority_selection(session) is not None:
+        try:
+            source = open_corefs_byte_source(
+                session=session,
+                object_uri=payload.storagePath,
+                expected_kinds=frozenset({"attachment"}),
+            )
+        except CoreFsSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Canonical document source is unavailable.",
+            ) from exc
+        if (
+            source.content_type != payload.mimeType
+            or source.content_sha256 != payload.sha256
+            or source.size != payload.sizeBytes
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Canonical document source changed identity.",
+            )
+    else:
+        try:
+            resolve_document_storage_path(payload.storagePath, user_id=payload.userId)
+        except DocumentStoragePathError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(exc),
+            ) from exc
     if payload.threadId is not None:
         _load_owned_thread(runtime_db, payload.threadId, user_id=payload.userId)
 

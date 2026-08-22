@@ -62,17 +62,22 @@ from anima_server.db.runtime_base import RuntimeBase
 from anima_server.services.agent import fastembed_backend as fastembed_backend_module
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
+from anima_server.services.credentials import (
+    CredentialStore,
+    MemoryCredentialBackend,
+    set_credential_store_for_tests,
+)
 from anima_server.services.documents import reranker as reranker_module
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 from fastapi.testclient import TestClient
 from sqlalchemy import BigInteger, create_engine, event
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 # Tests exercise the deterministic knowledge compiler by default; LLM-path
 # tests opt in explicitly with a scripted client.
 settings.knowledge_compiler = "deterministic"
+set_credential_store_for_tests(CredentialStore(MemoryCredentialBackend()))
 
 
 def _reranker_model_unavailable_in_tests() -> Any:
@@ -127,21 +132,32 @@ def _compile_biginteger_sqlite(type_: BigInteger, compiler: object, **kw: object
 def _init_runtime_engine_for_tests() -> Generator[None, None, None]:
     """Auto-init the runtime module globals so get_runtime_session_factory() works.
 
-    Creates a lightweight in-memory SQLite engine with runtime tables and
+    Creates a lightweight temporary SQLite engine with runtime tables and
     patches the module-level singletons so any code path that calls
     ``get_runtime_session_factory()`` (e.g. ``_build_runtime_db_factory()``
     inside ``run_agent``) gets a working factory without needing PostgreSQL.
+    A file-backed database gives background rebuilds their own connections;
+    sharing one StaticPool handle across request and worker threads is unsafe.
     """
+    from anima_server.services.corefs.migration import (
+        drain_unlocked_rebuilds,
+        resume_unlocked_rebuilds,
+    )
+
+    resume_unlocked_rebuilds()
     # If the globals are already set (e.g. by test_runtime_db.py which manages
     # its own engine lifecycle), skip this fixture.
     if runtime_mod._runtime_engine is not None:
-        yield
+        try:
+            yield
+        finally:
+            drain_unlocked_rebuilds()
         return
 
+    runtime_db_path = TEST_TEMP_ROOT / f"runtime-{uuid4().hex}.sqlite"
     engine = create_engine(
-        "sqlite://",
+        "sqlite:///" + str(runtime_db_path),
         connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
         echo=False,
     )
 
@@ -161,11 +177,18 @@ def _init_runtime_engine_for_tests() -> Generator[None, None, None]:
         expire_on_commit=False,
     )
 
-    yield
-
-    runtime_mod._runtime_engine = None
-    runtime_mod._runtime_session_factory = None
-    engine.dispose()
+    try:
+        yield
+    finally:
+        # Rebuild workers own Runtime sessions. Joining them before clearing
+        # or disposing the shared SQLite engine prevents cross-test commits,
+        # stale rows, and native connection teardown races.
+        drain_unlocked_rebuilds()
+        runtime_mod._runtime_engine = None
+        runtime_mod._runtime_session_factory = None
+        engine.dispose()
+        for suffix in ("", "-wal", "-shm"):
+            Path(f"{runtime_db_path}{suffix}").unlink(missing_ok=True)
 
 
 def _resolve_test_temp_root() -> Path:

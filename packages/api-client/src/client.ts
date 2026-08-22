@@ -9,8 +9,22 @@ import type {
   CapabilitiesResponse,
   ChangePasswordResponse,
   CorefsCredentialResponse,
+  CoreActiveStatus,
+  CoreImportOperation,
+  CoreImportProbe,
+  CoreFsRecoveryBrowseRequest,
+  CoreFsRecoveryBrowseResponse,
+  CoreFsRecoveryCredentialRequest,
+  CoreFsRecoveryCredentialResponse,
+  CoreFsRecoveryExportRequest,
   CoreFsOperationRequest,
   CoreFsOperationResponse,
+  CoreArchivePayloadKind,
+  CoreFsClientAccessState,
+  CoreFsClientScope,
+  CoreTransferDestinationProbe,
+  CoreTransferEstimate,
+  CoreTransferOperation,
   CoreFSRotationResponse,
   CoreFSSecurityStatus,
   ConfirmRecoveryCredentialResponse,
@@ -26,12 +40,11 @@ import type {
   DbTableInfo,
   DiaryAttachmentData,
   DiaryCorefsPreparedData,
-  DiaryDraftImportData,
-  DiaryDraftImportResult,
   DiaryEntryCreateData,
   DiaryEntryData,
   DiaryEntryUpdateData,
   DiaryFolderData,
+  DeleteUserResponse,
   DocumentWorkflow,
   DocumentWorkflowActionResponse,
   ParsingPackStatus,
@@ -68,6 +81,7 @@ import type {
   PersonaTemplateInfo,
   PresenceConfig,
   PresenceConfigUpdate,
+  PortablePreferences,
   ProactiveNotice,
   ProviderInfo,
   SelfModelData,
@@ -80,9 +94,6 @@ import type {
   TraceEvent,
   TraceMessagePreview,
   User,
-  VaultExportResponse,
-  VaultImportResponse,
-  VaultTransferFormat,
 } from "./types";
 
 interface ApiRequestOptions {
@@ -701,7 +712,7 @@ export function createApiClient(options: ApiClientOptions) {
       update: (id: number, data: Partial<User>) =>
         request<User>(`/users/${id}`, { method: "PUT", body: data }),
       delete: (id: number) =>
-        request<{ message: string }>(`/users/${id}`, { method: "DELETE" }),
+        request<DeleteUserResponse>(`/users/${id}`, { method: "DELETE" }),
     },
     corefs: {
       operation: (payload: CoreFsOperationRequest) =>
@@ -716,6 +727,128 @@ export function createApiClient(options: ApiClientOptions) {
           method: "POST",
           body: { currentPassword, recoveryPhrase },
         }),
+      clientAccess: () =>
+        request<CoreFsClientAccessState>("/corefs/access"),
+      approveClient: (installationId: string) =>
+        request<CoreFsClientAccessState>(
+          `/corefs/access/installations/${encodeURIComponent(installationId)}/approve`,
+          { method: "POST", body: { confirmed: true } },
+        ),
+      updateClientGrant: (
+        installationId: string,
+        folderStableId: string,
+        scope: CoreFsClientScope,
+        confirmed = false,
+      ) =>
+        request<CoreFsClientAccessState>(
+          `/corefs/access/installations/${encodeURIComponent(installationId)}/grants/${encodeURIComponent(folderStableId)}`,
+          { method: "PUT", body: { scope, confirmed } },
+        ),
+      revokeClient: (installationId: string) =>
+        request<CoreFsClientAccessState>(
+          `/corefs/access/installations/${encodeURIComponent(installationId)}`,
+          { method: "DELETE" },
+        ),
+      transfer: {
+        estimate: (payloadKind: CoreArchivePayloadKind = "full") =>
+          request<CoreTransferEstimate>("/corefs/transfer/estimate", {
+            method: "POST",
+            body: { payloadKind },
+          }),
+        probe: (destination: string, payloadKind: CoreArchivePayloadKind = "full") =>
+          request<CoreTransferDestinationProbe>("/corefs/transfer/probe", {
+            method: "POST",
+            body: { destination, payloadKind },
+          }),
+        prepare: (options: {
+          destination: string;
+          passphrase: string;
+          payloadKind?: CoreArchivePayloadKind;
+          finalName?: string;
+        }) =>
+          request<CoreTransferOperation>("/corefs/transfer/prepare", {
+            method: "POST",
+            body: {
+              destination: options.destination,
+              passphrase: options.passphrase,
+              payloadKind: options.payloadKind ?? "full",
+              finalName: options.finalName,
+            },
+          }),
+        operation: (operationId: string) =>
+          request<CoreTransferOperation>(
+            `/corefs/transfer/operations/${encodeURIComponent(operationId)}`,
+          ),
+        cancel: (operationId: string) =>
+          request<CoreTransferOperation>(
+            `/corefs/transfer/operations/${encodeURIComponent(operationId)}/cancel`,
+            { method: "POST" },
+          ),
+        probeImport: (archivePath: string, stagingParent: string) =>
+          request<CoreImportProbe>("/corefs/transfer/import/probe", {
+            method: "POST",
+            body: { archivePath, stagingParent },
+          }),
+        prepareImport: (options: {
+          archivePath: string;
+          stagingParent: string;
+          passphrase: string;
+        }) =>
+          request<CoreImportOperation>("/corefs/transfer/import/prepare", {
+            method: "POST",
+            body: options,
+          }),
+        importOperation: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}`,
+          ),
+        cancelImport: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/cancel`,
+            { method: "POST" },
+          ),
+        activateImportOnRestart: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/activate-on-restart`,
+            { method: "POST" },
+          ),
+        attachCoreFsRecovery: (operationId: string) =>
+          request<CoreImportOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/attach-corefs`,
+            { method: "POST" },
+          ),
+        replaceCoreFsRecoveryCredentials: (
+          operationId: string,
+          options: CoreFsRecoveryCredentialRequest,
+        ) =>
+          request<CoreFsRecoveryCredentialResponse>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/replace-corefs-credentials`,
+            { method: "POST", body: options },
+          ),
+        exportCoreFsRecovery: (
+          operationId: string,
+          options: CoreFsRecoveryExportRequest,
+        ) =>
+          request<CoreTransferOperation>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/export-corefs`,
+            { method: "POST", body: options },
+          ),
+        browseCoreFsRecovery: (
+          operationId: string,
+          options: CoreFsRecoveryBrowseRequest,
+        ) =>
+          request<CoreFsRecoveryBrowseResponse>(
+            `/corefs/transfer/import/operations/${encodeURIComponent(operationId)}/browse-corefs`,
+            { method: "POST", body: options },
+          ),
+        activeCore: () =>
+          request<CoreActiveStatus>("/corefs/transfer/active-core"),
+        rollbackOnRestart: () =>
+          request<CoreActiveStatus>(
+            "/corefs/transfer/active-core/rollback-on-restart",
+            { method: "POST", body: { confirmed: true } },
+          ),
+      },
     },
     chat: {
       send: (
@@ -970,6 +1103,15 @@ export function createApiClient(options: ApiClientOptions) {
           { method: "POST" },
         ),
     },
+    preferences: {
+      get: (userId: number) =>
+        request<PortablePreferences>(`/preferences/${userId}`),
+      update: (userId: number, values: Record<string, unknown>) =>
+        request<PortablePreferences>(`/preferences/${userId}`, {
+          method: "PATCH",
+          body: { values },
+        }),
+    },
     graph: {
       overview: (userId: number) =>
         request<GraphOverviewData>(`/graph/${userId}/overview`),
@@ -1046,11 +1188,6 @@ export function createApiClient(options: ApiClientOptions) {
       delete: (entryId: number) =>
         request<{ deleted: boolean }>(`/diary/${entryId}`, {
           method: "DELETE",
-        }),
-      importLegacyDraft: (userId: number, data: DiaryDraftImportData) =>
-        request<DiaryDraftImportResult>("/diary/drafts/import", {
-          method: "POST",
-          body: { userId, ...data },
         }),
       corefsPrepared: () =>
         request<DiaryCorefsPreparedData>("/diary/corefs-prepared"),
@@ -1226,38 +1363,6 @@ export function createApiClient(options: ApiClientOptions) {
         ),
       getAgentAvatarUrl: (userId: number) =>
         `${normalizedBaseUrl}/api/consciousness/${userId}/agent-profile/avatar`,
-    },
-    vault: {
-      export: (
-        passphrase: string,
-        options?: {
-          scope?: "full" | "memories";
-          format?: VaultTransferFormat;
-        },
-      ) =>
-        request<VaultExportResponse>("/vault/export", {
-          method: "POST",
-          body: {
-            passphrase,
-            scope: options?.scope,
-            format: options?.format,
-          },
-        }),
-      import: (
-        passphrase: string,
-        vault: string,
-        options?: {
-          format?: VaultTransferFormat;
-        },
-      ) =>
-        request<VaultImportResponse>("/vault/import", {
-          method: "POST",
-          body: {
-            passphrase,
-            vault,
-            format: options?.format,
-          },
-        }),
     },
     images: {
       removeFromMessage: (messageId: number, attachmentId: string) =>

@@ -186,7 +186,7 @@ def build_conversation_shadow_catalog(
                 _body(
                     stable_id=segment.segment_id,
                     parent_id=folder.stable_id,
-                    name=f"segment-{segment.index:08d}.jsonl",
+                    name=f"segment-{thread_id}-{segment.index:08d}.jsonl",
                     kind="message-segment",
                     content_type=MESSAGE_SEGMENT_CONTENT_TYPE,
                     data=segment.data,

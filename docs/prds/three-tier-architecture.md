@@ -1,6 +1,6 @@
 ---
 title: "PRD: Three-Tier Cognitive Architecture + N-Agent Spawning"
-description: Master PRD for splitting AnimaOS into Soul/Runtime/Archive tiers and enabling concurrent agent spawning
+description: Master PRD for the Soul/CoreFS/Runtime boundary and concurrent agent spawning
 category: prd
 version: "1.0"
 ---
@@ -32,19 +32,21 @@ version: "1.0"
 
 ## 1. Executive Summary
 
-AnimaOS's current architecture stores everything — identity, memory, messages, runtime state — in a single SQLite/SQLCipher database. This creates three hard blockers for concurrent agent processing (N-agent spawning): SQLite's single-writer constraint, per-user turn serialization, and shared mutable state in the tool executor.
+At this PRD's approval baseline, AnimaOS stored identity, memory, messages, and runtime state in one SQLite/SQLCipher database. That created three hard blockers for concurrent agent processing: SQLite's single-writer constraint, per-user turn serialization, and shared mutable tool-executor state. The Portable Core amendment above records the implemented replacement.
 
-This PRD defines a three-tier architecture that physically separates enduring identity (Soul) from working cognition (Runtime) and verbatim experience records (Archive). The separation solves SQLite's single-writer limitation and enables N-agent spawning — one identity running multiple cognitive processes in parallel.
+This PRD originally defined Soul, Runtime, and Archive. Its implemented refinement physically separates enduring identity (Soul), canonical authored/experience records (CoreFS), and working cognition (Runtime). The separation avoids making SQL rows one monolithic authority and enables N-agent spawning—one identity running multiple cognitive processes in parallel.
 
-**Outcome**: An AI that can think about multiple things at once while maintaining a singular, portable identity. Copy `.anima/` to a USB stick, plug into a new machine, enter the passphrase, and the AI wakes up knowing who it is.
+**Outcome**: An AI that can think about multiple things at once while maintaining a singular, portable identity. Export a verified full ANIMA CORE, activate it on another machine, unlock it, and the AI wakes knowing who it is with canonical authored history intact.
 
 **Theoretical validation**: The Engram paper (Cheng et al., 2026) independently validates this architectural principle at the neural level. Their finding: physically separating static knowledge from dynamic computation improves reasoning more than knowledge recall (BBH +5.0 vs. MMLU +3.4), because pre-loaded knowledge frees LLM capacity for deeper thought. Our always-loaded soul blocks serve the same function — they eliminate the "reconstruction tax" where the LLM would waste tokens re-establishing identity and context. See the [thesis](../thesis/three-tier-architecture.md) for the full analysis.
+
+**2026 Portable Core amendment:** this PRD's original Archive tier was refined by PCF-001–PCF-008 into encrypted CoreFS. Soul and CoreFS are the two portable authorities inside `.anima/`; machine-local PostgreSQL Runtime lives outside the Core. Visible messages/transcripts, diary, notes, gallery, documents, sources, tasks, and portable preferences are canonical CoreFS objects. Runtime retains only execution state and sealed/rebuildable projections. The phase history below remains the baseline that introduced PostgreSQL and consolidation, while the authority/path contract in this amendment controls current implementation.
 
 ---
 
 ## 2. Problem Statement
 
-### 2.1 Current State
+### 2.1 Baseline State at PRD Approval
 
 AnimaOS has a complete consciousness pipeline (Phases 0-10, 846 tests passing):
 
@@ -83,23 +85,23 @@ The three-tier architecture eliminates this tax: soul blocks are always loaded (
 
 | Tier | Store | Purpose | Durability |
 |------|-------|---------|------------|
-| **Soul** | SQLCipher (`anima.db`) in `.anima/` | Enduring identity, distilled knowledge, emotional patterns | Permanent, portable |
-| **Runtime** | Embedded PostgreSQL in `.anima/runtime/pg_data/` | Active conversations, spawns, in-flight state | Ephemeral (TTL-pruned) |
-| **Archive** | Encrypted JSONL in `.anima/transcripts/` | Full conversation transcripts | Retained (user-configurable) |
+| **Soul** | SQLCipher (`.anima/soul/soul.db`) | Enduring identity, distilled memory, emotional patterns | Permanent, portable |
+| **CoreFS** | Authenticated encrypted catalogs/objects (`.anima/fs/`) | Visible conversation history, diary/notes, gallery, documents/sources, tasks/preferences, trash | Permanent, portable |
+| **Runtime** | Machine-local PostgreSQL outside `.anima/` | Runs/steps, approvals, queues, sealed projections, indexes, checkpoints | Ephemeral/rebuildable |
 
 ### 3.2 The Identity Filter
 
 Every piece of data must answer: **"Does this define enduring identity, or is it just useful data?"**
 
-- Enduring identity → Soul (SQLCipher)
-- Active working state → Runtime (PostgreSQL)
-- Verbatim experience → Archive (encrypted JSONL)
+- Enduring identity/memory → Soul (SQLCipher)
+- Canonical authored content and verbatim experience → CoreFS
+- Active working state and rebuildable projections → Runtime (PostgreSQL)
 
 The distinction is durability, not significance. A user's current emotional state is significant but not identity.
 
 ### 3.3 Write Boundary Rule
 
-**Runtime never writes to Soul. Only Consolidation does.**
+**Runtime never becomes Soul or CoreFS authority. Only Consolidation writes promoted identity/memory to Soul; domain services write authored content through authenticated CoreFS transactions.**
 
 This is a hard architectural invariant, not a convention. It prevents:
 - Race conditions from concurrent writers
@@ -108,7 +110,7 @@ This is a hard architectural invariant, not a convention. It prevents:
 
 ### 3.4 Consolidation Gateway
 
-The only path from experience to identity. Reads from Runtime (PostgreSQL), writes to Soul (SQLCipher) and Archive (encrypted JSONL).
+The only path from experience to identity. It reads canonical CoreFS history plus Runtime candidates/operational context and writes promoted memory to Soul. Visible authored history is already durable in CoreFS and does not wait for consolidation.
 
 - Runs on conversation close (eager) and on inactivity timeout (fallback)
 - Idempotent (dedupe by `source_tool_call_id`)
@@ -120,7 +122,7 @@ The only path from experience to identity. Reads from Runtime (PostgreSQL), writ
 **Embedded PostgreSQL** (`pgserver` or equivalent) — no Docker, no external dependency.
 
 - PostgreSQL process starts/stops with the Python server via FastAPI lifespan
-- Data directory: `.anima/runtime/pg_data/`
+- Data directory: exact instance-scoped platform app-data binding outside `.anima/`
 - `atexit` handler + stale lockfile recovery for crash safety
 - CI environments use Docker PostgreSQL as fallback
 
@@ -130,12 +132,12 @@ The only path from experience to identity. Reads from Runtime (PostgreSQL), writ
 
 ### 3.7 Portability Story
 
-Copying `.anima/` to a new machine:
-- Soul (`anima.db`) — works immediately
-- Archive (`transcripts/`) — works immediately
-- Runtime (`runtime/pg_data/`) — discarded and rebuilt
+The supported product flow exports a pinned, coherent full ANIMA CORE as the authenticated streaming V2 container and imports it into same-volume staging before restart-only activation:
+- Soul (`soul/soul.db`) — transferred
+- CoreFS (`fs/`) — transferred with only committed catalogs/reachable objects
+- Runtime, device grants/config, credentials — excluded and rebuilt/reapproved
 
-**Safety net**: UI "Export / Prepare for transfer" flow triggers full consolidation before transfer. Pending ops that haven't been consolidated are lost if the user copies mid-session without consolidating.
+The exporter holds the write barrier and exact catalog/Soul snapshot; users are not instructed to drag-copy a live Core. Soul-only and CoreFS-only artifacts are explicit degraded recovery modes rather than complete ANIMA instances.
 
 ---
 
@@ -170,7 +172,7 @@ A single AI identity can run multiple cognitive processes in parallel without fr
 3. Preserve `.anima/` portability (USB-stick story)
 4. Maintain all existing consciousness features (self-model, emotions, inner monologue)
 5. Zero data loss — consolidation gateway ensures all knowledge is eventually promoted
-6. Full conversation transcripts archived and searchable
+6. Full visible conversation history committed to CoreFS and searchable through rebuildable Runtime indexes
 
 ### Non-Goals
 
@@ -189,7 +191,7 @@ A single AI identity can run multiple cognitive processes in parallel without fr
 | PostgreSQL deployment | (A) Docker Compose sidecar, (B) Embedded PG, (C) Docker for PG only | **B — Embedded PG** | Preserves zero-dependency, portable deployment. No Docker Desktop required. |
 | Knowledge graph | Soul-only, Runtime-only, Split | **Split** | High-confidence to soul via consolidation, raw to runtime. Same gateway pattern. |
 | Consolidation urgency | (A) Eager on thread close, (B) Significance-triggered, (C) Accept the gap | **A — Eager on close** | Simple, covers 90% of cases. Inactivity timeout as fallback. |
-| Portability of pending ops | Portable WAL file, Accept loss | **Accept loss with safety net** | UI triggers consolidation before transfer. Runtime is ephemeral by design. |
+| Portability of pending ops | Portable WAL file, accept loss, write-frozen conversion | **Authenticated resumable conversion** | Migration freezes legacy writes, journals progress, validates a complete CoreFS shadow, and requires explicit acceptance. |
 | Implementation phasing | Bottom-up (infra first), Feature-vertical | **Bottom-up** | Each phase has clear testable boundary. Infra issues surface before app logic changes. |
 | Prompt budget optimization | Fixed ratios, Adaptive per conversation mode, Empirical sweep | **Fixed ratios initially, empirical sweep post-P8** | Hand-tuned ratios are correct enough for ship. Engram's U-shaped allocation law provides methodology for optimization. |
 | Memory retrieval gating | Cosine-only, Two-stage (cosine + context gate) | **Cosine initially, context gate post-P6** | Context-aware gating (Engram eq. 4) prevents topically related but situationally irrelevant memories from consuming budget. Requires pgvector first. |
@@ -233,8 +235,8 @@ Note: P6 and P7 can run in parallel after P2. P8 requires both P4 (write boundar
 | Message concurrency | Two agent threads can write messages simultaneously without blocking |
 | Write boundary enforced | No runtime code path imports soul-write functions; linter/test enforces this |
 | Consolidation completes | Pending ops are promoted to soul within 60s of thread close |
-| Portability preserved | Copy `.anima/` minus `runtime/`, start fresh server, AI retains identity |
-| Transcript searchable | `recall_transcript` returns relevant snippets from archived conversations |
+| Portability preserved | Full V2 transfer restores coherent Soul + CoreFS while excluding Runtime/device/credentials |
+| Conversation searchable | Rebuilt Runtime index returns canonical CoreFS thread/message history |
 | Spawn completes | Spawned agent runs to completion, result appears in main agent context |
 | No regression | All existing 846+ tests pass after each phase |
 
@@ -296,7 +298,7 @@ This is the application-level equivalent of Engram's gating applied to entire me
 
 ### 11.5 Model-Level Memory Readiness
 
-When Engram-style conditional memory modules become available in open-source models (Ollama, vLLM), the three-tier architecture is already the right application-level complement. The soul/runtime/archive separation maps to: model-level Engram for general world knowledge (O(1) lookup, zero context window cost) + application-level soul for evolving personal knowledge (transparent, editable, continuously updated). No architectural changes needed — the separation is already in place.
+When Engram-style conditional memory modules become available in open-source models (Ollama, vLLM), the three-tier architecture is already the right application-level complement. Model-level Engram can serve general world knowledge; Soul carries evolving personal identity/memory; CoreFS carries authored evidence/history; Runtime builds context and projections. No authority merger is required.
 
 ---
 
@@ -304,5 +306,5 @@ When Engram-style conditional memory modules become available in open-source mod
 
 1. **Spawn recursion** — Should spawns spawn? Disabled initially. Revisit after P8 ships.
 2. **Spawn UI** — How does the frontend show spawn progress? WebSocket events TBD.
-3. **Sidecar encryption** — Should transcript sidecar indexes be encrypted? Unencrypted initially for fast filtering.
+3. **Index persistence** — Plaintext transcript sidecars are no longer canonical. Persisted Runtime indexes must remain sealed/safe and pass the raw private-marker scan; plaintext lexical state is unlock-scoped process memory.
 4. **Result merging** — How does the main agent incorporate spawn results? Memory block injection vs system message. Decision in P8 spec.

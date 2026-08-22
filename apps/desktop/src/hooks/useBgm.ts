@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { getPortablePreference, setPortablePreference } from "../lib/portablePreferences";
 
 export function useBgm(src: string, volume = 0.35) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const [muted, setMuted] = useState(() => {
-    try { return localStorage.getItem("anima_bgm_muted") === "true"; } catch { return false; }
+    return getPortablePreference<{ muted?: boolean }>("bgm", {}).muted ?? false;
   });
 
   useEffect(() => {
@@ -19,7 +20,10 @@ export function useBgm(src: string, volume = 0.35) {
 
   useEffect(() => {
     if (audioRef.current) audioRef.current.muted = muted;
-    try { localStorage.setItem("anima_bgm_muted", String(muted)); } catch {}
+    setPortablePreference("bgm", {
+      ...getPortablePreference<Record<string, unknown>>("bgm", {}),
+      muted,
+    });
   }, [muted]);
 
   const toggleMute = () => setMuted(m => !m);

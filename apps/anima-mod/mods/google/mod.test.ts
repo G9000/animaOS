@@ -14,7 +14,7 @@ function createGoogleContext() {
       clientId: "client-id",
       clientSecret: "client-secret",
     },
-    store: {
+    secrets: {
       get: async (key: string) => {
         if (key === "google:tokens:1") {
           return {
@@ -28,7 +28,6 @@ function createGoogleContext() {
       },
       set: async () => {},
       delete: async () => {},
-      has: async () => false,
     },
   });
 }
