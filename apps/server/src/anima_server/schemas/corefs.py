@@ -26,11 +26,28 @@ CoreFsOperation = Literal[
 
 CoreFsPrincipalKind = Literal["user", "anima", "client"]
 CoreFsSearchMode = Literal["exact", "text", "semantic"]
+CoreFsObjectKind = Literal[
+    "account-profile",
+    "attachment",
+    "diary",
+    "draft",
+    "gallery-asset",
+    "knowledge-source",
+    "message-segment",
+    "note",
+    "preferences",
+    "task",
+    "thread",
+]
+CoreFsBodyEncoding = Literal["utf-8", "binary"]
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _MAX_LOGICAL_PATH_BYTES = 32 * 1024
 _MAX_PORTABLE_NAME_BYTES = 255
 _MAX_NATIVE_U64 = (1 << 64) - 1
+_MAX_PATCH_CHARACTERS = 4 * 1024 * 1024
+_MAX_MUTATION_BASE64_CHARACTERS = 24 * 1024 * 1024
+_OPAQUE_ID_RE = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
 _RESERVED_COMPONENTS = frozenset(
     {
         ".anima",
@@ -109,6 +126,13 @@ def _has_uri_scheme(value: str) -> bool:
     )
 
 
+class CoreFsPatchAddFormat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: CoreFsObjectKind
+    contentType: str = Field(min_length=1, max_length=255)
+
+
 class CoreFsOperationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -135,6 +159,22 @@ class CoreFsOperationRequest(BaseModel):
     responseBytes: int | None = Field(default=None, ge=1024, le=10485760)
     regex: bool = False
     includeDirectories: bool = True
+    stableId: str | None = None
+    destination: str | None = None
+    trashFolderPath: str | None = None
+    trashFolderStableId: str | None = None
+    reservedRole: str | None = Field(default=None, min_length=1, max_length=255)
+    kind: CoreFsObjectKind | None = None
+    contentType: str | None = Field(default=None, min_length=1, max_length=255)
+    bodyEncoding: CoreFsBodyEncoding | None = None
+    contentBase64: str | None = Field(
+        default=None,
+        max_length=_MAX_MUTATION_BASE64_CHARACTERS,
+    )
+    expectedRevision: int | None = Field(default=None, ge=1, le=_MAX_NATIVE_U64)
+    patch: str | None = Field(default=None, max_length=_MAX_PATCH_CHARACTERS)
+    expectedRevisions: dict[str, int] | None = None
+    addFormats: dict[str, CoreFsPatchAddFormat] | None = None
 
     @field_validator(
         "path",
@@ -143,6 +183,8 @@ class CoreFsOperationRequest(BaseModel):
         "globCursorAfter",
         "grepCursorPath",
         "grepCursorWalkAfter",
+        "destination",
+        "trashFolderPath",
     )
     @classmethod
     def validate_logical_paths(cls, value: str | None, info: Any) -> str | None:
@@ -166,7 +208,88 @@ class CoreFsOperationRequest(BaseModel):
             raise ValueError("cursorGeneration is required with a continuation cursor.")
         if self.cursorGeneration is not None and not cursor_present:
             raise ValueError("cursorGeneration requires a continuation cursor.")
+        self._validate_mutation_shape()
         return self
+
+    def _validate_mutation_shape(self) -> None:
+        if self.stableId is not None and _OPAQUE_ID_RE.fullmatch(self.stableId) is None:
+            raise ValueError("stableId is not a valid CoreFS stable ID.")
+        if (
+            self.trashFolderStableId is not None
+            and _OPAQUE_ID_RE.fullmatch(self.trashFolderStableId) is None
+        ):
+            raise ValueError("trashFolderStableId is not a valid CoreFS stable ID.")
+        if self.expectedRevisions is not None:
+            if len(self.expectedRevisions) > 1024:
+                raise ValueError("expectedRevisions exceeds the CoreFS patch limit.")
+            for path, revision in self.expectedRevisions.items():
+                normalize_logical_path(path, field_name="expectedRevisions")
+                if isinstance(revision, bool) or revision <= 0 or revision > _MAX_NATIVE_U64:
+                    raise ValueError("expectedRevisions contains an invalid revision.")
+        if self.addFormats is not None:
+            if len(self.addFormats) > 1024:
+                raise ValueError("addFormats exceeds the CoreFS patch limit.")
+            for path in self.addFormats:
+                normalize_logical_path(path, field_name="addFormats")
+
+        if self.operation not in {
+            "mkdir",
+            "create_file",
+            "write_file",
+            "apply_patch",
+            "move",
+            "trash",
+            "restore",
+        }:
+            return
+        target_count = int(self.path is not None) + int(self.stableId is not None)
+        trash_count = int(self.trashFolderPath is not None) + int(
+            self.trashFolderStableId is not None
+        )
+        if self.operation == "mkdir":
+            if self.path is None:
+                raise ValueError("path is required for mkdir.")
+        elif self.operation == "create_file":
+            if (
+                self.path is None
+                or self.kind is None
+                or self.contentType is None
+                or self.bodyEncoding is None
+                or self.contentBase64 is None
+            ):
+                raise ValueError(
+                    "create_file requires path, kind, contentType, bodyEncoding, and contentBase64."
+                )
+        elif self.operation == "write_file":
+            if (
+                target_count != 1
+                or self.expectedRevision is None
+                or self.contentType is None
+                or self.bodyEncoding is None
+                or self.contentBase64 is None
+            ):
+                raise ValueError(
+                    "write_file requires one target, expectedRevision, contentType, "
+                    "bodyEncoding, and contentBase64."
+                )
+        elif self.operation == "apply_patch":
+            if (
+                self.patch is None
+                or self.expectedRevisions is None
+                or self.addFormats is None
+                or trash_count != 1
+            ):
+                raise ValueError(
+                    "apply_patch requires patch, expectedRevisions, addFormats, and one trash folder."
+                )
+        elif self.operation == "move":
+            if target_count != 1 or self.destination is None:
+                raise ValueError("move requires one source target and destination.")
+        elif self.operation == "trash":
+            if target_count != 1 or trash_count != 1:
+                raise ValueError("trash requires one target and one trash folder.")
+        elif self.operation == "restore" and target_count != 1:
+            raise ValueError("restore requires one target.")
 
 
 class CoreFsPrincipalResponse(BaseModel):
@@ -174,6 +297,8 @@ class CoreFsPrincipalResponse(BaseModel):
     id: str
     userId: int
     installDigest: str | None = None
+    installationId: str | None = None
+    packageId: str | None = None
 
 
 class CoreFsSelectedSnapshotResponse(BaseModel):

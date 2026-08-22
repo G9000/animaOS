@@ -7,21 +7,9 @@ import { useAuth } from "../../context/AuthContext";
 type LoginStep = "username" | "password";
 type RecoveryStep = "phrase" | "newPwd" | "confirm";
 
-const CACHED_USER_KEY = "anima_last_user";
-
-function readCachedUser(): string {
-  try {
-    return localStorage.getItem(CACHED_USER_KEY) ?? "";
-  } catch {
-    return "";
-  }
-}
-
 export default function Login() {
-  const [step, setStep] = useState<LoginStep>(() =>
-    readCachedUser() ? "password" : "username",
-  );
-  const [username, setUsername] = useState<string>(() => readCachedUser());
+  const [step, setStep] = useState<LoginStep>("username");
+  const [username, setUsername] = useState("");
   const [input, setInput] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [phrase, setPhrase] = useState("");
@@ -53,14 +41,12 @@ export default function Login() {
       }[recoveryStep]
     : step === "username"
       ? "who are you?"
-      : username
-        ? `welcome, ${username}`
-        : "password";
+      : "unlock ANIMA";
 
   function goBack() {
     setError("");
     if (!recovering) {
-      if (step === "password" && !readCachedUser()) {
+      if (step === "password") {
         setStep("username");
         setInput(username);
       } else navigate("/init", { replace: true });
@@ -93,11 +79,6 @@ export default function Login() {
       try {
         const res = await api.auth.login(username, input);
         setUnlockToken(res.unlockToken);
-        try {
-          localStorage.setItem(CACHED_USER_KEY, username);
-        } catch {
-          /* ignore */
-        }
         setUser({ id: res.id, username: res.username, name: res.name });
         navigate("/");
       } catch (err) {

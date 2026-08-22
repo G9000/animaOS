@@ -9,6 +9,13 @@ from typing import Literal
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from anima_server.services.credentials import (
+    CredentialReferenceError,
+    credential_reference,
+    credential_store,
+    validate_credential_reference,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[4]
 SERVER_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = REPO_ROOT / ".anima" / "dev"
@@ -319,15 +326,149 @@ _PERSISTED_RUNTIME_SETTING_FIELDS: tuple[str, ...] = (
     "agent_embedding_base_url",
 )
 
+_SECRET_RUNTIME_SETTING_FIELDS = frozenset(
+    {"agent_api_key", "agent_api_keys_json", "agent_embedding_api_key"}
+)
+
+
+def _provider_api_key_reference(provider: str, *, legacy_flat: bool = False) -> str:
+    normalized = provider.strip().lower() or "unassigned"
+    scope = "provider-api-legacy" if legacy_flat else "provider-api"
+    return credential_reference(scope, normalized)
+
+
+def _embedding_api_key_reference(provider: str) -> str:
+    return credential_reference("embedding-api", provider.strip().lower() or "unassigned")
+
+
+def _reference_or_none(value: str) -> str | None:
+    if not value.startswith("anima-credential:"):
+        return None
+    return validate_credential_reference(value)
+
+
+def _load_secret_value(value: str, *, destination_reference: str) -> tuple[str, bool]:
+    if not value:
+        return "", False
+    reference = _reference_or_none(value)
+    if reference is not None:
+        secret = credential_store().get(reference)
+        if secret is None:
+            raise RuntimeError("A runtime credential reference has no operating-system credential.")
+        return secret, False
+    credential_store().put(destination_reference, value)
+    return value, True
+
+
+def _load_provider_api_keys(value: str) -> tuple[str, bool]:
+    try:
+        raw = json.loads(value or "{}")
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError("Persisted provider credentials are malformed.") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError("Persisted provider credentials must be an object.")
+
+    migrated = False
+    resolved: dict[str, str] = {}
+    for provider, stored in raw.items():
+        if not isinstance(provider, str) or not isinstance(stored, str):
+            raise RuntimeError("Persisted provider credential entries are malformed.")
+        secret, copied = _load_secret_value(
+            stored,
+            destination_reference=_provider_api_key_reference(provider),
+        )
+        if secret:
+            resolved[provider] = secret
+        migrated = migrated or copied
+    return json.dumps(resolved), migrated
+
+
+def _credentialized_runtime_settings() -> tuple[dict[str, str], set[str]]:
+    payload: dict[str, str] = {}
+    retained_references: set[str] = set()
+    store = None
+
+    for field in _PERSISTED_RUNTIME_SETTING_FIELDS:
+        if field in _SECRET_RUNTIME_SETTING_FIELDS:
+            continue
+        payload[field] = str(getattr(settings, field, ""))
+
+    provider_references: dict[str, str] = {}
+    for provider, secret in _parse_api_keys().items():
+        if not secret:
+            continue
+        reference = _provider_api_key_reference(provider)
+        store = store or credential_store()
+        store.put(reference, secret)
+        provider_references[provider] = reference
+        retained_references.add(reference)
+    payload["agent_api_keys_json"] = json.dumps(
+        provider_references, sort_keys=True, separators=(",", ":")
+    )
+
+    legacy_secret = settings.agent_api_key.strip()
+    if legacy_secret:
+        reference = _provider_api_key_reference(
+            settings.agent_provider,
+            legacy_flat=True,
+        )
+        store = store or credential_store()
+        store.put(reference, legacy_secret)
+        payload["agent_api_key"] = reference
+        retained_references.add(reference)
+    else:
+        payload["agent_api_key"] = ""
+
+    embedding_secret = settings.agent_embedding_api_key.strip()
+    if embedding_secret:
+        reference = _embedding_api_key_reference(
+            settings.agent_embedding_provider or settings.agent_provider
+        )
+        store = store or credential_store()
+        store.put(reference, embedding_secret)
+        payload["agent_embedding_api_key"] = reference
+        retained_references.add(reference)
+    else:
+        payload["agent_embedding_api_key"] = ""
+    return payload, retained_references
+
+
+def _credential_references_in_payload(payload: object) -> set[str]:
+    if not isinstance(payload, dict):
+        return set()
+    references: set[str] = set()
+    for field in ("agent_api_key", "agent_embedding_api_key"):
+        value = payload.get(field)
+        if isinstance(value, str):
+            try:
+                reference = _reference_or_none(value)
+            except CredentialReferenceError:
+                continue
+            if reference is not None:
+                references.add(reference)
+    raw_provider_keys = payload.get("agent_api_keys_json")
+    if isinstance(raw_provider_keys, str):
+        try:
+            provider_keys = json.loads(raw_provider_keys)
+        except (json.JSONDecodeError, ValueError):
+            provider_keys = None
+        if isinstance(provider_keys, dict):
+            for value in provider_keys.values():
+                if not isinstance(value, str):
+                    continue
+                try:
+                    reference = _reference_or_none(value)
+                except CredentialReferenceError:
+                    continue
+                if reference is not None:
+                    references.add(reference)
+    return references
+
 
 def get_runtime_settings_path() -> Path:
     """Return the local runtime settings file path."""
     if settings.runtime_instance_data_dir:
-        return (
-            Path(settings.runtime_instance_data_dir)
-            / "config"
-            / RUNTIME_SETTINGS_FILENAME
-        )
+        return Path(settings.runtime_instance_data_dir) / "config" / RUNTIME_SETTINGS_FILENAME
     app_data_root = (
         Path(settings.runtime_app_data_dir)
         if settings.runtime_app_data_dir
@@ -353,9 +494,7 @@ def resolve_runtime_path_outside_core(path: Path, *, setting_name: str) -> Path:
     """Resolve a machine-local Runtime path and reject portable-Core overlap."""
     resolved = path.expanduser().resolve()
     portable_core = settings.data_dir.expanduser().resolve()
-    if resolved.is_relative_to(portable_core) or portable_core.is_relative_to(
-        resolved
-    ):
+    if resolved.is_relative_to(portable_core) or portable_core.is_relative_to(resolved):
         raise RuntimeError(f"{setting_name} must not overlap the portable Core")
     return resolved
 
@@ -369,16 +508,16 @@ def load_persisted_runtime_settings() -> None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        logger.warning(
-            "Failed to read persisted runtime settings from %s: %s", path, exc)
+        logger.warning("Failed to read persisted runtime settings from %s: %s", path, exc)
         return
 
     if not isinstance(payload, dict):
-        logger.warning(
-            "Ignoring persisted runtime settings from %s: expected object", path)
+        logger.warning("Ignoring persisted runtime settings from %s: expected object", path)
         return
 
     for field in _PERSISTED_RUNTIME_SETTING_FIELDS:
+        if field in _SECRET_RUNTIME_SETTING_FIELDS:
+            continue
         value = payload.get(field)
         if value is None:
             continue
@@ -391,30 +530,47 @@ def load_persisted_runtime_settings() -> None:
             continue
         setattr(settings, field, value)
 
+    migrated = False
+    provider_keys, provider_keys_migrated = _load_provider_api_keys(
+        str(payload.get("agent_api_keys_json", "{}"))
+    )
+    settings.agent_api_keys_json = provider_keys
+    migrated = migrated or provider_keys_migrated
+
+    legacy_api_key, legacy_api_key_migrated = _load_secret_value(
+        str(payload.get("agent_api_key", "")),
+        destination_reference=_provider_api_key_reference(
+            settings.agent_provider,
+            legacy_flat=True,
+        ),
+    )
+    settings.agent_api_key = legacy_api_key
+    migrated = migrated or legacy_api_key_migrated
+
+    embedding_api_key, embedding_api_key_migrated = _load_secret_value(
+        str(payload.get("agent_embedding_api_key", "")),
+        destination_reference=_embedding_api_key_reference(
+            settings.agent_embedding_provider or settings.agent_provider
+        ),
+    )
+    settings.agent_embedding_api_key = embedding_api_key
+    migrated = migrated or embedding_api_key_migrated
+    if migrated:
+        persist_runtime_settings()
+
 
 def persist_runtime_settings() -> Path:
     """Persist runtime settings for the next server restart."""
     path = get_runtime_settings_path()
-    payload: dict[str, str] = {}
+    existing_payload: object = {}
 
     if path.exists():
         try:
-            existing = json.loads(path.read_text(encoding="utf-8"))
+            existing_payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            logger.warning(
-                "Failed to read existing runtime settings from %s: %s", path, exc)
-        else:
-            if isinstance(existing, dict):
-                payload.update(
-                    {
-                        key: value
-                        for key, value in existing.items()
-                        if isinstance(key, str) and isinstance(value, str)
-                    }
-                )
-
-    for field in _PERSISTED_RUNTIME_SETTING_FIELDS:
-        payload[field] = str(getattr(settings, field, ""))
+            logger.warning("Failed to read existing runtime settings from %s: %s", path, exc)
+    previous_references = _credential_references_in_payload(existing_payload)
+    payload, retained_references = _credentialized_runtime_settings()
 
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
@@ -433,6 +589,8 @@ def persist_runtime_settings() -> Path:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+    for reference in sorted(previous_references - retained_references):
+        credential_store().delete(reference)
     return path
 
 

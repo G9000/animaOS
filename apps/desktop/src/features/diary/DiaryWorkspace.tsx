@@ -7,13 +7,7 @@ import type {
 } from "@anima/api-client";
 import type { Editor } from "@tiptap/react";
 import { useAuth } from "../../context/AuthContext";
-import { api } from "../../lib/api";
-import { packagedDraftCleanupAuthority } from "../../lib/draftCleanupAuthority";
 import { createDiaryHtmlSanitizer } from "./lib/sanitize";
-import {
-  draftMigrationRetryDelay,
-  migrateLegacyDiaryDraftsFromStorageProvider,
-} from "./lib/draftMigration";
 import { stripUnresolvedAttachmentImages } from "./lib/attachmentImages";
 import {
   graduateSessionEntry,
@@ -186,10 +180,7 @@ export default function DiaryWorkspace() {
   const [creatingEntry, setCreatingEntry] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [bodyText, setBodyText] = useState("");
-  // Drawer-open and sidebar-collapsed state live in component state only —
-  // never in browser storage (diary content and layout preferences never
-  // touch localStorage/sessionStorage; see the legacy-draft purge effect
-  // below).
+  // Drawer-open and sidebar-collapsed state live in component state only.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [deletingEntryId, setDeletingEntryId] = useState<number | null>(null);
@@ -336,37 +327,6 @@ export default function DiaryWorkspace() {
     initialFolderIdRef.current = selectedEntry.folderId ?? null;
     initialEntryDateRef.current = selectedEntry.entryDate;
   }, [selectedEntry?.id, initialHtml]);
-
-  // Move drafts written by older builds into the inactive encrypted CoreFS
-  // catalog. Deletion uses the durable ID/revision/hash completion token, so
-  // an edit made while the request is in flight remains local and is retried.
-  useEffect(() => {
-    if (user?.id == null) return;
-    const prefix = `anima:diary:draft:${user.id}:`;
-    let cancelled = false;
-    let retryAttempt = 0;
-    let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    const migrate = async () => {
-      const retry = await migrateLegacyDiaryDraftsFromStorageProvider({
-        storageProvider: () => window.localStorage,
-        lockManagerProvider: () => window.navigator.locks,
-        prefix,
-        userId: user.id,
-        sanitizeHtml: sanitizeDiaryHtml,
-        importDraft: (draft) => api.diary.importLegacyDraft(user.id, draft),
-        cleanupAuthority: packagedDraftCleanupAuthority(),
-      });
-      if (!retry || cancelled) return;
-      const delay = draftMigrationRetryDelay(retryAttempt);
-      retryAttempt += 1;
-      if (delay !== null) retryTimer = setTimeout(() => void migrate(), delay);
-    };
-    void migrate();
-    return () => {
-      cancelled = true;
-      if (retryTimer !== undefined) clearTimeout(retryTimer);
-    };
-  }, [user?.id]);
 
   // Voice-note recording + live speech-to-text, extracted (Task 12) into
   // its own hook — see hooks/useVoiceRecorder.ts. The two callbacks below

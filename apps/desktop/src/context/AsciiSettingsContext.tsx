@@ -1,4 +1,16 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  getPortablePreference,
+  PORTABLE_PREFERENCES_CHANGED_EVENT,
+  setPortablePreference,
+} from "../lib/portablePreferences";
 
 export interface AsciiSettings {
   cols: number;
@@ -39,12 +51,7 @@ const Ctx = createContext<AsciiSettingsCtx>({
 });
 
 function load(): AsciiSettings {
-  try {
-    const raw = localStorage.getItem("anima_ascii_settings");
-    return raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
-  } catch {
-    return DEFAULTS;
-  }
+  return { ...DEFAULTS, ...getPortablePreference<Partial<AsciiSettings>>("ascii", {}) };
 }
 
 export function AsciiSettingsProvider({ children }: { children: ReactNode }) {
@@ -53,10 +60,16 @@ export function AsciiSettingsProvider({ children }: { children: ReactNode }) {
   const [srcOverrideType, setSrcOverrideType] = useState<"image" | "video" | undefined>();
   const [srcOverrideName, setSrcOverrideName] = useState<string | undefined>();
 
+  useEffect(() => {
+    const refresh = () => setSettings(load());
+    globalThis.addEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+    return () => globalThis.removeEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+  }, []);
+
   const update = useCallback((patch: Partial<AsciiSettings>) => {
     setSettings(prev => {
       const next = { ...prev, ...patch };
-      try { localStorage.setItem("anima_ascii_settings", JSON.stringify(next)); } catch {}
+      setPortablePreference("ascii", next);
       return next;
     });
   }, []);
@@ -69,7 +82,7 @@ export function AsciiSettingsProvider({ children }: { children: ReactNode }) {
 
   const reset = useCallback(() => {
     setSettings(DEFAULTS);
-    try { localStorage.removeItem("anima_ascii_settings"); } catch {}
+    setPortablePreference("ascii", DEFAULTS);
     setSrcOverrideState(undefined);
     setSrcOverrideType(undefined);
     setSrcOverrideName(undefined);

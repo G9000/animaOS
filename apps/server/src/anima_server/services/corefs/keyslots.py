@@ -5,6 +5,7 @@ import binascii
 import json
 from collections.abc import Set
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import anima_core
 from sqlalchemy import select
@@ -45,6 +46,8 @@ from anima_server.services.crypto import (
 )
 from anima_server.services.data_crypto import ALL_DOMAINS
 from anima_server.services.recovery import RECOVERY_DOMAIN_PREFIX
+
+_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -522,6 +525,9 @@ def provision_initial_key_hierarchy(
     db.commit()
 
     def _activate(value: dict[str, object]) -> None:
+        from anima_server.services.corefs.authority import PORTABLE_CORE_RELEASE
+
+        value["portable_core_release"] = PORTABLE_CORE_RELEASE
         value["keyslots_version"] = 1
         value["keyslots"] = [slot.to_dict() for slot in slots]
         value["active_password_credential_generation"] = 1
@@ -628,6 +634,112 @@ def unlock_manifest_key_hierarchy(
 ) -> UnlockedManifestRoots:
     """Authenticate and open only the roots stored in the public manifest."""
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    return _unlock_manifest_key_hierarchy(
+        manifest,
+        credential=credential,
+        wrapping_path=wrapping_path,
+        expected_scope=expected_scope,
+        generation=generation,
+        status=status,
+    )
+
+
+def unlock_manifest_key_hierarchy_at(
+    manifest_path: Path,
+    *,
+    credential: str,
+    wrapping_path: WrappingPath,
+    expected_scope: PayloadScope | None = None,
+    generation: int | None = None,
+    status: KeyslotStatus = KeyslotStatus.ACTIVE,
+) -> UnlockedManifestRoots:
+    """Open manifest roots at an explicit, already-staged Core boundary.
+
+    Recovery-only transfer sessions cannot consult the process-global active
+    Core.  The caller supplies the exact staged manifest and this helper keeps
+    the same scope/completeness checks as the active-Core unlock path.
+    """
+    manifest = _read_manifest_at(manifest_path)
+    return _unlock_manifest_key_hierarchy(
+        manifest,
+        credential=credential,
+        wrapping_path=wrapping_path,
+        expected_scope=expected_scope,
+        generation=generation,
+        status=status,
+    )
+
+
+def unlock_manifest_compartment_at(
+    manifest_path: Path,
+    *,
+    credential: str,
+    wrapping_path: WrappingPath,
+    compartment: PayloadScope,
+) -> UnlockedManifestRoots:
+    """Recover only one declared partial-archive compartment.
+
+    A scoped archive filters out the other compartment but cannot rewrite its
+    surviving wrapper AAD without the user's credential.  Therefore source
+    slots may still declare ``full`` until the dedicated replacement flow.
+    This helper authenticates those original AAD fields, while completeness is
+    checked against the archive-declared compartment and every foreign-purpose
+    slot remains forbidden.
+    """
+    if compartment is PayloadScope.FULL:
+        raise ValueError("full scope is not a partial archive compartment")
+    manifest = _read_manifest_at(manifest_path)
+    if manifest.get("archive_payload_scope") != compartment.value:
+        raise ValueError("manifest does not declare the requested archive compartment")
+    slots = _manifest_slots(manifest)
+    expected_purpose = (
+        KeyPurpose.SOUL if compartment is PayloadScope.SOUL else KeyPurpose.FILESYSTEM_ROOT
+    )
+    if not slots or any(
+        slot.purpose is not expected_purpose or slot.scope not in {PayloadScope.FULL, compartment}
+        for slot in slots
+    ):
+        raise ValueError("partial archive contains foreign key material")
+    return _unlock_manifest_key_hierarchy(
+        manifest,
+        credential=credential,
+        wrapping_path=wrapping_path,
+        expected_scope=None,
+        generation=None,
+        status=KeyslotStatus.ACTIVE,
+        validation_scope=compartment,
+    )
+
+
+def _read_manifest_at(manifest_path: Path) -> dict[str, object]:
+    candidate = manifest_path.expanduser()
+    if candidate.is_symlink():
+        raise ValueError("Core manifest must be a regular file")
+    resolved = candidate.resolve(strict=True)
+    if not resolved.is_file():
+        raise ValueError("Core manifest must be a regular file")
+    size = resolved.stat().st_size
+    if size <= 0 or size > _MAX_MANIFEST_BYTES:
+        raise ValueError("Core manifest exceeds its size bound")
+    try:
+        manifest = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Core manifest is unavailable or invalid") from exc
+    if not isinstance(manifest, dict):
+        raise ValueError("Core manifest is invalid")
+    return manifest
+
+
+def _unlock_manifest_key_hierarchy(
+    manifest: dict[str, object],
+    *,
+    credential: str,
+    wrapping_path: WrappingPath,
+    expected_scope: PayloadScope | None,
+    generation: int | None,
+    status: KeyslotStatus,
+    validation_scope: PayloadScope | None = None,
+) -> UnlockedManifestRoots:
     if not manifest_has_versioned_key_hierarchy(manifest):
         raise ValueError("versioned key hierarchy is absent")
     core_id = str(manifest["core_id"])
@@ -658,6 +770,9 @@ def unlock_manifest_key_hierarchy(
     scope = next(iter(scopes))
     if expected_scope is not None and scope is not expected_scope:
         raise ValueError("credential generation scope does not match the requested scope")
+    effective_scope = validation_scope or scope
+    if validation_scope is not None and scope not in {PayloadScope.FULL, validation_scope}:
+        raise ValueError("source credential scope cannot recover the requested compartment")
     if len({(slot.purpose, slot.key_version) for slot in candidates}) != len(candidates):
         raise ValueError("duplicate manifest keyslots")
 
@@ -688,10 +803,10 @@ def unlock_manifest_key_hierarchy(
             frks[slot.frk_version] = secret
 
     required_frks: set[int] = set()
-    if scope in {PayloadScope.FULL, PayloadScope.FS}:
+    if effective_scope in {PayloadScope.FULL, PayloadScope.FS}:
         required_frks = _required_frk_versions_from_manifest(manifest)
     validate_scope_completeness(
-        scope,
+        effective_scope,
         purposes=purposes,
         soul_domains=set(),
         required_soul_domains=set(),
@@ -699,7 +814,7 @@ def unlock_manifest_key_hierarchy(
         required_frk_versions=required_frks,
     )
     return UnlockedManifestRoots(
-        scope=scope,
+        scope=effective_scope,
         owner_id=owner_id,
         credential_generation=selected_generation,
         sqlcipher_key=sqlcipher_key,

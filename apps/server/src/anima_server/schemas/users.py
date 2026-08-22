@@ -15,3 +15,5 @@ class UserUpdateRequest(BaseModel):
 
 class DeleteUserResponse(BaseModel):
     message: str
+    restartRequired: bool = False
+    deletionId: str | None = None

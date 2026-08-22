@@ -18,6 +18,7 @@ import { API_ORIGIN } from "./runtime";
 
 const DEFAULT_DAEMON_ORIGIN = "http://127.0.0.1:3032";
 const DAEMON_CONTROL_TOKEN_KEY = "anima_daemon_control_token";
+let daemonControlToken: string | null = null;
 let daemonRuntimeNonce: string | null = null;
 let resolvingControlToken: Promise<string | null> | null = null;
 let startingDaemon: Promise<void> | null = null;
@@ -48,21 +49,38 @@ function getDaemonOrigin(): string {
 }
 
 function getControlToken(): string | null {
-  try {
-    return (
-      localStorage.getItem(DAEMON_CONTROL_TOKEN_KEY)
-      ?? localStorage.getItem(DAEMON_CONTROL_TOKEN_ENV)
-    );
-  } catch {
-    return null;
-  }
+  return daemonControlToken;
 }
 
 function clearStoredControlToken(): void {
+  daemonControlToken = null;
+}
+
+function readLegacyControlToken(): string | null {
+  let values: string[];
   try {
-    localStorage.removeItem(DAEMON_CONTROL_TOKEN_KEY);
+    values = [
+      normalizeNonce(localStorage.getItem(DAEMON_CONTROL_TOKEN_KEY)),
+      normalizeNonce(localStorage.getItem(DAEMON_CONTROL_TOKEN_ENV)),
+    ].filter((value): value is string => value !== null);
   } catch {
-    // Ignore storage failures.
+    return null;
+  }
+  if (new Set(values).size > 1) {
+    throw new Error("Legacy daemon credential copies disagree.");
+  }
+  return values[0] ?? null;
+}
+
+function scrubLegacyControlToken(expected: string | null): void {
+  for (const key of [DAEMON_CONTROL_TOKEN_KEY, DAEMON_CONTROL_TOKEN_ENV]) {
+    const current = normalizeNonce(localStorage.getItem(key));
+    if (current !== null && current !== expected) {
+      throw new Error("Legacy daemon credential changed during secure migration.");
+    }
+  }
+  for (const key of [DAEMON_CONTROL_TOKEN_KEY, DAEMON_CONTROL_TOKEN_ENV]) {
+    localStorage.removeItem(key);
   }
 }
 
@@ -110,16 +128,21 @@ async function bootstrapControlToken(): Promise<string | null> {
       return null;
     }
 
+    const legacyToken = readLegacyControlToken();
     try {
-      const token = normalizeNonce(
-        await invoke<string | null>("read_daemon_control_token"),
-      );
-      if (token) {
-        setDaemonControlToken(token);
-      }
+      const token = normalizeNonce(await invoke<string | null>(
+        "read_daemon_control_token",
+        { legacyToken },
+      ));
+      daemonControlToken = token;
+      scrubLegacyControlToken(legacyToken);
       return token;
-    } catch {
-      return null;
+    } catch (error) {
+      throw new Error(
+        error instanceof Error
+          ? `Secure daemon credential migration failed: ${error.message}`
+          : "Secure daemon credential migration failed.",
+      );
     }
   })();
 
@@ -329,12 +352,4 @@ export async function setDaemonLock(locked: boolean): Promise<void> {
 
 export async function setDaemonBackground(enabled: boolean): Promise<void> {
   await controlDaemon("set-background", { backgroundEnabled: enabled });
-}
-
-export function setDaemonControlToken(token: string): void {
-  try {
-    localStorage.setItem(DAEMON_CONTROL_TOKEN_KEY, token);
-  } catch {
-    // Ignore storage errors for best-effort token persistence.
-  }
 }

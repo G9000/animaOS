@@ -103,6 +103,11 @@ def test_authenticated_document_source_streams_exact_snapshot_without_host_path(
         ],
     )
     monkeypatch.setattr(
+        asset_authority,
+        "authenticated_content_authority",
+        lambda current, *, family: current.content_authority,
+    )
+    monkeypatch.setattr(
         asset_authority.logical,
         "stat_v1",
         lambda **_kwargs: _logical_wire(

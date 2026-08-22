@@ -19,10 +19,9 @@ from anima_server.services.core import (
     ensure_core_manifest,
     get_manifest_path,
     get_owner_id,
+    get_owner_user_id,
     get_recovery_sqlcipher_key,
-    get_user_id_from_index,
     get_wrapped_sqlcipher_key,
-    store_user_index_entry,
     update_core_manifest,
 )
 from anima_server.services.corefs.credentials import (
@@ -270,11 +269,10 @@ def test_manifest_retains_legacy_sqlcipher_compatibility_without_profile_fields(
         )
 
         ensure_core_manifest()
-        store_user_index_entry("alice", 7)
         manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
 
         assert get_wrapped_sqlcipher_key() == _wrapped_record()
-        assert manifest["user_index"] == {"alice": 7}
+        assert "user_index" not in manifest
         new_structures = json.dumps(
             {"owner_binding": manifest["owner_binding"], "keyslots": manifest["keyslots"]}
         )
@@ -739,7 +737,10 @@ def test_registration_publishes_legacy_locators_before_hierarchy_activation(
             json={"username": "alice", "password": "password-123", "name": "Alice"},
         )
         assert response.status_code == 503
-        assert get_user_id_from_index("alice") == 0
+        assert get_owner_user_id() == 0
+        assert "user_index" not in json.loads(
+            get_manifest_path().read_text(encoding="utf-8")
+        )
         assert get_recovery_sqlcipher_key() is not None
 
         login = client.post(
@@ -847,7 +848,8 @@ def test_registration_crash_after_hierarchy_activation_keeps_account_locator(
         assert response.status_code == 503
         manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
         assert manifest["active_password_credential_generation"] == 1
-        assert get_user_id_from_index("alice") == 0
+        assert get_owner_user_id() == 0
+        assert "user_index" not in manifest
         assert get_recovery_sqlcipher_key() is not None
 
 

@@ -1,8 +1,8 @@
 import { dispatchSettingsChanged } from "./events";
+import { getPortablePreference, setPortablePreference } from "./portablePreferences";
 
 const DB_VIEWER_KEY = "anima-debug-db-viewer";
 const SHOW_TRACE_KEY = "anima-show-trace";
-const TRANSLATE_LANG_KEY = "anima-translate-lang";
 
 export const LANGUAGES = [
   { code: "en", label: "English" },
@@ -58,17 +58,9 @@ export function setDbViewerEnabled(enabled: boolean): void {
 }
 
 export function getTranslateLang(): LanguageCode {
-  try {
-    const stored = localStorage.getItem(TRANSLATE_LANG_KEY);
-    if (stored) return stored as LanguageCode;
-  } catch {}
-  return "en";
+  return getPortablePreference<LanguageCode>("translateLanguage", "en");
 }
 
 export function setTranslateLang(code: LanguageCode): void {
-  try {
-    localStorage.setItem(TRANSLATE_LANG_KEY, code);
-  } catch {
-    // Ignore storage failures
-  }
+  setPortablePreference("translateLanguage", code);
 }

@@ -9,13 +9,19 @@ import type { AnyElysia } from "elysia";
 import type { Mod, ModConfig, ModContext, ModManifest } from "./types.js";
 import { createModContext } from "./context.js";
 import { createLogger } from "./logger.js";
-import { loadConfig } from "./config.js";
+import {
+  DEFAULT_CONFIG_PATH,
+  loadConfig,
+  migrateLiteralCorePassword,
+  scrubLiteralModSecrets,
+} from "./config.js";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getDb } from "../db/index.js";
 import { ConfigService } from "../management/config-service.js";
 import { StateService } from "../management/state-service.js";
 import { EventService } from "../management/event-service.js";
+import { CredentialBroker } from "../security/credential-broker.js";
 
 const logger = createLogger("registry");
 
@@ -238,17 +244,30 @@ export class ModRegistry {
   async migrateYamlConfig(): Promise<void> {
     if (!this.configService) return;
 
+    await migrateLiteralCorePassword(
+      DEFAULT_CONFIG_PATH,
+      new CredentialBroker("core"),
+    );
+
     for (const [id, loaded] of this.mods) {
       const yamlConfig = loaded.config.config;
       if (!yamlConfig || Object.keys(yamlConfig).length === 0) continue;
 
       const hasDbConfig = await this.configService.hasConfig(id);
-      if (hasDbConfig) continue;
-
-      // Seed DB from YAML
       const schema = loaded.mod?.configSchema;
-      await this.configService.setConfig(id, yamlConfig, schema);
-      logger.warn(`Migrated config for mod '${id}' from YAML to database`);
+      if (!hasDbConfig) {
+        // Seed DB from YAML. Secret fields are copied and verified through the
+        // credential broker before only opaque references enter SQLite.
+        await this.configService.setConfig(id, yamlConfig, schema);
+        logger.warn(`Migrated config for mod '${id}' from YAML to database`);
+      } else {
+        // Also upgrades any pre-PCF-007 plaintext secret row before YAML scrub.
+        await this.configService.getConfig(id);
+      }
+      const secretKeys = Object.entries(schema ?? {})
+        .filter(([, field]) => field.type === "secret")
+        .map(([key]) => key);
+      await scrubLiteralModSecrets(DEFAULT_CONFIG_PATH, id, secretKeys);
     }
   }
 

@@ -5,10 +5,15 @@ function DaemonIcon() {
   return <span className="w-4 h-4 inline-flex items-center justify-center text-xs opacity-80">D</span>;
 }
 
+function AccessIcon() {
+  return <span className="w-4 h-4 inline-flex items-center justify-center text-xs opacity-80">A</span>;
+}
+
 const SETTINGS_SECTIONS = [
   { to: "/settings/ai",         label: "AI",         description: "Provider, model, keys, directive.", Icon: AiIcon },
   { to: "/settings/security",   label: "Security",   description: "Master password & session.",        Icon: SecurityIcon },
-  { to: "/settings/vault",      label: "Vault",      description: "Encrypted backup.",                 Icon: VaultIcon },
+  { to: "/settings/access",     label: "Core Access", description: "Client and mod folder grants.",     Icon: AccessIcon },
+  { to: "/settings/core-transfer", label: "Core Transfer", description: "Encrypted export and restore.", Icon: VaultIcon },
   { to: "/settings/language",   label: "Language",   description: "Translation preferences.",          Icon: LanguageIcon },
   { to: "/settings/appearance", label: "Appearance", description: "Theme & background.",               Icon: AppearanceIcon },
   { to: "/settings/daemon",     label: "Daemon",     description: "Runtime status and controls.",      Icon: DaemonIcon },
@@ -72,4 +77,3 @@ export default function Settings() {
     </div>
   );
 }
-

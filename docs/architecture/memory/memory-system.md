@@ -83,9 +83,11 @@ This document traces every path through AnimaOS's memory system: how memories ar
 
 ## Memory Taxonomy
 
-Canonical long-term memory lives in per-user SQLite + SQLCipher tables under `.anima/`. These tables are the portable source of truth for identity, durable memories, claims, episodes, self-model state, and user-facing memory edits. The system uses **supersession** for durable memory changes: it does not delete by default, but creates new rows and links old ones via `superseded_by`.
+Canonical long-term identity/memory lives in the active single-owner SQLCipher Soul at `.anima/soul/soul.db`. It is the portable source of truth for memories, claims, episodes, self-model state, and emotional/growth history. The system uses **supersession** for durable memory changes: it does not delete by default, but creates new rows and links old ones via `superseded_by`.
 
-Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL by default. The server starts an embedded PostgreSQL instance with `pgserver` unless `ANIMA_RUNTIME_DATABASE_URL` points at an explicit PostgreSQL service. Runtime rows are operational state and caches: active thread messages, runs, pending memory operations, memory candidates awaiting Soul Writer promotion, access logs, retrieval feedback, session notes, and pgvector search rows. Runtime data can be replayed, promoted, synced, or rebuilt from SQLCipher and transcripts depending on the table; it is not the portable memory authority.
+Canonical authored evidence and visible conversation history live in encrypted CoreFS objects/catalogs. Runtime memory-pipeline state lives in machine-local PostgreSQL outside `.anima/`. The server starts embedded `pgserver` unless `ANIMA_RUNTIME_DATABASE_URL` selects an explicit local service. Runtime rows are operational state and caches: runs/steps, null-body CoreFS message references, approvals, pending memory operations, candidates awaiting Soul Writer promotion, access/retrieval feedback, session notes, sealed/rebuildable source projections, and pgvector rows. Runtime deletion cannot delete canonical Soul/CoreFS content.
+
+Legacy app tables remain physically present in Soul only as read-only rollback material until PCF-009's separately approved cleanup release. Post-cutover routes do not treat those retained rows as authority.
 
 ### Storage Tables
 
@@ -109,7 +111,7 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 
 | Table | Purpose | Durability expectation |
 |-------|---------|------------------------|
-| `runtime_threads`, `runtime_runs`, `runtime_steps`, `runtime_messages` | Active conversation runtime and trace state | Operational history; archived threads are also exported to encrypted JSONL transcripts |
+| `runtime_threads`, `runtime_runs`, `runtime_steps`, `runtime_messages` | Active execution trace and CoreFS message references | Visible bodies/history are canonical CoreFS message events; Runtime body fields remain null or sealed operational state |
 | `pending_memory_ops` | Tool-requested changes to soul/persona/human blocks | Must be promoted by Soul Writer or remain visible as pending work |
 | `memory_candidates` | Extracted facts/preferences/goals/relationships awaiting promotion | Retryable work queue; promoted memories land in SQLCipher |
 | `promotion_journal` | Audit trail for Soul Writer decisions | Operational audit for idempotency and debugging |
@@ -117,9 +119,9 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 | `memory_extraction_failures` | Failed LLM extraction attempts with source message IDs | Retryable failure queue surfaced through memory pipeline health |
 | `memory_access_log`, `memory_retrieval_feedback` | Deferred read/feedback updates for ranking and heat | Synced back to durable memory metrics |
 | `embeddings` | pgvector-backed search rows for `MemoryItem` content | Cache derived from `MemoryItem.embedding_json` and rebuildable |
-| `runtime_documents`, `runtime_document_chunks` | Uploaded document metadata and chunk text for RAG | Runtime context; not durable memory unless conclusions are promoted |
-| `runtime_image_assets`, `runtime_image_message_links`, `runtime_image_annotations` | Central per-user image binaries, chat provenance links, and searchable image-derived text | Runtime visual memory assets; not durable SQLCipher memory unless a future explicit promotion flow creates memory candidates |
-| `runtime_sources`, `runtime_source_artifacts`, `runtime_source_spans` | Universal source-ingestion evidence registry and citable spans for files, media, web captures, and connector exports | Runtime evidence; rebuildable or portable through OKF export, not the SQLCipher memory authority |
+| `runtime_documents`, `runtime_document_chunks` | Parse/workflow status and rebuildable document projections | Original and normalized/canonical document/source bytes live in CoreFS; conclusions require Soul promotion |
+| `runtime_image_assets`, `runtime_image_message_links`, `runtime_image_annotations` | Rebuildable image indexing/provenance projections | Image binaries and canonical message/diary/avatar links live in CoreFS |
+| `runtime_sources`, `runtime_source_artifacts`, `runtime_source_spans` | Rebuildable ingestion/compiler projections and citable offsets | Canonical original plus normalized text/HTML/Markdown source objects live in CoreFS |
 | `runtime_knowledge_concepts`, `runtime_knowledge_concept_sources`, `runtime_knowledge_links`, `runtime_knowledge_bundle_runs` | OKF/LLM-wiki concept pages, citations, links, and maintenance run records | Runtime compiled knowledge; may ground answers but does not become memory without explicit promotion |
 
 ### Memory Categories
@@ -136,7 +138,7 @@ Runtime memory pipeline state lives in the local Runtime DB, which is PostgreSQL
 
 ## Document RAG Boundary
 
-Uploaded documents and their chunks are runtime context, not canonical memories. `runtime_documents` records document metadata and ingestion status; `runtime_document_chunks` stores chunk text, hashes, page ranges, and ordering for retrieval. These rows can support a workflow, a thread, and short-term document search, but they are not part of the portable SQLCipher memory authority.
+Uploaded originals and canonical normalized source artifacts are authenticated CoreFS objects. `runtime_documents` records parse/workflow status and CoreFS references; `runtime_document_chunks` and pgvector rows are rebuildable retrieval projections. They can support a workflow, thread, and search, but are neither Soul authority nor the only copy of authored/source content.
 
 pgvector indexes document chunks in the runtime `embeddings` table with `source_type="document_chunk"` and `source_id` pointing at `runtime_document_chunks.id`. Document RAG search hydrates those hits back into chunks and document metadata so the agent can cite or reason over source text without converting the whole document into memory.
 
@@ -144,7 +146,7 @@ Only approved conclusions cross into long-term memory. A PDF or document workflo
 
 ## Visual Image Asset Boundary
 
-Chat images are first-class runtime visual memory assets. `services.images.store.register_image_asset()` validates MIME type and magic bytes, computes SHA-256, and stores each user-owned image once under `users/<user_id>/media/images/<sha-prefix>/<sha>.<ext>`. `runtime_image_assets` owns the binary metadata and retention state; `runtime_image_message_links` records which chat message/attachment referenced the asset.
+Chat images, diary attachments, and the agent avatar are canonical CoreFS binary objects. Upload validates MIME/magic, size, and hash, publishes through a bounded reopened native mutation, then links the stable `corefs://` object URI into the relevant message/diary/account-profile revision. Runtime image rows are retained only as rebuildable projections during the transition and are not post-cutover binary authority.
 
 Image indexing writes text annotations into `runtime_image_annotations`:
 
@@ -154,17 +156,17 @@ Image indexing writes text annotations into `runtime_image_annotations`:
 
 Active annotations are embedded into runtime `embeddings` rows with `source_type="image_annotation"` and the annotation id as `source_id`. Prompt assembly reuses the turn query embedding to build a small `relevant_images` block, and the agent can explicitly call `search_images` for bounded visual recall. Proactive image prompts select only owned, indexed, non-deleted, unprompted assets and record `proactivePromptedAt` in image metadata to suppress repeats.
 
-Deletion is explicit. Removing an image from a chat deletes the message link and attachment metadata; orphaned transient assets are deleted with their annotations, embeddings, row, and safe-to-delete file. Reused or retained assets survive link removal. Forgetting an image globally removes all links, annotations, `image_annotation` embeddings, the asset row, and the local file when path validation succeeds. Thread deletion uses the same cleanup rule for orphaned transient images.
+Deletion is explicit and recoverable. Removing a chat image appends a new message revision, unlinks the canonical attachment, and moves unreferenced content into encrypted CoreFS trash. Forgetting uses the same authenticated authority and invalidates/rebuilds Runtime annotations and embeddings; it does not delete a host-path file or mutate retained Runtime asset rows as authority.
 
 This is separate from the document path. PDFs continue to use `runtime_documents` and `runtime_document_chunks`; GIF uploads are stored as image assets without frame-level analysis in v1; video, audio, timecoded media, and generic media annotation should be planned as separate work rather than folded into the image tables.
 
 ## Source Ingestion Boundary
 
-Source ingestion generalizes document chunks, image annotations, markdown/text inputs, web captures, and future connector exports into a shared evidence model. The runtime source tables hold source rows, extracted artifacts, and citable spans. The knowledge tables hold compiled OKF/LLM-wiki concept pages, citation links back to spans, concept-to-concept links, and run records for compiler/import/export/lint work.
+Source ingestion generalizes documents, image annotations, Markdown/text inputs, web captures, HTML, OKF, and future connector exports. CoreFS holds canonical originals and normalized authored/source bodies. Runtime source/span/knowledge rows hold rebuildable parse, compiler, search, citation, and workflow projections.
 
 This layer is intentionally not the same thing as memory. A compiled concept can be searched by the agent, shown in the desktop Knowledge Library, exported as an OKF bundle, or used as evidence in a response. It does not update `memory_items`, `memory_claims`, `self_model_blocks`, or the human profile by itself.
 
-If a future workflow should turn source knowledge into durable personal memory, it must create explicit `MemoryCandidate` rows or another approved promotion artifact and pass through the existing Soul Writer boundary. Until that happens, source-ingestion data remains runtime knowledge and evidence.
+Turning source knowledge into durable personal memory still requires explicit `MemoryCandidate` or approved promotion material through the Soul Writer. Canonical source content being portable in CoreFS does not make it identity/memory in Soul.
 
 ---
 
@@ -943,10 +945,10 @@ df(user_id, content, table="memory_items", field="content")  # decrypt
 ```
 
 - **Encrypted fields**: `MemoryItem.content`, `MemoryItemEvidence.evidence_text`, `EmotionalSignal.evidence`, `RuntimeSessionNote.value`, `MemoryEpisode.summary`, `SelfModelBlock.content`, etc.
-- **Runtime vector cache**: active semantic search uses the runtime PostgreSQL `embeddings` table (`RuntimeEmbedding`) with pgvector. It stores embedding vectors, integrity checksums, content hashes, and a short plaintext `content_preview` for debugging/BM25 cache rebuilds. `MemoryVector` remains a legacy SQLCipher schema table and is not the active search backend.
+- **Runtime vector cache**: active semantic search uses the Runtime PostgreSQL `embeddings` table (`RuntimeEmbedding`) with pgvector. Vectors, integrity metadata, and sealed/rebuildable references may persist there; seeded portable plaintext/body previews are forbidden by the raw Runtime/cache/log/index privacy gate. `MemoryVector` remains a legacy Soul schema table and is not the active search backend.
 - **Embeddings**: stored as numeric vectors/checksummed payloads derived from decrypted memory content
 
-Portability guarantee: copy `.anima/` directory, enter passphrase on new machine, all memory decrypts and the AI wakes up intact.
+Portability guarantee: a verified full ANIMA CORE transfer carries Soul plus CoreFS and excludes Runtime. After unlock on the destination, identity/memory and canonical authored history are intact while indexes rebuild.
 
 ---
 

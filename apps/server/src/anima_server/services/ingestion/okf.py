@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 from sqlalchemy import delete, select
@@ -37,6 +38,79 @@ class OKFExportResult:
 class OKFImportResult:
     concept_count: int
     link_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PortableOKFConcept:
+    slug: str
+    concept_type: str
+    title: str
+    description: str | None
+    body_markdown: str
+    frontmatter_json: dict[str, object]
+    original_markdown: str
+    linked_slugs: tuple[str, ...]
+
+
+def read_portable_okf_bundle(*, bundle_dir: Path) -> tuple[PortableOKFConcept, ...]:
+    concepts: list[PortableOKFConcept] = []
+    seen_slugs: set[str] = set()
+    for path in sorted((bundle_dir / "concepts").glob("*.md")):
+        slug = path.stem
+        _concept_markdown_path(bundle_dir / "concepts", slug)
+        if slug in seen_slugs:
+            raise ValueError(f"Duplicate OKF concept slug: {slug!r}")
+        seen_slugs.add(slug)
+        original = path.read_text(encoding="utf-8")
+        frontmatter, body = _parse_markdown(path)
+        body = _strip_generated_source_references(body, frontmatter)
+        frontmatter = _frontmatter_for_import(frontmatter)
+        description_value = frontmatter.get("description")
+        concepts.append(
+            PortableOKFConcept(
+                slug=slug,
+                concept_type=str(frontmatter.get("type") or "note"),
+                title=str(frontmatter.get("title") or _title_from_slug(slug)),
+                description=(
+                    str(description_value) if description_value is not None else None
+                ),
+                body_markdown=body,
+                frontmatter_json=frontmatter,
+                original_markdown=original,
+                linked_slugs=tuple(_extract_relative_link_slugs(body)),
+            )
+        )
+    return tuple(concepts)
+
+
+def export_portable_okf_bundle(
+    *,
+    concepts: tuple[PortableOKFConcept, ...],
+    bundle_dir: Path,
+) -> OKFExportResult:
+    concepts_dir = bundle_dir / "concepts"
+    concepts_dir.mkdir(parents=True, exist_ok=True)
+    ordered = sorted(concepts, key=lambda concept: concept.slug)
+    exported_slugs = {concept.slug for concept in ordered}
+    if len(exported_slugs) != len(ordered):
+        raise ValueError("Canonical OKF export contains duplicate slugs.")
+    for concept in ordered:
+        frontmatter = dict(concept.frontmatter_json)
+        frontmatter["type"] = concept.concept_type
+        frontmatter["title"] = concept.title
+        if concept.description:
+            frontmatter["description"] = concept.description
+        body = _unlink_absent_bundle_targets(concept.body_markdown, exported_slugs)
+        _concept_markdown_path(concepts_dir, concept.slug).write_text(
+            _render_markdown(frontmatter, body),
+            encoding="utf-8",
+        )
+    (bundle_dir / "index.md").write_text(
+        _render_index(ordered),
+        encoding="utf-8",
+    )
+    (bundle_dir / "log.md").write_text(_render_log(ordered), encoding="utf-8")
+    return OKFExportResult(bundle_dir=bundle_dir, concept_count=len(ordered))
 
 
 def export_okf_bundle(
@@ -93,31 +167,20 @@ def import_okf_bundle(
     user_id: int,
     bundle_dir: Path,
 ) -> OKFImportResult:
-    concepts_dir = bundle_dir / "concepts"
-    concept_paths = sorted(concepts_dir.glob("*.md"))
     imported_by_slug: dict[str, RuntimeKnowledgeConcept] = {}
 
-    for path in concept_paths:
-        slug = path.stem
-        _concept_markdown_path(concepts_dir, slug)
-        frontmatter, body = _parse_markdown(path)
-        body = _strip_generated_source_references(body, frontmatter)
-        frontmatter = _frontmatter_for_import(frontmatter)
-        concept_type = str(frontmatter.get("type") or "note")
-        title = str(frontmatter.get("title") or _title_from_slug(slug))
-        description_value = frontmatter.get("description")
-        description = str(description_value) if description_value is not None else None
+    for portable in read_portable_okf_bundle(bundle_dir=bundle_dir):
         concept = _upsert_concept(
             db,
             user_id=user_id,
-            slug=slug,
-            concept_type=concept_type,
-            title=title,
-            description=description,
-            body_markdown=body,
-            frontmatter_json=frontmatter,
+            slug=portable.slug,
+            concept_type=portable.concept_type,
+            title=portable.title,
+            description=portable.description,
+            body_markdown=portable.body_markdown,
+            frontmatter_json=portable.frontmatter_json,
         )
-        imported_by_slug[slug] = concept
+        imported_by_slug[portable.slug] = concept
 
     db.flush()
     link_count = _replace_imported_links(db, user_id=user_id, concepts=imported_by_slug)
@@ -449,13 +512,13 @@ def _json_safe_value(value: object) -> object:
     return value
 
 
-def _render_index(concepts: list[RuntimeKnowledgeConcept]) -> str:
+def _render_index(concepts: list[Any]) -> str:
     lines = ["# Index", ""]
     lines.extend(f"- [{concept.title}](concepts/{concept.slug}.md)" for concept in concepts)
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _render_log(concepts: list[RuntimeKnowledgeConcept]) -> str:
+def _render_log(concepts: list[Any]) -> str:
     timestamp = datetime.now(UTC).isoformat()
     return f"# Log\n\n- {timestamp} - Exported {len(concepts)} OKF concept page(s).\n"
 

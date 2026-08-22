@@ -165,4 +165,3 @@ export const api: ApiClient & {
     return data[0].map((segment) => segment[0]).join("");
   },
 };
-

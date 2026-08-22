@@ -6,14 +6,26 @@ from contextlib import contextmanager
 from datetime import datetime
 
 import pytest
+from anima_server.config import settings
 from anima_server.db.base import Base
 from anima_server.models import MemoryEpisode, MemoryItem, User
 from anima_server.services.data_crypto import df, ef
+from anima_server.services.regeneration_work import mark_regeneration_work
 from anima_server.services.sessions import unlock_session_store
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def _runtime_work_root(managed_tmp_path) -> Generator[None, None, None]:  # type: ignore[no-untyped-def]
+    previous = settings.runtime_instance_data_dir
+    settings.runtime_instance_data_dir = str(managed_tmp_path / "runtime-instance")
+    try:
+        yield
+    finally:
+        settings.runtime_instance_data_dir = previous
 
 
 @contextmanager
@@ -131,7 +143,9 @@ def test_episode_sampling_skips_stale_episodes_marked_for_regeneration() -> None
             topics=["private"],
             significance=5,
         )
-        stale.needs_regeneration = True
+        mark_regeneration_work(
+            {(int(user.id), "memory_episode", int(stale.id))}
+        )
         active_first = _episode(
             db,
             user_id=user.id,

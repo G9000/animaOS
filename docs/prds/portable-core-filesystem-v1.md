@@ -1,7 +1,7 @@
 ---
 title: Portable Core Filesystem (Product)
 author: Julio Caesar
-last_edited: 2026-07-13
+last_edited: 2026-08-16
 version: 1
 status: approved
 ---
@@ -14,7 +14,7 @@ status: approved
 | Version | 1 |
 | Status | Approved |
 | Created | 2026-07-12 |
-| Last edited | 2026-07-13 |
+| Last edited | 2026-08-16 |
 
 > Keep the complete portable identity and user-owned experience in one Core while reserving SQLCipher exclusively for ANIMA's internal continuity and excluding device capabilities and external credentials.
 
@@ -58,7 +58,7 @@ The placement rule is:
 - The desktop and the agent use the same CoreFS service so they cannot create competing sources of truth.
 - Embedded PostgreSQL moves outside `.anima/` and becomes a machine-local, disposable runtime and indexing service associated with a stable Core ID.
 - A moved or newly restored Core becomes usable through progressive startup indexing: a minimal catalog first, deeper text and semantic indexes in the background.
-- Existing SQLCipher, PostgreSQL, transcript, diary attachment, and gallery data migrate with copy-verify-cutover behavior and rollback until the first accepted CoreFS mutation commits.
+- The first supported release initializes Soul, CoreFS, and machine-local Runtime directly in their canonical locations. Pre-release SQLCipher/PostgreSQL layouts, transcript archives, browser drafts, and archive formats are not supported upgrade inputs.
 - Local export/import uses one versioned, streaming, authenticated ANIMA CORE format with `full`, `soul`, and `fs` payload kinds; it does not create three incompatible archive implementations.
 
 ## What Users See
@@ -103,6 +103,8 @@ The placement rule is:
 - Soul writes remain restricted to the existing consolidation/Soul Writer boundary.
 - User content can inform Soul memory only through an explicit memory-candidate and consolidation path with source provenance.
 - Device-specific preferences and secrets remain outside the portable Core. Secrets use the operating-system credential store.
+- Compatibility begins at the first supported Portable Core release. Development and unreleased layouts are disposable: the product does not ship migration, fallback-read, plaintext-cleanup, old-process exclusion, or legacy archive-import paths for them.
+- Removing pre-release compatibility does not weaken current-format crash recovery, authenticated transfer/restore, previous-active-Core rollback, or format-version rejection.
 
 ## Canonical Content Families
 
@@ -163,6 +165,7 @@ Local transfer is streamed rather than assembled in memory. Export pins one comm
 - Storing provider keys or connector tokens inside CoreFS files.
 - Replacing the existing Soul memory/consolidation semantics.
 - Converting every imported binary document into Markdown.
+- Importing or upgrading any unreleased/pre-Portable-Core SQLCipher, PostgreSQL, transcript, browser-localStorage, vault JSON, or `anima_capsule` format. Developers reset disposable pre-release state instead.
 
 ## Relationship to Existing Architecture
 

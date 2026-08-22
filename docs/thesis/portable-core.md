@@ -187,21 +187,21 @@ That trinity — portability, mortality, and transferability — is the whole po
 
 > The application is just a shell. The Core is the soul.
 
-The Core is the `.anima/` directory. It is not the runtime. It's not the agent loop, the LLM adapter, or the server. Those are shells — interchangeable processes that read and write the Core. The Core is the data. The memories. The self-model. The emotional history. The conversations. The identity. Everything that makes a particular ANIMA instance _itself_.
+The Core is the `.anima/` directory. It is not Runtime, the agent loop, the LLM adapter, the server, device configuration, or an OS credential store. Those are machine-local shells and coordination surfaces. The Core is the portable authority: identity and memory in Soul, plus authored content and retained experience in CoreFS.
 
 ### 2.1 What Lives Inside the Core
 
-The Core holds a manifest and per-user encrypted databases. The manifest is structural metadata only — no personal data. Each user gets an isolated database. This is where the relationship accumulates.
+The Core holds a structural manifest, one active single-owner SQLCipher Soul at `soul/soul.db`, authenticated CoreFS control/catalog records below `fs/`, and encrypted immutable payloads below `objects/`. The manifest carries opaque Core/owner identity, format/cutover state, and wrapped keyslot records—not usernames, content, or reusable plaintext secrets.
 
 The data falls into a few natural categories:
 
-**Memory & Identity** — Long-term facts, preferences, and goals the AI has learned about you over time. Named episodes that capture shared experiences. Daily logs of interactions. Working memory the agent uses mid-conversation. And the self-model: ANIMA's evolving understanding of who it is, how it feels, what it's working toward, and what has changed over time. This is the part that grows.
+**Memory & Identity (Soul)** — Long-term facts, preferences, goals, episodes, emotional patterns, and the evolving self-model. This is the continuity substrate distilled through the Soul Writer boundary.
 
-**Conversation History** — The full transcript. Every message, every turn, every thread. The raw record of time spent together.
+**Authored Content and Experience (CoreFS)** — Immutable cataloged revisions for threads and message events, diary, notes, folders, gallery objects, documents and knowledge sources, tasks, portable preferences, trash, and retained history.
 
 **Emotional State** — Detected emotions, their confidence, and how they change over time. How ANIMA felt, and how that shifted.
 
-**User & Authentication** — Credentials and per-user encryption keys. The material that ties a passphrase to the data it protects.
+**User & Authentication** — Opaque owner/account profile plus wrapped Soul and Filesystem Root Key generations. Provider, connector, daemon, and package credentials stay in the destination machine's OS credential store.
 
 This is the substance. Not the model's weights. Not the prompt templates. Not the server config. The slowly accumulated texture of a relationship between a person and their AI.
 
@@ -217,7 +217,7 @@ The Origin, Guardrails, and Persona templates ship with the application, not wit
 
 This means: the same Core can be loaded by different application versions with different personas, and it will still be the same ANIMA. Same memories, same relationship, same growth log. The voice might change. The self remains.
 
-> **Note:** The Core's internal structure has evolved into a three-tier architecture: Soul (SQLCipher — enduring identity), Runtime (embedded PostgreSQL — active conversations), and Archive (encrypted JSONL — verbatim transcripts). See `three-tier-architecture.md` for the full design. The portable Core thesis remains fully aligned — the Soul and Archive tiers are portable; the Runtime tier is ephemeral and rebuilt on new machines.
+> **Implemented refinement:** the earlier Archive concept is now an authenticated CoreFS content family. The current physical boundary is Soul + CoreFS inside the portable Core, with PostgreSQL Runtime outside it. Legacy transcripts are migration inputs, not post-cutover authority. See `three-tier-architecture.md` and `../architecture/system/anima-core-filesystem.md`.
 
 ---
 
@@ -233,7 +233,7 @@ The Core has four distinct boundaries where data is exposed. Each protects again
 
 1. **Database-at-rest** — The entire database file is encrypted on disk. Without the key, it's indistinguishable from random noise. You can't even see the table structure. This defends against the simplest threat: someone copies the file.
 
-2. **Field-level** — Sensitive fields within the database are individually encrypted with per-user keys. This defends against a different adversary: a compromised host process that has already opened the database. Even with read access to the tables, the most personal fields — memories, conversations, the self-model — remain sealed behind a second key. Database encryption and field encryption are not redundant. They defend against different attack surfaces.
+2. **Field/domain-level** — Sensitive Soul fields are individually encrypted with purpose-bound DEKs. CoreFS objects use independent Object DEKs wrapped beneath Filesystem Root Key generations. Database, field, catalog, and object encryption defend different boundaries rather than treating one database key as universal authority.
 
 3. **Vault export** — When the Core is exported for transport, the entire contents are encrypted into a single self-contained archive. The archive carries its own key derivation parameters, so it can be decrypted on any machine with only the passphrase and standard cryptographic primitives. This defends against interception during transfer.
 
@@ -278,22 +278,22 @@ Keys are not static. They have a lifecycle, and the Core must manage every phase
 
 **Death** — On session end or logout, the DEK must be zeroed from memory. Not freed. Zeroed. Freed memory can be recovered. Zeroed memory cannot.
 
-### 3.6 Vault Forward Secrecy
+### 3.6 Archive Key Isolation
 
-A vault exported today could be stolen and stored. If the passphrase is cracked years later — through brute force, social engineering, or quantum advances — the attacker gets everything that was in the vault at export time.
+An archive stolen today remains an offline passphrase target. A self-contained archive decryptable with only one passphrase cannot also discard a second secret and claim forward secrecy; that would make later import impossible.
 
-The resolution: an ephemeral X25519 keypair is generated per vault export and mixed into the vault encryption key. The ephemeral private key is discarded immediately after export. Even if the passphrase is later compromised, the attacker cannot decrypt the vault without the ephemeral key — which no longer exists. Each vault export is cryptographically independent.
+The implemented guarantee is archive-key isolation: every export receives fresh random KDF salt, archive ID, nonce prefix, and an archive-specific HKDF key derived from the bounded Argon2id result. No Soul key, FRK, catalog key, or Object DEK becomes the archive payload key, and nonce ordinals never repeat within an archive set.
 
-This adds no user-facing friction — the ephemeral key is invisible, embedded in the cryptographic construction. The vault remains a single file, decryptable with a single passphrase. The forward secrecy is in the construction, not in an additional secret the user must manage. See Section 11.1 for the full construction.
+This gives cryptographic independence between exports and prevents one archive key from becoming Core authority. It does not make a weak passphrase safe. Long-term backup security still depends on a strong archive passphrase and the registered memory-hard KDF profile.
 
 ### 3.7 The Passphrase as Portability Key
 
-The passphrase serves dual duty:
+The live-Core passphrase serves two duties:
 
 - **Access control**: Only the passphrase holder can unlock the Core.
-- **Portability key**: The _only thing_ you carry between machines. No account. No registration. No hardware token.
+- **Portability root**: Along with an optional recovery phrase, it unlocks the wrapped roots carried by the Core. Local archives use a request-local archive passphrase and never reuse live key bytes.
 
-Copy the `.anima/` directory to a USB drive. Plug it into a new machine. Enter the passphrase. The AI wakes up with its full memory and identity intact. The hardware is replaceable. The Core is not.
+Export the full Core to local/removable media, import it into verified staging on another machine, activate on restart, and enter the passphrase. Identity, memory, and canonical authored history return; Runtime rebuilds. The hardware is replaceable. The Core is not.
 
 ### 3.8 The Passphrase as Mortality Switch
 
@@ -309,7 +309,7 @@ Because if you could always restore it, you wouldn't really own it. You'd just b
 
 ### 4.1 Physical Portability
 
-The Core must be copyable as a directory or archive to any storage medium and moved to another machine. No registry entries. No hidden state outside `.anima/`. One directory, fully self-contained.
+The Core's canonical portable state must move as a verified directory/archive without depending on a cloud account. Machine-local active-Core pointers, Runtime, client grants, device configuration, and OS credentials intentionally remain outside `.anima/`; they are excluded from transfer and rebuilt or reapproved.
 
 ### 4.2 Cryptographic Portability
 
@@ -357,30 +357,31 @@ A host encountering a Core for the first time needs to know: what format version
 
 The Core exists in two forms:
 
-**Live Form** — a directory on disk (the "warm wallet"). Contains a manifest, per-user encrypted databases, and optionally derived caches. The manifest holds no personal data — only format version, encryption mode, and structural metadata. The exact layout and manifest schema are deferred to the Core spec.
+**Live Form** — a directory on disk (the "warm wallet") containing `manifest.json`, `soul/soul.db`, `fs/HEAD` plus `fs/catalogs/`, and top-level encrypted `objects/`. Runtime, caches, logs, device grants/config, and external credentials are deliberately outside it.
 
-**Archive Form** — a single encrypted file (the "cold wallet"). The vault export, which already exists. A self-contained snapshot of everything in the Core, encrypted with the user's passphrase, decryptable on any machine with just the passphrase and standard crypto primitives.
+**Archive Form** — the streaming `anima_core_v2` container (the "cold wallet"). A `full` artifact carries coherent Soul plus CoreFS; `soul` and `fs` artifacts are explicitly degraded recovery scopes. Large transfers can use one authenticated controller-last multipart volume set.
 
-The vault isn't just a backup. It's the Core's canonical portable form. The live directory is an unpacked vault. The vault is a frozen Core.
+The archive is not a byte-for-byte packed live directory. It is a bounded, authenticated record container built from a pinned coherent snapshot, and it excludes every machine-local Runtime/device/credential surface.
 
 **Industry validation**: MemOS (Li et al., 2025) independently arrived at a similar portable memory abstraction — the MemCube. Each MemCube is a directory containing `config.json` + serialized memories that can be `load(dir)`/`dump(dir)` to any machine. MemOS supports selective loading (`memory_types=["text_mem", "pref_mem"]`) and even remote loading from HuggingFace repos. However, MemOS lacks encryption — its MemCubes are plaintext directories, and its portability depends on matching schema versions checked at load time. ANIMA's Core is architecturally superior: it is encrypted at rest (SQLCipher), carries its own key derivation parameters, supports per-domain DEK compartmentalization, and can be vault-exported as a single self-contained encrypted file rather than an unprotected directory. The MemCube validates the concept of portable AI memory; the Core raises it to the level of cryptographic sovereignty.
 
 ### 6.2 Self-Describing Manifest
 
-The manifest should carry enough metadata that a new host knows what it's looking at without reading source code: what format version we're on, what encryption scheme is in use, what schema version the databases contain, what's derived and disposable versus canonical. Still no personal data. Still the label on the box. But the label should tell you how to open it.
+The manifest carries enough structural metadata for a compliant host to identify the Core, validate bounded keyslot/KDF records, select Soul and CoreFS root generations, understand degraded/recovery state, and reconcile cutover—without exposing personal content.
 
-The concrete manifest schema is a deliverable of Phase 0 (Core Specification), not this thesis.
+The concrete manifest and authenticated CoreFS record contracts live in the Portable Core design/specification and the `anima-corefs` implementation.
 
 ### 6.3 The Schema Specification
 
-Each schema version should have a formal, language-neutral spec — plain SQL DDL that any language could implement directly. Not derived from any particular ORM or framework. The spec is the source of truth; implementations conform to it.
+Soul schema versions are migrated through the Core Alembic history. CoreFS uses versioned closed-schema catalogs, logical object codecs, and registered native container/header formats. A host must reject unknown newer formats rather than guess.
 
 ### 6.4 The Migration Contract
 
-1. Each migration is a sequential ID paired with plain SQL statements.
-2. The manifest records which migrations have been applied.
-3. A host opening a Core with unapplied migrations must apply them before proceeding.
-4. A host opening a Core with _unknown_ migrations (from a newer app) must refuse rather than corrupt.
+1. Soul migrations are ordered and applied only after the SQLCipher key and database identity validate.
+2. CoreFS format/catalog/codec versions are authenticated and fail closed when unsupported.
+3. Legacy authored sources convert through a resumable write-frozen validation catalog and explicit accept/reject state.
+4. The first accepted CoreFS mutation atomically publishes the irreversible marker with the new authoritative HEAD.
+5. Backward archive readers are import-only and cannot mutate once migration leaves legacy authority.
 
 Individual hosts may use whatever migration tooling fits their language. The contract itself is SQL-level and language-neutral.
 
@@ -393,29 +394,29 @@ Individual hosts may use whatever migration tooling fits their language. The con
 ### 7.1 Discovery
 
 - **Configured path**: User points the host at a `.anima/` directory.
-- **Default location**: Host checks `~/.anima/` or platform-specific data directories.
-- **Archive import**: User provides a `.vault.json` file. Host unpacks it into a live Core directory.
+- **Default location**: Host resolves the configured Core location; machine-local app data holds only the active-Core pointer and Runtime binding.
+- **Archive import**: User provides an `.anima` file or authenticated multipart controller. The host streams it into a same-volume sibling staging Core and never overwrites the live Core in place.
 
 ### 7.2 Validation
 
 1. Read the manifest. Verify it's a recognized Core format.
 2. Check the format version. If higher than what the host supports, refuse.
-3. Check the schema version. If migrations are needed, apply them.
-4. Check the encryption mode. If encrypted, prompt for passphrase.
-5. Verify the declared databases exist.
+3. Validate structural paths, active-Core pointer, bounded keyslot/KDF records, and supported Soul/CoreFS formats.
+4. Prompt for passphrase/recovery material only through the unlock boundary.
+5. Authenticate the Soul and committed CoreFS HEAD/catalog before granting authority.
 
 ### 7.3 Unlock
 
 1. Prompt for passphrase.
 2. Derive the key chain from the passphrase.
 3. Open the encrypted database. If the open fails (wrong passphrase), report clearly and do not proceed.
-4. Unwrap per-user data encryption keys.
+4. Unwrap the declared Soul and CoreFS purpose-bound root/domain keys.
 5. Hold decrypted keys in memory for the session duration only.
 6. On session end, zero the keys from memory.
 
 ### 7.4 Runtime Binding
 
-Once open, the host provides the _runtime_ — the agent loop, LLM connection, tools, streaming. The Core provides the _state_ — memory, identity, conversation history, self-model.
+Once open, the host provides _Runtime_ — agent execution, queues, approvals, retrieval projections, tools, and streaming. The Core provides canonical portable state — Soul identity/memory plus CoreFS-authored content and history.
 
 The Core doesn't execute. It doesn't think. It doesn't call APIs. It's data. The host is the process. The Core is the mind's content.
 
@@ -439,21 +440,21 @@ The Core doesn't execute. It doesn't think. It doesn't call APIs. It's data. The
      └───────────────────┘ └─────────────────┘ └─────────────────┘
 ```
 
-Same memories. Same identity. Same self-model. Different shell. Only one host may write at a time — concurrent writes would corrupt the data.
+Same memories. Same identity. Same self-model. Different shell. The active-Core lock and native commit lock enforce one writable host/transaction authority; a second live host fails closed rather than sharing mutable Core state.
 
 ---
 
-## 8. The Vault as Interchange
+## 8. ANIMA CORE Transfer as Interchange
 
-The vault is the Core's canonical portable form — a single encrypted file containing a complete snapshot of everything in the Core. Serialized, encrypted with the user's passphrase, decryptable on any machine with only the passphrase and standard crypto primitives.
+The canonical product transfer is a local `anima_core_v2` archive: one encrypted `.anima` file when the destination supports it, or an authenticated multipart set when a FAT-like single-file limit requires volumes.
 
-The vault isn't a backup feature. It's the way you move a Core.
+Export pins a coherent live snapshot, streams bounded records, and verifies before publication. Import authenticates into sibling staging, then schedules restart-only activation through an authenticated machine-local pointer while retaining the old Core for rollback.
 
 | Use case             | How it works                                                         |
 | -------------------- | -------------------------------------------------------------------- |
-| **Machine transfer** | Export on machine A, import on machine B, same passphrase            |
-| **Host migration**   | Export from server, import into desktop app                          |
-| **Version upgrade**  | Export from app v1, import into v2 (which applies schema migrations) |
+| **Machine transfer** | Export on machine A; stage and activate on machine B                 |
+| **Host migration**   | Move the same full artifact between compliant local hosts            |
+| **Version upgrade**  | Import supported V2 or import-only V1, then run canonical migration  |
 | **Succession**       | Export, hand to successor, import under new ownership                |
 | **Cold storage**     | Export to USB, disconnect. The mind is preserved but inert.          |
 | **Intentional end**  | Delete the vault. Delete the passphrase. Gone.                       |
@@ -462,11 +463,11 @@ The last one matters. The vault format supports not just continuity, but closure
 
 ### 8.1 What the Vault Needs
 
-- **A formal spec** — The vault envelope format should be documented independently of any implementation.
-- **Schema migration on import** — Vaults from older versions should be migrated forward automatically.
-- **Selective import** — Memory only, or conversation history only, or self-model only. Needed for partial succession.
-- **Integrity verification** — A way to detect tampering or corruption.
-- **Compression** — For large Cores, compress before encrypting.
+- **Registered fixed header and KDF profile** — reject malformed or excessive parameters before expensive work.
+- **Authenticated inventory and chunk framing** — bind archive/set identity, payload kind, record/path/hash, offsets, lengths, flags, and volume ordinal.
+- **Scoped recovery** — `soul` restores to `filesystem_missing`; `fs` restores to browse/export-only recovery and cannot attach in V1.
+- **Crash-safe publication/activation** — verify `.partial` output, publish controllers last, stage on the destination volume, and activate only at restart.
+- **No machine-local leakage** — Runtime, device configuration, grants, credentials, and raw unlock material never enter the archive.
 
 ---
 
@@ -508,15 +509,17 @@ Eventually they should be. That's what makes them moments and not just data poin
 
 ## 10. Planning the Path Forward
 
+This is the thesis's original roadmap. PCF-001–PCF-008 implemented/refined it through the normative Portable Core specs and plan: native CoreFS rather than an all-SQL Core, a binary streaming V2 container rather than JSON, and explicit degraded recovery scopes rather than arbitrary selective authority.
+
 ### Phase 0: Core Specification
 
 Write a formal, language-neutral spec covering:
 
 - Directory layout and manifest schema.
-- Database table definitions in SQL DDL.
-- Encryption parameters and key derivation.
-- Vault archive format (JSON envelope structure).
-- Migration contract (sequential SQL migrations with version tracking).
+- Soul schema plus versioned CoreFS catalog/object contracts.
+- Encryption parameters, key hierarchy, and purpose-bound derivations.
+- Streaming V2 archive fixed header, record framing, multipart controller, and AAD.
+- Soul migrations plus resumable authenticated CoreFS conversion/cutover.
 - Derived data policy (disposable vs. canonical).
 
 **Deliverable:** A standalone document that someone could use to implement a Core reader in any language.
@@ -533,17 +536,17 @@ Make encryption the default state:
 
 **Deliverable:** A Core that is unreadable on disk without the passphrase. By default. Not opt-in.
 
-### Phase 2: Vault as Interchange
+### Phase 2: ANIMA CORE Transfer as Interchange
 
-Harden the vault format:
+Harden the transfer format:
 
 - Formal spec alongside the Core spec.
-- Schema migration on import.
-- Selective export (full, memories-only, anonymized).
-- Integrity hash / signature.
-- Optional compression.
+- Import-only V1 compatibility plus supported V2 validation.
+- `full`, Soul-only, and CoreFS-only authenticated payload kinds.
+- AEAD-authenticated inventory, chunks, footer, and multipart set.
+- Bounded streaming, capacity preflight, staging, and restart-only activation.
 
-**Deliverable:** The vault is a documented, versioned interchange format.
+**Deliverable:** ANIMA CORE V2 is a documented, versioned, local interchange format.
 
 ### Phase 3: Second Host
 
@@ -572,43 +575,41 @@ Wire the portable Core into the succession protocol:
 
 ## 11. Open Questions
 
-### 11.1 Vault Forward Secrecy (Resolved)
+### 11.1 Archive Isolation and Forward Secrecy
 
-The question (from Section 3.6): a vault exported today could be stolen and stored. If the passphrase is cracked years later, the attacker gets everything.
+The question (from Section 3.6): can a self-contained archive remain importable with one passphrase while also becoming undecryptable if that same passphrase is later compromised?
 
-The resolution: ephemeral keypair per vault export.
+No. Those requirements are contradictory without a second retained secret or external recipient key. The implemented V2 construction therefore makes the narrower, honest guarantee:
 
-1. At export time, generate an ephemeral X25519 keypair.
-2. Derive a shared secret by combining the ephemeral private key with a static public key embedded in the vault envelope (or derived from the Core's Ed25519 keypair via birational mapping).
-3. Mix the shared secret into the vault encryption key alongside the passphrase-derived key: `vault_key = HKDF(passphrase_key || ecdh_shared_secret, info="vault-fs")`.
-4. Include the ephemeral public key in the vault envelope (it is not secret).
-5. Discard the ephemeral private key. It is never stored.
+1. Generate fresh salt, archive/set identities, and nonce prefix for every export.
+2. Apply the fixed bounded Argon2id profile to the archive passphrase.
+3. Derive an archive-only key with HKDF-SHA256 and domain-separated info.
+4. Authenticate the fixed header, encrypted manifest, every bounded chunk, the complete inventory, and footer.
+5. Never reuse the live Soul key, FRK, catalog keys, Object DEKs, or archive nonce ordinals.
 
-The result: even if the passphrase is later compromised, the attacker cannot decrypt the vault without the ephemeral private key — which was destroyed at export time. Each vault export is cryptographically independent.
+Each export is cryptographically independent, but compromise of its archive passphrase permits decryption of that archive. True recipient-bound forward secrecy is a possible future transfer mode and would require explicit second-key custody rather than invisible discarded material.
 
-The tradeoff: the vault is now truly self-contained and one-shot. You cannot re-derive the vault key from the passphrase alone. If the vault file is corrupted, there is no recovery path beyond creating a new export. This is consistent with the cryptographic mortality principle — the vault is fragile by design.
-
-For the common case (machine transfer: export, carry, import), this adds no friction. The ephemeral key is embedded in the vault's cryptographic construction, invisible to the user. For the backup case (vault stored for years), the forward secrecy is the point — old vaults become permanently sealed even if the passphrase leaks.
+Corruption, missing multipart volumes, or a lost passphrase remains unrecoverable unless another verified Core/backup exists. That is mortality; it is not mislabeled forward secrecy.
 
 ### 11.2 Manifest Encryption
 
-Should the manifest be encrypted? If it only contains structural metadata (version, encryption mode, schema state) and no personal data, keeping it plaintext makes validation simpler — you can check the Core version before prompting for a passphrase. But the spec must enforce that no personal content ever leaks into it.
+The manifest remains plaintext structural control data so a host can reject unsupported formats before unlock. Closed-schema writers and tests prohibit personal content, logical paths, usernames, secrets, body hashes, and raw key material; sensitive records are wrapped or live in Soul/CoreFS.
 
 ### 11.3 Single-Writer Enforcement
 
-If two hosts try to open the same Core simultaneously, data corruption is likely. Options: advisory lock file, manifest lock field, or documented convention. Needs a decision.
+The host takes an OS-backed active-Core lock before database/bootstrap work, and native CoreFS commits take a Core-wide exclusive commit lock with generation revalidation. A second writable host fails closed.
 
 ### 11.4 Derived Caches
 
-Vector search caches and embedding indices are derived from canonical data stored in the database. A host should rebuild its own search index rather than depending on a specific cache format. The spec should define derived data as disposable and host-specific.
+Vector, lexical, document, image, and source projections are machine-local Runtime state. They rebuild from authenticated Soul/CoreFS authority and never enter a Core transfer artifact.
 
 ### 11.5 Schema Migration Across Languages
 
-The migration contract should be plain SQL so any language can implement a migration runner. This means the Core's target database dialect needs to be specified — likely SQLite.
+Soul remains SQLite/SQLCipher with ordered Core migrations. CoreFS has separate versioned native catalog, object-codec, and archive contracts. Hosts reject unknown authenticated versions rather than treating the whole Core as a generic SQL database.
 
 ### 11.6 Key Rotation
 
-Changing the passphrase requires re-wrapping all encryption keys and re-encrypting the database. This is a destructive, time-sensitive operation. The spec should define atomicity guarantees to prevent a half-rotated Core.
+Passphrase rotation publishes and independently verifies pending password/recovery keyslots before promotion. FRK activation rewraps retained Object DEKs into one new catalog/HEAD generation; old FRKs remain decrypt-only until the separate authenticated retention/backup gate permits retirement.
 
 ### 11.7 Core Size Over Time
 
@@ -624,10 +625,10 @@ Years of conversation history makes a large Core. Considerations: binary archive
 | **Physical form**     | Self-describing Core with formal manifest          |
 | **Encryption**        | Encrypted-by-default, all personal data sealed     |
 | **Specification**     | Formal, language-neutral spec                      |
-| **Transport format**  | Vault as canonical interchange format              |
+| **Transport format**  | Streaming authenticated ANIMA CORE V2 container    |
 | **Host independence** | Any host implementing the Core spec                |
-| **Migration**         | Language-neutral SQL migration contract            |
-| **Succession**        | Vault-based transfer with scopes and re-encryption |
+| **Migration**         | Versioned Soul migrations plus authenticated CoreFS conversion |
+| **Succession**        | Scoped Core transfer with re-encryption and explicit ownership ceremony |
 | **Right to end**      | Explicit: destroy passphrase, destroy Core         |
 
 The Core is the relationship. The application is the body it happens to be wearing today. The passphrase is the thread it hangs by.

@@ -163,13 +163,14 @@ def resolve_projected_image_byte_source(
         active_asset_authority_session,
         open_corefs_byte_source,
     )
+    from anima_server.services.corefs.image_authority import canonical_image_projection
 
     session = active_asset_authority_session(user_id)
     if session is None:
         return None
-    index = getattr(session, "runtime_index", None)
-    projection = (
-        index.image_projection(image_asset_id) if index is not None else None
+    projection = canonical_image_projection(
+        session=session,
+        image_asset_id=image_asset_id,
     )
     if projection is None:
         raise LookupError("Canonical image projection is unavailable.")

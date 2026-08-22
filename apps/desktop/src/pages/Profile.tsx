@@ -42,8 +42,13 @@ export default function Profile() {
       return;
 
     try {
-      await api.users.delete(user!.id);
+      const result = await api.users.delete(user!.id);
       await logout();
+      if (result.restartRequired) {
+        window.alert(
+          "Whole-Core account deletion is scheduled. Restart animaOS to complete it before a new Core is created.",
+        );
+      }
       navigate("/login");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Delete failed");

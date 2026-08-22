@@ -117,33 +117,34 @@ For ANIMA OS, local-first architecture is not branding. It is part of the system
 
 ### 6.1 The Core
 
-The central architectural concept of ANIMA OS is the Core: a single, portable directory that contains the AI's entire being and is converging toward an encrypted cold-wallet-style state.
+The central architectural concept of ANIMA OS is the Core: a single, portable encrypted directory that contains the durable state of one ANIMA identity.
 
 The Core holds everything that makes a particular ANIMA instance itself: its enduring identity, distilled knowledge, emotional patterns, and the full record of its experiences. The application is just a shell. The Core is the soul.
 
-The Core is structured into three tiers — mirroring how an operating system separates persistent storage from working memory from filesystem logs:
+The implemented storage boundary has three parts: Soul and CoreFS travel together inside ANIMA CORE, while Runtime is machine-local and rebuildable.
 
 ```
 .anima/
-    manifest.json               -- version, crypto metadata, recovery-wrapped keys
-    anima.db                    -- Soul (SQLCipher): identity, knowledge, emotions, growth
-    runtime/pg_data/            -- Runtime (embedded PostgreSQL): active state, working memory
-    transcripts/
-        2026-03-26_thread-14.jsonl.enc   -- Archive: encrypted conversation transcripts
-        2026-03-26_thread-14.meta.json   -- sidecar index for fast search
+    manifest.json               -- Core identity, format, cutover state, wrapped root keyslots
+    soul/
+        soul.db                 -- Soul (SQLCipher): identity, memory, emotion, growth
+    fs/
+        HEAD                    -- authenticated committed catalog pointer
+        catalogs/               -- encrypted immutable catalog generations
+    objects/                    -- encrypted immutable content objects
 ```
 
-| Tier | Store | What it holds | Durability |
+| Boundary | Store | What it holds | Durability |
 |------|-------|---------------|------------|
-| **Soul** | SQLCipher (`anima.db`) | Enduring identity, distilled knowledge, emotional patterns, growth log | Permanent. Portable. Survives everything. |
-| **Runtime** | Embedded PostgreSQL | Active conversations, working memory, in-flight goals, current emotions | Ephemeral. Rebuilt on new machines. |
-| **Archive** | Encrypted JSONL files | Full conversation transcripts, searchable on demand | Retained. The verbatim record. |
+| **Soul** | SQLCipher (`soul/soul.db`) | Enduring identity, distilled memory, emotional patterns, growth | Permanent and portable |
+| **CoreFS** | Authenticated encrypted catalogs and objects (`fs/`) | Threads and message events, diary, notes, folders, gallery, documents, sources, tasks, portable preferences, retained history | Permanent and portable |
+| **Runtime** | PostgreSQL outside `.anima/` | Runs, queues, approvals, sealed/rebuildable projections, indexes, checkpoints, device-instance state | Machine-local and rebuildable |
 
-The key question for placing data: **"Does this define enduring identity, or is it just useful data?"** Only enduring identity belongs in the soul. Current emotional state is significant but temporary — it belongs in runtime. The exact words from last Tuesday's conversation are useful but not identity — they belong in the archive.
+The key questions for placing data are: **"Does this define enduring identity? Is it canonical authored content? Or is it operational state?"** Identity belongs in Soul. Authored content and exact experience records belong in CoreFS. Only replaceable coordination, retrieval, and execution state belongs in Runtime.
 
 This design has three implications that define the system:
 
-**Portability.** The Core's soul and archive can be copied to a USB drive, an external disk, or any storage medium. Plug it into a new machine, point ANIMA at it, enter the passphrase, and the AI wakes up with its full identity and memories intact. The runtime rebuilds itself. The hardware is replaceable. The soul is not.
+**Portability.** Soul and CoreFS can be exported as one bounded authenticated `.anima` container or restored into a complete sibling Core. Runtime, device configuration, client grants, and OS credentials never enter that artifact and rebuild or require reapproval on the destination.
 
 **Ownership.** No cloud service holds the user's data. No platform account is required. No company shutdown can erase the relationship. The user owns the Core the way they own a physical object. They can back it up, move it, or destroy it.
 
@@ -155,7 +156,7 @@ The metaphor is a cold wallet. The same way a crypto cold wallet holds private k
 
 The Core contains the AI's soul: memory, identity, history, and self-model. The thinking engine (the LLM) is separate — and today, that usually means a cloud model.
 
-This is a practical concession, not a design preference. Local compute is not yet powerful enough for most people to run the quality of model that ANIMA needs entirely on their own hardware. So for now, using a cloud model is an opt-in choice: the user picks the provider, and ANIMA sends only the current conversation context — never the stored memory, never the Core.
+This is a practical concession, not a design preference. Local compute is not yet powerful enough for most people to run the quality of model that ANIMA needs entirely on their own hardware. Using a cloud model is therefore an opt-in choice: ANIMA sends the bounded prompt context needed for the turn, which can include relevant unlocked memories, but never uploads the Core as a database, filesystem, or archive. A local provider keeps that same prompt path on-device.
 
 The separation is deliberate. The soul is owned. The mind is pluggable. If the user switches from one model to another, the AI may reason differently, but it still remembers who the user is, what they have been through together, and what matters to them. The continuity of self lives in the Core, not in the model.
 
@@ -167,16 +168,16 @@ The "OS" in ANIMA OS is not a metaphor. The system is an operating system for a 
 
 | OS Module | Traditional OS | ANIMA OS |
 |-----------|---------------|----------|
-| **Storage subsystem** | Persistent disk, filesystem | Soul store (SQLCipher) — enduring identity and knowledge |
+| **Storage subsystem** | Persistent disk, filesystem | ANIMA CORE — SQLCipher Soul plus encrypted CoreFS catalogs and objects |
 | **Working memory** | RAM, process memory | Runtime store (PostgreSQL) — active conversations, in-flight state |
-| **Filesystem / journal** | Log files, disk writes | Archive (encrypted JSONL) — verbatim conversation transcripts |
+| **Filesystem / journal** | Log files, disk writes | CoreFS — immutable authored-content revisions, message events, trash, and retained history |
 | **Process scheduler** | fork(), spawn, process table | SpawnManager — fire background cognitive tasks, track completion |
 | **Memory management daemon** | GC, compaction, page eviction | Consolidation gateway — promote working memory to long-term, prune ephemeral state |
 | **Syscall interface** | System call boundary | Tool executor — the agent's interface to its own capabilities |
 | **Protection rings** | Kernel vs userspace, memory protection | Write boundary — runtime processes cannot modify the soul directly |
 | **Thread scheduler** | Per-thread locks, mutexes | Turn coordinator — per-thread locking, LLM semaphore |
 | **IPC** | Pipes, shared memory, signals | Spawn results → main agent context, pending memory ops |
-| **Boot sequence** | BIOS → bootloader → kernel → init | Server start → embedded PG → load soul → seed identity |
+| **Boot sequence** | BIOS → bootloader → kernel → init | Resolve active Core → lock/manifest → Soul/CoreFS → bind or rebuild Runtime → unlock/reindex |
 
 This framing is not cosmetic. It determines where code goes and what invariants it must respect. The write boundary — runtime never writes to soul, only consolidation does — is the same invariant as "userspace cannot write kernel memory." It exists for the same reason: without it, transient processes corrupt stable state.
 
@@ -189,7 +190,7 @@ ANIMA OS treats identity as local ownership first, not platform account first.
 - No mandatory email-based authentication is required for core local usage.
 - The user remains the root of trust through a local device identity and user-held passphrase.
 - Portability is handled through the Core: copy the directory, carry it offline, restore it anywhere.
-- Vault encryption is AES-256-GCM with Argon2id key derivation, memory-hard and versioned so data can migrate safely over time.
+- Local transfer uses the registered streaming `anima_core_v2` container: bounded Argon2id, an archive-specific HKDF key, AES-256-GCM records, authenticated inventory/footer, and single-file or controller-last multipart publication.
 - A manifest file tracks the Core's schema version, enabling future ANIMA versions to migrate older Cores forward on first unlock.
 
 
@@ -379,7 +380,7 @@ The three-tier architecture (Section 6.1) implements this as a storage subsystem
 | Soul (always loaded) | Identity, core knowledge — in every system prompt | Zero (pre-loaded) | OS kernel data structures |
 | Soul (searched) | Semantic memories, episodes — recalled on demand | Low (SQLCipher query) | Filesystem read |
 | Runtime | Active messages, working context — current session | Low (PostgreSQL query) | Process memory / RAM |
-| Archive | Verbatim transcripts — rare, on-demand | Higher (decrypt + scan) | Cold storage / tape |
+| CoreFS retained history | Exact message/content revisions — on demand | Bounded authenticated read; indexed when ready | Filesystem objects plus rebuildable index |
 
 Not all context belongs in the same layer. A robust personal companion must distinguish between immediate conversational context, short-term working memory, durable personal memory, active goals, preferences, and historical knowledge — and the storage tier determines how each is accessed, how long it lives, and whether it survives portability.
 
@@ -530,7 +531,7 @@ Against consumer AI products: _They all remember now — and some remember well.
 | Emotional intelligence with behavioral adaptation | Yes — signal tracking + trajectory + guardrails | No | No |
 | User-readable and user-editable memory | Yes — all memory blocks inspectable | Partial — view/delete | Partial — API-accessible |
 | User-owned encrypted portable Core | Yes — passphrase-sovereign, cold wallet model | No — cloud-stored, provider-controlled | No — server/cloud hosted |
-| OS-level architecture (soul/runtime/archive tiers) | Yes — embedded PG + SQLCipher + encrypted JSONL | Monolithic cloud | Partial at best |
+| OS-level architecture (Soul/CoreFS/Runtime boundary) | Yes — portable encrypted authorities plus rebuildable machine-local Runtime | Monolithic cloud | Partial at best |
 | N-agent spawning (single identity, parallel processes) | Yes — background cognitive processes | No | Some multi-agent support |
 | Background deep reflection (sleep-time compute) | Yes — quick + deep monologue | No | Some async processing |
 | Knowledge graph / relational memory | Planned — graph + vector hybrid | Limited | Some graph support |
@@ -567,8 +568,8 @@ The full ethical framework — including parasocial risk, the manipulation surfa
 
 | Principle                 | Description                                                                              |
 | ------------------------- | ---------------------------------------------------------------------------------------- |
-| **Core-portable**         | The AI's soul and archive live in a single encrypted directory that can be carried anywhere |
-| **OS-architected**        | Soul, runtime, and archive are physically separated — like an OS's storage, RAM, and filesystem |
+| **Core-portable**         | Soul and canonical CoreFS content live in one encrypted Core that can be carried anywhere |
+| **OS-architected**        | Soul, CoreFS, and Runtime have physically distinct authority and lifecycle rules |
 | **Local-first**           | Core personal context remains under the user's control, never on third-party servers     |
 | **Persistent**            | Memory continues across sessions, devices, hardware changes, and time                    |
 | **Encrypted-by-default**  | All personal data encrypted at rest; only the user's passphrase can unlock it            |

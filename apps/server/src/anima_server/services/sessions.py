@@ -116,6 +116,7 @@ class UnlockSessionStore:
         runtime_index_factory: (
             Callable[[object | None, bytes | None], CoreFSProgressiveIndex | None] | None
         ) = None,
+        before_session_publish: Callable[[UnlockSession], None] | None = None,
         on_session_published: Callable[[UnlockSession], None] | None = None,
     ) -> None:
         self._lock = RLock()
@@ -124,6 +125,7 @@ class UnlockSessionStore:
         self._snapshot = snapshot
         self._corefs_session_factory = corefs_session_factory or _create_native_corefs_session
         self._runtime_index_factory = runtime_index_factory or _create_runtime_index
+        self._before_session_publish = before_session_publish
         self._on_session_published = on_session_published
         self._sessions: dict[str, UnlockSession] = {}
         self._latest_deks_by_user: dict[int, dict[str, bytes]] = {}
@@ -148,6 +150,7 @@ class UnlockSessionStore:
         try:
             token = secrets.token_urlsafe(32)
             session = self._new_session(user_id, deks, corefs_keys)
+            self._prepare_session_for_publish(session)
             with self._lock:
                 self._ensure_running_locked()
                 cleanup.extend(self._purge_expired_locked())
@@ -197,6 +200,7 @@ class UnlockSessionStore:
             replacement = self._new_session(user_id, deks, corefs_keys)
             if before_publish is not None:
                 before_publish(replacement)
+            self._prepare_session_for_publish(replacement)
             with self._lock:
                 self._ensure_running_locked()
                 cleanup.extend(self._purge_expired_locked())
@@ -563,12 +567,22 @@ class UnlockSessionStore:
         copied_deks = {domain: _copy_key(dek) for domain, dek in deks.items()}
         corefs_session: object | None = None
         runtime_index: CoreFSProgressiveIndex | None = None
+        content_authority: dict[str, object] | None = None
         try:
             corefs_session = None if corefs_keys is None else self._corefs_session_factory()
             if corefs_session is not None and not callable(
                 getattr(corefs_session, "begin_close", None)
             ):
                 raise RuntimeError("CoreFS native session does not implement begin_close")
+            if corefs_session is not None:
+                from anima_server.services.corefs.authority import (
+                    reconcile_content_authority,
+                )
+
+                content_authority = reconcile_content_authority(
+                    corefs_session=corefs_session,
+                    keys=corefs_keys,
+                )
             with self._lock:
                 sqlcipher_key = self._sqlcipher_key
             runtime_index = self._runtime_index_factory(
@@ -601,6 +615,7 @@ class UnlockSessionStore:
             corefs_keys=corefs_keys,
             corefs_session=corefs_session,
             runtime_index=runtime_index,
+            content_authority=content_authority,
         )
 
     @staticmethod
@@ -685,6 +700,11 @@ class UnlockSessionStore:
             callback(session)
         except Exception:
             logger.exception("Failed to schedule unlocked Runtime index rebuild")
+
+    def _prepare_session_for_publish(self, session: UnlockSession) -> None:
+        callback = self._before_session_publish
+        if callback is not None:
+            callback(session)
 
     def _ensure_running_locked(self) -> None:
         if self._shut_down:
@@ -991,51 +1011,20 @@ def _zero_dek(dek: bytes) -> None:
 # Initialize the process-global store only after every restore helper above is
 # defined. Dev reloads import this module with a snapshot already present.
 def _schedule_published_session_rebuild(session: UnlockSession) -> None:
-    # PCF-004/005/006 prepare and verify one combined authored-content shadow
-    # only after SQLCipher, Runtime, and CoreFS keys are live. Legacy routes
-    # remain authoritative until the global PCF-008 cutover marker is accepted.
-    if session.corefs_session is not None and session.corefs_keys is not None:
-        from anima_server.config import settings
-        from anima_server.db.runtime import get_runtime_session_factory
-        from anima_server.db.session import get_user_session_factory
-        from anima_server.services.corefs.asset_migration import (
-            prepare_portable_content_validation_catalog,
-            record_asset_migration_failure,
-        )
-        from anima_server.services.corefs.conversation_migration import (
-            record_conversation_migration_failure,
-        )
-        from anima_server.services.corefs.diary_migration import (
-            prepare_diary_validation_catalog,
-            record_diary_migration_failure,
-        )
-
-        try:
-            with get_user_session_factory(session.user_id)() as db:
-                try:
-                    runtime_factory = get_runtime_session_factory()
-                except RuntimeError:
-                    prepare_diary_validation_catalog(session=session, db=db)
-                else:
-                    with runtime_factory() as runtime_db:
-                        prepare_portable_content_validation_catalog(
-                            session=session,
-                            soul_db=db,
-                            runtime_db=runtime_db,
-                            transcripts_dir=settings.data_dir / "transcripts",
-                        )
-        except Exception as exc:
-            record_diary_migration_failure(user_id=session.user_id, error=exc)
-            record_conversation_migration_failure(user_id=session.user_id, error=exc)
-            record_asset_migration_failure(user_id=session.user_id, error=exc)
-            logger.exception("PCF-004/005/006 inactive content preparation failed")
     from anima_server.services.corefs.migration import schedule_unlocked_rebuild
 
     schedule_unlocked_rebuild(session)
 
 
+def _bootstrap_greenfield_session(session: UnlockSession) -> None:
+    from anima_server.services.corefs.greenfield import bootstrap_greenfield_content
+
+    bootstrap_greenfield_content(session)
+
+
 unlock_session_store = UnlockSessionStore(
     snapshot=DevSessionSnapshot.from_environment(),
+    before_session_publish=_bootstrap_greenfield_session,
     on_session_published=_schedule_published_session_rebuild,
 )
 

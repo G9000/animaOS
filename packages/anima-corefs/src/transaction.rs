@@ -12,9 +12,9 @@ mod object_lease;
 pub use converter::{
     ResolvedValidationRole, ValidationBatch, ValidationBatchError, ValidationBatchFolder,
     ValidationBatchMode, ValidationBatchObject, ValidationBatchOutcome, ValidationBatchPolicy,
-    MAX_GALLERY_ASSET_BYTES, MAX_KNOWLEDGE_SOURCE_BYTES, MAX_MESSAGE_SEGMENT_BYTES,
-    MAX_THREAD_DOCUMENT_BYTES, MAX_WRITING_ATTACHMENT_BYTES, MAX_WRITING_BODY_CHARS,
-    MAX_WRITING_DOCUMENT_BYTES,
+    MAX_ACCOUNT_PROFILE_BYTES, MAX_GALLERY_ASSET_BYTES, MAX_KNOWLEDGE_SOURCE_BYTES,
+    MAX_MESSAGE_SEGMENT_BYTES, MAX_PREFERENCES_BYTES, MAX_TASK_BYTES, MAX_THREAD_DOCUMENT_BYTES,
+    MAX_WRITING_ATTACHMENT_BYTES, MAX_WRITING_BODY_CHARS, MAX_WRITING_DOCUMENT_BYTES,
 };
 
 /// Secret-free inputs and outcomes for the resumable preparation FFI boundary.
