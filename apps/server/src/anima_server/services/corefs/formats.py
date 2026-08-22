@@ -20,9 +20,15 @@ _SANITIZER_CONTRACT = json.loads(
 DIARY_FORMAT_VERSION = 1
 NOTE_FORMAT_VERSION = 1
 DRAFT_FORMAT_VERSION = 1
+ACCOUNT_PROFILE_FORMAT_VERSION = 1
+TASK_FORMAT_VERSION = 1
+PREFERENCES_FORMAT_VERSION = 1
 DIARY_CONTENT_TYPE = "application/vnd.anima.diary+json;version=1"
 NOTE_CONTENT_TYPE = "application/vnd.anima.note+json;version=1"
 DRAFT_CONTENT_TYPE = "application/vnd.anima.draft+json;version=1"
+ACCOUNT_PROFILE_CONTENT_TYPE = "application/vnd.anima.account-profile+json;version=1"
+TASK_CONTENT_TYPE = "application/vnd.anima.task+json;version=1"
+PREFERENCES_CONTENT_TYPE = "application/vnd.anima.preferences+json;version=1"
 WRITING_SANITIZER_CONTRACT = "anima-writing-html-v1"
 MAX_WRITING_BODY_CHARACTERS = 20_000_000
 MAX_INLINE_MEDIA_BYTES = int(_SANITIZER_CONTRACT["maxInlineMediaBytes"])
@@ -95,6 +101,45 @@ class DraftDocument:
     content_type: str
     body: str
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountProfileDocument:
+    format_version: int
+    stable_id: str
+    owner_id: str
+    legacy_user_id: int
+    username: str
+    display_name: str
+    gender: str | None
+    age: int | None
+    birthday: str | None
+    setup_complete: bool
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class TaskDocument:
+    format_version: int
+    stable_id: str
+    legacy_id: int
+    text: str
+    done: bool
+    priority: int
+    due_date: str | None
+    completed_at: str | None
+    created_at: str | None
+    updated_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PreferencesDocument:
+    format_version: int
+    stable_id: str
+    owner_id: str
+    values: dict[str, Any]
+    updated_at: str | None
 
 
 MediaReferenceFactory = Callable[[str, bytes, str], str]
@@ -322,6 +367,175 @@ def decode_draft_document(data: bytes) -> DraftDocument:
     )
 
 
+def encode_account_profile_document(
+    *,
+    stable_id: str,
+    owner_id: str,
+    legacy_user_id: int,
+    username: str,
+    display_name: str,
+    gender: str | None,
+    age: int | None,
+    birthday: str | None,
+    setup_complete: bool,
+    created_at: str | None,
+    updated_at: str | None,
+) -> bytes:
+    _validate_stable_id(stable_id)
+    if not owner_id or not username or not display_name:
+        raise CoreFormatError("Account profile identity fields must be non-empty.")
+    if legacy_user_id < 0 or (age is not None and age < 0):
+        raise CoreFormatError("Account profile integer fields are invalid.")
+    return _canonical_json(
+        {
+            "format": "anima.account-profile",
+            "version": ACCOUNT_PROFILE_FORMAT_VERSION,
+            "stableId": stable_id,
+            "ownerId": owner_id,
+            "legacyUserId": legacy_user_id,
+            "username": username,
+            "displayName": display_name,
+            "gender": gender,
+            "age": age,
+            "birthday": birthday,
+            "setupComplete": setup_complete,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+        }
+    )
+
+
+def decode_account_profile_document(data: bytes) -> AccountProfileDocument:
+    payload = _decode_object(
+        data,
+        expected_format="anima.account-profile",
+        version=ACCOUNT_PROFILE_FORMAT_VERSION,
+    )
+    stable_id = _required_string(payload, "stableId")
+    _validate_stable_id(stable_id)
+    legacy_user_id = _required_int(payload, "legacyUserId")
+    age = _optional_int(payload, "age")
+    if legacy_user_id < 0 or (age is not None and age < 0):
+        raise CoreFormatError("Account profile integer fields are invalid.")
+    return AccountProfileDocument(
+        format_version=ACCOUNT_PROFILE_FORMAT_VERSION,
+        stable_id=stable_id,
+        owner_id=_required_string(payload, "ownerId"),
+        legacy_user_id=legacy_user_id,
+        username=_required_string(payload, "username"),
+        display_name=_required_string(payload, "displayName"),
+        gender=_optional_string(payload, "gender"),
+        age=age,
+        birthday=_optional_string(payload, "birthday"),
+        setup_complete=_required_bool(payload, "setupComplete"),
+        created_at=_optional_string(payload, "createdAt"),
+        updated_at=_optional_string(payload, "updatedAt"),
+    )
+
+
+def encode_task_document(
+    *,
+    stable_id: str,
+    legacy_id: int,
+    text: str,
+    done: bool,
+    priority: int,
+    due_date: str | None,
+    completed_at: str | None,
+    created_at: str | None,
+    updated_at: str | None,
+) -> bytes:
+    _validate_stable_id(stable_id)
+    if legacy_id < 0 or not text.strip() or not 1 <= priority <= 5:
+        raise CoreFormatError("Task identity, text, or priority is invalid.")
+    if due_date is not None and re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date) is None:
+        raise CoreFormatError("Task due date must use YYYY-MM-DD.")
+    return _canonical_json(
+        {
+            "format": "anima.task",
+            "version": TASK_FORMAT_VERSION,
+            "stableId": stable_id,
+            "legacyId": legacy_id,
+            "text": text,
+            "done": done,
+            "priority": priority,
+            "dueDate": due_date,
+            "completedAt": completed_at,
+            "createdAt": created_at,
+            "updatedAt": updated_at,
+        }
+    )
+
+
+def decode_task_document(data: bytes) -> TaskDocument:
+    payload = _decode_object(data, expected_format="anima.task", version=TASK_FORMAT_VERSION)
+    stable_id = _required_string(payload, "stableId")
+    _validate_stable_id(stable_id)
+    legacy_id = _required_int(payload, "legacyId")
+    priority = _required_int(payload, "priority")
+    text = _required_string(payload, "text")
+    due_date = _optional_string(payload, "dueDate")
+    if legacy_id < 0 or not 1 <= priority <= 5:
+        raise CoreFormatError("Task identity or priority is invalid.")
+    if due_date is not None and re.fullmatch(r"\d{4}-\d{2}-\d{2}", due_date) is None:
+        raise CoreFormatError("Task due date must use YYYY-MM-DD.")
+    return TaskDocument(
+        format_version=TASK_FORMAT_VERSION,
+        stable_id=stable_id,
+        legacy_id=legacy_id,
+        text=text,
+        done=_required_bool(payload, "done"),
+        priority=priority,
+        due_date=due_date,
+        completed_at=_optional_string(payload, "completedAt"),
+        created_at=_optional_string(payload, "createdAt"),
+        updated_at=_optional_string(payload, "updatedAt"),
+    )
+
+
+def encode_preferences_document(
+    *,
+    stable_id: str,
+    owner_id: str,
+    values: dict[str, Any],
+    updated_at: str | None,
+) -> bytes:
+    _validate_stable_id(stable_id)
+    if not owner_id:
+        raise CoreFormatError("Preferences owner ID must be non-empty.")
+    try:
+        json.dumps(values, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise CoreFormatError("Preferences values must be canonical JSON data.") from exc
+    return _canonical_json(
+        {
+            "format": "anima.preferences",
+            "version": PREFERENCES_FORMAT_VERSION,
+            "stableId": stable_id,
+            "ownerId": owner_id,
+            "values": values,
+            "updatedAt": updated_at,
+        }
+    )
+
+
+def decode_preferences_document(data: bytes) -> PreferencesDocument:
+    payload = _decode_object(
+        data,
+        expected_format="anima.preferences",
+        version=PREFERENCES_FORMAT_VERSION,
+    )
+    stable_id = _required_string(payload, "stableId")
+    _validate_stable_id(stable_id)
+    return PreferencesDocument(
+        format_version=PREFERENCES_FORMAT_VERSION,
+        stable_id=stable_id,
+        owner_id=_required_string(payload, "ownerId"),
+        values=_object(payload, "values"),
+        updated_at=_optional_string(payload, "updatedAt"),
+    )
+
+
 def _validate_writing_body_length(body: str) -> None:
     if len(body) > MAX_WRITING_BODY_CHARACTERS:
         raise CoreFormatError("Writing body exceeds the public 20,000,000-character limit.")
@@ -501,4 +715,18 @@ def _optional_int(payload: dict[str, Any], key: str) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
         raise CoreFormatError(f"Portable writing field {key} must be an integer or null.")
+    return value
+
+
+def _required_int(payload: dict[str, Any], key: str) -> int:
+    value = payload.get(key)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CoreFormatError(f"Portable writing field {key} must be an integer.")
+    return value
+
+
+def _required_bool(payload: dict[str, Any], key: str) -> bool:
+    value = payload.get(key)
+    if not isinstance(value, bool):
+        raise CoreFormatError(f"Portable writing field {key} must be a boolean.")
     return value

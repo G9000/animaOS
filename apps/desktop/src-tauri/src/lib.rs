@@ -1,11 +1,12 @@
+use anima_credential_store::{credential_reference, CredentialStore, OsCredentialBackend};
 use serde::Deserialize;
+use std::sync::Arc;
 use std::{
     env, fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Mutex,
 };
-use std::sync::Arc;
 use sysinfo::{get_current_pid, Components, Networks, ProcessesToUpdate, System};
 use tauri::{
     menu::{Menu, MenuItem},
@@ -68,19 +69,35 @@ fn get_system_stats(monitor: tauri::State<AppMonitor>) -> SystemStats {
 
     let cpu_temp_c = {
         let components = Components::new_with_refreshed_list();
-        let found = components.iter()
+        let found = components
+            .iter()
             .find(|c| {
                 let l = c.label().to_lowercase();
-                l.contains("package") || l.contains("tdie") || l.contains("tccd")
+                l.contains("package")
+                    || l.contains("tdie")
+                    || l.contains("tccd")
                     || (l.contains("cpu") && !l.contains("core"))
             })
-            .or_else(|| components.iter().find(|c| c.label().to_lowercase().contains("core")));
-        found.and_then(|c| c.temperature()).filter(|&t| t.is_finite() && t > 0.0)
+            .or_else(|| {
+                components
+                    .iter()
+                    .find(|c| c.label().to_lowercase().contains("core"))
+            });
+        found
+            .and_then(|c| c.temperature())
+            .filter(|&t| t.is_finite() && t > 0.0)
     };
 
     let gpu = monitor.gpu_cache.lock().unwrap().clone();
 
-    SystemStats { cpu_usage, cpu_temp_c, ram_used_mb, ram_total_mb, app_ram_mb, gpu }
+    SystemStats {
+        cpu_usage,
+        cpu_temp_c,
+        ram_used_mb,
+        ram_total_mb,
+        app_ram_mb,
+        gpu,
+    }
 }
 
 #[tauri::command]
@@ -111,7 +128,10 @@ fn get_network_stats(monitor: tauri::State<AppMonitor>) -> NetworkStats {
 
     *prev = Some((total_rx, total_tx, now));
 
-    NetworkStats { download_kbps, upload_kbps }
+    NetworkStats {
+        download_kbps,
+        upload_kbps,
+    }
 }
 
 // GPU queried in a background thread — never blocks the main stats call.
@@ -143,16 +163,21 @@ fn try_nvidia() -> Option<GpuInfo> {
         .filter(|o| o.status.success())?;
     let s = String::from_utf8(out.stdout).ok()?;
     let parts: Vec<&str> = s.trim().lines().next()?.split(',').map(str::trim).collect();
-    if parts.len() < 4 { return None; }
+    if parts.len() < 4 {
+        return None;
+    }
     let vram_used: Option<u64> = parts[2].parse().ok();
     let vram_free: Option<u64> = parts[3].parse().ok();
     let vram_total = vram_used.zip(vram_free).map(|(u, f)| u + f);
-    let temp_c: Option<f32> = parts.get(4).and_then(|s| s.parse().ok()).filter(|&t: &f32| t > 0.0);
+    let temp_c: Option<f32> = parts
+        .get(4)
+        .and_then(|s| s.parse().ok())
+        .filter(|&t: &f32| t > 0.0);
     Some(GpuInfo {
-        name:          Some(parts[0].to_string()),
-        usage:         parts[1].parse().ok(),
+        name: Some(parts[0].to_string()),
+        usage: parts[1].parse().ok(),
         temp_c,
-        vram_used_mb:  vram_used,
+        vram_used_mb: vram_used,
         vram_total_mb: vram_total,
     })
 }
@@ -165,16 +190,23 @@ fn try_amd_linux() -> Option<GpuInfo> {
         let vram_used = format!("/sys/class/drm/card{}/device/mem_info_vram_used", i);
         let vram_total = format!("/sys/class/drm/card{}/device/mem_info_vram_total", i);
         if let Ok(usage_s) = std::fs::read_to_string(&busy) {
-            let temp_c = std::fs::read_to_string(format!("/sys/class/drm/card{}/device/hwmon/hwmon0/temp1_input", i))
-                .ok().and_then(|s| s.trim().parse::<f32>().ok()).map(|m| m / 1000.0);
+            let temp_c = std::fs::read_to_string(format!(
+                "/sys/class/drm/card{}/device/hwmon/hwmon0/temp1_input",
+                i
+            ))
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .map(|m| m / 1000.0);
             return Some(GpuInfo {
-                name:         lspci_gpu_name(),
-                usage:        usage_s.trim().parse().ok(),
+                name: lspci_gpu_name(),
+                usage: usage_s.trim().parse().ok(),
                 temp_c,
-                vram_used_mb: std::fs::read_to_string(&vram_used).ok()
+                vram_used_mb: std::fs::read_to_string(&vram_used)
+                    .ok()
                     .and_then(|s| s.trim().parse::<u64>().ok())
                     .map(|b| b / 1_048_576),
-                vram_total_mb: std::fs::read_to_string(&vram_total).ok()
+                vram_total_mb: std::fs::read_to_string(&vram_total)
+                    .ok()
                     .and_then(|s| s.trim().parse::<u64>().ok())
                     .map(|b| b / 1_048_576),
             });
@@ -190,10 +222,10 @@ fn try_intel_linux() -> Option<GpuInfo> {
         let busy = format!("/sys/class/drm/card{}/gt_busy_percent", i);
         if let Ok(s) = std::fs::read_to_string(&busy) {
             return Some(GpuInfo {
-                name:          lspci_gpu_name(),
-                usage:         s.trim().parse().ok(),
-                temp_c:        None,
-                vram_used_mb:  None,
+                name: lspci_gpu_name(),
+                usage: s.trim().parse().ok(),
+                temp_c: None,
+                vram_used_mb: None,
                 vram_total_mb: None,
             });
         }
@@ -204,7 +236,9 @@ fn try_intel_linux() -> Option<GpuInfo> {
 #[cfg(target_os = "linux")]
 fn lspci_gpu_name() -> Option<String> {
     let out = std::process::Command::new("lspci").output().ok()?;
-    String::from_utf8(out.stdout).ok()?.lines()
+    String::from_utf8(out.stdout)
+        .ok()?
+        .lines()
         .find(|l| l.contains("VGA") || l.contains("Display") || l.contains("3D"))
         .map(|l| l.splitn(2, ':').nth(1).unwrap_or(l).trim().to_string())
 }
@@ -232,13 +266,27 @@ try {
         .filter(|o| o.status.success())?;
     let s = String::from_utf8(out.stdout).ok()?;
     let parts: Vec<&str> = s.trim().split('|').collect();
-    if parts.len() < 4 { return None; }
+    if parts.len() < 4 {
+        return None;
+    }
     let name = (!parts[0].is_empty()).then(|| parts[0].to_string());
     let vram_total_mb: Option<u64> = parts[1].parse().ok().filter(|&v| v > 0);
-    let usage: Option<f32> = parts[2].parse().ok().filter(|&v: &f32| v >= 0.0).map(|v| v.min(100.0));
+    let usage: Option<f32> = parts[2]
+        .parse()
+        .ok()
+        .filter(|&v: &f32| v >= 0.0)
+        .map(|v| v.min(100.0));
     let vram_used_mb: Option<u64> = parts[3].parse().ok().filter(|&v| v > 0);
-    if name.is_none() && vram_total_mb.is_none() { return None; }
-    Some(GpuInfo { name, usage, temp_c: None, vram_used_mb, vram_total_mb })
+    if name.is_none() && vram_total_mb.is_none() {
+        return None;
+    }
+    Some(GpuInfo {
+        name,
+        usage,
+        temp_c: None,
+        vram_used_mb,
+        vram_total_mb,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -313,14 +361,22 @@ struct ResolvedManifestDaemonLaunch {
 }
 
 #[tauri::command]
-fn read_daemon_control_token() -> Option<String> {
-    let token = fs::read_to_string(daemon_control_token_path()).ok()?;
-    let trimmed = token.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+fn read_daemon_control_token(legacy_token: Option<String>) -> Result<Option<String>, String> {
+    let backend = OsCredentialBackend::new().map_err(|error| error.to_string())?;
+    let store = CredentialStore::new(backend);
+    let reference =
+        credential_reference("daemon", "control-token").map_err(|error| error.to_string())?;
+    let mut selected = store
+        .load_migrating_legacy(&reference, &daemon_control_token_path())
+        .map_err(|error| error.to_string())?;
+    if let Some(legacy_token) = legacy_token.filter(|value| !value.trim().is_empty()) {
+        selected = Some(
+            store
+                .import_legacy_value(&reference, &legacy_token)
+                .map_err(|error| error.to_string())?,
+        );
     }
+    Ok(selected)
 }
 
 #[tauri::command]

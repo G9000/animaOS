@@ -132,33 +132,6 @@ def get_recovery_sqlcipher_key() -> dict[str, object] | None:
     return key_data
 
 
-# ---------------------------------------------------------------------------
-# User index — lightweight username→user_id mapping outside encrypted DBs
-# ---------------------------------------------------------------------------
-
-
-def store_user_index_entry(username: str, user_id: int) -> None:
-    """Add a username→user_id mapping to the manifest index."""
-    with _manifest_lock:
-        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
-        index = manifest.setdefault("user_index", {})
-        index[username] = user_id
-        _write_manifest(manifest)
-
-
-def get_user_id_from_index(username: str) -> int | None:
-    """Look up user_id by username from the manifest index."""
-    path = get_manifest_path()
-    if not path.is_file():
-        return None
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    index = manifest.get("user_index")
-    if not isinstance(index, dict):
-        return None
-    user_id = index.get(username)
-    return int(user_id) if user_id is not None else None
-
-
 def _detect_encryption_mode() -> str:
     """Determine the current encryption mode based on settings."""
     has_passphrase = bool(settings.core_passphrase.strip())
@@ -312,6 +285,10 @@ def _load_manifest(*, now: str) -> dict[str, object]:
     manifest.setdefault("core_id", str(uuid.uuid7()))
     manifest.setdefault("created_at", now)
     manifest.setdefault("last_opened_at", now)
+    # A username is private account content. Older builds used this manifest
+    # index to locate the encrypted database before unlock; the opaque owner
+    # binding and manifest keyslots make that locator unnecessary.
+    manifest.pop("user_index", None)
     manifest.setdefault("next_user_id", _detect_next_user_id())
     manifest.setdefault("owner_id", str(uuid.uuid7()))
     legacy_owner = manifest.get("owner_user_id")

@@ -1,8 +1,10 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { initializePreUnlockEnvironment } from "./lib/preUnlockEnvironment";
 import { initTheme } from "./lib/theme";
 
+initializePreUnlockEnvironment();
 initTheme();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

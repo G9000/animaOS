@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -21,6 +22,7 @@ const env = {
   NX_ISOLATE_PLUGINS: "false",
   NX_ADD_PLUGINS: "false",
 };
+const credentialBrokerSecret = randomBytes(48).toString("base64url");
 
 let activeStack = null;
 let devSessionContinuity = null;
@@ -61,7 +63,12 @@ function spawnNxDevTarget(name) {
   const spec = buildTargetSpec(name, repoRoot, process.execPath);
   const child = spawn(spec.command, spec.args, {
     cwd: spec.cwd,
-    env: buildTargetEnvironment(name, env, devSessionContinuity?.serverEnv ?? {}),
+    env: buildTargetEnvironment(
+      name,
+      env,
+      devSessionContinuity?.serverEnv ?? {},
+      credentialBrokerSecret,
+    ),
     stdio: "inherit",
   });
 

@@ -1,0 +1,16 @@
+[package]
+name = "anima-credential-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hex = "0.4"
+keyring.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

@@ -41,6 +41,8 @@ def messages_to_transcript_dicts(messages: list[RuntimeMessage]) -> list[dict[st
     for message in messages:
         role = "assistant" if message.role == "tool" and message.tool_name == "send_message" else message.role
         payload: dict[str, object] = {
+            "id": message.id,
+            "thread_id": message.thread_id,
             "role": role,
             "content": message.content_text or "",
             "ts": _isoformat_utc(message.created_at),
@@ -85,6 +87,12 @@ def export_transcript(
     episode_ids: list[str] | None = None,
     summary: str | None = None,
 ) -> TranscriptExportResult:
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user_id) is not None:
+        raise RuntimeError("Legacy transcript export is disabled after CoreFS conversation cutover.")
     transcripts_dir.mkdir(parents=True, exist_ok=True)
 
     date_prefix = _get_date_prefix(messages)

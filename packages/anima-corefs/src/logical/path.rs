@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use unicode_normalization::UnicodeNormalization;
 
@@ -101,11 +101,11 @@ pub fn map_migration_component(value: &str, stable_id: &str) -> Result<String, L
             .iter()
             .any(|reserved| mapped.eq_ignore_ascii_case(reserved))
     {
-        mapped = mapped
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("~{byte:02X}"))
-            .collect();
+        let mut escaped = String::with_capacity(mapped.len().saturating_mul(3));
+        for byte in mapped.as_bytes() {
+            write!(&mut escaped, "~{byte:02X}").expect("writing to a String cannot fail");
+        }
+        mapped = escaped;
     }
     if mapped.len() > MAX_PORTABLE_NAME_BYTES {
         let suffix = format!("~{:x}", Sha256::digest(value.as_bytes()));

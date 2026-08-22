@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import MemoryItem
+from anima_server.models import AgentProfile, MemoryItem
 from anima_server.services.agent.pending_ops import create_pending_op
+from anima_server.services.corefs.account_profile import read_account_profile_for_session
 from anima_server.services.data_crypto import df
+from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -751,6 +753,35 @@ def test_setup_complete_persists_after_setup() -> None:
         resp = client.get(
             f"/api/consciousness/{user_id}/agent-profile", headers=h)
         assert resp.json()["setupComplete"] is True
+
+
+def test_setup_completion_is_published_to_encrypted_account_profile() -> None:
+    with managed_test_client("anima-creation-test-") as client:
+        payload = _register_user(client)
+        h = _headers(payload)
+        user_id = int(payload["id"])
+
+        completed = client.patch(
+            f"/api/consciousness/{user_id}/agent-profile",
+            headers=h,
+            json={"agentName": "Nova"},
+        )
+        assert completed.status_code == 200, completed.text
+
+        # The portable encrypted account object is authoritative once published.
+        with get_user_session_factory(user_id)() as db:
+            profile = db.scalar(
+                select(AgentProfile).where(AgentProfile.user_id == user_id)
+            )
+            assert profile is not None
+            profile.setup_complete = False
+            db.commit()
+
+        session = unlock_session_store.resolve(str(payload["unlockToken"]))
+        assert session is not None
+        account = read_account_profile_for_session(session)
+        assert account is not None
+        assert account.setup_complete is True
 
 
 def test_agent_profile_requires_unlock_token() -> None:

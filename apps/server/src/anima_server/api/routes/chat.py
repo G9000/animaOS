@@ -5,10 +5,11 @@ import contextlib
 import json
 import logging
 from collections.abc import AsyncGenerator
+from datetime import datetime
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.types import Receive, Scope, Send
@@ -46,8 +47,10 @@ from anima_server.services.agent import (
     stream_approve_or_deny,
 )
 from anima_server.services.agent.attachments import (
+    AttachmentReadError,
     AttachmentTooLargeError,
     AttachmentValidationError,
+    resolve_corefs_chat_attachment,
     resolve_message_attachment,
     validate_chat_attachment_inputs,
 )
@@ -62,6 +65,21 @@ from anima_server.services.agent.state import (
 )
 from anima_server.services.agent.streaming import summarize_usage
 from anima_server.services.agent.system_prompt import PromptTemplateError
+from anima_server.services.corefs.asset_authority import (
+    CoreFsSourceError,
+    open_corefs_byte_source,
+)
+from anima_server.services.corefs.conversation_authority import (
+    canonical_message_api_id,
+    conversation_corefs_authority_active,
+    list_canonical_threads,
+)
+from anima_server.services.corefs.conversation_mutations import (
+    ConversationMutationError,
+    create_canonical_thread,
+)
+from anima_server.services.corefs.logical import CoreFsMutationUnavailable
+from anima_server.services.corefs.messages import ConversationFormatError
 from anima_server.services.corefs.runtime_sealing import RuntimeSealingLocked
 from anima_server.services.corefs.sealed_runtime import runtime_index_for_sensitive_write
 
@@ -226,7 +244,40 @@ async def get_chat_history(
     limit: int = Query(default=50, ge=1, le=200),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> list[ChatHistoryMessage]:
-    await require_unlocked_user_async(request, userId)
+    unlock_session = await require_unlocked_user_async(request, userId)
+    if conversation_corefs_authority_active(unlock_session):
+        canonical = [
+            message
+            for view in list_canonical_threads(session=unlock_session)
+            for message in view.messages
+        ]
+        canonical.sort(key=lambda message: (message.created_at, message.sequence))
+        try:
+            return [
+                ChatHistoryMessage(
+                    id=canonical_message_api_id(message),
+                    userId=userId,
+                    role=message.role,
+                    content=message.content,
+                    createdAt=datetime.fromisoformat(message.created_at),
+                    attachments=[
+                        resolve_corefs_chat_attachment(
+                            session=unlock_session,
+                            object_uri=uri,
+                        ).to_public_dict(message_id=canonical_message_api_id(message))
+                        for uri in message.attachment_uris
+                    ]
+                    if message.role == "user"
+                    else [],
+                    pills=[],
+                )
+                for message in canonical[-limit:]
+            ]
+        except (AttachmentReadError, CoreFsSourceError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Canonical chat attachment authority is unavailable.",
+            ) from exc
     rows = list_agent_history(userId, runtime_db, limit=limit)
     return [
         ChatHistoryMessage(
@@ -255,8 +306,36 @@ async def get_message_attachment(
     attachment_id: str,
     request: Request,
     runtime_db: Session = Depends(get_runtime_db),
-) -> FileResponse:
+) -> Response:
     unlock_session = await require_unlocked_session_async(request)
+    if conversation_corefs_authority_active(unlock_session):
+        matches = [
+            message
+            for view in list_canonical_threads(session=unlock_session)
+            for message in view.messages
+            if canonical_message_api_id(message) == message_id and message.role == "user"
+        ]
+        object_uri = f"corefs://object/{attachment_id}"
+        if len(matches) != 1 or object_uri not in matches[0].attachment_uris:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Attachment not found",
+            )
+        try:
+            source = open_corefs_byte_source(
+                session=unlock_session,
+                object_uri=object_uri,
+                expected_kinds=frozenset({"attachment", "gallery-asset"}),
+            )
+        except CoreFsSourceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Canonical chat attachment authority is unavailable.",
+            ) from exc
+        return StreamingResponse(
+            source.iter_chunks(),
+            media_type=source.content_type,
+        )
     message = runtime_db.get(RuntimeMessage, message_id)
     if (
         message is None
@@ -287,7 +366,22 @@ async def clear_chat_history(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatHistoryClearResponse:
-    await require_unlocked_user_async(request, payload.userId)
+    unlock_session = await require_unlocked_user_async(request, payload.userId)
+    if conversation_corefs_authority_active(unlock_session):
+        try:
+            create_canonical_thread(session=unlock_session, force_new=True)
+        except (
+            ConversationFormatError,
+            ConversationMutationError,
+            CoreFsMutationUnavailable,
+            PermissionError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
+            ) from exc
+        return ChatHistoryClearResponse(status="cleared")
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatHistoryClearResponse(status="cleared")
 
@@ -299,7 +393,22 @@ async def reset_chat_thread(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResetResponse:
-    await require_unlocked_user_async(request, payload.userId)
+    unlock_session = await require_unlocked_user_async(request, payload.userId)
+    if conversation_corefs_authority_active(unlock_session):
+        try:
+            create_canonical_thread(session=unlock_session, force_new=True)
+        except (
+            ConversationFormatError,
+            ConversationMutationError,
+            CoreFsMutationUnavailable,
+            PermissionError,
+            ValueError,
+        ) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
+            ) from exc
+        return ChatResetResponse(status="reset")
     await reset_agent_thread(payload.userId, runtime_db, db=db)
     return ChatResetResponse(status="reset")
 

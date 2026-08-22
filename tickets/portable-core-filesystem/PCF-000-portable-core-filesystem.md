@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-02 20:25 MYT
+- Updated: 2026-08-16 16:56 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -26,14 +26,14 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-001 | Filesystem key hierarchy and credential generations | done | none |
 | PCF-002 | Shared file tools, immutable objects, catalogs, and CoreFS | done | PCF-001 |
 | PCF-003 | Machine-local Runtime and progressive indexing | done | PCF-002 |
-| PCF-004 | Diary, folders, drafts, and notes | in_progress | PCF-003 |
-| PCF-005 | Canonical threads, messages, and transcript merge | backlog | PCF-003 |
-| PCF-006 | Gallery, attachments, documents, and knowledge sources | backlog | PCF-003, PCF-005 |
-| PCF-007 | Account profile, tasks, preferences, and credentials | backlog | PCF-004, PCF-006 |
-| PCF-008 | Cutover, transfer, and first-release validation | backlog | PCF-001 through PCF-007 |
+| PCF-004 | Diary, folders, drafts, and notes | done | PCF-003 |
+| PCF-005 | Canonical threads, messages, and transcript merge | done | PCF-003 |
+| PCF-006 | Gallery, attachments, documents, and knowledge sources | done | PCF-003, PCF-005 |
+| PCF-007 | Account profile, tasks, preferences, and credentials | done | PCF-004, PCF-006 |
+| PCF-008 | Cutover, transfer, and first-release validation | in_progress | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
-| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | backlog | none |
+| PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | done | none |
 
 ## Deliverables
 
@@ -82,6 +82,11 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PCF-001 - Filesystem key hierarchy and credential generations (latest PR #90 review follow-up completed 2026-07-14 18:27 MYT).
 - PCF-002 - Shared file tools, immutable objects, catalogs, and CoreFS (PR #125 second-phase closeout completed 2026-07-28 22:57 MYT).
 - PCF-003 - Machine-local Runtime and progressive indexing (PR #127 second-phase closeout completed 2026-08-01 19:49 MYT).
+- PCF-004 - Diary, folders, drafts, and notes (implementation slice completed 2026-08-13 15:58 MYT; unreleased plaintext-draft compatibility is being removed by PCF-008).
+- PCF-005 - Canonical threads, messages, and transcript merge (completed locally 2026-08-13 11:36 MYT).
+- PCF-006 - Gallery, attachments, documents, and knowledge sources (completed locally 2026-08-13 12:41 MYT).
+- PCF-007 - Account profile, tasks, preferences, and credentials (completed locally 2026-08-13 18:40 MYT).
+- PCF-011 - Windows lease-diagnostic CI flake (completed locally 2026-08-13 12:52 MYT).
 
 ## Activity Log
 
@@ -343,12 +348,269 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - 2026-08-02 19:00 MYT - PCF-004's final focused plan review approved `433586e8` with zero remaining consequential findings. The parent and child remain `in_progress`; the reviewed child plan is ready for execution-mode handoff, with legacy authority and all external-action boundaries unchanged.
 - 2026-08-02 19:52 MYT - PCF-004 preparation Task 1 completed through `e75d0c4d`: the dedicated FRK subkey, five closed/bounded encrypted formats, canonical semantic validation, authenticated sealed publication provenance, and capability-rooted publication foundation are implemented. Final independent verification passed 11 format, 10 crypto, and 227 CoreFS library tests with 1 ignored; one intermediate known Windows lease flake passed on exact rerun. Spec and quality gates approved with zero Critical/Important findings. PCF-004 and this parent remain `in_progress`; Task 2 durable begin/resume is next and legacy authority is unchanged.
 - 2026-08-02 20:25 MYT - PCF-004 preparation Task 2 completed through `16876f6b`: durable authenticated begin/resume, bounded status, exact one-lock pointer/snapshot CAS, snapshot-before-pointer crash ordering, and fail-closed recovery are implemented. Focused recovery tests and independent full CoreFS verification (`233 passed`, `1 ignored`) passed after a spec-required tests-only repair; final quality review found zero Critical/Important issues. A minor fail-closed diagnostic classification was dispositioned as non-blocking. PCF-004 and this parent remain `in_progress`; Task 3 one-object preparation is next and legacy authority is unchanged.
+- 2026-08-12 19:18 MYT - Reconciled PCF-004 preparation Task 3 from landed `main` code in `840dfc1c`, `a6d37c29`, and `1c93e9bb`. One-object bounded preparation, durable descriptor segments, exact resume/conflict semantics, bounded paged reconciliation, graph metadata retention, and the synthetic >1 GiB memory-bound contract are implemented; current focused verification passed `10 + 1 + 3` tests. PCF-004 and this parent remain `in_progress`; Task 4 exact seal/finalize is next, and legacy SQLCipher plus inactive validation authority remain unchanged.
+- 2026-08-12 19:25 MYT - Resumed PCF-004 Task 4 test-first and completed its first bounded staging slice. Canonical final-intent metadata now publishes as independently bounded encrypted segments under exact preparation CAS, restart validates intent roots and global ordinals, and later source/object reconciliation invalidates stale staged intent. Focused tests passed `2`, all preparation tests passed `30`, and the CoreFS library passed `217` with `1` ignored. PCF-004 and this parent remain `in_progress`: the preparation is still `collecting`, `VALIDATION_HEAD` cannot yet publish through this path, and graph seal/finalize/post-head recovery remain open.
+- 2026-08-12 20:00 MYT - Completed PCF-004 resumable-preparation Task 4. Exact-CAS sealing now validates and authenticates a bounded durable final intent; one-lock finalization reconstructs the catalog without materializing decrypted bodies and publishes exactly one inactive validation generation. Deterministic encrypted completion receipts recover idempotently across validation-head, receipt, and pointer-clear crash seams, while competing heads and source drift fail closed without losing the preparation. Final gates passed: seal/finalize `11`, post-head recovery `3`, validation-batch integration `7`, CoreFS library `229 passed`/`1 ignored`, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. PCF-004 and the parent remain `in_progress`; Task 5 is next, legacy SQLCipher remains authoritative, and authoritative `HEAD` is untouched.
+- 2026-08-12 20:34 MYT - Published PCF-004 Task 4's exact commit `9f1d78cbb1f268176ca216395b3c0d9d3db2580b` to draft PR #142 on `codex/pcf-004-resumable-preparation`; GitHub reported the same remote head. No review request, monitoring, or merge action was taken.
+- 2026-08-12 20:34 MYT - Completed PCF-004 resumable-preparation Task 5 locally. Deterministic abandonment and explicit raw-pointer quarantine are crash-replayable and deletion-free; quarantine inventory captures the complete trusted keyring, and FRK activation/retirement fail closed for live, corrupt, incomplete, or missing-retained-key preparation state. Terminal calls participate in session-close admission. Final gates passed: terminal `8`, quarantine `1`, rotation `14`, CoreFS library `238 passed`/`1 ignored`, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. PCF-004 and this parent remain `in_progress`; Task 6 bounded PyO3 exposure is next, legacy SQLCipher remains authoritative, and the Task 5 commit is local/unpushed.
+- 2026-08-12 20:46 MYT - Published PCF-004 Task 5 commit `3c388643bfa7af1abb1be5e099d3a7ef88135e63` to the existing branch and PR #142; GitHub reported that exact head. No PR metadata update, review request, monitoring, or merge action was taken. PCF-004 and this parent remain `in_progress`, and Task 6 continues locally.
+- 2026-08-12 21:11 MYT - Completed PCF-004 resumable-preparation Task 6 locally. Seven versioned, bounded PyO3 operations now expose the native preparation lifecycle under session-operation admission, with one bytes-like body per object, secret-free wire outputs, typed conflict/corruption/source-fence errors, close rejection, and active-operation drain coverage. Final gates passed: default boundary `2`, Python-feature boundary/integration `9`, targeted close-drain `1`, CoreFS library `238 passed`/`1 ignored`, Python feature check, adjusted strict Clippy, rustfmt, diff hygiene, and repository organization. The broader Python session band passed `18/19`; its sole pre-existing pinned-root symlink layout case fails before session construction under current fail-closed layout validation. PCF-004 and this parent remain `in_progress`; Task 7 transactional SQLCipher source fencing is next, legacy authority is unchanged, and no Task 6 publication is authorized.
+- 2026-08-12 21:30 MYT - Completed PCF-004 resumable-preparation Task 7 locally. Linear Core revision `20260812_0001` and the legacy unstamped-database repair now install authoritative per-user SQLCipher triggers for every folder, entry, and attachment mutation, including ownership changes and cascades; the monotonic source generation advances in the writer transaction, rolls back atomically, and is fenced by `BEGIN IMMEDIATE`. The revision advances the already-occupied `20260802_0001` head without branching. Final gates passed: affected migration/API band `32`, deterministic two-connection encrypted exclusion, exactly one Alembic head, full server Ruff, diff hygiene, and repository organization. PCF-004 and this parent remain `in_progress`; Task 8 streaming orchestration is next, legacy SQLCipher remains authoritative, and no Task 7 publication is authorized.
+- 2026-08-12 22:24 MYT - Completed PCF-004 resumable-preparation Task 8 locally. The server now streams deterministic writing inventory through the bounded native preparation lifecycle, reconciles crash-durable objects, finalizes under the live SQLCipher source fence, and verifies only bounded metadata or one body at a time; the aggregate Python/PyO3 production path is removed. Browser draft handoff uses durable revision/hash completion CAS and retains concurrent edits. Restart/finalization fault injection and synthetic >1 GiB logical-inventory coverage are green, as are affected Python `53`, client/desktop `30`, Python-feature bindings `9`, the manifest UUID Core identity regression, formatting, lint, and diff hygiene. PCF-004 and this parent remain `in_progress`; Task 9 full validation and independent implementation review are next, legacy SQLCipher remains authoritative, and no Task 8 publication is authorized.
+- 2026-08-13 01:04 MYT - PCF-004 Task 9 validation and independent review completed through local implementation `8664cbcca83e7607a9af327169b7fecce36fca43`. The bounded resumable-preparation protocol and all review-driven recovery/security fixes are green: CoreFS `243 passed`/`1 ignored`, affected Python `103`, desktop `17`, build/format/diff/health, plus an earlier repository-wide `3457 passed`/`2 skipped`; final focused re-review found no remaining code correctness or data-loss issue. PCF-004 and its parent row are now `blocked`, not done, because safely retaining edits from uncooperative legacy localStorage writers is incompatible with deleting the plaintext key without an approved writer-exclusion/cleanup protocol. Clearance requires that protocol or an explicit PRD/spec/acceptance revision assigning cleanup later. This parent remains `in_progress` because PCF-005 is independently dependency-eligible and unclaimed; parent ownership is unchanged.
+- 2026-08-13 01:25 MYT - PCF-004's proposed packaged writer-exclusion cleanup addendum and Task 10 passed independent review after closing release-target TOCTOU, source/sidecar crash ordering, platform identity/process testability, orphan-sidecar recreation, and Debian trust-anchor gaps. The reviewed protocol requires replacement-only MSI/signed-PKG/DEB/RPM release verification, reboot plus pre-WebView lifetime launch gating, consume-time native target/census checks, a one-shot bounded capability, source-first cleanup, and signed Linux installed identity. The child and its parent row remain `blocked` solely pending explicit user design approval; this initiative remains `in_progress` because PCF-005 is independently eligible. No Task 10 implementation, release change, or external publication has begun.
+- 2026-08-13 01:56 MYT - The user explicitly approved PCF-004's independently reviewed Task 10 packaged writer-exclusion design. Cleared the recorded blocker and synchronized the child plus parent row to `in_progress`, preserving child ownership and its original `Started:` timestamp. Task 10 resumes locally on `codex/pcf-004-resumable-preparation` from `aed28abd4fed566595d9b4abbfc83eaae23d9bc7`; this parent remains `in_progress`, PCF-005 remains eligible/unclaimed, and no post-Task-5 publication is authorized.
+- 2026-08-13 03:45 MYT - PCF-004 Task 10 implementation completed locally and passed independent final review without a substantive correctness, no-loss, security/privacy, bounded-memory, loaded-image identity, legacy compatibility, or acceptance-testability finding. The replacement installer contract, protected predecessor/current identities, reboot-bound launch gate, native census, one-shot cleanup authority, and source-first renderer deletion are implemented; native `11 + 5`, strict desktop Clippy, affected Bun `24`, desktop build, workflow parsing, repository organization, and diff hygiene passed. PCF-004 and this parent remain `in_progress` because child closure still requires actual protected Windows, macOS, DEB, and RPM signed-package workflow results plus artifact digests. PCF-005 remains eligible/unclaimed, and no post-Task-5 publication or workflow execution is authorized.
+- 2026-08-13 03:48 MYT - At the user's explicit cost constraint, removed every trigger from PCF-004's reviewed four-platform package-evidence workflow and retained the implementation locally for later re-enablement. A source-contract regression keeps the workflow cost-disabled. PCF-004 and this parent remain `in_progress`; no push or workflow execution occurred, the evidence gate is intentionally deferred, and PCF-005 remains eligible/unclaimed.
+- 2026-08-13 03:58 MYT - Published PCF-004's reviewed Task 6 through Task 10 implementation and cost-disable follow-up to existing PR #142. GitHub reported exact branch head `0243e0e04f6939b3d67602b31c42c8b2e9af415a`; no checks or paid package-evidence workflow were launched. PCF-004 and this parent remain `in_progress`, PCF-005 remains eligible/unclaimed, and no review request, monitoring, or merge action was taken.
+- 2026-08-13 04:00 MYT - Claimed PCF-005 as the first eligible backlog child after rechecking its completed PCF-003 dependency and absence of any visible claim. Synchronized the child and parent row to `in_progress` on local stacked branch `codex/pcf-005-conversations` from published PCF-004 head `83f2490058f9e8c6565716cc5eee0b44bed530d3`; parent ownership is unchanged, PCF-004 remains independently open on cost-deferred package evidence, and no PCF-005 external action is authorized.
+- 2026-08-13 11:36 MYT - Completed PCF-005 locally and synchronized its child state, parent row, completed history, validation, changed paths, and residual follow-ups. Canonical message events/segments, projection privacy, merge quarantine, shared/manage conversations-root validation, stable-role reads, combined inactive preparation, and fail-closed post-cutover routing are implemented; focused `101`, adjacent PCF-004 `50`, native validation `8`, strict lint/Clippy/format/build/check, repository build, and diff hygiene passed. PCF-006 is now dependency-eligible. PCF-004 remains separately `in_progress` on its intentionally cost-deferred four-platform signed-package evidence; no PCF-005 external action was authorized or performed.
+- 2026-08-13 11:39 MYT - Claimed PCF-006 as the next dependency-eligible child after PCF-005 completed locally. Synchronized the child and parent row to `in_progress` on local stacked branch `codex/pcf-006-assets-documents` from `d3ab653e`; parent ownership is unchanged, PCF-004 remains independently open on cost-deferred package evidence, and no PCF-006 external action is authorized.
+- 2026-08-13 12:41 MYT - Completed PCF-006 locally and synchronized its child state, parent row, plan checklist, validation, changed paths, and residual activation boundary. Gallery/assets/documents/captured sources publish in the combined inactive preparation with authenticated streaming reads, CoreFS URI reconciliation, stable-role recovery, pathless PDF parsing, and Runtime-deletion rebuild into scrubbed unlock-only image/document/evidence/concept projections. The focused band passed `219`, adjacent regressions `121`, Runtime plaintext/privacy `52`, native validation `9`, strict lint/Clippy/format/PyO3 check, complete workspace build, repository organization, and diff hygiene. PCF-007 remains blocked only by PCF-004's cost-deferred four-platform package evidence; PCF-011 is the next dependency-eligible backlog child. No PCF-006 external action was authorized or performed.
+- 2026-08-13 12:44 MYT - Claimed dependency-free PCF-011 for Codex on local branch `codex/pcf-011-windows-lease-flake` from PCF-006 completion head `290e8c62`; the child and parent row now agree on `in_progress`. PCF-007 remains dependency-ineligible on PCF-004's user-deferred paid four-platform package evidence. Automatic paid workflow triggers remain disabled, and no external action was authorized.
+- 2026-08-13 12:52 MYT - Completed PCF-011 locally with a one-retry, exact-signature, fresh-fixture policy for the tracked Windows resource-budget diagnostic; persistent exact failures and unrelated failures remain fatal. Platform-neutral retry regressions passed on current and Rust 1.75 toolchains, the complete affected catalog target passed `11`, logical-path `4`, validation-batch `9`, strict current/pinned Clippy, format, and diff hygiene passed. The paid workflow remains manual-only and was not dispatched. PCF-004's cost-deferred signed-package evidence is now the sole open prerequisite before PCF-007 can be claimed; no external action was authorized.
+- 2026-08-13 12:53 MYT - Dependency recomputation after PCF-011 completion found no eligible child. PCF-004 and this parent are now `blocked` on the user's intentionally cost-deferred Windows/macOS/DEB/RPM signed replacement-install results and artifact digests. PCF-007 depends on PCF-004; PCF-008 depends on PCF-007; PCF-009 and PCF-010 require PCF-008 plus their separate observation/backup/approval gates. The protected workflow remains triggerless/manual-only and was not dispatched. Clearance requires later authorization for funded execution or equivalent authenticated four-platform evidence.
+- 2026-08-13 15:54 MYT - User approved moving PCF-004's cost-bearing final signed-package executions into PCF-008 as a mandatory pre-cutover/first-release gate, without waiving them. Cleared PCF-004's blocker and restored this parent plus its child row to `in_progress` for closeout. PCF-008 now explicitly requires all four protected native results and exact artifact digests; the workflow remains triggerless and no external action was authorized.
+- 2026-08-13 15:58 MYT - Completed PCF-004 as the fully implemented, locally validated, independently reviewed diary/notes slice under the user-approved evidence sequencing; final signed Windows/macOS/DEB/RPM execution remains mandatory in PCF-008. In the same dependency transaction, claimed now-eligible PCF-007 for Codex on local branch `codex/pcf-007-account-settings` from `031f5857` and synchronized its row to `in_progress`. Parent ownership is unchanged, the workflow remains triggerless, and no external action was authorized.
+- 2026-08-13 16:26 MYT - PCF-007 Steps 1-2 completed locally with an exact persisted-state classification and bounded encrypted account-profile/preferences/task conversion. Focused Python passed `10`, the affected CoreFS migration band passed `73`, native converter coverage and desktop storage classification passed, and lint/format/diff hygiene is clean. PCF-007 remains `in_progress` on credentials, unlock/task/preference rewiring, secret/config migration, client grants, and neutral pre-unlock behavior; no external action was taken.
+- 2026-08-13 16:56 MYT - PCF-007 Step 3 completed locally with one fail-closed OS credential boundary across Python, native desktop/daemon, and anima-mod. Provider and mod secrets, Google OAuth, and the daemon token now use verified secure storage; short-lived audience-bound mod capabilities have no generic browser read route; legacy file/browser/SQLite/config secret copies use exact copy-verify-scrub migration. Focused Python, desktop, anima-mod, native, launcher, lint, format, build, and diff checks passed. PCF-007 remains `in_progress` on unlock, task/preference authority, remaining classified migrations, client grants, and neutral locked UI; no external action was taken.
+- 2026-08-13 17:07 MYT - PCF-007 Step 4 completed locally. Versioned account login now follows manifest keyslot -> opaque owner -> SQLCipher -> Soul keyslots -> CoreFS keys -> authenticated encrypted account-profile, while old manifest username indexes are scrubbed and crash recovery uses the opaque single-owner binding. The stable auth band passed `13`, focused owner/keyslot regressions `6`, account migration `2`, plus Ruff/diff hygiene; the known background-index teardown crash remains isolated to two unrelated auth-file tests. PCF-007 remains `in_progress` on task/preference authority, remaining classified migrations, client grants, and neutral locked UI; no external action was taken.
+- 2026-08-13 17:14 MYT - PCF-007 Step 5 completed locally. Task CRUD now copy-verifies each encrypted shadow after the legacy commit; an authenticated marker-pinned task reader takes over only at global cutover and prevents any further SQL mutation while PCF-008 retains the first-write activation adapter. Python/Rust task priority bounds now match the public `1..5` schema. Task/account regressions passed `7`, native converter validation `1`, plus Ruff/diff hygiene. PCF-007 remains `in_progress` on portable preferences, remaining classified migrations, client grants, and neutral locked UI; no external action was taken.
+- 2026-08-13 17:33 MYT - PCF-007 Step 6 completed locally. The desktop now migrates every classified portable renderer preference into the encrypted CoreFS preference document only after exact response verification, preserves concurrent changes for retry, keeps host/custom media metadata device-local, and refuses browser data-URL persistence. Presence commits synchronously validate the same encrypted shadow, while PCF-004 remains the completed draft-migration authority. Focused server regressions passed `12`, desktop/API-client tests `33`, TypeScript and the production desktop build passed. PCF-007 remains `in_progress` on remaining classified migrations, client grants, and neutral locked UI; no external action was taken.
+- 2026-08-13 18:04 MYT - PCF-007 Step 7 completed locally. Obsolete manifest runtime-engine fields, Telegram/Discord bindings, and regeneration flags now migrate copy-verify-scrub into machine-local instance state; successful unlock imports and hash-verifies legacy plaintext `soul.md`; onboarding publishes the encrypted account-profile shadow; and anima-mod literal YAML plus legacy SQLite secrets migrate into verified OS credential references before source scrubbing. Focused server bands passed `27`, `13`, `44`, `2`, and `1`; anima-mod credential/config/Google tests passed `19`, with Ruff, TypeScript, and diff hygiene green. PCF-007 remains `in_progress` on client grants, neutral locked UI, and final validation; no external action was taken.
+- 2026-08-13 18:28 MYT - PCF-007 Step 8 completed locally. Device-local trusted installation records and stable-folder grants now bind exact Core/instance/package/publisher/digest/scope/generation state; user settings require explicit approval and scope expansion, while downgrade/revocation are immediate. One-shot unlock-bound client capabilities are grant-checked before and after reads, and transfer, collision, update, replay, lock, reserved-role, and sibling-folder cases fail closed. Focused server coverage passed `52`, desktop/API-client tests passed `2 + 27`, and the production desktop build, Ruff, and diff hygiene passed. PCF-007 remains `in_progress` on neutral pre-unlock verification and final validation; no external action was taken.
+- 2026-08-13 18:35 MYT - PCF-007 Step 9 completed locally. Locked routes now scrub legacy profile/login hints and expose only neutral ANIMA state: no remembered username, profile/avatar, portable customization, or device-custom track metadata is rendered before unlock. OS locale/direction, system color scheme, reduced motion, contrast, and forced colors drive the locked surface, including a deterministic still ASCII frame under reduced motion. Desktop privacy/storage coverage passed `5`, the checked inventory passed `7`, and the production desktop build plus diff hygiene passed. PCF-007 remains `in_progress` only for full Step 10 validation and closeout; no external action was taken.
+- 2026-08-13 18:40 MYT - Completed PCF-007 locally and synchronized its child state, parent row, completed history, plan checklist, validation, changed paths, and residual PCF-008 activation boundary. The final matrix passed backend `128`, desktop `9`, anima-mod `13`, API client `27`, startup/health `2`, native daemon/Tauri checks, full repository build, full lint, and diff hygiene. PCF-008 is now dependency-eligible and retains first-write cutover, transfer/recovery, and the user-deferred signed Windows/macOS/DEB/RPM evidence; no external action was taken.
+- 2026-08-13 18:41 MYT - Claimed now-eligible PCF-008 for Codex on local branch `codex/pcf-008-cutover-transfer` from completed PCF-007 head `1067becf` and synchronized its parent row to `in_progress`. Scope begins with reversible cutover-state and transfer failure tests; the triggerless paid four-platform package workflow, irreversible first-write marker, release publication, and merge remain unauthorized.
+- 2026-08-13 18:58 MYT - PCF-008 Step 1 completed locally. Exact reversible manifest states now remain subordinate to the authenticated committed `fs/HEAD` marker; unlock recovers the post-HEAD/pre-manifest crash seam into forward-only authority, rejects markerless forward claims, and prevents post-marker rollback. Native logical reads and stable-role resolution switch from validation to committed authority only after the marker. Server cutover/session coverage passed `82`, the full CoreFS native suite and strict CoreFS Clippy passed, and the Python-enabled binding compile-check plus scoped lint/format/diff hygiene passed. The protected paid workflow remains disabled, and no irreversible first mutation or external action occurred.
+- 2026-08-13 19:22 MYT - PCF-008's first transfer milestone added the exact registered `anima_core_v2` header/KDF, bounded authenticated Rust streaming with closed payload allowlists and a >16-MiB round trip, plus local capacity/file-limit probing and crash-injected single/controller-last multipart publication. Rust archive coverage passed `6`, Python transfer publication coverage passed `31`, and scoped Clippy/Ruff/format/diff gates passed. Step 2 and Step 7 remain open for live pinned snapshots, native multipart-set authentication, import activation, and API/UI work; no paid workflow or irreversible cutover action occurred.
+- 2026-08-13 19:34 MYT - PCF-008 import activation now uses a same-volume verified sibling, authenticated generation-monotonic active-Core pointer, authenticated restart journal/completion, and retained-old-Core rollback without deletion. All directory/pointer/completion failure seams, pointer tampering, symbolic-link rejection, capacity preflight, and rollback replay pass in the `42`-test focused transfer suite. The paid package workflow remains disabled and no irreversible cutover action occurred.
+- 2026-08-13 19:39 MYT - PCF-008 now copy-verifies and atomically activates the single owner Soul at `.anima/soul/soul.db` after clean WAL checkpoint plus page/cipher/FK/schema and deterministic retained-table checks, while preserving the encrypted legacy copy until the forward-only marker. Crash resume, target/source mutation rejection, canonical post-flip routing, cutover/auth, and broader database/runtime regressions pass (`5`, `35`, and `70` focused bands). Step 3 remains open for the wider converter/acceptance/fresh-Runtime orchestration; no paid or irreversible action occurred.
+- 2026-08-13 19:45 MYT - PCF-008 now drives the combined portable-content converter through a plaintext-free instance-scoped Runtime journal with restart-safe preflight/freeze/convert/verify/accept-or-reject states and explicit failure retry. Every coordinator and manifest crash seam passes in the `76`-test combined PCF-008 band, and the full `52`-test Runtime privacy suite remains green. Step 3 still needs production API/fixture parity and the fresh Runtime transition; no paid or irreversible action occurred.
+- 2026-08-13 19:56 MYT - PCF-008 now exposes the Rust V2 archive through a bounded Python bridge and derives transfer inputs only from the authenticated committed native inventory under the object lease. Wrapped keyslots are transient, escaped/unreachable sources are rejected, verification extracts only into disposable same-volume staging, and the focused archive gates pass (`6` Rust, `3` Python, Python-enabled compile-check, Ruff/diff). Multipart global-nonce/controller authentication and coherent Soul checkpoint generation remain open; the paid signed-package workflow stays disabled and no irreversible or external action occurred.
+- 2026-08-13 20:07 MYT - PCF-008 now has an authenticated local estimate/probe/background-export/progress/cancel API plus API-client and desktop Core Transfer flow. The UI makes full export primary, labels advanced degraded recovery, displays checkpoint/capacity/file-limit/publication/verification state, and redirects the legacy Vault screen; it explicitly gates restore and multipart until their native authority is complete. Transfer backend tests pass `48`, API/desktop contracts `31`, and the desktop production build plus PyO3/Ruff/diff checks pass. No paid workflow, push, or irreversible cutover action occurred.
+- 2026-08-13 20:26 MYT - PCF-008 now has a tested native first/normal logical mutation transaction, exact PyO3 selected-snapshot binding, manifest-to-authenticated-HEAD crash reconciliation, and a closed-schema HTTP dispatch path. The public mutation readiness constant intentionally remains false until all content-family adapters and the deferred signed-package evidence pass, so this milestone cannot consume the irreversible marker. Native mutation coverage passes `7`, the focused server band `66`, API client `28`, strict CoreFS Clippy, the Python binding compile-check, scoped anima-core Clippy, formatting, and diff hygiene all pass. No paid workflow, push, or irreversible cutover action occurred.
+- 2026-08-13 20:33 MYT - PCF-008 partial transfer manifests now enforce their declared compartment: Soul export retains only Soul root wrappers and removes filesystem authority, while CoreFS-only export retains only FRK wrappers and removes SQLCipher root material. Explicit degraded-state/scope metadata is included, malformed scoped slots fail closed, and the transport passphrase remains separate from normal Core unlock. The focused archive tests pass `6` and the combined transfer/API band passes `51`; restore activation and the paid signed-package gate remain disabled, with no external or irreversible action taken.
+- 2026-08-13 20:43 MYT - PCF-008 now exposes safe restore staging without activation. Exact archive/source/capacity preflight is consumed again immediately before bounded authenticated extraction; native inventory, manifest scope/identity, keyslot snapshot, degraded state, symlink/extra-file rejection, and cancellation all fail closed with residue cleanup. The desktop can verify and stage full/Soul/CoreFS artifacts but explicitly leaves the running Core unchanged and activation restart-gated. Backend transfer coverage passes `60`, API/desktop contracts `32`, and the desktop production build passes; the paid workflow remains disabled and no external or irreversible action occurred.
+- 2026-08-13 20:52 MYT - PCF-008 startup now selects the active Core through a machine-local HMAC-authenticated registry whose 32-byte key exists only in the OS credential store. Pointer Core IDs are bound to bounded regular manifests, interrupted full-restore activation recovers before the Core lock/database bootstrap, the old Core remains the rollback target, and partial recovery modes cannot activate. Focused startup/transfer coverage passes `56` and encrypted startup/auth passes `17` with `4` environment skips. The product activation endpoint and paid workflow remain disabled; no external or irreversible action occurred.
+- 2026-08-13 20:56 MYT - PCF-008 full restore can now be scheduled through an authenticated restart intent without changing the running Core. Startup consumes the intent through the journaled directory/pointer/completion transaction, retains the prior Core, and deletes the request durably; partial modes cannot schedule. Backend startup/transfer coverage passes `67`, API/desktop contracts `32`, and the desktop production build passes. No live pointer swap, paid workflow, push, or irreversible cutover action occurred.
+- 2026-08-13 21:03 MYT - PCF-008 retained-Core rollback is now exposed as an explicitly confirmed authenticated restart intent. It changes no live pointer, exposes no machine path, requires a complete Soul plus committed CoreFS shape for both pointer-selected Cores at the next pre-resource startup, and consumes the existing crash-idempotent pointer/completion transaction before durably deleting the request. Focused backend coverage passes `71`, API/desktop contracts `33`, and the desktop production build passes. No live pointer swap, paid workflow, push, or irreversible cutover action occurred.
+- 2026-08-13 21:13 MYT - PCF-008 now has a bounded authenticated encrypted recovery bundle for the relocated legacy PostgreSQL source. It is create-only and machine-local outside the portable Core, encrypts paths/content under an OS-credential-held key, rejects source drift/tampering/missing credentials, resumes a durable partial, and re-verifies before reporting ready. Plaintext retirement separately requires durable forward-only authority, stopped PostgreSQL, verified recovery, and a fresh Runtime database; only temporary fixtures were deleted. The focused recovery/relocation/orchestration/cutover band passes `46`. Automatic lifecycle wiring remains open, and no external or irreversible action occurred.
+- 2026-08-13 21:21 MYT - PCF-008 restart lifecycle now prepares/re-verifies legacy Runtime recovery before a forward-only embedded startup selects the fresh PostgreSQL directory, and retires plaintext only after the fresh database claims the exact Core/instance identity, completes schema setup, and initializes indexes. Explicit external Runtime follows the same post-binding gate; a live/ambiguous legacy postmaster fails closed. The expanded Runtime/cutover band passes `96` and focused final rerun `55`. First-mutation restart coordination remains open; no real source deletion, external action, or irreversible cutover occurred.
+- 2026-08-13 21:34 MYT - PCF-008 live transfer now captures Soul through a WAL-checkpointed, pinned SQLite/SQLCipher online backup that is independently integrity/inventory verified and remains encrypted at rest. Full/CoreFS capture freezes `fs/HEAD`, rechecks the authenticated native inventory after Soul capture, and binds streaming to the exact generation/catalog hash while retaining the object lease; temporary snapshots are removed on all paths and private inventory hashes stay out of the API. The combined transfer/Soul band passes `70`, native archive tests `6`, the Python binding compile-check, and a real SQLCipher regression. Multipart/V1 and later cutover gates remain open; the paid workflow stays disabled and no external or irreversible action occurred.
+- 2026-08-13 21:42 MYT - PCF-008 now exposes the required closed V1 CoreFS-to-Soul attachment operation: an authenticated owner may address only a completed CoreFS-only staged recovery, which deterministically returns HTTP 409 `corefs_reattachment_not_supported` without paths or internals. Backend coverage passes `9` and API-client coverage `30`; recovery-only browse/export and scoped credential controls remain open. No external or irreversible action occurred.
+- 2026-08-13 21:58 MYT - PCF-008 CoreFS-only staged recovery now supports authenticated bounded stat/list/read without attachment or activation. Each request uses an ephemeral compartment-limited unlock, authenticates filtered filesystem wrappers under their original source-scope AAD, rejects foreign root material, rechecks the archive-authenticated control records and imported generation before and after native access, rate-limits expensive unwrap attempts, closes the native session, and exposes no staging path or private error. Pre-cutover archives use a serialized byte-exact temporary validation-pointer alias derived from authenticated HEAD and remove it on every exit. The broader transfer band passes `76`, API-client/desktop contracts `33`, and the desktop production build passes. Re-export and scoped recovery-credential replacement remain open; no external or irreversible action occurred.
+- 2026-08-13 22:21 MYT - PCF-008 CoreFS-only recovery now supports separately confirmed scoped credential replacement. One request-local source credential opens only the FS compartment; fresh password/recovery generations wrap exactly those FRKs at `fs` scope and independently reopen before keyslot-inventory-then-manifest publication. Injected failures restore both original controls, updated authenticated hashes gate later access, no Soul authority can enter, and neither request credentials nor the returned-once phrase are retained. The transfer band passes `82`, API-client/desktop contracts `33`, desktop build and scoped hygiene pass. Recovery-only re-export remains open; no external or irreversible action occurred.
+- 2026-08-13 22:35 MYT - PCF-008 recovery-only re-export now streams a new verified FS artifact from the exact authenticated staging Core without consulting, attaching, or activating the live Core. One request-local credential opens the FS compartment; explicit staged root/manifest authority, generation/control rechecks, native object-lease pinning, verified cancellable `.partial` publication, forbidden active/staged destinations, and unconditional native-session close protect the flow. The transfer band passes `86`, API-client/desktop contracts `33`, desktop build and scoped hygiene pass. Multipart remains open; no external or irreversible action occurred.
+- 2026-08-13 22:54 MYT - PCF-008 began Step 8 writable-authority replacement: authenticated forward-only task CRUD and portable-preference patches now use native optimistic CoreFS mutations only, propagate trusted generation changes across local sessions, invalidate active indexes, create canonical task identity/body atomically, and trash deleted tasks beneath stable `core.trash` without using the retained SQL allocator or write path. Focused task/preferences tests pass `11`, diary migration `40`, native mutation `7`, and scoped hygiene passes. Remaining content families and raw plaintext scans keep Step 8 open; no external or irreversible action occurred.
+- 2026-08-13 23:04 MYT - PCF-008 presence authority now follows the same
+  forward-only preference object: API reads/writes and background consent
+  decisions authenticate CoreFS, native mutation preserves the consent lock,
+  retained `presence_configs` remains byte-for-byte legacy recovery state, and
+  a locked forward-only process refuses stale SQL. Focused preference coverage
+  passes `7`, account/initiative/dream coverage passes `152`, and scoped
+  hygiene passes. Remaining content-family writers and raw scans keep PCF-008
+  in progress; no external or irreversible action occurred.
+- 2026-08-13 23:17 MYT - PCF-008 account identity/onboarding authority now
+  reads and mutates only the authenticated account-profile object after
+  cutover, including login hydration and identity-override gates. Canonical
+  username changes survive logout/login while retained SQL account/setup rows
+  remain unchanged; unsafe directory-only account deletion now fails closed
+  pending restart-safe whole-Core coordination. The account/login/onboarding
+  band passes `50` and scoped hygiene passes. Remaining writer families and
+  raw scans keep PCF-008 in progress; no external or irreversible action
+  occurred.
+- 2026-08-13 23:32 MYT - PCF-008 canonical thread lifecycle now routes
+  list/read, create/reuse, reset/clear, close, and delete through authenticated
+  bounded CoreFS snapshots and native optimistic commits only. Atomic
+  close-plus-create and thread-plus-segment trash preserve retained Runtime
+  rows as recovery state; migrated visible content remains readable. Focused
+  conversation/chat coverage passes `36` and native patch/CoreFS coverage
+  passes `22`. Visible message persistence and remaining writer families keep
+  PCF-008 in progress; no external or irreversible action occurred.
+- 2026-08-13 23:49 MYT - PCF-008 ordinary blocking and streaming agent turns
+  now append visible user/assistant bodies only to authenticated CoreFS message
+  segments and rebuild prompt history from canonical content. Fresh Runtime
+  message rows contain null bodies plus CoreFS message/event references, and
+  thread-scoped segment names prevent multi-thread catalog collisions. Route
+  and migration coverage passes `15`; approval resume, edit/delete,
+  attachments, remaining writer families, and raw scans remain. No external
+  or irreversible action occurred.
+- 2026-08-13 23:56 MYT - PCF-008 approval checkpoints now remain sealed
+  operational Runtime state with null raw prompt/argument fields, while a
+  resumed visible response returns only to canonical CoreFS. Independent
+  canonical and Runtime sequence identities plus resumed step offsets prevent
+  collisions. The combined approval/agent/chat regression band passes;
+  edit/delete, attachments, remaining writers, and raw scans remain. No
+  external or irreversible action occurred.
+- 2026-08-14 05:24 MYT - PCF-008 canonical message edit/delete now use
+  immutable authenticated events with exact prior-event/version preconditions,
+  bounded tail retry, native optimistic commit, terminal deletion, and correct
+  visible-count projection without Runtime/Soul writes. Focused coverage passes
+  `15`; attachments, remaining writers, and raw scans remain. No external or
+  irreversible action occurred.
+- 2026-08-14 14:10 MYT - PCF-008 diary entry/folder CRUD and monotonic draft
+  handoff now route through authenticated CoreFS after cutover, including
+  recoverable trash and crash-retry-safe unfile/move sequencing. The route
+  regression proves retained SQL counts remain unchanged; diary/migration
+  coverage passes `51`. Binary attachment and remaining asset/document/
+  knowledge writers plus raw scans remain. No external or irreversible action
+  occurred.
+- 2026-08-14 14:29 MYT - PCF-008 added the first post-cutover binary mutation
+  adapter and routed diary attachment upload, authenticated download, canonical
+  metadata linking, and cover selection through CoreFS only. Bounded uploads
+  are reopened and byte/hash/type verified, retained Soul attachment rows
+  remain unchanged, and the diary/asset/document-migration band passes `59`
+  with scoped hygiene green. Remaining image/avatar/chat/document/knowledge
+  writers and raw scans keep PCF-008 active; no external or irreversible
+  action occurred.
+- 2026-08-14 14:38 MYT - PCF-008 agent avatars now upload, stream, replace,
+  project into profile/biography responses, and delete only through canonical
+  `core.gallery` authority after cutover. Retained DB metadata and plaintext
+  avatar files remain untouched and cannot become read fallback. The focused
+  cutover regression and wider `39`-test account/biography/creation/asset band
+  pass with scoped hygiene green. Remaining chat/image/document/knowledge
+  writers and raw scans keep PCF-008 active; no external or irreversible
+  action occurred.
+- 2026-08-14 14:50 MYT - PCF-008 chat-image upload, provider input, canonical
+  history, authenticated message-bound download, unlink, and recoverable
+  deletion now use CoreFS without creating new Runtime image/link rows or host
+  plaintext. The scoped legacy/canonical chat-image band passes `47` with Ruff
+  and diff hygiene green. Image-gallery/document/knowledge writers and raw
+  scans keep PCF-008 active; no external or irreversible action occurred.
+- 2026-08-14 14:57 MYT - PCF-008 PDF upload, registration, parse/reparse input,
+  and derived source synchronization now use authenticated CoreFS originals;
+  legacy storage-path starts fail closed and only sealed/rebuildable Runtime
+  projections remain. The broader document band passes `104` plus the focused
+  authority rerun, with scoped hygiene green. Image-gallery/knowledge writers
+  and raw scans keep PCF-008 active; no external or irreversible action
+  occurred.
+- 2026-08-14 15:16 MYT - PCF-008 direct text/Markdown/web/HTML knowledge
+  ingestion, derived compile/search, and offline HTML re-extraction now use
+  authenticated CoreFS documents that preserve original plus normalized
+  content without new Runtime knowledge rows. Migrated gallery image reads,
+  encrypted retention sidecars, and source-first recoverable forget also use
+  CoreFS without retained Runtime mutation. The widened band passes `99` with
+  scoped Ruff green. OKF bundle import/export/lint and raw scans remain; no
+  external or irreversible action occurred.
+- 2026-08-14 15:25 MYT - PCF-008 canonical OKF import now validates bounded
+  archives before stable idempotent CoreFS publication, while OKF export and
+  lint derive only from authenticated projections and create no Runtime
+  concepts/links. The knowledge/OKF band passes `61`. The full raw persistence
+  scan remains; no external or irreversible action occurred.
+- 2026-08-14 15:32 MYT - PCF-008's bounded raw privacy gate passes against a
+  real stopped embedded PostgreSQL data directory and exact cache/log/index
+  roots with eight seeded private marker classes present only as authenticated
+  ciphertext. The Runtime privacy/relocation/database band passes `107`, and
+  the discovered legacy bad-stamp migration seam is repaired. Restart-safe
+  whole-Core account deletion remains the Step 8 gap; no real deletion,
+  external action, or irreversible cutover occurred.
+- 2026-08-14 16:01 MYT - PCF-008 now publishes and imports native
+  controller-last multipart V2 archive sets with shared KDF material,
+  non-overlapping global nonce blocks, exact ordered part commitments, complete
+  aggregate inventory validation, and failed-stage cleanup. FAT-like export,
+  recovery re-export, controller-aware import preflight, and product operation
+  status are wired; native tests pass `7` and the focused transfer band passes
+  `79`. Backward V1/JSON import and restart-safe whole-Core account deletion
+  remain before PCF-008 closeout. The paid package workflow is still disabled,
+  and no external, destructive, or irreversible action occurred.
+- 2026-08-14 16:13 MYT - PCF-008 completed backward V1/JSON import and enabled
+  the now-authenticated multipart desktop path. Legacy JSON/capsule restore is
+  explicitly pre-cutover-only, reports required canonical migration, clears
+  unlock sessions, and rejects every later cutover state before mutation. The
+  Vault suite passes `28`, desktop transfer contracts pass `3`, and the
+  production desktop build plus scoped Ruff/diff hygiene pass. PCF-008 Steps 2
+  and 7 are complete; restart-safe whole-Core account deletion is the remaining
+  local behavior gap before the separately authorized release evidence gate.
+  The paid workflow remains disabled and no external or irreversible action
+  occurred.
+- 2026-08-14 16:35 MYT - PCF-008 Step 8 is locally complete. Post-cutover
+  account deletion is now an authenticated restart-only transaction that
+  revokes unlock state immediately, requires the exact Runtime binding to be
+  stopped, and crash-resumably removes the active Core, retained rollback Core,
+  Runtime instance, machine registries, and obsolete credential before a fresh
+  empty Core can initialize. All seven durable seams, live-process exclusion,
+  tamper preservation, zero-based owner compatibility, client response, and
+  desktop restart guidance are covered; focused server tests pass `42`, Bun
+  contracts pass `34`, and the desktop build plus full Server Ruff pass. No
+  real data was deleted, the paid workflow remains disabled, and PCF-008 stays
+  in progress for Steps 3-5, documentation, full validation, and separately
+  authorized signed-package evidence.
+- 2026-08-14 17:05 MYT - PCF-008 Steps 3 and 5 are locally complete. The
+  product now exposes resumable migration status plus explicit reversible
+  acceptance/rejection, requires a verified relocated Soul before acceptance,
+  restores legacy routing on rejection, and retires the old Soul copy only at
+  forward-only startup. First-write cutover is restart-fenced by an exact
+  encrypted legacy Runtime recovery bundle; stopped-source drift refreshes
+  through a crash-safe authenticated swap, the committing response signals a
+  second restart, and subsequent portable writes stay blocked until fresh
+  Runtime verification and exact plaintext retirement. Runtime migration
+  progress retains no content-derived hashes. Focused server tests pass `67`,
+  Bun contracts pass `37`, and Server Ruff plus the desktop build pass. PCF-008
+  remains active for Step 4's separately authorized signed-artifact/irreversible
+  gate, architecture documentation, and full validation; the paid workflow is
+  still disabled and no real cutover or external action occurred.
+- 2026-08-14 17:16 MYT - PCF-008 Step 9 is complete. All canonical thesis,
+  architecture, schema, memory/document/source, and PRD surfaces now use the
+  implemented Soul/CoreFS portable authority plus machine-local Runtime
+  boundary, including exact storage/key/route/cutover/transfer/recovery and
+  restart-only lifecycle contracts. The filesystem architecture intentionally
+  keeps planned status until the mandatory signed-package/irreversible gate
+  passes. Repository organization and diff hygiene pass. PCF-008 remains
+  active for Step 4, focused/full validation, and cost-deferred package
+  evidence; no paid workflow or external/irreversible action occurred.
+- 2026-08-16 02:57 MYT - PCF-008 completed every feasible local portion of
+  focused and full validation. The focused server authority/transfer matrix
+  passes `211`, desktop transfer contracts pass `3`, native capsule/archive
+  filters pass `15` and `7`, the complete desktop suite passes `371`, and the
+  complete server suite passes `3703` with `6` environment skips. Root
+  lint/build, a temporary Alembic upgrade to head, isolated temporary-Core
+  health, repository organization, and diff hygiene pass. A full-suite CoreFS
+  rebuild-worker/Runtime-engine teardown race was fixed with explicit worker
+  resume/drain lifecycle control and concurrent file-backed test databases.
+  PCF-008 remains `in_progress`; the mandatory signed four-platform package
+  evidence is cost-deferred, and the live irreversible first write/source
+  retirement/pointer and recovery smoke operations remain separately gated.
+  The paid workflow stays disabled and no real user state or external system
+  was changed.
+
+- 2026-08-16 15:34 MYT - User approved greenfield Portable Core scope because
+  no supported installation or user data predates the first release. PCF-008
+  will remove all unreleased database/browser/transcript/archive compatibility
+  and the paid legacy-writer package gate while preserving current-format
+  recovery and transfer safety. The former 73-commit PR #142 was preserved,
+  reduced by exact force-with-lease to PCF-004, and replaced by draft ticket
+  stack PRs #142-#147 with verified base/head relationships.
+- 2026-08-16 16:54 MYT - PCF-008 implemented the approved greenfield
+  amendment on top PR #147. The first supported release now establishes
+  canonical Soul/CoreFS authority directly and deletes the unreleased
+  migration, plaintext-draft, package-census, paid-workflow, legacy recovery,
+  and V1 vault surfaces. Focused server tests passed `44 + 19 + 7`, client/
+  desktop contracts passed `36`, native CoreFS/archive tests passed `8 + 7`,
+  TypeScript/Tauri/all-target Rust checks, full workspace build, Ruff,
+  repository organization, and diff hygiene passed. PCF-008 remains
+  `in_progress` for safe temporary smoke/initiative closeout only.
+- 2026-08-16 16:56 MYT - PCF-008 committed the greenfield implementation as
+  `0981463f` and completed its local commit step. The child and parent remain
+  `in_progress`; publication does not close the remaining safe-smoke and
+  initiative-closeout acceptance.
 
 ## Validation
 
 - PCF-003 second-phase closeout: exact implementation head `f0991e38bbb7ee0a90f2b4cb5639f079a9dba72f` passed standalone checkout, Server Ruff, pytest, Windows native lease, and macOS native lease; complete pagination found no unresolved consequential feedback and the focused exact-head Codex review was clean.
 
 - Commands:
+  - PCF-008 greenfield amendment: focused server `44 + 19 + 7`, desktop/client
+    `36`, CoreFS/archive `8 + 7`, TypeScript, Tauri/all-target Cargo checks,
+    full workspace build, Ruff, repository organization, and diff hygiene
+    passed.
+  - PCF-008 local closeout: focused server authority/transfer tests `211/211`,
+    desktop transfer `3/3`, native capsule/archive `15/15` and `7/7`, complete
+    server `3703 passed, 6 skipped`, complete desktop `371/371`, root lint and
+    build, isolated Alembic head/health smoke, repository organization, and
+    diff hygiene all passed. That matrix is historical after the greenfield
+    amendment; replacement validation must prove clean bootstrap and unsupported
+    pre-release input rejection without a paid cross-version package run.
   - PR #127 path-oracle/Soul-navigation follow-up: both focused regressions failed RED and pass GREEN; CoreFS migration plus Runtime privacy coverage passed `68`, all `79` desktop tests passed, and scoped Ruff/format, the desktop production build, repository organization, and diff hygiene passed.
   - PR #127 packaged Core/Runtime layout follow-up: the pure-layout regression failed RED before the resolver existed; three Rust cases cover disjoint defaults, explicit overrides, fallback-database continuity, and pre-validation environment placement; all `79` desktop tests pass, and the desktop production build, `cargo check -p desktop`, repository organization, and diff hygiene pass.
   - PR #127 final clean implementation head and second-phase closeout: head `70d22b7c32205c740eacd8f258e108405e3ee87b` passed standalone checkout, Server Ruff, Server Tests, Windows native lease, and macOS native/fallback CoreFS checks; the unchanged Windows failed-job rerun passed after the known PCF-011 aggregate flake. Codex reported no major issues for reviewed commit `70d22b7c32`, and full GraphQL pagination consumed `85` reviews, `57` top-level comments, `100` review threads, and every per-thread comments connection with zero unresolved non-outdated actionable threads.
@@ -532,6 +794,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001, PCF-002, and PCF-003 are complete. PCF-004 is claimed and `in_progress`; PCF-005 remains dependency-eligible and unclaimed in backlog. PCF-011 separately tracks the known Windows native-lease aggregate flake.
+  - PCF-001 through PCF-007 and PCF-011 are complete. PCF-008 is active on
+    greenfield smoke/closeout; the unreleased signed-package compatibility gate
+    no longer applies. PCF-009 and PCF-010 retain their separate approval
+    gates.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.

@@ -2,9 +2,9 @@
 
 #[cfg(test)]
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
@@ -23,18 +23,21 @@ use sha2::{Digest, Sha256};
 
 use crate::bounded::{json_to_vec as bounded_json_to_vec, BoundedJsonError};
 use crate::catalog::{
-    ContentHash, ObjectPhysicalName, WrappedObjectDekRecord, MAX_CATALOG_ENTRIES,
+    encode_catalog_generation, CatalogGeneration, ContentHash, ObjectPhysicalName,
+    WrappedObjectDekRecord, MAX_CATALOG_ENTRIES,
 };
 use crate::crypto::{
-    generate_object_dek, CryptoError, FrkSubkeys, ObjectBaseAad, ObjectKind, NONCE_LENGTH,
+    generate_object_dek, unwrap_object_dek, CryptoError, FrkSubkeys, ObjectBaseAad, ObjectKeyAad,
+    ObjectKind, NONCE_LENGTH,
 };
 use crate::envelope::{
-    BodyEncoding, EnvelopeMetadata, BODY_CHUNK_PLAINTEXT_SIZE, ENVELOPE_VERSION,
-    MAX_METADATA_PLAINTEXT_SIZE, METADATA_SCHEMA_VERSION,
+    open_envelope_stream, BodyEncoding, EnvelopeMetadata, BODY_CHUNK_PLAINTEXT_SIZE,
+    ENVELOPE_VERSION, MAX_METADATA_PLAINTEXT_SIZE, METADATA_SCHEMA_VERSION,
 };
 use crate::id::{validate_opaque_id, OpaqueId};
 use crate::publication::{
-    atomic_publish_in_with_hook, publish_immutable_in_with_hook, PublicationPhase,
+    atomic_publish_in_with_hook, create_temporary_in, publish_immutable_in_with_hook,
+    publish_staged_immutable_in_with_hook, PublicationPhase,
 };
 
 const PREPARATION_SCHEMA_VERSION: u16 = 1;
@@ -51,10 +54,19 @@ const ENVELOPE_FIXED_HEADER_SIZE: usize = 43;
 const TAG_LENGTH: usize = 16;
 const MAX_AAD_CONTEXT_BYTES: usize = 128;
 const MAX_SCOPE_BYTES: usize = 64;
+const MAX_CORE_ID_BYTES: usize = 255;
 const MAX_SEGMENT_REFERENCES: usize = 1024;
 const MAX_SEGMENT_ITEMS: usize = 1024;
 const MAX_RECONCILIATION_PAGE_ITEMS: u32 = 128;
-const MAX_RECONCILIATION_PAGE_BYTES: u32 = 64 * 1024;
+// A descriptor segment is independently capped at 1 MiB, so a 2 MiB page can
+// always return at least one accepted descriptor plus reconciliation framing.
+// Keeping the page bounded separately prevents an otherwise-valid large
+// metadata object from making crash recovery non-resumable.
+const MAX_RECONCILIATION_PAGE_BYTES: u32 = 2 * 1024 * 1024;
+const MAX_QUARANTINE_RECORDS: usize = 1024;
+const MAX_RETAINED_FRK_VERSIONS: usize = 128;
+const QUARANTINE_POINTER_SUFFIX: &str = ".prep-pointer";
+const QUARANTINE_RECEIPT_SUFFIX: &str = ".prep-quarantine.acore";
 
 #[cfg(test)]
 thread_local! {
@@ -160,8 +172,22 @@ pub(super) enum PreparationError {
     ActiveConflict(&'static str),
     #[error("the caller source state is older than the durable preparation")]
     StaleSourceState,
+    #[error("the source mutation generation or inventory digest changed")]
+    SourceChanged,
     #[error("the exact preparation pointer/snapshot compare-and-swap failed")]
     CasConflict,
+    #[error("the exact expected validation head changed")]
+    ValidationHeadConflict,
+    #[error("the sealed final intent does not reconstruct the intended catalog")]
+    FinalIntentMismatch,
+    #[error("the deterministic preparation receipt conflicts with durable state")]
+    ReceiptConflict,
+    #[error(
+        "the corrupt preparation pointer or its quarantine record conflicts with durable state"
+    )]
+    QuarantineConflict,
+    #[error("retained preparation state requires unavailable FRK version {0}")]
+    RetainedFrkMissing(u32),
     #[error("the preparation layout is missing or invalid")]
     InvalidLayout,
     #[error("the preparation references a missing {kind:?} segment {segment_index}")]
@@ -195,6 +221,33 @@ pub(super) struct PreparationBeginRequest {
 pub(super) struct PreparationCas {
     pub(super) pointer_sha256: String,
     pub(super) snapshot_sequence: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationSealRequest {
+    pub(super) source_mutation_generation: u64,
+    pub(super) source_inventory_sha256: String,
+    pub(super) folders: Vec<super::converter::ValidationBatchFolder>,
+    pub(super) objects: Vec<PreparationIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationFinalizeRequest {
+    pub(super) preparation_id: String,
+    pub(super) expected: PreparationCas,
+    pub(super) source_mutation_generation: u64,
+    pub(super) source_inventory_sha256: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationAbandonRequest {
+    pub(super) preparation_id: String,
+    pub(super) expected: PreparationCas,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PreparationQuarantineRequest {
+    pub(super) expected_pointer_sha256: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -350,8 +403,15 @@ pub(super) enum PreparationOpenDisposition {
 pub(super) enum PreparationPublicationTarget {
     Object,
     Descriptor,
+    Intent,
     Snapshot,
     Head,
+    ValidationCatalog,
+    ValidationHead,
+    Receipt,
+    QuarantinePointer,
+    QuarantineReceipt,
+    Clear,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -370,6 +430,10 @@ pub(super) struct PreparationStatus {
     pub(super) source_schema_version: u16,
     pub(super) source_mutation_generation: u64,
     pub(super) source_inventory_sha256: String,
+    pub(super) expected_validation_generation: Option<u64>,
+    pub(super) expected_validation_catalog_sha256: Option<String>,
+    pub(super) intended_validation_generation: Option<u64>,
+    pub(super) intended_validation_catalog_sha256: Option<String>,
     pub(super) total_objects: u32,
     pub(super) total_plaintext_bytes: u64,
     pub(super) total_ciphertext_bytes: u64,
@@ -492,6 +556,16 @@ pub(super) struct PreparationSnapshot {
     pub(super) manifest_segments: Vec<PreparationSegmentReference>,
     pub(super) final_intent_root_sha256: Option<String>,
     pub(super) final_intent_segments: Vec<PreparationSegmentReference>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) canonical_intent_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) intended_validation_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) intended_validation_catalog_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) final_intent_entry_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) final_intent_folder_count: Option<u32>,
 }
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
@@ -570,7 +644,49 @@ pub(super) struct FinalIntentSegment {
     pub(super) entries: Vec<FinalIntentEntry>,
 }
 
-#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum FinalCatalogIntentEntry {
+    Folder(FinalCatalogFolderIntent),
+    Object(Box<FinalCatalogObjectIntent>),
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FinalCatalogFolderIntent {
+    stable_id: String,
+    parent_id: Option<String>,
+    name: String,
+    role: Option<String>,
+    policy: String,
+    metadata: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FinalCatalogObjectIntent {
+    stable_id: String,
+    parent_id: String,
+    name: String,
+    object_kind: String,
+    revision: u64,
+    object_key_epoch: u32,
+    content_sha256: String,
+    content_type: String,
+    body_encoding: String,
+    body_length: u64,
+    created_at: String,
+    updated_at: String,
+    source_character_count: Option<u64>,
+    references: Vec<String>,
+    policy: String,
+    metadata: BTreeMap<String, Value>,
+    source_fingerprint_sha256: String,
+    converter_format_version: u16,
+    preparation_ordinal: u64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum PreparationReceiptOutcome {
     Completed,
@@ -588,7 +704,7 @@ impl PreparationReceiptOutcome {
     }
 }
 
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PreparationReceipt {
     pub(super) schema_version: u16,
@@ -602,6 +718,8 @@ pub(super) struct PreparationReceipt {
     pub(super) pointer_sha256: String,
     pub(super) validation_generation: Option<u64>,
     pub(super) validation_catalog_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) retained_frk_versions: Vec<u32>,
 }
 
 trait PreparationRecord: Clone + DeserializeOwned + Serialize {
@@ -735,6 +853,8 @@ impl PreparationRecord for PreparationSnapshot {
         validate_hash(&self.source_inventory_sha256)?;
         validate_hash(&self.manifest_root_sha256)?;
         validate_optional_hash(self.final_intent_root_sha256.as_deref())?;
+        validate_optional_hash(self.canonical_intent_sha256.as_deref())?;
+        validate_optional_hash(self.intended_validation_catalog_sha256.as_deref())?;
         if usize::try_from(self.total_objects)
             .map_err(|_| PreparationError::LimitExceeded("total objects"))?
             > MAX_CATALOG_ENTRIES
@@ -752,6 +872,41 @@ impl PreparationRecord for PreparationSnapshot {
         }
         validate_segment_references(&self.manifest_segments)?;
         validate_segment_references(&self.final_intent_segments)?;
+        let intent_count = self
+            .final_intent_segments
+            .iter()
+            .try_fold(0_u32, |total, reference| {
+                total.checked_add(reference.item_count)
+            })
+            .ok_or(PreparationError::LimitExceeded("final-intent entries"))?;
+        let ready_fields = (
+            self.final_intent_root_sha256.as_ref(),
+            self.canonical_intent_sha256.as_ref(),
+            self.intended_validation_generation,
+            self.intended_validation_catalog_sha256.as_ref(),
+            self.final_intent_entry_count,
+            self.final_intent_folder_count,
+        );
+        match self.state {
+            PreparationState::Ready => match ready_fields {
+                (Some(_), Some(_), Some(generation), Some(_), Some(entries), Some(folders))
+                    if generation > 0
+                        && entries == intent_count
+                        && folders <= entries
+                        && entries.saturating_sub(folders) == self.total_objects => {}
+                _ => return Err(PreparationError::InvalidFormat("ready snapshot intent")),
+            },
+            _ => {
+                if self.canonical_intent_sha256.is_some()
+                    || self.intended_validation_generation.is_some()
+                    || self.intended_validation_catalog_sha256.is_some()
+                    || self.final_intent_entry_count.is_some()
+                    || self.final_intent_folder_count.is_some()
+                {
+                    return Err(PreparationError::InvalidFormat("non-ready snapshot intent"));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -890,6 +1045,37 @@ impl PreparationRecord for PreparationReceipt {
             return Err(PreparationError::InvalidFormat(
                 "completed receipt lacks validation generation",
             ));
+        }
+        if self.outcome != PreparationReceiptOutcome::Completed
+            && self.validation_generation.is_some()
+        {
+            return Err(PreparationError::InvalidFormat(
+                "non-completed receipt contains validation generation",
+            ));
+        }
+        match self.outcome {
+            PreparationReceiptOutcome::Quarantined => {
+                if self.retained_frk_versions.is_empty()
+                    || self.retained_frk_versions.len() > MAX_RETAINED_FRK_VERSIONS
+                    || self.retained_frk_versions.contains(&0)
+                    || !self
+                        .retained_frk_versions
+                        .windows(2)
+                        .all(|pair| pair[0] < pair[1])
+                    || !self
+                        .retained_frk_versions
+                        .contains(&self.required_frk_version)
+                {
+                    return Err(PreparationError::InvalidFormat("quarantine key retention"));
+                }
+            }
+            PreparationReceiptOutcome::Completed | PreparationReceiptOutcome::Abandoned => {
+                if !self.retained_frk_versions.is_empty() {
+                    return Err(PreparationError::InvalidFormat(
+                        "terminal receipt key retention",
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1095,7 +1281,7 @@ fn open_record<T: PreparationRecord>(
     expected_core_id: &str,
     expected_frk_version: u32,
 ) -> Result<T, PreparationError> {
-    validate_opaque(expected_core_id, "Core ID")?;
+    validate_core_id(expected_core_id)?;
     if encoded.len() > T::MAX_ENVELOPE_SIZE
         || encoded.len() < ENVELOPE_FIXED_HEADER_SIZE + TAG_LENGTH
     {
@@ -1184,7 +1370,7 @@ fn record_aad(
     monotonic_number: u64,
     context: &[u8],
 ) -> Result<Vec<u8>, PreparationError> {
-    validate_opaque(core_id, "Core ID")?;
+    validate_core_id(core_id)?;
     let core_length =
         u32::try_from(core_id.len()).map_err(|_| PreparationError::LimitExceeded("Core ID"))?;
     let context_length =
@@ -1211,7 +1397,7 @@ fn validate_common<T: PreparationRecord>(
             record.schema_version(),
         ));
     }
-    validate_opaque(record.core_id(), "Core ID")?;
+    validate_core_id(record.core_id())?;
     validate_opaque(preparation_id, "preparation ID")?;
     if record.required_frk_version() == 0 {
         return Err(PreparationError::InvalidFormat("FRK version"));
@@ -1295,6 +1481,13 @@ fn validate_opaque(value: &str, field: &'static str) -> Result<(), PreparationEr
     validate_opaque_id(value).map_err(|_| PreparationError::InvalidFormat(field))
 }
 
+fn validate_core_id(value: &str) -> Result<(), PreparationError> {
+    if value.is_empty() || value.len() > MAX_CORE_ID_BYTES || value.contains(':') {
+        return Err(PreparationError::InvalidFormat("Core ID"));
+    }
+    Ok(())
+}
+
 pub(super) fn publish_preparation_head_with_hook<F>(
     fs_dir: &Dir,
     sealed: &SealedPreparationRecord,
@@ -1341,7 +1534,7 @@ struct PreparationLayout {
     snapshots: Dir,
     descriptors: Dir,
     intent: Dir,
-    _receipts: Dir,
+    receipts: Dir,
 }
 
 struct LoadedPreparation {
@@ -1427,6 +1620,11 @@ impl super::CoreCommitCoordinator {
             manifest_segments: Vec::new(),
             final_intent_root_sha256: None,
             final_intent_segments: Vec::new(),
+            canonical_intent_sha256: None,
+            intended_validation_generation: None,
+            intended_validation_catalog_sha256: None,
+            final_intent_entry_count: None,
+            final_intent_folder_count: None,
         };
         let sealed_snapshot = snapshot.seal(keys)?;
         let snapshot_ciphertext_sha256 = sha256_hex(sealed_snapshot.as_bytes());
@@ -1516,7 +1714,10 @@ impl super::CoreCommitCoordinator {
             }
             return status_from_loaded(&loaded, PreparationOpenDisposition::Resumed);
         }
-        if loaded.snapshot.state != PreparationState::Collecting {
+        if !matches!(
+            loaded.snapshot.state,
+            PreparationState::Collecting | PreparationState::Ready
+        ) {
             return Err(PreparationError::ActiveConflict("preparation state"));
         }
         let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
@@ -1531,6 +1732,10 @@ impl super::CoreCommitCoordinator {
             unix_time_millis()?.max(next_snapshot.created_at_unix_ms);
         next_snapshot.source_mutation_generation = request.source_mutation_generation;
         next_snapshot.source_inventory_sha256 = request.source_inventory_sha256.clone();
+        next_snapshot.state = PreparationState::Collecting;
+        next_snapshot.final_intent_root_sha256 = None;
+        next_snapshot.final_intent_segments.clear();
+        clear_sealed_intent_metadata(&mut next_snapshot);
         let sealed_snapshot = next_snapshot.seal(keys)?;
         let snapshot_ciphertext_sha256 = sha256_hex(sealed_snapshot.as_bytes());
         publish_immutable_preparation_record_with_hook(
@@ -1643,6 +1848,7 @@ impl super::CoreCommitCoordinator {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn prepare_object_inner<R, F>(
         &self,
         keys: &FrkSubkeys,
@@ -1808,6 +2014,9 @@ impl super::CoreCommitCoordinator {
             next_snapshot.manifest_segments.push(reference);
         }
         next_snapshot.manifest_root_sha256 = manifest_root(&next_snapshot.manifest_segments);
+        next_snapshot.final_intent_root_sha256 = None;
+        next_snapshot.final_intent_segments.clear();
+        clear_sealed_intent_metadata(&mut next_snapshot);
         next_snapshot.sequence = next_snapshot
             .sequence
             .checked_add(1)
@@ -1864,6 +2073,764 @@ impl super::CoreCommitCoordinator {
                 ciphertext_bytes: prepared.encoded_size,
             },
         })
+    }
+
+    pub(super) fn stage_final_intent(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        entries: &[FinalIntentEntry],
+    ) -> Result<PreparationStatus, PreparationError> {
+        self.stage_final_intent_inner(keys, expected, entries, MAX_SEGMENT_ITEMS, &mut |_, _| {
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn stage_final_intent_with_limits(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        entries: &[FinalIntentEntry],
+        segment_items: usize,
+    ) -> Result<PreparationStatus, PreparationError> {
+        self.stage_final_intent_inner(keys, expected, entries, segment_items, &mut |_, _| Ok(()))
+    }
+
+    fn stage_final_intent_inner<F>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        entries: &[FinalIntentEntry],
+        segment_items: usize,
+        hook: &mut F,
+    ) -> Result<PreparationStatus, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_preparation_cas(expected)?;
+        validate_final_intent_entries(entries, segment_items)?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
+        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+        validate_loaded_cas(&loaded, expected)?;
+        if loaded.snapshot.state != PreparationState::Collecting {
+            return Err(PreparationError::ActiveConflict("preparation state"));
+        }
+        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+        let layout = open_preparation_layout(&preparations, &loaded.snapshot.preparation_id)?;
+        let segments = final_intent_segments(&loaded.snapshot, entries, segment_items)?;
+        let mut references = Vec::with_capacity(segments.len());
+        for segment in segments {
+            let plaintext_bytes = u32::try_from(segment.encode()?.len())
+                .map_err(|_| PreparationError::LimitExceeded("final-intent segment"))?;
+            let sealed = segment.seal(keys)?;
+            let ciphertext_sha256 = sha256_hex(sealed.as_bytes());
+            publish_immutable_preparation_record_with_hook(
+                &layout.intent,
+                &sealed,
+                &mut |phase| hook(PreparationPublicationTarget::Intent, phase),
+            )?;
+            references.push(PreparationSegmentReference {
+                segment_index: segment.segment_index,
+                ciphertext_sha256,
+                item_count: u32::try_from(segment.entries.len())
+                    .map_err(|_| PreparationError::LimitExceeded("final-intent segment items"))?,
+                plaintext_bytes,
+            });
+        }
+
+        let mut next_snapshot = loaded.snapshot.clone();
+        next_snapshot.final_intent_root_sha256 = Some(manifest_root(&references));
+        next_snapshot.final_intent_segments = references;
+        next_snapshot.sequence = next_snapshot
+            .sequence
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("snapshot sequence"))?;
+        next_snapshot.updated_at_unix_ms =
+            unix_time_millis()?.max(next_snapshot.created_at_unix_ms);
+        let sealed_snapshot = next_snapshot.seal(keys)?;
+        let snapshot_ciphertext_sha256 = sha256_hex(sealed_snapshot.as_bytes());
+        publish_immutable_preparation_record_with_hook(
+            &layout.snapshots,
+            &sealed_snapshot,
+            &mut |phase| hook(PreparationPublicationTarget::Snapshot, phase),
+        )?;
+
+        let current_pointer =
+            read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
+        let (current_head, current_pointer_sha256) =
+            authenticate_pointer(&current_pointer, keys, &self.core_id)?;
+        if current_pointer_sha256 != expected.pointer_sha256
+            || current_head.snapshot_sequence != expected.snapshot_sequence
+        {
+            return Err(PreparationError::CasConflict);
+        }
+        let next_head = PreparationHeadRecord {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: self.core_id.clone(),
+            preparation_id: loaded.snapshot.preparation_id,
+            snapshot_sequence: next_snapshot.sequence,
+            snapshot_ciphertext_sha256: snapshot_ciphertext_sha256.clone(),
+            envelope_version: PREPARATION_ENVELOPE_VERSION,
+            required_frk_version: keys.frk_version(),
+        };
+        let sealed_head = next_head.seal(keys)?;
+        publish_preparation_head_with_hook(&self.fs_dir, &sealed_head, &mut |phase| {
+            hook(PreparationPublicationTarget::Head, phase)
+        })?;
+        let status = status_from_loaded(
+            &LoadedPreparation {
+                head: next_head,
+                snapshot: next_snapshot,
+                pointer_sha256: sha256_hex(sealed_head.as_bytes()),
+            },
+            PreparationOpenDisposition::Reconciled,
+        );
+        drop(commit_lock);
+        status
+    }
+
+    pub(super) fn seal_preparation(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        request: &PreparationSealRequest,
+    ) -> Result<PreparationStatus, PreparationError> {
+        self.seal_preparation_with_hook(keys, expected, request, &mut |_, _| Ok(()))
+    }
+
+    fn seal_preparation_with_hook<F>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        request: &PreparationSealRequest,
+        hook: &mut F,
+    ) -> Result<PreparationStatus, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_preparation_cas(expected)?;
+        validate_seal_request(request)?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
+        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+        validate_loaded_cas(&loaded, expected)?;
+        if loaded.snapshot.state != PreparationState::Collecting {
+            return Err(PreparationError::ActiveConflict("preparation state"));
+        }
+        validate_source_fence(
+            &loaded.snapshot,
+            request.source_mutation_generation,
+            &request.source_inventory_sha256,
+        )?;
+        let current = self.load_validation_snapshot(keys)?;
+        validate_expected_validation_head(&loaded.snapshot, current.as_ref())?;
+
+        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+        let layout = open_preparation_layout(&preparations, &loaded.snapshot.preparation_id)?;
+        let descriptors = read_all_descriptors(&layout, &loaded.snapshot, keys)?;
+        validate_descriptor_coverage(&descriptors, &request.objects)?;
+        validate_descriptor_revision_preconditions(
+            current.as_ref().map(|snapshot| snapshot.catalog()),
+            &descriptors,
+        )?;
+        let next_generation = current.as_ref().map_or(Ok(1), |snapshot| {
+            snapshot
+                .head()
+                .generation()
+                .checked_add(1)
+                .ok_or(PreparationError::LimitExceeded("validation generation"))
+        })?;
+        let catalog = build_catalog_from_inputs(
+            next_generation,
+            &request.folders,
+            &descriptors,
+            &request.objects,
+        )?;
+        let catalog_sha256 = canonical_catalog_sha256(&catalog)?;
+        let entries = final_intent_entries(&request.folders, &descriptors)?;
+        let canonical_intent_sha256 = canonical_intent_sha256(&entries);
+        let segments = final_intent_segments(&loaded.snapshot, &entries, MAX_SEGMENT_ITEMS)?;
+        let mut references = Vec::with_capacity(segments.len());
+        for segment in segments {
+            let plaintext_bytes = u32::try_from(segment.encode()?.len())
+                .map_err(|_| PreparationError::LimitExceeded("final-intent segment"))?;
+            let sealed = segment.seal(keys)?;
+            let ciphertext_sha256 = sha256_hex(sealed.as_bytes());
+            publish_immutable_preparation_record_with_hook(
+                &layout.intent,
+                &sealed,
+                &mut |phase| hook(PreparationPublicationTarget::Intent, phase),
+            )?;
+            references.push(PreparationSegmentReference {
+                segment_index: segment.segment_index,
+                ciphertext_sha256,
+                item_count: u32::try_from(segment.entries.len())
+                    .map_err(|_| PreparationError::LimitExceeded("final-intent segment items"))?,
+                plaintext_bytes,
+            });
+        }
+
+        let mut next_snapshot = loaded.snapshot.clone();
+        next_snapshot.state = PreparationState::Ready;
+        next_snapshot.final_intent_root_sha256 = Some(manifest_root(&references));
+        next_snapshot.final_intent_segments = references;
+        next_snapshot.canonical_intent_sha256 = Some(canonical_intent_sha256);
+        next_snapshot.intended_validation_generation = Some(next_generation);
+        next_snapshot.intended_validation_catalog_sha256 = Some(catalog_sha256);
+        next_snapshot.final_intent_entry_count = Some(
+            u32::try_from(entries.len())
+                .map_err(|_| PreparationError::LimitExceeded("final-intent entries"))?,
+        );
+        next_snapshot.final_intent_folder_count = Some(
+            u32::try_from(request.folders.len())
+                .map_err(|_| PreparationError::LimitExceeded("final-intent folders"))?,
+        );
+        next_snapshot.sequence = next_snapshot
+            .sequence
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("snapshot sequence"))?;
+        next_snapshot.updated_at_unix_ms =
+            unix_time_millis()?.max(next_snapshot.created_at_unix_ms);
+        let result = self.publish_preparation_snapshot_and_head_locked(
+            keys,
+            expected,
+            loaded,
+            &layout,
+            next_snapshot,
+            hook,
+        );
+        drop(commit_lock);
+        result
+    }
+
+    pub(super) fn finalize_preparation(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationFinalizeRequest,
+    ) -> Result<PreparationReceipt, PreparationError> {
+        self.finalize_preparation_with_hook(keys, request, &mut |_, _| Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn finalize_preparation_with_hook<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationFinalizeRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.finalize_preparation_with_hook_inner(keys, request, hook)
+    }
+
+    #[cfg(not(test))]
+    fn finalize_preparation_with_hook<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationFinalizeRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.finalize_preparation_with_hook_inner(keys, request, hook)
+    }
+
+    fn finalize_preparation_with_hook_inner<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationFinalizeRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_finalize_request(request)?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+        let layout = open_preparation_layout(&preparations, &request.preparation_id)?;
+        let Some(pointer) = read_pointer_bytes(&self.fs_dir)? else {
+            let receipt = load_completed_receipt(
+                self,
+                &layout,
+                keys,
+                &request.preparation_id,
+                &request.expected,
+            )?;
+            drop(commit_lock);
+            return Ok(receipt);
+        };
+        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+        if loaded.snapshot.preparation_id != request.preparation_id {
+            return Err(PreparationError::CasConflict);
+        }
+        validate_loaded_cas(&loaded, &request.expected)?;
+        if loaded.snapshot.state != PreparationState::Ready {
+            return Err(PreparationError::ActiveConflict("preparation state"));
+        }
+        // A terminal abandonment receipt can be durable while the live
+        // pointer remains if its subsequent clear crashes. Inspect the whole
+        // bounded receipt directory before any validation publication:
+        // find_terminal_receipt accepts a matching completion replay, but
+        // rejects an opposite or duplicate terminal outcome fail-closed.
+        let _durable_completion = find_terminal_receipt(
+            &layout,
+            keys,
+            &self.core_id,
+            &request.preparation_id,
+            &request.expected,
+            PreparationReceiptOutcome::Completed,
+        )?;
+        validate_source_fence(
+            &loaded.snapshot,
+            request.source_mutation_generation,
+            &request.source_inventory_sha256,
+        )?;
+        let (catalog, prepared, descriptors) =
+            reconstruct_sealed_catalog(&layout, &loaded.snapshot, keys)?;
+        let intended_generation = loaded
+            .snapshot
+            .intended_validation_generation
+            .ok_or(PreparationError::FinalIntentMismatch)?;
+        if catalog.generation() != intended_generation
+            || canonical_catalog_sha256(&catalog)?
+                != loaded
+                    .snapshot
+                    .intended_validation_catalog_sha256
+                    .as_deref()
+                    .ok_or(PreparationError::FinalIntentMismatch)?
+        {
+            return Err(PreparationError::FinalIntentMismatch);
+        }
+
+        if self.load_pointer_head(super::HEAD_FILE)?.is_some()
+            || self
+                .load_pointer_head(super::CUTOVER_RECEIPT_FILE)?
+                .is_some()
+            || self
+                .load_pointer_head(super::CUTOVER_COMPLETE_FILE)?
+                .is_some()
+        {
+            return Err(super::CommitError::CoreAlreadyInitialized.into());
+        }
+        let current = self.load_validation_snapshot(keys)?;
+        if current
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.catalog().cutover_marker().is_some())
+        {
+            return Err(super::CommitError::InvalidCutoverTransition.into());
+        }
+        let committed_head = if current.as_ref().is_some_and(|snapshot| {
+            snapshot.head().generation() == intended_generation
+                && canonical_catalog_sha256(snapshot.catalog()).ok().as_deref()
+                    == loaded
+                        .snapshot
+                        .intended_validation_catalog_sha256
+                        .as_deref()
+        }) {
+            current
+                .as_ref()
+                .expect("matching validation snapshot exists")
+                .head()
+                .clone()
+        } else {
+            validate_expected_validation_head(&loaded.snapshot, current.as_ref())?;
+            validate_descriptor_revision_preconditions(
+                current.as_ref().map(|snapshot| snapshot.catalog()),
+                &descriptors,
+            )?;
+            for (revision, descriptor) in prepared.iter().zip(&descriptors) {
+                self.validate_prepared_revision_file(revision)?;
+                validate_prepared_descriptor_envelope(self, keys, descriptor, revision)?;
+            }
+            let preconditions = match current.as_ref() {
+                Some(snapshot) => super::converter::full_graph_preconditions(
+                    snapshot.catalog(),
+                    catalog.entries(),
+                )?,
+                None => Vec::new(),
+            };
+            if let Some(snapshot) = current.as_ref() {
+                super::validate_preconditions(Some(snapshot.catalog()), &preconditions)?;
+                super::validate_precondition_coverage(
+                    snapshot.catalog(),
+                    &catalog,
+                    &preconditions,
+                )?;
+            }
+            super::validate_prepared_revisions(
+                &self.objects_dir,
+                keys,
+                &self.core_id,
+                (
+                    current.as_ref().map(|snapshot| snapshot.catalog()),
+                    &catalog,
+                ),
+                &prepared,
+                None,
+                #[cfg(test)]
+                None,
+            )?;
+            let (head, _, _, _, _) = self.publish_catalog_pointer_with_hook(
+                keys,
+                &catalog,
+                super::VALIDATION_HEAD_FILE,
+                false,
+                &mut |point| map_validation_publication_hook(point, hook),
+            )?;
+            let published = self
+                .load_validation_snapshot(keys)?
+                .ok_or(PreparationError::ValidationHeadConflict)?;
+            if published.head() != &head
+                || canonical_catalog_sha256(published.catalog())?
+                    != loaded
+                        .snapshot
+                        .intended_validation_catalog_sha256
+                        .as_deref()
+                        .ok_or(PreparationError::FinalIntentMismatch)?
+            {
+                return Err(PreparationError::FinalIntentMismatch);
+            }
+            head
+        };
+
+        let receipt = completed_receipt(&loaded, keys, &committed_head)?;
+        publish_or_verify_receipt(&layout, keys, &receipt, hook)?;
+        clear_preparation_head_exact(&self.fs_dir, &loaded.pointer_sha256, hook)?;
+        drop(commit_lock);
+        Ok(receipt)
+    }
+
+    pub(super) fn abandon_preparation(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+    ) -> Result<PreparationReceipt, PreparationError> {
+        self.abandon_preparation_with_hook(keys, request, &mut |_, _| Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn abandon_preparation_with_hook<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.abandon_preparation_with_hook_inner(keys, request, hook)
+    }
+
+    #[cfg(not(test))]
+    fn abandon_preparation_with_hook<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.abandon_preparation_with_hook_inner(keys, request, hook)
+    }
+
+    fn abandon_preparation_with_hook_inner<F>(
+        &self,
+        keys: &FrkSubkeys,
+        request: &PreparationAbandonRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_abandon_request(request)?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
+        let layout = open_preparation_layout(&preparations, &request.preparation_id)?;
+        let Some(pointer) = read_pointer_bytes(&self.fs_dir)? else {
+            let receipt = find_terminal_receipt(
+                &layout,
+                keys,
+                &self.core_id,
+                &request.preparation_id,
+                &request.expected,
+                PreparationReceiptOutcome::Abandoned,
+            )?
+            .ok_or(PreparationError::Missing)?;
+            drop(commit_lock);
+            return Ok(receipt);
+        };
+        let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
+        if loaded.snapshot.preparation_id != request.preparation_id {
+            return Err(PreparationError::CasConflict);
+        }
+        validate_loaded_cas(&loaded, &request.expected)?;
+        if !matches!(
+            loaded.snapshot.state,
+            PreparationState::Collecting | PreparationState::Ready
+        ) {
+            return Err(PreparationError::ActiveConflict("preparation state"));
+        }
+        let receipt = abandoned_receipt(&loaded, keys)?;
+        if let Some(durable) = find_terminal_receipt(
+            &layout,
+            keys,
+            &self.core_id,
+            &request.preparation_id,
+            &request.expected,
+            PreparationReceiptOutcome::Abandoned,
+        )? {
+            if durable != receipt {
+                return Err(PreparationError::ReceiptConflict);
+            }
+        }
+        // Abandonment is terminal only while the durable validation head is
+        // still the snapshot's exact precondition. In particular, a finalizer
+        // may have published the intended catalog and crashed before writing
+        // its completion receipt or clearing PREPARATION_HEAD. Re-check under
+        // the same Core commit lock so abandonment cannot relabel and clear
+        // that committed preparation (or an unrelated validation-head winner).
+        let current = self.load_validation_snapshot(keys)?;
+        validate_expected_validation_head(&loaded.snapshot, current.as_ref())?;
+        publish_or_verify_receipt(&layout, keys, &receipt, hook)?;
+        clear_preparation_head_exact(&self.fs_dir, &loaded.pointer_sha256, hook)?;
+        drop(commit_lock);
+        Ok(receipt)
+    }
+
+    pub(super) fn quarantine_preparation(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+    ) -> Result<PreparationReceipt, PreparationError> {
+        self.quarantine_preparation_with_hook(keyring, active_keys, request, &mut |_, _| Ok(()))
+    }
+
+    #[cfg(test)]
+    pub(super) fn quarantine_preparation_with_hook<F>(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.quarantine_preparation_with_hook_inner(keyring, active_keys, request, hook)
+    }
+
+    #[cfg(not(test))]
+    fn quarantine_preparation_with_hook<F>(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        self.quarantine_preparation_with_hook_inner(keyring, active_keys, request, hook)
+    }
+
+    fn quarantine_preparation_with_hook_inner<F>(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+        active_keys: &FrkSubkeys,
+        request: &PreparationQuarantineRequest,
+        hook: &mut F,
+    ) -> Result<PreparationReceipt, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        validate_hash(&request.expected_pointer_sha256)?;
+        keyring
+            .require_matching(active_keys)
+            .map_err(|error| PreparationError::Commit(error.into()))?;
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let quarantine =
+            super::ensure_child_directory(&self.fs_dir, PREPARATION_QUARANTINE_DIRECTORY)?;
+        let Some(pointer) = read_raw_preparation_pointer(&self.fs_dir)? else {
+            let receipt = load_quarantine_receipt(
+                &quarantine,
+                keyring,
+                &self.core_id,
+                &request.expected_pointer_sha256,
+            )?;
+            drop(commit_lock);
+            return Ok(receipt);
+        };
+        let pointer_sha256 = pointer.sha256.clone();
+        if pointer_sha256 != request.expected_pointer_sha256 {
+            return Err(PreparationError::CasConflict);
+        }
+        if pointer.bounded_bytes.as_deref().is_some_and(|encoded| {
+            pointer_authenticates_with_keyring(encoded, keyring, &self.core_id)
+        }) {
+            return Err(PreparationError::ActiveConflict(
+                "authenticated preparation must be abandoned",
+            ));
+        }
+        let retained_frk_versions = keyring.versions();
+        if retained_frk_versions.is_empty()
+            || retained_frk_versions.len() > MAX_RETAINED_FRK_VERSIONS
+        {
+            return Err(PreparationError::LimitExceeded(
+                "quarantine retained FRK versions",
+            ));
+        }
+        publish_or_verify_quarantine_pointer(
+            &self.fs_dir,
+            &quarantine,
+            &pointer_sha256,
+            pointer.byte_length,
+            hook,
+        )?;
+        let preparation_id = quarantine_preparation_id(&pointer_sha256)?;
+        let receipt = PreparationReceipt {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: self.core_id.clone(),
+            preparation_id: preparation_id.clone(),
+            receipt_id: deterministic_receipt_id(
+                active_keys,
+                &preparation_id,
+                PreparationReceiptOutcome::Quarantined,
+                &pointer_sha256,
+            )?,
+            outcome: PreparationReceiptOutcome::Quarantined,
+            required_frk_version: active_keys.frk_version(),
+            final_snapshot_sequence: 1,
+            final_snapshot_ciphertext_sha256: pointer_sha256.clone(),
+            pointer_sha256: pointer_sha256.clone(),
+            validation_generation: None,
+            validation_catalog_sha256: None,
+            retained_frk_versions,
+        };
+        publish_or_verify_quarantine_receipt(&quarantine, active_keys, &receipt, hook)?;
+        clear_preparation_head_exact(&self.fs_dir, &pointer_sha256, hook)?;
+        drop(commit_lock);
+        Ok(receipt)
+    }
+
+    pub(super) fn quarantined_preparation_frk_versions(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+    ) -> Result<Vec<u32>, PreparationError> {
+        let _lease_operation = self.admit_lease_publication_operation()?;
+        let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.validate_pinned_layout()?;
+        let versions = self.quarantined_preparation_frk_versions_locked(keyring)?;
+        drop(commit_lock);
+        Ok(versions)
+    }
+
+    pub(super) fn ensure_preparation_rotation_allowed_locked(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+    ) -> Result<(), super::CommitError> {
+        match super::read_bounded_in(
+            &self.fs_dir,
+            OsStr::new(PREPARATION_HEAD_FILE),
+            MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
+        ) {
+            Ok(_) => return Err(crate::rotation::RotationError::PreparationActive.into()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => return Err(crate::rotation::RotationError::PreparationActive.into()),
+        }
+        self.quarantined_preparation_frk_versions_locked(keyring)
+            .map(|_| ())
+            .map_err(|error| match error {
+                PreparationError::RetainedFrkMissing(version) => {
+                    crate::rotation::RotationError::QuarantinedPreparationRequiresVersion(version)
+                        .into()
+                }
+                _ => crate::rotation::RotationError::QuarantinedPreparationCorrupt.into(),
+            })
+    }
+
+    fn quarantined_preparation_frk_versions_locked(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+    ) -> Result<Vec<u32>, PreparationError> {
+        let quarantine = match self.fs_dir.open_dir(PREPARATION_QUARANTINE_DIRECTORY) {
+            Ok(directory) => directory,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(_) => return Err(PreparationError::QuarantineConflict),
+        };
+        super::validate_linked_directory(
+            &self.fs_dir,
+            PREPARATION_QUARANTINE_DIRECTORY,
+            &quarantine,
+        )
+        .map_err(|_| PreparationError::QuarantineConflict)?;
+        scan_quarantine_retention(&quarantine, keyring, &self.core_id)
+    }
+
+    fn publish_preparation_snapshot_and_head_locked<F>(
+        &self,
+        keys: &FrkSubkeys,
+        expected: &PreparationCas,
+        loaded: LoadedPreparation,
+        layout: &PreparationLayout,
+        next_snapshot: PreparationSnapshot,
+        hook: &mut F,
+    ) -> Result<PreparationStatus, PreparationError>
+    where
+        F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+    {
+        let sealed_snapshot = next_snapshot.seal(keys)?;
+        let snapshot_ciphertext_sha256 = sha256_hex(sealed_snapshot.as_bytes());
+        publish_immutable_preparation_record_with_hook(
+            &layout.snapshots,
+            &sealed_snapshot,
+            &mut |phase| hook(PreparationPublicationTarget::Snapshot, phase),
+        )?;
+        let current_pointer =
+            read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
+        let (current_head, current_pointer_sha256) =
+            authenticate_pointer(&current_pointer, keys, &self.core_id)?;
+        if current_pointer_sha256 != expected.pointer_sha256
+            || current_head.snapshot_sequence != expected.snapshot_sequence
+        {
+            return Err(PreparationError::CasConflict);
+        }
+        let next_head = PreparationHeadRecord {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: self.core_id.clone(),
+            preparation_id: loaded.snapshot.preparation_id,
+            snapshot_sequence: next_snapshot.sequence,
+            snapshot_ciphertext_sha256: snapshot_ciphertext_sha256.clone(),
+            envelope_version: PREPARATION_ENVELOPE_VERSION,
+            required_frk_version: keys.frk_version(),
+        };
+        let sealed_head = next_head.seal(keys)?;
+        publish_preparation_head_with_hook(&self.fs_dir, &sealed_head, &mut |phase| {
+            hook(PreparationPublicationTarget::Head, phase)
+        })?;
+        status_from_loaded(
+            &LoadedPreparation {
+                head: next_head,
+                snapshot: next_snapshot,
+                pointer_sha256: sha256_hex(sealed_head.as_bytes()),
+            },
+            PreparationOpenDisposition::Reconciled,
+        )
     }
 
     pub(super) fn reconcile_prepared_objects(
@@ -2168,6 +3135,521 @@ fn prepared_revision_from_descriptor(
     })
 }
 
+fn validate_seal_request(request: &PreparationSealRequest) -> Result<(), PreparationError> {
+    if request.source_mutation_generation == 0 {
+        return Err(PreparationError::InvalidFormat(
+            "source mutation generation",
+        ));
+    }
+    validate_hash(&request.source_inventory_sha256)?;
+    if request.folders.len().saturating_add(request.objects.len()) > MAX_CATALOG_ENTRIES {
+        return Err(PreparationError::LimitExceeded("final-intent entries"));
+    }
+    let mut ids = HashSet::new();
+    let mut ordinals = HashSet::new();
+    for identity in &request.objects {
+        validate_opaque(&identity.object_id, "object ID")?;
+        validate_hash(&identity.content_sha256)?;
+        if identity.revision == 0
+            || usize::try_from(identity.preparation_ordinal)
+                .map_or(true, |ordinal| ordinal >= MAX_CATALOG_ENTRIES)
+            || !ids.insert(identity.object_id.as_str())
+            || !ordinals.insert(identity.preparation_ordinal)
+        {
+            return Err(PreparationError::InvalidFormat("preparation identity"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_finalize_request(request: &PreparationFinalizeRequest) -> Result<(), PreparationError> {
+    validate_opaque(&request.preparation_id, "preparation ID")?;
+    validate_preparation_cas(&request.expected)?;
+    if request.source_mutation_generation == 0 {
+        return Err(PreparationError::InvalidFormat(
+            "source mutation generation",
+        ));
+    }
+    validate_hash(&request.source_inventory_sha256)
+}
+
+fn validate_abandon_request(request: &PreparationAbandonRequest) -> Result<(), PreparationError> {
+    validate_opaque(&request.preparation_id, "preparation ID")?;
+    validate_preparation_cas(&request.expected)
+}
+
+fn validate_source_fence(
+    snapshot: &PreparationSnapshot,
+    source_mutation_generation: u64,
+    source_inventory_sha256: &str,
+) -> Result<(), PreparationError> {
+    if snapshot.source_mutation_generation != source_mutation_generation
+        || snapshot.source_inventory_sha256 != source_inventory_sha256
+    {
+        return Err(PreparationError::SourceChanged);
+    }
+    Ok(())
+}
+
+fn validate_expected_validation_head(
+    snapshot: &PreparationSnapshot,
+    current: Option<&super::ValidationSnapshot>,
+) -> Result<(), PreparationError> {
+    match (
+        snapshot.expected_validation_generation,
+        snapshot.expected_validation_catalog_sha256.as_deref(),
+        current,
+    ) {
+        (None, None, None) => Ok(()),
+        (Some(generation), Some(hash), Some(current))
+            if current.head().generation() == generation
+                && current.head().catalog_hash() == hash =>
+        {
+            Ok(())
+        }
+        _ => Err(PreparationError::ValidationHeadConflict),
+    }
+}
+
+fn read_all_descriptors(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+) -> Result<Vec<PreparedObjectDescriptor>, PreparationError> {
+    let mut descriptors = Vec::with_capacity(
+        usize::try_from(snapshot.total_objects)
+            .map_err(|_| PreparationError::LimitExceeded("total objects"))?,
+    );
+    for reference in &snapshot.manifest_segments {
+        descriptors.extend(read_descriptor_segment(layout, snapshot, keys, reference)?.descriptors);
+    }
+    if descriptors.len()
+        != usize::try_from(snapshot.total_objects)
+            .map_err(|_| PreparationError::LimitExceeded("total objects"))?
+    {
+        return Err(PreparationError::CorruptSnapshot);
+    }
+    Ok(descriptors)
+}
+
+fn validate_descriptor_coverage(
+    descriptors: &[PreparedObjectDescriptor],
+    identities: &[PreparationIdentity],
+) -> Result<(), PreparationError> {
+    if descriptors.len() != identities.len() {
+        return Err(PreparationError::FinalIntentMismatch);
+    }
+    let by_ordinal: BTreeMap<_, _> = identities
+        .iter()
+        .map(|identity| (identity.preparation_ordinal, identity))
+        .collect();
+    for descriptor in descriptors {
+        let identity = by_ordinal
+            .get(&descriptor.preparation_ordinal)
+            .ok_or(PreparationError::FinalIntentMismatch)?;
+        if identity.object_id != descriptor.stable_id
+            || identity.revision != descriptor.revision
+            || identity.content_sha256 != descriptor.content_sha256
+            || descriptor.stable_role.is_some()
+        {
+            return Err(PreparationError::FinalIntentMismatch);
+        }
+    }
+    Ok(())
+}
+
+fn validate_descriptor_revision_preconditions(
+    current: Option<&CatalogGeneration>,
+    descriptors: &[PreparedObjectDescriptor],
+) -> Result<(), PreparationError> {
+    for descriptor in descriptors {
+        let current_entry = current.and_then(|catalog| {
+            catalog
+                .entries()
+                .iter()
+                .find(|entry| entry.stable_id().as_str() == descriptor.stable_id)
+        });
+        match current_entry.and_then(|entry| entry.object_payload()) {
+            Some(object)
+                if object.revision().checked_add(1) == Some(descriptor.revision)
+                    && object.object_key_epoch() == descriptor.object_key_epoch => {}
+            None if current_entry.is_none()
+                && descriptor.revision == 1
+                && descriptor.object_key_epoch == 1 => {}
+            _ => {
+                return Err(PreparationError::Converter(
+                    super::converter::ValidationBatchError::Invalid(
+                        "object revision precondition mismatch",
+                    ),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn build_catalog_from_inputs(
+    generation: u64,
+    folders: &[super::converter::ValidationBatchFolder],
+    descriptors: &[PreparedObjectDescriptor],
+    identities: &[PreparationIdentity],
+) -> Result<CatalogGeneration, PreparationError> {
+    validate_descriptor_coverage(descriptors, identities)?;
+    let objects = descriptors
+        .iter()
+        .map(|descriptor| {
+            Ok(super::converter::PreparedValidationCatalogObject {
+                prepared: prepared_revision_from_descriptor(descriptor)?,
+                parent_id: descriptor.parent_id.clone(),
+                name: descriptor.name.clone(),
+                policy: parse_policy(&descriptor.policy)?,
+                references: descriptor.references.clone(),
+                metadata: descriptor.graph_metadata.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, PreparationError>>()?;
+    super::converter::build_prepared_validation_catalog(generation, folders, objects)
+        .map_err(PreparationError::from)
+}
+
+fn validate_prepared_descriptor_envelope(
+    coordinator: &super::CoreCommitCoordinator,
+    keys: &FrkSubkeys,
+    descriptor: &PreparedObjectDescriptor,
+    prepared: &super::PreparedObjectRevision,
+) -> Result<(), PreparationError> {
+    let base_aad = ObjectBaseAad::new(
+        &coordinator.core_id,
+        &descriptor.stable_id,
+        ObjectKind::parse(&descriptor.kind)?,
+        ENVELOPE_VERSION,
+        descriptor.object_key_epoch,
+        descriptor.revision,
+    )
+    .map_err(super::CommitError::from)?;
+    let object_key_aad =
+        ObjectKeyAad::from_base(base_aad.clone(), prepared.wrapped_dek.frk_version())
+            .map_err(super::CommitError::from)?;
+    let wrapped = prepared
+        .wrapped_dek
+        .to_wrapped_object_dek()
+        .map_err(super::CommitError::from)?;
+    let object_key =
+        unwrap_object_dek(keys, &wrapped, &object_key_aad).map_err(super::CommitError::from)?;
+    let file = super::open_regular_file_in(
+        &coordinator.objects_dir,
+        OsStr::new(prepared.physical_name.as_str()),
+    )
+    .map_err(super::CommitError::from)?;
+    let authenticated =
+        open_envelope_stream(file, &object_key, base_aad).map_err(super::CommitError::from)?;
+    let expected = envelope_metadata_from_descriptor(descriptor)?;
+    if authenticated.metadata() != &expected
+        || envelope_metadata_sha256(authenticated.metadata())?
+            != descriptor.envelope_metadata_sha256
+    {
+        return Err(PreparationError::FinalIntentMismatch);
+    }
+    Ok(())
+}
+
+fn envelope_metadata_from_descriptor(
+    descriptor: &PreparedObjectDescriptor,
+) -> Result<EnvelopeMetadata, PreparationError> {
+    let body_length = descriptor.body_length;
+    let chunks = if body_length == 0 {
+        0
+    } else {
+        body_length
+            .checked_add(BODY_CHUNK_PLAINTEXT_SIZE as u64 - 1)
+            .ok_or(PreparationError::LimitExceeded("object chunk count"))?
+            / BODY_CHUNK_PLAINTEXT_SIZE as u64
+    };
+    let mut metadata = descriptor.graph_metadata.clone();
+    for value in metadata.values_mut() {
+        canonicalize_json(value);
+    }
+    Ok(EnvelopeMetadata {
+        schema_version: METADATA_SCHEMA_VERSION,
+        kind: descriptor.kind.clone(),
+        object_id: descriptor.stable_id.clone(),
+        revision: descriptor.revision,
+        created_at: descriptor.created_at.clone(),
+        updated_at: descriptor.updated_at.clone(),
+        content_type: descriptor.content_type.clone(),
+        metadata,
+        body_encoding: parse_body_encoding(&descriptor.body_encoding)?,
+        body_length,
+        body_sha256: descriptor.content_sha256.clone(),
+        chunk_plaintext_size: BODY_CHUNK_PLAINTEXT_SIZE as u32,
+        chunk_count: u32::try_from(chunks)
+            .map_err(|_| PreparationError::LimitExceeded("object chunk count"))?,
+    })
+}
+
+fn final_intent_entries(
+    folders: &[super::converter::ValidationBatchFolder],
+    descriptors: &[PreparedObjectDescriptor],
+) -> Result<Vec<FinalIntentEntry>, PreparationError> {
+    let mut values = Vec::with_capacity(folders.len() + descriptors.len());
+    for folder in folders {
+        values.push((
+            folder.stable_id.clone(),
+            FinalCatalogIntentEntry::Folder(FinalCatalogFolderIntent {
+                stable_id: folder.stable_id.clone(),
+                parent_id: folder.parent_id.clone(),
+                name: folder.name.clone(),
+                role: folder.role.clone(),
+                policy: policy_name(folder.policy).to_owned(),
+                metadata: folder.metadata.clone(),
+            }),
+        ));
+    }
+    for descriptor in descriptors {
+        values.push((
+            descriptor.stable_id.clone(),
+            FinalCatalogIntentEntry::Object(Box::new(FinalCatalogObjectIntent {
+                stable_id: descriptor.stable_id.clone(),
+                parent_id: descriptor.parent_id.clone(),
+                name: descriptor.name.clone(),
+                object_kind: descriptor.kind.clone(),
+                revision: descriptor.revision,
+                object_key_epoch: descriptor.object_key_epoch,
+                content_sha256: descriptor.content_sha256.clone(),
+                content_type: descriptor.content_type.clone(),
+                body_encoding: descriptor.body_encoding.clone(),
+                body_length: descriptor.body_length,
+                created_at: descriptor.created_at.clone(),
+                updated_at: descriptor.updated_at.clone(),
+                source_character_count: descriptor.source_character_count,
+                references: descriptor.references.clone(),
+                policy: descriptor.policy.clone(),
+                metadata: descriptor.graph_metadata.clone(),
+                source_fingerprint_sha256: descriptor.source_fingerprint_sha256.clone(),
+                converter_format_version: descriptor.converter_format_version,
+                preparation_ordinal: descriptor.preparation_ordinal,
+            })),
+        ));
+    }
+    values.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut previous = None;
+    let mut entries = Vec::with_capacity(values.len());
+    for (ordinal, (stable_id, value)) in values.into_iter().enumerate() {
+        if previous.as_deref() == Some(stable_id.as_str()) {
+            return Err(PreparationError::Converter(
+                super::converter::ValidationBatchError::Invalid("duplicate stable ID"),
+            ));
+        }
+        previous = Some(stable_id.clone());
+        let canonical_catalog_entry_json = serde_json::to_string(&serde_json::to_value(&value)?)?;
+        entries.push(FinalIntentEntry {
+            ordinal: u64::try_from(ordinal)
+                .map_err(|_| PreparationError::LimitExceeded("final-intent ordinal"))?,
+            stable_id,
+            canonical_catalog_entry_sha256: sha256_hex(canonical_catalog_entry_json.as_bytes()),
+            canonical_catalog_entry_json,
+        });
+    }
+    validate_final_intent_entries(&entries, MAX_SEGMENT_ITEMS)?;
+    Ok(entries)
+}
+
+fn canonical_intent_sha256(entries: &[FinalIntentEntry]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"anima-corefs-final-intent-v1\0");
+    for entry in entries {
+        digest.update(entry.ordinal.to_le_bytes());
+        digest.update((entry.stable_id.len() as u64).to_le_bytes());
+        digest.update(entry.stable_id.as_bytes());
+        digest.update(entry.canonical_catalog_entry_sha256.as_bytes());
+    }
+    hex_bytes(&digest.finalize())
+}
+
+fn canonical_catalog_sha256(catalog: &CatalogGeneration) -> Result<String, PreparationError> {
+    Ok(sha256_hex(
+        &encode_catalog_generation(catalog)
+            .map_err(super::converter::ValidationBatchError::from)?,
+    ))
+}
+
+fn read_all_final_intent_entries(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+) -> Result<Vec<FinalIntentEntry>, PreparationError> {
+    let capacity = snapshot
+        .final_intent_entry_count
+        .and_then(|count| usize::try_from(count).ok())
+        .unwrap_or(0);
+    let mut entries = Vec::with_capacity(capacity);
+    for reference in &snapshot.final_intent_segments {
+        let name = format!(
+            "{:020}-{}.prep-intent.acore",
+            reference.segment_index, reference.ciphertext_sha256
+        );
+        let encoded = read_referenced_record(
+            &layout.intent,
+            &name,
+            MAX_FINAL_INTENT_SEGMENT_ENVELOPE_SIZE,
+            PreparationReferenceKind::Intent,
+            reference.segment_index,
+        )?;
+        if sha256_hex(&encoded) != reference.ciphertext_sha256 {
+            return Err(PreparationError::CorruptReferencedRecord {
+                kind: PreparationReferenceKind::Intent,
+                segment_index: reference.segment_index,
+            });
+        }
+        let segment = FinalIntentSegment::open(
+            &encoded,
+            keys,
+            &snapshot.core_id,
+            snapshot.required_frk_version,
+        )?;
+        entries.extend(segment.entries);
+    }
+    Ok(entries)
+}
+
+fn reconstruct_sealed_catalog(
+    layout: &PreparationLayout,
+    snapshot: &PreparationSnapshot,
+    keys: &FrkSubkeys,
+) -> Result<
+    (
+        CatalogGeneration,
+        Vec<super::PreparedObjectRevision>,
+        Vec<PreparedObjectDescriptor>,
+    ),
+    PreparationError,
+> {
+    let entries = read_all_final_intent_entries(layout, snapshot, keys)?;
+    if canonical_intent_sha256(&entries)
+        != snapshot
+            .canonical_intent_sha256
+            .as_deref()
+            .ok_or(PreparationError::FinalIntentMismatch)?
+    {
+        return Err(PreparationError::FinalIntentMismatch);
+    }
+    let descriptors = read_all_descriptors(layout, snapshot, keys)?;
+    let mut folders = Vec::new();
+    let mut identities = Vec::new();
+    for entry in &entries {
+        let value: FinalCatalogIntentEntry =
+            serde_json::from_str(&entry.canonical_catalog_entry_json)?;
+        match value {
+            FinalCatalogIntentEntry::Folder(FinalCatalogFolderIntent {
+                stable_id,
+                parent_id,
+                name,
+                role,
+                policy,
+                metadata,
+            }) => {
+                if stable_id != entry.stable_id {
+                    return Err(PreparationError::FinalIntentMismatch);
+                }
+                folders.push(super::converter::ValidationBatchFolder {
+                    stable_id,
+                    parent_id,
+                    name,
+                    role,
+                    policy: parse_policy(&policy)?,
+                    metadata,
+                });
+            }
+            FinalCatalogIntentEntry::Object(object) => {
+                let FinalCatalogObjectIntent {
+                    stable_id,
+                    parent_id,
+                    name,
+                    object_kind,
+                    revision,
+                    object_key_epoch,
+                    content_sha256,
+                    content_type,
+                    body_encoding,
+                    body_length,
+                    created_at,
+                    updated_at,
+                    source_character_count,
+                    references,
+                    policy,
+                    metadata,
+                    source_fingerprint_sha256,
+                    converter_format_version,
+                    preparation_ordinal,
+                } = *object;
+                if stable_id != entry.stable_id {
+                    return Err(PreparationError::FinalIntentMismatch);
+                }
+                let descriptor = usize::try_from(preparation_ordinal)
+                    .ok()
+                    .and_then(|ordinal| descriptors.get(ordinal))
+                    .ok_or(PreparationError::FinalIntentMismatch)?;
+                if descriptor.stable_id != stable_id
+                    || descriptor.parent_id != parent_id
+                    || descriptor.name != name
+                    || descriptor.kind != object_kind
+                    || descriptor.revision != revision
+                    || descriptor.object_key_epoch != object_key_epoch
+                    || descriptor.content_sha256 != content_sha256
+                    || descriptor.content_type != content_type
+                    || descriptor.body_encoding != body_encoding
+                    || descriptor.body_length != body_length
+                    || descriptor.created_at != created_at
+                    || descriptor.updated_at != updated_at
+                    || descriptor.source_character_count != source_character_count
+                    || descriptor.references != references
+                    || descriptor.policy != policy
+                    || descriptor.graph_metadata != metadata
+                    || descriptor.source_fingerprint_sha256 != source_fingerprint_sha256
+                    || descriptor.converter_format_version != converter_format_version
+                    || descriptor.preparation_ordinal != preparation_ordinal
+                {
+                    return Err(PreparationError::FinalIntentMismatch);
+                }
+                identities.push(PreparationIdentity {
+                    object_id: stable_id,
+                    revision,
+                    content_sha256,
+                    preparation_ordinal,
+                });
+            }
+        }
+    }
+    if Some(
+        u32::try_from(entries.len())
+            .map_err(|_| PreparationError::LimitExceeded("final-intent entries"))?,
+    ) != snapshot.final_intent_entry_count
+        || Some(
+            u32::try_from(folders.len())
+                .map_err(|_| PreparationError::LimitExceeded("final-intent folders"))?,
+        ) != snapshot.final_intent_folder_count
+    {
+        return Err(PreparationError::FinalIntentMismatch);
+    }
+    let generation = snapshot
+        .intended_validation_generation
+        .ok_or(PreparationError::FinalIntentMismatch)?;
+    let prepared = descriptors
+        .iter()
+        .map(prepared_revision_from_descriptor)
+        .collect::<Result<Vec<_>, _>>()?;
+    let catalog = build_catalog_from_inputs(generation, &folders, &descriptors, &identities)?;
+    Ok((catalog, prepared, descriptors))
+}
+
+fn clear_sealed_intent_metadata(snapshot: &mut PreparationSnapshot) {
+    snapshot.canonical_intent_sha256 = None;
+    snapshot.intended_validation_generation = None;
+    snapshot.intended_validation_catalog_sha256 = None;
+    snapshot.final_intent_entry_count = None;
+    snapshot.final_intent_folder_count = None;
+}
+
 fn next_descriptor_segment(
     layout: &PreparationLayout,
     snapshot: &PreparationSnapshot,
@@ -2199,6 +3681,96 @@ fn next_descriptor_segment(
         },
         false,
     ))
+}
+
+fn validate_final_intent_entries(
+    entries: &[FinalIntentEntry],
+    segment_items: usize,
+) -> Result<(), PreparationError> {
+    if entries.is_empty() {
+        return Err(PreparationError::InvalidFormat("final intent is empty"));
+    }
+    if entries.len() > MAX_CATALOG_ENTRIES {
+        return Err(PreparationError::LimitExceeded("final-intent entries"));
+    }
+    if segment_items == 0 || segment_items > MAX_SEGMENT_ITEMS {
+        return Err(PreparationError::LimitExceeded(
+            "final-intent segment items",
+        ));
+    }
+    let mut stable_ids = HashSet::with_capacity(entries.len());
+    for (index, entry) in entries.iter().enumerate() {
+        entry.validate()?;
+        if !stable_ids.insert(entry.stable_id.as_str()) {
+            return Err(PreparationError::InvalidFormat("duplicate stable ID"));
+        }
+        if entry.ordinal
+            != u64::try_from(index)
+                .map_err(|_| PreparationError::LimitExceeded("final-intent ordinal"))?
+        {
+            return Err(PreparationError::InvalidFormat(
+                "final-intent ordinals are not contiguous",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn final_intent_segments(
+    snapshot: &PreparationSnapshot,
+    entries: &[FinalIntentEntry],
+    segment_items: usize,
+) -> Result<Vec<FinalIntentSegment>, PreparationError> {
+    let mut segments = Vec::new();
+    let mut current = Vec::new();
+    for entry in entries {
+        current.push(entry.clone());
+        let segment_index = u32::try_from(segments.len())
+            .map_err(|_| PreparationError::LimitExceeded("final-intent segment index"))?;
+        let candidate = FinalIntentSegment {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: snapshot.core_id.clone(),
+            preparation_id: snapshot.preparation_id.clone(),
+            required_frk_version: snapshot.required_frk_version,
+            segment_index,
+            entries: current.clone(),
+        };
+        let exceeds_items = current.len() > segment_items;
+        let exceeds_bytes = matches!(candidate.encode(), Err(PreparationError::LimitExceeded(_)));
+        if exceeds_items || exceeds_bytes {
+            let last = current
+                .pop()
+                .ok_or(PreparationError::InvalidFormat("final intent is empty"))?;
+            if current.is_empty() {
+                return Err(PreparationError::LimitExceeded("final-intent entry"));
+            }
+            segments.push(FinalIntentSegment {
+                entries: std::mem::take(&mut current),
+                ..candidate
+            });
+            current.push(last);
+        }
+    }
+    if !current.is_empty() {
+        let segment_index = u32::try_from(segments.len())
+            .map_err(|_| PreparationError::LimitExceeded("final-intent segment index"))?;
+        let segment = FinalIntentSegment {
+            schema_version: PREPARATION_SCHEMA_VERSION,
+            core_id: snapshot.core_id.clone(),
+            preparation_id: snapshot.preparation_id.clone(),
+            required_frk_version: snapshot.required_frk_version,
+            segment_index,
+            entries: current,
+        };
+        segment.encode()?;
+        segments.push(segment);
+    }
+    if segments.len() > MAX_SEGMENT_REFERENCES {
+        return Err(PreparationError::LimitExceeded(
+            "final-intent segment references",
+        ));
+    }
+    Ok(segments)
 }
 
 fn read_descriptor_segment(
@@ -2570,6 +4142,7 @@ fn parse_body_encoding(value: &str) -> Result<BodyEncoding, PreparationError> {
 fn policy_name(value: super::converter::ValidationBatchPolicy) -> &'static str {
     match value {
         super::converter::ValidationBatchPolicy::UserWrite => "user_write",
+        super::converter::ValidationBatchPolicy::SharedManage => "shared_manage",
         super::converter::ValidationBatchPolicy::Inherit => "inherit",
         super::converter::ValidationBatchPolicy::Deny => "deny",
     }
@@ -2578,6 +4151,7 @@ fn policy_name(value: super::converter::ValidationBatchPolicy) -> &'static str {
 fn parse_policy(value: &str) -> Result<super::converter::ValidationBatchPolicy, PreparationError> {
     match value {
         "user_write" => Ok(super::converter::ValidationBatchPolicy::UserWrite),
+        "shared_manage" => Ok(super::converter::ValidationBatchPolicy::SharedManage),
         "inherit" => Ok(super::converter::ValidationBatchPolicy::Inherit),
         "deny" => Ok(super::converter::ValidationBatchPolicy::Deny),
         _ => Err(PreparationError::InvalidFormat("policy")),
@@ -2671,6 +4245,16 @@ fn status_from_loaded(
         source_schema_version: loaded.snapshot.source_inventory_version,
         source_mutation_generation: loaded.snapshot.source_mutation_generation,
         source_inventory_sha256: loaded.snapshot.source_inventory_sha256.clone(),
+        expected_validation_generation: loaded.snapshot.expected_validation_generation,
+        expected_validation_catalog_sha256: loaded
+            .snapshot
+            .expected_validation_catalog_sha256
+            .clone(),
+        intended_validation_generation: loaded.snapshot.intended_validation_generation,
+        intended_validation_catalog_sha256: loaded
+            .snapshot
+            .intended_validation_catalog_sha256
+            .clone(),
         total_objects: loaded.snapshot.total_objects,
         total_plaintext_bytes: loaded.snapshot.total_plaintext_bytes,
         total_ciphertext_bytes: loaded.snapshot.total_ciphertext_bytes,
@@ -2679,6 +4263,616 @@ fn status_from_loaded(
         next_intent_segment,
         disposition,
     })
+}
+
+fn map_validation_publication_hook<F>(
+    point: super::CommitFailurePoint,
+    hook: &mut F,
+) -> io::Result<()>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    match point {
+        super::CommitFailurePoint::Publication {
+            target: super::PublicationTarget::Catalog,
+            phase,
+        } => hook(PreparationPublicationTarget::ValidationCatalog, phase),
+        super::CommitFailurePoint::Publication {
+            target: super::PublicationTarget::ValidationHead,
+            phase,
+        } => hook(PreparationPublicationTarget::ValidationHead, phase),
+        _ => Ok(()),
+    }
+}
+
+fn completed_receipt(
+    loaded: &LoadedPreparation,
+    keys: &FrkSubkeys,
+    validation_head: &crate::head::HeadRecord,
+) -> Result<PreparationReceipt, PreparationError> {
+    Ok(PreparationReceipt {
+        schema_version: PREPARATION_SCHEMA_VERSION,
+        core_id: loaded.snapshot.core_id.clone(),
+        preparation_id: loaded.snapshot.preparation_id.clone(),
+        receipt_id: deterministic_receipt_id(
+            keys,
+            &loaded.snapshot.preparation_id,
+            PreparationReceiptOutcome::Completed,
+            &loaded.head.snapshot_ciphertext_sha256,
+        )?,
+        outcome: PreparationReceiptOutcome::Completed,
+        required_frk_version: loaded.snapshot.required_frk_version,
+        final_snapshot_sequence: loaded.snapshot.sequence,
+        final_snapshot_ciphertext_sha256: loaded.head.snapshot_ciphertext_sha256.clone(),
+        pointer_sha256: loaded.pointer_sha256.clone(),
+        validation_generation: Some(validation_head.generation()),
+        validation_catalog_sha256: Some(validation_head.catalog_hash().to_owned()),
+        retained_frk_versions: Vec::new(),
+    })
+}
+
+fn abandoned_receipt(
+    loaded: &LoadedPreparation,
+    keys: &FrkSubkeys,
+) -> Result<PreparationReceipt, PreparationError> {
+    Ok(PreparationReceipt {
+        schema_version: PREPARATION_SCHEMA_VERSION,
+        core_id: loaded.snapshot.core_id.clone(),
+        preparation_id: loaded.snapshot.preparation_id.clone(),
+        receipt_id: deterministic_receipt_id(
+            keys,
+            &loaded.snapshot.preparation_id,
+            PreparationReceiptOutcome::Abandoned,
+            &loaded.head.snapshot_ciphertext_sha256,
+        )?,
+        outcome: PreparationReceiptOutcome::Abandoned,
+        required_frk_version: loaded.snapshot.required_frk_version,
+        final_snapshot_sequence: loaded.snapshot.sequence,
+        final_snapshot_ciphertext_sha256: loaded.head.snapshot_ciphertext_sha256.clone(),
+        pointer_sha256: loaded.pointer_sha256.clone(),
+        validation_generation: None,
+        validation_catalog_sha256: None,
+        retained_frk_versions: Vec::new(),
+    })
+}
+
+fn deterministic_receipt_id(
+    keys: &FrkSubkeys,
+    preparation_id: &str,
+    outcome: PreparationReceiptOutcome,
+    final_snapshot_ciphertext_sha256: &str,
+) -> Result<String, PreparationError> {
+    let mut context = Vec::with_capacity(128);
+    context.extend_from_slice(b"anima-corefs-preparation-receipt-id-v1\0");
+    context.extend_from_slice(preparation_id.as_bytes());
+    context.push(0);
+    context.extend_from_slice(outcome.as_str().as_bytes());
+    context.push(0);
+    context.extend_from_slice(final_snapshot_ciphertext_sha256.as_bytes());
+    let hkdf = hkdf::Hkdf::<Sha256>::from_prk(keys.preparation().as_slice())
+        .map_err(|_| CryptoError::Derivation)?;
+    let mut keyed = [0_u8; 32];
+    hkdf.expand(&context, &mut keyed)
+        .map_err(|_| CryptoError::Derivation)?;
+    Ok(OpaqueId::derive_migration("preparation-receipt-v1", &keyed)
+        .map_err(|_| PreparationError::InvalidFormat("receipt ID"))?
+        .as_str()
+        .to_owned())
+}
+
+fn receipt_file_name(receipt_id: &str) -> String {
+    format!("{receipt_id}.prep-receipt.acore")
+}
+
+fn publish_or_verify_receipt<F>(
+    layout: &PreparationLayout,
+    keys: &FrkSubkeys,
+    receipt: &PreparationReceipt,
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let name = receipt_file_name(&receipt.receipt_id);
+    match super::read_bounded_in(
+        &layout.receipts,
+        OsStr::new(&name),
+        MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
+    ) {
+        Ok(encoded) => {
+            let durable = PreparationReceipt::open(
+                &encoded,
+                keys,
+                &receipt.core_id,
+                receipt.required_frk_version,
+            )
+            .map_err(|_| PreparationError::ReceiptConflict)?;
+            if &durable != receipt {
+                return Err(PreparationError::ReceiptConflict);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let sealed = receipt.seal(keys)?;
+            publish_immutable_in_with_hook(
+                &layout.receipts,
+                OsStr::new(&name),
+                sealed.as_bytes(),
+                &mut |phase| hook(PreparationPublicationTarget::Receipt, phase),
+            )?;
+            Ok(())
+        }
+        Err(_) => Err(PreparationError::ReceiptConflict),
+    }
+}
+
+fn load_completed_receipt(
+    coordinator: &super::CoreCommitCoordinator,
+    layout: &PreparationLayout,
+    keys: &FrkSubkeys,
+    preparation_id: &str,
+    expected: &PreparationCas,
+) -> Result<PreparationReceipt, PreparationError> {
+    let receipt = find_terminal_receipt(
+        layout,
+        keys,
+        &coordinator.core_id,
+        preparation_id,
+        expected,
+        PreparationReceiptOutcome::Completed,
+    )?
+    .ok_or(PreparationError::Missing)?;
+    let validation = coordinator
+        .load_validation_snapshot(keys)?
+        .ok_or(PreparationError::ValidationHeadConflict)?;
+    if receipt.validation_generation != Some(validation.head().generation())
+        || receipt.validation_catalog_sha256.as_deref() != Some(validation.head().catalog_hash())
+    {
+        return Err(PreparationError::ValidationHeadConflict);
+    }
+    Ok(receipt)
+}
+
+fn find_terminal_receipt(
+    layout: &PreparationLayout,
+    keys: &FrkSubkeys,
+    core_id: &str,
+    preparation_id: &str,
+    expected: &PreparationCas,
+    expected_outcome: PreparationReceiptOutcome,
+) -> Result<Option<PreparationReceipt>, PreparationError> {
+    let mut matched = None;
+    let mut inspected = 0_usize;
+    for entry in layout.receipts.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().ends_with(".prep-receipt.acore") {
+            continue;
+        }
+        inspected = inspected
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("preparation receipts"))?;
+        if inspected > 8 {
+            return Err(PreparationError::ReceiptConflict);
+        }
+        let encoded = super::read_bounded_in(
+            &layout.receipts,
+            &name,
+            MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
+        )
+        .map_err(|_| PreparationError::ReceiptConflict)?;
+        let receipt = PreparationReceipt::open(&encoded, keys, core_id, keys.frk_version())
+            .map_err(|_| PreparationError::ReceiptConflict)?;
+        if name != OsStr::new(&receipt_file_name(&receipt.receipt_id))
+            || receipt.receipt_id
+                != deterministic_receipt_id(
+                    keys,
+                    &receipt.preparation_id,
+                    receipt.outcome,
+                    &receipt.final_snapshot_ciphertext_sha256,
+                )?
+        {
+            return Err(PreparationError::ReceiptConflict);
+        }
+        if receipt.preparation_id == preparation_id
+            && receipt.final_snapshot_sequence == expected.snapshot_sequence
+            && receipt.pointer_sha256 == expected.pointer_sha256
+            && (receipt.outcome != expected_outcome || matched.replace(receipt).is_some())
+        {
+            return Err(PreparationError::ReceiptConflict);
+        }
+    }
+    Ok(matched)
+}
+
+struct InspectedQuarantineFile {
+    sha256: String,
+    byte_length: u64,
+    bounded_bytes: Option<Vec<u8>>,
+}
+
+fn inspect_quarantine_file(
+    directory: &Dir,
+    name: &OsStr,
+    capture_limit: usize,
+) -> Result<Option<InspectedQuarantineFile>, PreparationError> {
+    let mut file = match super::open_regular_file_in(directory, name) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(PreparationError::QuarantineConflict),
+    };
+    let mut hasher = Sha256::new();
+    let mut byte_length = 0_u64;
+    let mut bounded_bytes = Some(Vec::new());
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| PreparationError::QuarantineConflict)?;
+        if read == 0 {
+            break;
+        }
+        byte_length = byte_length
+            .checked_add(
+                u64::try_from(read)
+                    .map_err(|_| PreparationError::LimitExceeded("quarantine pointer"))?,
+            )
+            .ok_or(PreparationError::LimitExceeded("quarantine pointer"))?;
+        hasher.update(&buffer[..read]);
+        if let Some(bytes) = bounded_bytes.as_mut() {
+            if bytes
+                .len()
+                .checked_add(read)
+                .is_some_and(|length| length <= capture_limit)
+            {
+                bytes.extend_from_slice(&buffer[..read]);
+            } else {
+                bounded_bytes = None;
+            }
+        }
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    Ok(Some(InspectedQuarantineFile {
+        sha256: hex_bytes(&digest),
+        byte_length,
+        bounded_bytes,
+    }))
+}
+
+fn read_raw_preparation_pointer(
+    fs_dir: &Dir,
+) -> Result<Option<InspectedQuarantineFile>, PreparationError> {
+    inspect_quarantine_file(
+        fs_dir,
+        OsStr::new(PREPARATION_HEAD_FILE),
+        MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
+    )
+}
+
+fn sealed_required_frk_version(encoded: &[u8]) -> Result<u32, PreparationError> {
+    if encoded.len() < 17 || encoded.get(..8) != Some(ENVELOPE_MAGIC.as_slice()) {
+        return Err(PreparationError::QuarantineConflict);
+    }
+    let version = u32::from_le_bytes(
+        encoded[13..17]
+            .try_into()
+            .map_err(|_| PreparationError::QuarantineConflict)?,
+    );
+    if version == 0 {
+        return Err(PreparationError::QuarantineConflict);
+    }
+    Ok(version)
+}
+
+fn pointer_authenticates_with_keyring(
+    pointer: &[u8],
+    keyring: &crate::rotation::FrkKeyring<'_>,
+    core_id: &str,
+) -> bool {
+    sealed_required_frk_version(pointer)
+        .ok()
+        .and_then(|version| keyring.require(version).ok())
+        .is_some_and(|keys| authenticate_pointer(pointer, keys, core_id).is_ok())
+}
+
+fn quarantine_preparation_id(pointer_sha256: &str) -> Result<String, PreparationError> {
+    validate_hash(pointer_sha256)?;
+    Ok(
+        OpaqueId::derive_migration("preparation-quarantine-v1", pointer_sha256.as_bytes())
+            .map_err(|_| PreparationError::InvalidFormat("quarantine preparation ID"))?
+            .as_str()
+            .to_owned(),
+    )
+}
+
+fn quarantine_pointer_file_name(pointer_sha256: &str) -> String {
+    format!("{pointer_sha256}{QUARANTINE_POINTER_SUFFIX}")
+}
+
+fn quarantine_receipt_file_name(pointer_sha256: &str) -> String {
+    format!("{pointer_sha256}{QUARANTINE_RECEIPT_SUFFIX}")
+}
+
+fn publish_or_verify_quarantine_pointer<F>(
+    fs_dir: &Dir,
+    quarantine: &Dir,
+    pointer_sha256: &str,
+    pointer_byte_length: u64,
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let name = quarantine_pointer_file_name(pointer_sha256);
+    match inspect_quarantine_file(quarantine, OsStr::new(&name), 0)? {
+        Some(durable) => {
+            if durable.byte_length != pointer_byte_length || durable.sha256 != pointer_sha256 {
+                return Err(PreparationError::QuarantineConflict);
+            }
+            Ok(())
+        }
+        None => publish_quarantine_pointer_from_source(
+            fs_dir,
+            quarantine,
+            OsStr::new(&name),
+            pointer_sha256,
+            pointer_byte_length,
+            hook,
+        ),
+    }
+}
+
+fn publish_quarantine_pointer_from_source<F>(
+    fs_dir: &Dir,
+    quarantine: &Dir,
+    target: &OsStr,
+    pointer_sha256: &str,
+    pointer_byte_length: u64,
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let mut source = super::open_regular_file_in(fs_dir, OsStr::new(PREPARATION_HEAD_FILE))
+        .map_err(|_| PreparationError::QuarantineConflict)?;
+    let (mut temporary, temporary_name) = create_temporary_in(quarantine, target)?;
+    hook(
+        PreparationPublicationTarget::QuarantinePointer,
+        PublicationPhase::TemporaryCreated,
+    )?;
+    let result = (|| {
+        let mut hasher = Sha256::new();
+        let mut copied = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = source.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            temporary.write_all(&buffer[..read])?;
+            hasher.update(&buffer[..read]);
+            copied = copied
+                .checked_add(
+                    u64::try_from(read)
+                        .map_err(|_| PreparationError::LimitExceeded("quarantine pointer"))?,
+                )
+                .ok_or(PreparationError::LimitExceeded("quarantine pointer"))?;
+        }
+        let digest: [u8; 32] = hasher.finalize().into();
+        if copied != pointer_byte_length || hex_bytes(&digest) != pointer_sha256 {
+            return Err(PreparationError::QuarantineConflict);
+        }
+        hook(
+            PreparationPublicationTarget::QuarantinePointer,
+            PublicationPhase::PayloadWritten,
+        )?;
+        temporary.sync_all()?;
+        hook(
+            PreparationPublicationTarget::QuarantinePointer,
+            PublicationPhase::PayloadSynced,
+        )?;
+        publish_staged_immutable_in_with_hook(
+            quarantine,
+            &temporary,
+            &temporary_name,
+            target,
+            &mut |phase| hook(PreparationPublicationTarget::QuarantinePointer, phase),
+        )?;
+        Ok(())
+    })();
+    drop(temporary);
+    if result.is_err() {
+        let _ = quarantine.remove_file(&temporary_name);
+    }
+    result
+}
+
+fn publish_or_verify_quarantine_receipt<F>(
+    quarantine: &Dir,
+    keys: &FrkSubkeys,
+    receipt: &PreparationReceipt,
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let name = quarantine_receipt_file_name(&receipt.pointer_sha256);
+    match super::read_bounded_in(
+        quarantine,
+        OsStr::new(&name),
+        MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
+    ) {
+        Ok(encoded) => {
+            let durable = PreparationReceipt::open(
+                &encoded,
+                keys,
+                &receipt.core_id,
+                receipt.required_frk_version,
+            )
+            .map_err(|_| PreparationError::QuarantineConflict)?;
+            if &durable != receipt {
+                return Err(PreparationError::QuarantineConflict);
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let sealed = receipt.seal(keys)?;
+            publish_immutable_in_with_hook(
+                quarantine,
+                OsStr::new(&name),
+                sealed.as_bytes(),
+                &mut |phase| hook(PreparationPublicationTarget::QuarantineReceipt, phase),
+            )?;
+            Ok(())
+        }
+        Err(_) => Err(PreparationError::QuarantineConflict),
+    }
+}
+
+fn load_quarantine_receipt(
+    quarantine: &Dir,
+    keyring: &crate::rotation::FrkKeyring<'_>,
+    core_id: &str,
+    pointer_sha256: &str,
+) -> Result<PreparationReceipt, PreparationError> {
+    validate_hash(pointer_sha256)?;
+    let pointer_name = quarantine_pointer_file_name(pointer_sha256);
+    let pointer = inspect_quarantine_file(quarantine, OsStr::new(&pointer_name), 0)?
+        .ok_or(PreparationError::QuarantineConflict)?;
+    if pointer.sha256 != pointer_sha256 {
+        return Err(PreparationError::QuarantineConflict);
+    }
+    let receipt_name = quarantine_receipt_file_name(pointer_sha256);
+    let encoded = super::read_bounded_in(
+        quarantine,
+        OsStr::new(&receipt_name),
+        MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
+    )
+    .map_err(|_| PreparationError::QuarantineConflict)?;
+    let required_frk_version = sealed_required_frk_version(&encoded)?;
+    let keys = keyring
+        .require(required_frk_version)
+        .map_err(|_| PreparationError::RetainedFrkMissing(required_frk_version))?;
+    let receipt = PreparationReceipt::open(&encoded, keys, core_id, required_frk_version)
+        .map_err(|_| PreparationError::QuarantineConflict)?;
+    let preparation_id = quarantine_preparation_id(pointer_sha256)?;
+    if receipt.outcome != PreparationReceiptOutcome::Quarantined
+        || receipt.preparation_id != preparation_id
+        || receipt.pointer_sha256 != pointer_sha256
+        || receipt.final_snapshot_sequence != 1
+        || receipt.final_snapshot_ciphertext_sha256 != pointer_sha256
+        || receipt.receipt_id
+            != deterministic_receipt_id(
+                keys,
+                &preparation_id,
+                PreparationReceiptOutcome::Quarantined,
+                pointer_sha256,
+            )?
+    {
+        return Err(PreparationError::QuarantineConflict);
+    }
+    if let Some(missing) = receipt
+        .retained_frk_versions
+        .iter()
+        .copied()
+        .find(|version| !keyring.contains(*version))
+    {
+        return Err(PreparationError::RetainedFrkMissing(missing));
+    }
+    Ok(receipt)
+}
+
+fn scan_quarantine_retention(
+    quarantine: &Dir,
+    keyring: &crate::rotation::FrkKeyring<'_>,
+    core_id: &str,
+) -> Result<Vec<u32>, PreparationError> {
+    let mut pointer_hashes = BTreeSet::new();
+    let mut receipt_hashes = BTreeSet::new();
+    let mut entries = 0_usize;
+    for entry in quarantine.entries()? {
+        let entry = entry.map_err(|_| PreparationError::QuarantineConflict)?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| PreparationError::QuarantineConflict)?;
+        entries = entries
+            .checked_add(1)
+            .ok_or(PreparationError::LimitExceeded("quarantine records"))?;
+        if entries > MAX_QUARANTINE_RECORDS.saturating_mul(4) {
+            return Err(PreparationError::LimitExceeded("quarantine records"));
+        }
+        if let Some(target) = quarantine_temporary_target(&name) {
+            let hash = target
+                .strip_suffix(QUARANTINE_POINTER_SUFFIX)
+                .or_else(|| target.strip_suffix(QUARANTINE_RECEIPT_SUFFIX))
+                .ok_or(PreparationError::QuarantineConflict)?;
+            validate_hash(hash).map_err(|_| PreparationError::QuarantineConflict)?;
+            continue;
+        }
+        let (pointer_sha256, hashes) =
+            if let Some(hash) = name.strip_suffix(QUARANTINE_POINTER_SUFFIX) {
+                (hash, &mut pointer_hashes)
+            } else if let Some(hash) = name.strip_suffix(QUARANTINE_RECEIPT_SUFFIX) {
+                (hash, &mut receipt_hashes)
+            } else {
+                return Err(PreparationError::QuarantineConflict);
+            };
+        validate_hash(pointer_sha256).map_err(|_| PreparationError::QuarantineConflict)?;
+        if !hashes.insert(pointer_sha256.to_owned()) {
+            return Err(PreparationError::QuarantineConflict);
+        }
+    }
+    if pointer_hashes != receipt_hashes || pointer_hashes.len() > MAX_QUARANTINE_RECORDS {
+        return Err(PreparationError::QuarantineConflict);
+    }
+
+    let mut versions = Vec::new();
+    for pointer_sha256 in pointer_hashes {
+        let receipt = load_quarantine_receipt(quarantine, keyring, core_id, &pointer_sha256)?;
+        versions.extend(receipt.retained_frk_versions);
+    }
+    versions.sort_unstable();
+    versions.dedup();
+    Ok(versions)
+}
+
+fn quarantine_temporary_target(name: &str) -> Option<&str> {
+    let staged = name.strip_prefix('.')?.strip_suffix(".tmp")?;
+    let (target, random_suffix) = staged.rsplit_once('.')?;
+    random_suffix.parse::<u64>().ok()?;
+    Some(target)
+}
+
+fn clear_preparation_head_exact<F>(
+    fs_dir: &Dir,
+    expected_pointer_sha256: &str,
+    hook: &mut F,
+) -> Result<(), PreparationError>
+where
+    F: FnMut(PreparationPublicationTarget, PublicationPhase) -> io::Result<()>,
+{
+    let pointer = inspect_quarantine_file(fs_dir, OsStr::new(PREPARATION_HEAD_FILE), 0)?
+        .ok_or(PreparationError::CasConflict)?;
+    if pointer.sha256 != expected_pointer_sha256 {
+        return Err(PreparationError::CasConflict);
+    }
+    hook(
+        PreparationPublicationTarget::Clear,
+        PublicationPhase::PayloadSynced,
+    )?;
+    fs_dir.remove_file(PREPARATION_HEAD_FILE)?;
+    hook(
+        PreparationPublicationTarget::Clear,
+        PublicationPhase::DestinationPublished,
+    )?;
+    #[cfg(not(windows))]
+    crate::publication::sync_directory(fs_dir)?;
+    hook(
+        PreparationPublicationTarget::Clear,
+        PublicationPhase::DestinationSynced,
+    )?;
+    Ok(())
 }
 
 fn create_preparation_layout(
@@ -2691,7 +4885,7 @@ fn create_preparation_layout(
         snapshots: super::ensure_child_directory(&preparation, SNAPSHOTS_DIRECTORY)?,
         descriptors: super::ensure_child_directory(&preparation, DESCRIPTORS_DIRECTORY)?,
         intent: super::ensure_child_directory(&preparation, INTENT_DIRECTORY)?,
-        _receipts: super::ensure_child_directory(&preparation, RECEIPTS_DIRECTORY)?,
+        receipts: super::ensure_child_directory(&preparation, RECEIPTS_DIRECTORY)?,
     })
 }
 
@@ -2705,7 +4899,7 @@ fn open_preparation_layout(
         snapshots: open_required_directory(&preparation, SNAPSHOTS_DIRECTORY)?,
         descriptors: open_required_directory(&preparation, DESCRIPTORS_DIRECTORY)?,
         intent: open_required_directory(&preparation, INTENT_DIRECTORY)?,
-        _receipts: open_required_directory(&preparation, RECEIPTS_DIRECTORY)?,
+        receipts: open_required_directory(&preparation, RECEIPTS_DIRECTORY)?,
     })
 }
 
@@ -2764,6 +4958,14 @@ fn validate_reconciliation_snapshot_manifest(
     {
         return Err(PreparationError::CorruptSnapshot);
     }
+    match (
+        snapshot.final_intent_root_sha256.as_deref(),
+        snapshot.final_intent_segments.is_empty(),
+    ) {
+        (None, true) => {}
+        (Some(root), false) if root == manifest_root(&snapshot.final_intent_segments) => {}
+        _ => return Err(PreparationError::CorruptSnapshot),
+    }
     Ok(())
 }
 
@@ -2818,6 +5020,8 @@ fn validate_referenced_segments(
     {
         return Err(PreparationError::CorruptSnapshot);
     }
+    let mut intent_count = 0_u64;
+    let mut intent_ids = HashSet::new();
     for reference in &snapshot.final_intent_segments {
         let name = format!(
             "{:020}-{}.prep-intent.acore",
@@ -2856,6 +5060,21 @@ fn validate_referenced_segments(
                 kind: PreparationReferenceKind::Intent,
                 segment_index: reference.segment_index,
             });
+        }
+        for entry in &record.entries {
+            if entry.ordinal != intent_count || !intent_ids.insert(entry.stable_id.clone()) {
+                return Err(PreparationError::CorruptReferencedRecord {
+                    kind: PreparationReferenceKind::Intent,
+                    segment_index: reference.segment_index,
+                });
+            }
+            intent_count =
+                intent_count
+                    .checked_add(1)
+                    .ok_or(PreparationError::CorruptReferencedRecord {
+                        kind: PreparationReferenceKind::Intent,
+                        segment_index: reference.segment_index,
+                    })?;
         }
     }
     Ok(())

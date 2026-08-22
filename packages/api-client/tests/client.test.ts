@@ -9,6 +9,32 @@ function readClientSource(): string {
 }
 
 describe("createApiClient error handling", () => {
+  test("returns restart metadata for whole-Core account deletion", async () => {
+    let requestedUrl = "";
+    let requestedMethod = "";
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requestedUrl = String(input);
+        requestedMethod = init?.method || "GET";
+        return new Response(
+          JSON.stringify({
+            message: "Whole-Core account deletion scheduled for restart",
+            restartRequired: true,
+            deletionId: "d0f7d7e7-9c57-4cd5-9942-f38aa8b1475a",
+          }),
+        );
+      },
+    });
+
+    const result = await api.users.delete(7);
+
+    expect(requestedUrl).toBe("https://api.test/api/users/7");
+    expect(requestedMethod).toBe("DELETE");
+    expect(result.restartRequired).toBe(true);
+    expect(result.deletionId).toBe("d0f7d7e7-9c57-4cd5-9942-f38aa8b1475a");
+  });
+
   test("serializes CoreFS operations without caller-selected identity headers", async () => {
     let requestedUrl = "";
     let requestBody: unknown = null;
@@ -89,6 +115,199 @@ describe("createApiClient error handling", () => {
     );
     expect((caught as Error & { status?: number }).status).toBe(409);
     expect((caught as Error & { detail?: unknown }).detail).toEqual(detail);
+  });
+
+  test("serializes local ANIMA CORE transfer operations without archive bytes", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            operationId: "operation-a",
+            payloadKind: "full",
+            state: "prepared",
+            phase: "prepared",
+            selectedBytes: 10,
+            bytesPublished: 0,
+            progressPercent: 0,
+            publicationMode: "single_file",
+            declaredVolumeCount: 1,
+            resultPath: null,
+            archiveId: null,
+            errorCode: null,
+          }),
+        );
+      },
+    });
+
+    await api.corefs.transfer.prepare({
+      destination: "/Volumes/Backup",
+      passphrase: "correct horse battery staple",
+      payloadKind: "full",
+    });
+    await api.corefs.transfer.operation("operation-a");
+    await api.corefs.transfer.cancel("operation-a");
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/corefs/transfer/prepare",
+        method: "POST",
+        body: {
+          destination: "/Volumes/Backup",
+          passphrase: "correct horse battery staple",
+          payloadKind: "full",
+        },
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/operations/operation-a",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/operations/operation-a/cancel",
+        method: "POST",
+        body: undefined,
+      },
+    ]);
+    expect(JSON.stringify(requests)).not.toContain("vault");
+  });
+
+  test("serializes non-activating restore staging operations", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            operationId: "import-a",
+            state: "prepared",
+            phase: "prepared",
+            archiveBytes: 10,
+            bytesProcessed: 0,
+            progressPercent: 0,
+            payloadKind: null,
+            recoveryState: null,
+            archiveId: null,
+            activationId: null,
+            restartRequired: false,
+            credentialsReplaced: false,
+            recoveryExportOperationId: null,
+            errorCode: null,
+          }),
+        );
+      },
+    });
+
+    await api.corefs.transfer.probeImport("/Volumes/Backup/core.anima", "/Users/alice");
+    await api.corefs.transfer.prepareImport({
+      archivePath: "/Volumes/Backup/core.anima",
+      stagingParent: "/Users/alice",
+      passphrase: "correct horse battery staple",
+    });
+    await api.corefs.transfer.importOperation("import-a");
+    await api.corefs.transfer.cancelImport("import-a");
+    await api.corefs.transfer.activateImportOnRestart("import-a");
+    await api.corefs.transfer.attachCoreFsRecovery("import-a");
+    await api.corefs.transfer.replaceCoreFsRecoveryCredentials("import-a", {
+      sourceCredentialKind: "password",
+      sourceCredential: "old portable password",
+      newPassword: "new portable password",
+      confirmed: true,
+    });
+    await api.corefs.transfer.exportCoreFsRecovery("import-a", {
+      destination: "/Volumes/Recovery",
+      finalName: "recovered-fs.anima",
+      passphrase: "new archive passphrase",
+      credentialKind: "recovery",
+      credential: "one request phrase",
+    });
+    await api.corefs.transfer.browseCoreFsRecovery("import-a", {
+      operation: "list",
+      credentialKind: "recovery",
+      credential: "one request phrase",
+      path: "",
+    });
+
+    expect(requests.map((request) => request.url)).toEqual([
+      "https://api.test/api/corefs/transfer/import/probe",
+      "https://api.test/api/corefs/transfer/import/prepare",
+      "https://api.test/api/corefs/transfer/import/operations/import-a",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/cancel",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/activate-on-restart",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/attach-corefs",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/replace-corefs-credentials",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/export-corefs",
+      "https://api.test/api/corefs/transfer/import/operations/import-a/browse-corefs",
+    ]);
+    expect(requests.at(-3)?.body).toEqual({
+      sourceCredentialKind: "password",
+      sourceCredential: "old portable password",
+      newPassword: "new portable password",
+      confirmed: true,
+    });
+    expect(requests.at(-2)?.body).toEqual({
+      destination: "/Volumes/Recovery",
+      finalName: "recovered-fs.anima",
+      passphrase: "new archive passphrase",
+      credentialKind: "recovery",
+      credential: "one request phrase",
+    });
+    expect(requests.at(-1)?.body).toEqual({
+      operation: "list",
+      credentialKind: "recovery",
+      credential: "one request phrase",
+      path: "",
+    });
+  });
+
+  test("requires explicit confirmation for restart-only retained Core rollback", async () => {
+    const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+    const api = createApiClient({
+      baseUrl: "https://api.test/api",
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          method: init?.method || "GET",
+          body: init?.body ? JSON.parse(String(init.body)) : undefined,
+        });
+        return new Response(
+          JSON.stringify({
+            generation: 3,
+            activeCoreId: "active-core",
+            retainedCoreId: "retained-core",
+            activationId: "activation-a",
+            rollbackScheduled: init?.method === "POST",
+          }),
+        );
+      },
+    });
+
+    await api.corefs.transfer.activeCore();
+    await api.corefs.transfer.rollbackOnRestart();
+
+    expect(requests).toEqual([
+      {
+        url: "https://api.test/api/corefs/transfer/active-core",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "https://api.test/api/corefs/transfer/active-core/rollback-on-restart",
+        method: "POST",
+        body: { confirmed: true },
+      },
+    ]);
   });
 
   test("surfaces normalized validation details arrays", async () => {

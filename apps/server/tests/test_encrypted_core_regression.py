@@ -10,10 +10,12 @@ from unittest.mock import patch
 import pytest
 from anima_server.config import settings
 from anima_server.db import dispose_cached_engines
+from anima_server.db import session as db_session
 from anima_server.db.user_store import _bootstrapped_roots
 from anima_server.services.agent import invalidate_agent_runtime_cache
 from anima_server.services.agent.vector_store import reset_vector_store
-from anima_server.services.core import release_core_lock
+from anima_server.services.core import ensure_core_manifest, release_core_lock
+from anima_server.services.corefs.soul_store import create_verified_soul_snapshot
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
 from conftest import create_managed_temp_dir
 from fastapi.testclient import TestClient
@@ -41,10 +43,13 @@ def _create_app():
 def _test_client(**kwargs: object) -> Generator[TestClient, None, None]:
     app = _create_app()
     main_module = sys.modules["anima_server.main"]
-    with patch.object(main_module, "_start_embedded_pg", return_value=None), TestClient(
-        app,
-        **kwargs,
-    ) as client:
+    with (
+        patch.object(main_module, "_start_embedded_pg", return_value=None),
+        TestClient(
+            app,
+            **kwargs,
+        ) as client,
+    ):
         yield client
 
 
@@ -58,8 +63,10 @@ def isolated_runtime_root(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     original_database_url = settings.database_url
     original_passphrase = settings.core_passphrase
     original_require_encryption = settings.core_require_encryption
+    original_runtime_app_data_dir = settings.runtime_app_data_dir
 
     settings.data_dir = runtime_root
+    settings.runtime_app_data_dir = str(managed_tmp_path / "runtime-app-data")
     settings.database_url = f"sqlite:///{(runtime_root / 'anima.db').as_posix()}"
     settings.core_passphrase = ""
     settings.core_require_encryption = False
@@ -73,6 +80,7 @@ def isolated_runtime_root(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         settings.database_url = original_database_url
         settings.core_passphrase = original_passphrase
         settings.core_require_encryption = original_require_encryption
+        settings.runtime_app_data_dir = original_runtime_app_data_dir
 
 
 @pytest.fixture(scope="module")
@@ -147,7 +155,9 @@ def _reset_fresh_process_state() -> None:
     _bootstrapped_roots.clear()
 
 
-def _register_user(client: TestClient, username: str, password: str, name: str) -> dict[str, object]:
+def _register_user(
+    client: TestClient, username: str, password: str, name: str
+) -> dict[str, object]:
     response = client.post(
         "/api/auth/register",
         json={"username": username, "password": password, "name": name},
@@ -198,6 +208,46 @@ def test_encrypted_core_opens_with_correct_passphrase_and_round_trips_data(
 
     raw_db = (isolated_runtime_root / "users" / str(user_id) / "anima.db").read_bytes()
     assert SENTINEL_ROUND_TRIP.encode("utf-8") not in raw_db
+
+
+def test_verified_soul_snapshot_remains_sqlcipher_encrypted(
+    isolated_runtime_root: Path,
+    managed_tmp_path: Path,
+) -> None:
+    pytest.importorskip("sqlcipher3")
+
+    settings.core_passphrase = "snapshot-core-passphrase"
+    settings.core_require_encryption = True
+    ensure_core_manifest()
+    source = isolated_runtime_root / "soul-source.db"
+    snapshot = managed_tmp_path / "soul-snapshot.db"
+    source_url = f"sqlite:///{source.as_posix()}"
+    engine = db_session.get_engine(source_url)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE alembic_version (version_num TEXT PRIMARY KEY)"
+            )
+            connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('202608130001')")
+            connection.exec_driver_sql(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)"
+            )
+            connection.exec_driver_sql("INSERT INTO users VALUES (7, 'owner')")
+            connection.exec_driver_sql(
+                "CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO memories VALUES (1, ?)",
+                (SENTINEL_ROUND_TRIP,),
+            )
+        inventory = create_verified_soul_snapshot(source, snapshot)
+        assert inventory.combined_hash
+    finally:
+        db_session.dispose_database(source_url)
+
+    encoded = snapshot.read_bytes()
+    assert encoded[:16] != b"SQLite format 3\x00"
+    assert SENTINEL_ROUND_TRIP.encode("utf-8") not in encoded
 
 
 def test_encrypted_core_rejects_wrong_passphrase_without_corrupting_data(

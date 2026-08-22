@@ -7,7 +7,7 @@ import anima_server.api.routes.auth as auth_routes
 from anima_server.config import settings
 from anima_server.db import session as db_session
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import SoulKeyslot
+from anima_server.models import SoulKeyslot, User
 from anima_server.services.agent.llm import LLMInvocationError
 from anima_server.services.core import get_manifest_path, update_core_manifest
 from anima_server.services.corefs.keyslots import manifest_has_versioned_key_hierarchy
@@ -81,6 +81,31 @@ def test_login_me_and_logout_use_the_same_unlock_token() -> None:
         locked_response = client.get("/api/auth/me", headers=headers)
         assert locked_response.status_code == 401
         assert locked_response.json() == {"error": "Session locked. Please sign in again."}
+
+
+def test_versioned_login_hydrates_private_profile_after_keyslot_unlock() -> None:
+    with managed_test_client("anima-auth-encrypted-profile-") as client:
+        registered = _register_user(client, password="pw123456")
+        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+        assert "user_index" not in manifest
+        assert (settings.data_dir / "fs" / "VALIDATION_HEAD").is_file()
+
+        with get_user_session_factory(int(registered["id"]))() as db:
+            user = db.get(User, int(registered["id"]))
+            assert user is not None
+            user.display_name = "Unpublished SQL Name"
+            db.commit()
+        client.post(
+            "/api/auth/logout",
+            headers={"x-anima-unlock": str(registered["unlockToken"])},
+        )
+
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "pw123456"},
+        )
+        assert login.status_code == 200
+        assert login.json()["name"] == "Alice"
 
 
 def test_logout_clears_sqlcipher_key_and_disposes_user_engines() -> None:

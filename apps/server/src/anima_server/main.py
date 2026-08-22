@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import importlib.util
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -21,7 +22,10 @@ from .api.routes.config import router as config_router
 from .api.routes.consciousness import router as consciousness_router
 from .api.routes.core import router as core_router
 from .api.routes.corefs import router as corefs_router
+from .api.routes.corefs_access import router as corefs_access_router
 from .api.routes.corefs_security import router as corefs_security_router
+from .api.routes.corefs_transfer import router as corefs_transfer_router
+from .api.routes.credentials import router as credentials_router
 from .api.routes.db import router as db_router
 from .api.routes.diary import router as diary_router
 from .api.routes.documents import router as documents_router
@@ -32,13 +36,13 @@ from .api.routes.health import router as health_router
 from .api.routes.images import router as images_router
 from .api.routes.knowledge import router as knowledge_router
 from .api.routes.memory import router as memory_router
+from .api.routes.preferences import router as preferences_router
 from .api.routes.presence import router as presence_router
 from .api.routes.soul import router as soul_router
 from .api.routes.tasks import router as tasks_router
 from .api.routes.telegram import router as telegram_router
 from .api.routes.threads import router as threads_router
 from .api.routes.users import router as users_router
-from .api.routes.vault import router as vault_router
 from .api.routes.ws import router as ws_router
 from .config import (
     default_runtime_app_data_root,
@@ -56,12 +60,19 @@ from .db.runtime import (
     init_runtime_engine,
 )
 from .db.user_store import ensure_per_user_databases_ready
-from .services.core import acquire_core_lock, ensure_core_manifest, is_provisioned
+from .services.core import (
+    acquire_core_lock,
+    ensure_core_manifest,
+    is_provisioned,
+)
+from .services.corefs.active_core_registry import (
+    initialize_active_core_after_manifest,
+    resolve_active_core_for_startup,
+)
 from .services.corefs.instance_registry import (
     RuntimeInstanceBinding,
     RuntimeInstanceRegistry,
 )
-from .services.corefs.legacy_runtime import relocate_legacy_runtime
 from .services.health.event_logger import emit as health_emit
 
 
@@ -82,8 +93,16 @@ def get_cors_origins() -> list[str]:
 
 
 # Paths exempt from sidecar-nonce validation.
-_NONCE_EXEMPT_PATHS = frozenset({"/health", "/api/health", "/api/health/detailed",
-                                "/api/health/check", "/api/health/logs", "/api/health/logs/summary"})
+_NONCE_EXEMPT_PATHS = frozenset(
+    {
+        "/health",
+        "/api/health",
+        "/api/health/detailed",
+        "/api/health/check",
+        "/api/health/logs",
+        "/api/health/logs/summary",
+    }
+)
 _NONCE_EXEMPT_PREFIXES = ("/api/health/",)
 logger = logging.getLogger(__name__)
 _active_runtime_registry: RuntimeInstanceRegistry | None = None
@@ -115,24 +134,13 @@ def _claim_runtime_instance(
     )
     registry = RuntimeInstanceRegistry(app_data_root)
     binding = registry.resolve(settings.data_dir, runtime_url=runtime_url)
-    try:
-        relocate_legacy_runtime(
-            settings.data_dir,
-            binding,
-            postgres_running=False,
-        )
-    except BaseException:
-        registry.release(binding)
-        raise
     settings.runtime_instance_data_dir = str(binding.instance_root)
     if settings.health_log_dir:
         configured_health_logs = Path(settings.health_log_dir).expanduser().resolve()
         if configured_health_logs.is_relative_to(settings.data_dir.resolve()):
             registry.release(binding)
             settings.runtime_instance_data_dir = ""
-            raise RuntimeError(
-                "ANIMA_HEALTH_LOG_DIR must not resolve inside the portable Core"
-            )
+            raise RuntimeError("ANIMA_HEALTH_LOG_DIR must not resolve inside the portable Core")
     else:
         settings.health_log_dir = str(binding.health_log_dir)
         _active_runtime_default_health_log = True
@@ -161,44 +169,45 @@ def _start_embedded_pg() -> EmbeddedPG | None:
         return None
     binding = _claim_runtime_instance()
     if importlib.util.find_spec("pgserver") is None:
-        logger.warning(
-            "pgserver is not installed; skipping embedded runtime PostgreSQL startup."
-        )
+        logger.warning("pgserver is not installed; skipping embedded runtime PostgreSQL startup.")
         return None
 
+    selected_pg_data_dir = binding.pg_data_dir
     if settings.runtime_pg_data_dir:
         configured_pg_data = Path(settings.runtime_pg_data_dir).expanduser().resolve()
-        if configured_pg_data != binding.active_pg_data_dir:
+        if configured_pg_data != selected_pg_data_dir:
             raise RuntimeError(
                 "ANIMA_RUNTIME_PG_DATA_DIR must match the claimed machine-local "
                 "Core instance path; configure ANIMA_RUNTIME_APP_DATA_DIR instead"
             )
-    pg_data_dir = binding.active_pg_data_dir
 
-    pg = EmbeddedPG(data_dir=pg_data_dir)
+    pg = EmbeddedPG(data_dir=selected_pg_data_dir)
     pg.start()
     return pg
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    from .services.corefs.migration import (
+        drain_unlocked_rebuilds,
+        resume_unlocked_rebuilds,
+    )
+    from .services.credentials import provision_broker_bootstrap_secret
     from .services.sessions import unlock_session_store
 
+    provision_broker_bootstrap_secret(os.environ.get("ANIMA_CREDENTIAL_BROKER_SECRET"))
+    resume_unlocked_rebuilds()
     unlock_session_store.start()
     embedded_pg: EmbeddedPG | None = None
     runtime_binding: RuntimeInstanceBinding | None = None
     sweep_tasks: list[asyncio.Task[None]] = []
 
     try:
-        runtime_binding = _claim_runtime_instance(
-            runtime_url=settings.runtime_database_url or None
-        )
+        runtime_binding = _claim_runtime_instance(runtime_url=settings.runtime_database_url or None)
         embedded_pg = _start_embedded_pg()
         load_persisted_runtime_settings()
         runtime_url = (
-            embedded_pg.database_url
-            if embedded_pg is not None
-            else settings.runtime_database_url
+            embedded_pg.database_url if embedded_pg is not None else settings.runtime_database_url
         )
         if runtime_url:
             init_runtime_engine(
@@ -214,7 +223,6 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             ensure_pgvector()
             ensure_runtime_tables()
             unlock_session_store.initialize_runtime_indexes()
-
             try:
                 from .services.agent.inner_life.catchup import apply_offline_catchup
 
@@ -230,6 +238,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                 logger.warning("Offline presence catch-up failed", exc_info=True)
     except BaseException:
         try:
+            await asyncio.to_thread(drain_unlocked_rebuilds)
             await unlock_session_store.shutdown()
         finally:
             try:
@@ -250,6 +259,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     health_logger: EventLogger | None = None
 
     try:
+
         async def _periodic_inactivity_sweep() -> None:
             while True:
                 await asyncio.sleep(60)
@@ -314,9 +324,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
         # local reranker when enabled) off the chat/request path so the
         # first query after startup doesn't pay for the load. Cancelled on
         # shutdown like the sweep tasks above; never raises.
-        sweep_tasks.append(
-            asyncio.create_task(asyncio.to_thread(warm_up_retrieval_models))
-        )
+        sweep_tasks.append(asyncio.create_task(asyncio.to_thread(warm_up_retrieval_models)))
 
         # Install structured health event logger
         health_logger = get_event_logger()
@@ -329,6 +337,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
     finally:
         from .services.agent.consolidation import drain_background_memory_tasks
         from .services.agent.reflection import cancel_pending_reflection
+
         try:
             # Flush pending Soul Writer candidates for all active users unless
             # background memory work was explicitly disabled for this process.
@@ -341,19 +350,18 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
                     rt_factory = get_runtime_session_factory()
                     with rt_factory() as rt_db:
-                        active_user_ids = list(rt_db.scalars(
-                            _sel(RuntimeThread.user_id).where(
-                                RuntimeThread.status == "active")
-                        ).all())
+                        active_user_ids = list(
+                            rt_db.scalars(
+                                _sel(RuntimeThread.user_id).where(RuntimeThread.status == "active")
+                            ).all()
+                        )
                     for uid in set(active_user_ids):
                         try:
                             await run_soul_writer(uid)
                         except Exception:
-                            logger.debug(
-                                "Shutdown Soul Writer failed for user %s", uid)
+                            logger.debug("Shutdown Soul Writer failed for user %s", uid)
                 except Exception:
-                    logger.debug(
-                        "Shutdown Soul Writer sweep failed", exc_info=True)
+                    logger.debug("Shutdown Soul Writer sweep failed", exc_info=True)
 
             for task in sweep_tasks:
                 task.cancel()
@@ -361,6 +369,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             await drain_background_memory_tasks()
         finally:
             try:
+                await asyncio.to_thread(drain_unlocked_rebuilds)
                 await unlock_session_store.shutdown()
             finally:
                 if health_handler is not None:
@@ -389,22 +398,24 @@ class SidecarNonceMiddleware(BaseHTTPMiddleware):
     def __init__(self, app) -> None:
         super().__init__(app)
         if not settings.sidecar_nonce and settings.app_env != "development":
-            logger.warning(
-                "Sidecar nonce is not configured in non-development environment")
+            logger.warning("Sidecar nonce is not configured in non-development environment")
 
     # type: ignore[override]
     async def dispatch(self, request: Request, call_next):
         nonce = settings.sidecar_nonce
         path = request.url.path
-        if nonce and path not in _NONCE_EXEMPT_PATHS and not path.startswith(_NONCE_EXEMPT_PREFIXES):
+        if (
+            nonce
+            and path not in _NONCE_EXEMPT_PATHS
+            and not path.startswith(_NONCE_EXEMPT_PREFIXES)
+        ):
             header_value = (request.headers.get("x-anima-nonce") or "").strip()
             if not hmac.compare_digest(header_value, nonce):
                 return JSONResponse(
                     status_code=403,
                     content={"error": "Invalid or missing sidecar nonce."},
                 )
-        response = await call_next(request)
-        return response
+        return await call_next(request)
 
 
 def create_app() -> FastAPI:
@@ -413,14 +424,14 @@ def create_app() -> FastAPI:
         and not settings.sidecar_nonce
         and settings.app_env != "development"
     ):
-        raise RuntimeError(
-            "Sidecar nonce must be configured when encryption is required.")
+        raise RuntimeError("Sidecar nonce must be configured when encryption is required.")
     if not settings.sidecar_nonce and settings.app_env != "development":
-        logger.warning(
-            "Sidecar nonce is not configured in non-development environment")
+        logger.warning("Sidecar nonce is not configured in non-development environment")
+    active_core_startup = resolve_active_core_for_startup()
     if not acquire_core_lock():
         raise RuntimeError("Core is already open in another process")
     ensure_core_manifest()
+    initialize_active_core_after_manifest(active_core_startup)
     ensure_per_user_databases_ready()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
 
@@ -446,10 +457,15 @@ def create_app() -> FastAPI:
             content: dict[str, object] = {"error": exc.detail}
         else:
             content = {"error": "Request failed", "details": exc.detail}
-        health_emit("http", "error_response", "warn", data={
-            "status_code": exc.status_code,
-            "detail": str(exc.detail)[:200],
-        })
+        health_emit(
+            "http",
+            "error_response",
+            "warn",
+            data={
+                "status_code": exc.status_code,
+                "detail": str(exc.detail)[:200],
+            },
+        )
         return JSONResponse(status_code=exc.status_code, content=content)
 
     @app.exception_handler(RequestValidationError)
@@ -492,7 +508,10 @@ def create_app() -> FastAPI:
     app.include_router(consciousness_router)
     app.include_router(core_router)
     app.include_router(corefs_router)
+    app.include_router(corefs_access_router)
     app.include_router(corefs_security_router)
+    app.include_router(corefs_transfer_router)
+    app.include_router(credentials_router)
     app.include_router(db_router)
     app.include_router(diary_router)
     app.include_router(documents_router)
@@ -504,12 +523,12 @@ def create_app() -> FastAPI:
     app.include_router(knowledge_router)
     app.include_router(memory_router)
     app.include_router(presence_router)
+    app.include_router(preferences_router)
     app.include_router(soul_router)
     app.include_router(tasks_router)
     app.include_router(telegram_router)
     app.include_router(threads_router)
     app.include_router(users_router)
-    app.include_router(vault_router)
     app.include_router(ws_router)
 
     return app

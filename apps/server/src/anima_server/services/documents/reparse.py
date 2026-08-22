@@ -30,7 +30,7 @@ from anima_server.services.documents.parsing_pack import parsing_pack_ready
 from anima_server.services.documents.store import (
     get_document_for_user,
     replace_document_chunks,
-    resolve_document_storage_path,
+    resolve_document_byte_source,
 )
 from anima_server.services.ingestion.adapters.documents import sync_document_source
 
@@ -69,9 +69,9 @@ def reparse_document(
     # given" None into that path.
     effective_embedding_fn = embedding_fn or generate_embedding
 
-    storage_path = resolve_document_storage_path(document.storage_path, user_id=user_id)
+    source = resolve_document_byte_source(document, user_id=user_id)
     try:
-        outcome = extract_document_text(str(storage_path))
+        outcome = extract_document_text(source)
     except DocumentAwaitingParserError:
         # Scanned/textless PDF and the parsing pack is still downloading (or
         # just started its first download) — this is the same "wait and

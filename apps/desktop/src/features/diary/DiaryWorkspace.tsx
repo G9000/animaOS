@@ -180,10 +180,7 @@ export default function DiaryWorkspace() {
   const [creatingEntry, setCreatingEntry] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [bodyText, setBodyText] = useState("");
-  // Drawer-open and sidebar-collapsed state live in component state only —
-  // never in browser storage (diary content and layout preferences never
-  // touch localStorage/sessionStorage; see the legacy-draft purge effect
-  // below).
+  // Drawer-open and sidebar-collapsed state live in component state only.
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [deletingEntryId, setDeletingEntryId] = useState<number | null>(null);
@@ -330,21 +327,6 @@ export default function DiaryWorkspace() {
     initialFolderIdRef.current = selectedEntry.folderId ?? null;
     initialEntryDateRef.current = selectedEntry.entryDate;
   }, [selectedEntry?.id, initialHtml]);
-
-  // Remove drafts written by older builds. Diary content must stay in the
-  // encrypted diary service, not in browser storage.
-  useEffect(() => {
-    if (user?.id == null) return;
-    const prefix = `anima:diary:draft:${user.id}:`;
-    try {
-      for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
-        const key = window.localStorage.key(index);
-        if (key?.startsWith(prefix)) window.localStorage.removeItem(key);
-      }
-    } catch {
-      // Browser storage can be unavailable in restricted environments.
-    }
-  }, [user?.id]);
 
   // Voice-note recording + live speech-to-text, extracted (Task 12) into
   // its own hook — see hooks/useVoiceRecorder.ts. The two callbacks below

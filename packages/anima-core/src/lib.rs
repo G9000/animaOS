@@ -21,6 +21,7 @@ pub use anima_corefs as corefs;
 pub mod capsule;
 pub mod cards;
 pub mod chunker;
+pub mod core_archive;
 pub mod engine;
 pub mod enrich;
 pub mod frame;
@@ -47,7 +48,7 @@ pub mod replay;
 
 pub mod path_engine;
 
-#[cfg(feature = "python")]
+#[cfg(any(feature = "python", test))]
 mod ffi;
 
 /// Crate-level error type.

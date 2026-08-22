@@ -19,8 +19,8 @@ from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
 from anima_server.models import SelfModelBlock
 from anima_server.services.agent.soul_blocks import set_soul_block
+from anima_server.services.corefs.legacy_soul import migrate_legacy_soul_file
 from anima_server.services.data_crypto import df
-from anima_server.services.storage import get_user_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ def _looks_like_encrypted_field_payload(value: str) -> bool:
     try:
         for segment in parts[1:]:
             b64decode(segment, validate=True)
-    except binascii.Error:
+    except (binascii.Error, ValueError):
         return False
     return True
 
@@ -90,18 +90,11 @@ async def get_user_directive(
     db: Session = Depends(get_db),
 ) -> UserDirectiveResponse:
     await require_unlocked_user_async(request, user_id)
+    migrate_legacy_soul_file(db, user_id=user_id)
 
     block = _get_user_directive_block(db, user_id)
     if block is not None:
         content = _read_user_directive_content(user_id, block.content)
-        return UserDirectiveResponse(content=content, source="database")
-
-    legacy_path = get_user_data_dir(user_id) / "soul.md"
-    if legacy_path.is_file():
-        content = legacy_path.read_text(encoding="utf-8")
-        _set_user_directive_block(db, user_id, content)
-        db.commit()
-        legacy_path.unlink(missing_ok=True)
         return UserDirectiveResponse(content=content, source="database")
 
     return UserDirectiveResponse(content="", source="database")

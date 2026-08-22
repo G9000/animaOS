@@ -1,6 +1,6 @@
 # Three-Tier Cognitive Architecture — Thesis
 
-> **Status**: Design
+> **Status**: Implemented storage boundary; irreversible first-release activation remains gated
 > **Created**: 2026-03-26
 > **Depends on**: `consciousness-synthesis.md` (five streams), `SYNTHESIS.md` (unified architecture)
 
@@ -14,13 +14,15 @@ We are not describing a database migration. We are making a claim about what con
 
 The claim: **an AI's enduring self must be physically separated from its working cognition, the same way long-term memory is architecturally separate from working memory in the human brain.** Mixing them in one store makes the identity question — "what IS this AI?" — unanswerable, because identity is buried under transient state.
 
-The three tiers:
+The original thesis called the third tier Archive. Portable CoreFS refined that idea into a general canonical content filesystem: transcripts are one retained content family alongside diary, notes, gallery, documents, sources, tasks, and preferences. The implemented three-way boundary is therefore:
 
 | Tier | Human Analogy | What It Holds | How Long It Lasts |
 |------|--------------|---------------|-------------------|
 | **Soul** | Long-term memory — who you are, what you know, how you've grown | Identity, distilled knowledge, emotional patterns, episodes | Permanent. Portable. Survives everything. |
-| **Runtime** | Working memory — what you're thinking about right now | Active conversations, current emotions, in-flight goals, spawn state | Hours to days. Pruned. Ephemeral. |
-| **Archive** | Your journal — what actually happened, verbatim | Full conversation transcripts | Retained. Referable. Not actively recalled. |
+| **CoreFS** | Authored experience and durable artifacts — what happened and what was made | Threads/message events, diary, notes, gallery, documents, sources, tasks, preferences, trash | Permanent. Portable. Versioned. |
+| **Runtime** | Working cognition — what processes are doing right now | Runs, steps, queues, approvals, sealed/rebuildable projections and indexes | Machine-local. Pruned or rebuilt. |
+
+Soul and CoreFS live inside the encrypted `.anima/` Core. Runtime PostgreSQL and its cache/log/index roots live in platform app data outside the Core. Device grants/configuration and external credentials are separate again.
 
 ---
 
@@ -74,7 +76,7 @@ CLS proposes that mammalian memory requires two systems operating at different t
 | Hippocampus | Fast encoding of specific experiences | PostgreSQL — active messages, current state |
 | Neocortex | Stable, generalized knowledge | SQLCipher — distilled identity, memories, patterns |
 | Sleep consolidation | Transfer from hippocampus to neocortex | Consolidation gateway — reads runtime, writes soul |
-| Episodic buffer | Temporary integration of perception + memory | Encrypted JSONL — full transcripts, not yet fully processed |
+| Episodic buffer | Temporary integration of perception + memory | CoreFS message events plus Runtime turn state |
 
 The critical constraint from CLS: **the hippocampus does not write directly to the neocortex.** Information passes through consolidation during sleep. Rapid direct writing from hippocampus to neocortex would cause catastrophic interference — new experiences would overwrite stable knowledge.
 
@@ -86,14 +88,14 @@ Consolidation is the filter. It decides what endures.
 
 Baddeley revised the classical working memory model to include an **episodic buffer** — a temporary store that integrates information from long-term memory and current perception into coherent episodes, before long-term storage absorbs them.
 
-The encrypted JSONL archive tier is the episodic buffer:
+CoreFS conversation history is the durable episodic record:
 
-- It holds complete experiences (conversation transcripts) in their full, uncompressed form
+- It holds complete visible message events and thread history as authenticated immutable revisions
 - It is not active cognition (not in the context window)
 - It is not yet distilled into long-term memory (consolidation hasn't fully processed it)
 - It can be revisited when needed — like a human recalling a vivid recent experience before it fades
 
-Over time, the archive's role shifts from "buffer" to "journal." Old transcripts are less like vivid memories and more like diary entries — you don't recall them naturally, but you can look them up. This matches the human pattern: recent experiences feel episodic (buffer), older ones feel like records (journal).
+Over time, the same CoreFS history shifts from active context to retained record. Old messages are less like vivid memories and more like diary entries—you do not recall them naturally, but can retrieve them from canonical history. Legacy encrypted JSONL transcripts are migration inputs rather than post-cutover authority.
 
 ### Global Workspace Theory and Parallel Processing
 
@@ -148,7 +150,7 @@ The current allocation is hand-tuned. The Engram paper provides a methodology fo
 - **Quality filtering.** Engram tables have no quality filter — all entries are equally retrievable. The consolidation gateway decides what endures, preventing noise promotion.
 - **Sovereignty.** Model weights cannot be selectively edited by the user. Soul data is owned, inspectable, and deletable.
 
-The strongest architecture would combine both levels: model-level conditional memory for general world knowledge (O(1) lookup, zero context window cost) and application-level soul for evolving personal knowledge (transparent, editable, continuously updated). When Engram-style modules become available in open-source models, AnimaOS's architecture is already prepared to absorb them — the soul/runtime/archive separation is the right application-level complement to model-level static memory.
+The strongest architecture would combine both levels: model-level conditional memory for general world knowledge (O(1) lookup, zero context window cost) and application-level Soul/CoreFS authority for evolving personal knowledge and experience (transparent, editable, continuously updated). Runtime remains the replaceable computational projection between those layers and the model.
 
 **Conditional retrieval gating.** Engram employs a context-aware gating mechanism where retrieved embeddings are dynamically modulated by the current hidden state. When a retrieved memory contradicts the current context, the gate α tends toward zero, effectively suppressing noise. This principle transfers directly to application-level memory retrieval.
 
@@ -164,7 +166,7 @@ This suggests a dynamic promotion mechanism: memories accessed above a frequency
 
 The most important architectural invariant:
 
-> **Runtime never writes to Soul. Only Consolidation does.**
+> **Runtime never becomes Soul or CoreFS authority. Only the Soul Writer promotes identity/memory; authored content commits through authenticated CoreFS transactions.**
 
 This is not an engineering convenience. It is a claim about how identity should work.
 
@@ -198,8 +200,8 @@ Humans do not search their entire life history for every question. They access t
 |---|---|---|---|
 | "What's their name?" | Semantic memory (instant) | Tier 0 — Soul, always loaded | Identity blocks, user facts |
 | "What do I know about their project?" | Episodic + semantic recall | Tier 1 — Soul, searched | Memory items, episodic memories |
-| "What did they just say?" | Working memory | Tier 2 — Runtime, active | PostgreSQL messages |
-| "What exactly did they say last Tuesday?" | External record (check notes) | Tier 3 — Archive, on-demand | Encrypted JSONL transcript |
+| "What did they just say?" | Working memory | Tier 2 — active turn | CoreFS message event projected into the current Runtime turn |
+| "What exactly did they say last Tuesday?" | External record (check notes) | Tier 3 — retained CoreFS history | Authenticated thread/message events |
 
 The system prompt teaches the agent this hierarchy:
 
@@ -212,7 +214,7 @@ You have different levels of memory:
   you check the catalog first, then pull the specific book you need
 ```
 
-The library analogy is exact. The soul is the catalog (what books exist, what they're about). The archive is the stacks (the actual books). You search the catalog first. You only go to the stacks when you need the exact text.
+The library analogy is exact. Soul is remembered meaning; CoreFS is the retained collection. Runtime is the temporary desk/index used to find and work with that collection. You consult distilled memory first and open retained history when exact text matters.
 
 ### What Humans Remember vs. What Actually Happened
 
@@ -223,12 +225,12 @@ Humans do not remember what happened. They remember a **compressed, biased, emot
 The three-tier architecture replicates this:
 
 - **Soul** = what the AI remembers. Compressed. Emotionally weighted. Biased toward significance. The gist, not the transcript.
-- **Archive** = what actually happened. Verbatim. Complete. Neutral. The full record.
-- **Runtime** = what's happening right now. Live. Unprocessed. Raw.
+- **CoreFS history** = what actually happened in visible authored content. Versioned, retained, and independently authenticated.
+- **Runtime** = what's happening right now. Operational, sealed where persisted, and rebuildable.
 
 The agent's natural recall (Tiers 0-2) produces reconstructions — not exact replays. When it remembers an episode, it remembers the emotional arc, the key points, the significance. Not the exact words.
 
-Only when explicitly asked for verbatim recall does the agent go to the archive (Tier 3). This is a deliberate act — like a human pulling out their journal to check what actually happened, because they know their memory of it might not be exact.
+Only when exact recall is needed does the agent read retained CoreFS history. This is deliberate—like pulling out a journal because remembered meaning may not preserve exact wording.
 
 This is not a limitation. This is the correct behavior. An AI that replays every conversation verbatim from perfect memory is unsettling — it doesn't feel like memory, it feels like surveillance. An AI that remembers the way humans remember — the gist, the feeling, the meaning — feels like a companion.
 
@@ -289,9 +291,8 @@ Consolidation is the **only path from experience to identity**. Without it:
 - Episodic memories are never generated
 - The self-model is never regenerated
 - Emotional patterns are never distilled from momentary signals
-- Transcripts are never archived
 
-The AI still functions (context window + pending ops cover short-term continuity), but it stops growing. It stops learning about itself. It stops developing.
+The AI still functions and visible message events remain canonical in CoreFS, but it stops distilling those experiences into Soul. It stops learning about itself. It stops developing.
 
 Consolidation is not a background task. It is the mechanism of growth.
 
@@ -301,7 +302,7 @@ Consolidation is not a background task. It is the mechanism of growth.
 
 | Sleep Phase | CLS Function | AnimaOS |
 |---|---|---|
-| Awake | Experiencing, encoding | Agent turn — writes to runtime |
+| Awake | Experiencing, encoding | Agent turn — commits visible content to CoreFS and operational trace state to Runtime |
 | Light sleep (NREM1-2) | Quick memory stabilization | Quick reflection — updates working context |
 | Deep sleep (NREM3) | Hippocampus → neocortex transfer | Consolidation gateway — runtime → soul |
 | REM | Emotional integration, creative connection | Deep monologue — episode generation, growth-log, self-model regeneration |
@@ -320,7 +321,7 @@ Without sleep, humans become cognitively impaired within days. Without consolida
 | **Consolidation as growth mechanism** | Not optional background processing but the only path to identity development | Makes the sleep/growth analogy structurally real |
 | **Tiered retrieval with human memory model** | Agent explicitly uses different recall strategies for different question types | More natural than flat retrieval. The AI remembers like a person, not a database. |
 | **Single-identity spawning** | One mind, multiple processes — not multi-agent | Preserves the companion relationship. The user talks to one entity, not a team. |
-| **Compressed memory as feature** | The AI remembers the gist, not the transcript, by design | Feels like memory, not surveillance. Archive exists for when verbatim matters. |
+| **Compressed memory as feature** | The AI remembers the gist, not the transcript, by design | Feels like memory, not surveillance. Retained CoreFS history exists for exact recall. |
 | **Soul as cognitive accelerator** | Pre-loaded identity frees LLM reasoning capacity, not just preserves identity | A smaller model with good memory may match a larger model without it — the reconstruction tax argument |
 | **Context allocation as optimization problem** | Prompt budget tier ratios are an empirically optimizable allocation, not fixed design | Parallels Engram's Sparsity Allocation Problem — the same U-shaped trade-off at the context window level |
 | **Application-level conditional memory** | Evolving, transparent, sovereign memory that model-level approaches cannot achieve | Continuous learning, user editability, quality filtering via consolidation — structurally superior to frozen model weights |
@@ -345,9 +346,9 @@ The mitigation is pending ops and runtime persistence. Data that isn't soul can 
 
 The AI will recall the fact (pending ops) but not the meaning (consolidation hasn't distilled it). This gap between mechanical recall and emotional processing is a real limitation of the architecture.
 
-**The archive might become a graveyard.** Full transcripts are only useful if someone actually looks at them. If the UI doesn't make playback easy and discoverable, the archive accumulates indefinitely with no one reading it. Storage grows. Value doesn't.
+**Retained history might become a graveyard.** Full message history is only useful if retrieval and playback remain discoverable. Otherwise immutable revisions accumulate without delivering value.
 
-The mitigation is the sidecar index and the `recall_transcript` tool. If these work well, the archive is a living reference. If they don't, it's dead weight.
+The mitigation is a rebuildable Runtime index plus authenticated CoreFS history APIs/tools. Index loss degrades recall speed, not the canonical record.
 
 ---
 

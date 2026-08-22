@@ -1,4 +1,8 @@
-const THEME_KEY = "anima-theme";
+import {
+  getPortablePreference,
+  PORTABLE_PREFERENCES_CHANGED_EVENT,
+  setPortablePreference,
+} from "./portablePreferences";
 
 export type Theme = "dark" | "light" | "system";
 export const THEME_CHANGED_EVENT = "anima-theme-changed";
@@ -8,7 +12,7 @@ function getSystemTheme(): "dark" | "light" {
 }
 
 export function getTheme(): Theme {
-  return (localStorage.getItem(THEME_KEY) as Theme) ?? "dark";
+  return getPortablePreference<Theme>("theme", "system");
 }
 
 export function getEffectiveTheme(): "dark" | "light" {
@@ -30,6 +34,10 @@ function dispatchThemeChanged() {
 
 export function initTheme() {
   applyTheme(getEffectiveTheme());
+  globalThis.addEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, () => {
+    applyTheme(getEffectiveTheme());
+    dispatchThemeChanged();
+  });
   window
     .matchMedia("(prefers-color-scheme: dark)")
     .addEventListener("change", () => {
@@ -41,7 +49,7 @@ export function initTheme() {
 }
 
 export function setTheme(theme: Theme): Theme {
-  localStorage.setItem(THEME_KEY, theme);
+  setPortablePreference("theme", theme);
   applyTheme(getEffectiveTheme());
   dispatchThemeChanged();
   return theme;

@@ -15,7 +15,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from anima_server.config import settings
 from anima_server.db.url import ensure_database_directory
 from anima_server.services.sessions import get_sqlcipher_key, unlock_session_store
-from anima_server.services.storage import get_user_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +128,7 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
         ),
         (
             "emotional_salience",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN emotional_salience FLOAT NOT NULL DEFAULT 0.0",
+            "ALTER TABLE memory_items ADD COLUMN emotional_salience FLOAT NOT NULL DEFAULT 0.0",
         ),
         (
             "stability_class",
@@ -144,13 +142,11 @@ def _repair_legacy_memory_schema(connection: Connection) -> None:
         ),
         (
             "relationship_proximity",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN relationship_proximity FLOAT NOT NULL DEFAULT 0.0",
+            "ALTER TABLE memory_items ADD COLUMN relationship_proximity FLOAT NOT NULL DEFAULT 0.0",
         ),
         (
             "evidence_strength",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN evidence_strength FLOAT NOT NULL DEFAULT 0.8",
+            "ALTER TABLE memory_items ADD COLUMN evidence_strength FLOAT NOT NULL DEFAULT 0.8",
         ),
         (
             "evolves_from_item_id",
@@ -212,6 +208,65 @@ def _repair_legacy_diary_schema(connection: Connection) -> None:
             diary_columns.add(column_name)
 
 
+def _corefs_writing_source_bump_sql(user_expression: str) -> str:
+    return (
+        "INSERT INTO corefs_writing_source_state (user_id, generation) "
+        f"VALUES ({user_expression}, 1) "
+        "ON CONFLICT(user_id) DO UPDATE SET generation = "
+        "corefs_writing_source_state.generation + 1;"
+    )
+
+
+def _repair_legacy_corefs_writing_source_schema(connection: Connection) -> None:
+    """Install Task 7's trigger fence on legacy create-all databases.
+
+    Databases without an Alembic version are stamped at head after additive
+    repair. Because stamping does not execute the head migration, create-all
+    supplies the typed state table and this helper supplies the authoritative
+    SQLite triggers that model metadata cannot represent.
+    """
+    if connection.dialect.name != "sqlite":
+        return
+
+    writing_tables = ("diary_folders", "diary_entries", "diary_attachments")
+    if any(not _sqlite_column_names(connection, table_name) for table_name in writing_tables):
+        return
+
+    connection.exec_driver_sql(
+        """
+        CREATE TABLE IF NOT EXISTS corefs_writing_source_state (
+            user_id INTEGER NOT NULL PRIMARY KEY,
+            generation INTEGER NOT NULL,
+            CONSTRAINT ck_corefs_writing_source_state_generation_positive
+                CHECK (generation >= 1)
+        )
+        """
+    )
+    for table_name in writing_tables:
+        for operation, row in (("insert", "NEW"), ("update", "NEW"), ("delete", "OLD")):
+            connection.exec_driver_sql(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS
+                    trg_corefs_writing_source_{table_name}_{operation}
+                AFTER {operation.upper()} ON {table_name}
+                BEGIN
+                    {_corefs_writing_source_bump_sql(f"{row}.user_id")}
+                END
+                """
+            )
+        connection.exec_driver_sql(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS
+                trg_corefs_writing_source_{table_name}_update_old_user
+            AFTER UPDATE OF user_id ON {table_name}
+            WHEN OLD.user_id <> NEW.user_id
+            BEGIN
+                {_corefs_writing_source_bump_sql("OLD.user_id")}
+            END
+            """
+        )
+
+
 def _repair_legacy_presence_schema(connection: Connection) -> None:
     """Add current presence_configs columns to legacy SQLite tables stamped
     past migrations (IL3: initiative_enabled/quiet_hours_*; IL7: dream_sharing)."""
@@ -225,8 +280,7 @@ def _repair_legacy_presence_schema(connection: Connection) -> None:
     for column_name, ddl in (
         (
             "initiative_enabled",
-            "ALTER TABLE presence_configs "
-            "ADD COLUMN initiative_enabled BOOLEAN NOT NULL DEFAULT 0",
+            "ALTER TABLE presence_configs ADD COLUMN initiative_enabled BOOLEAN NOT NULL DEFAULT 0",
         ),
         (
             "quiet_hours_start",
@@ -438,8 +492,9 @@ def get_session_factory(database_url: str) -> sessionmaker[Session]:
         return factory
 
 
-def get_user_database_path(user_id: int):
-    return get_user_data_dir(user_id) / "anima.db"
+def get_user_database_path(user_id: int) -> Path:
+    del user_id
+    return settings.data_dir / "soul" / "soul.db"
 
 
 def is_sqlite_mode() -> bool:
@@ -539,6 +594,7 @@ def _run_alembic_upgrade_on(connection, cfg, has_alembic: bool, has_app_tables: 
             _repair_legacy_kg_schema(connection)
             _repair_legacy_diary_schema(connection)
             _repair_legacy_presence_schema(connection)
+            _repair_legacy_corefs_writing_source_schema(connection)
             logger.info("Ensured metadata tables exist.")
 
 

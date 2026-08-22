@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
+from anima_server.config import settings
+from anima_server.db.session import get_user_session_factory
+from anima_server.models import TelegramLink
 from conftest import managed_test_client
+from sqlalchemy import select
 
 
 def _register(client):
@@ -40,6 +46,24 @@ class TestTelegramLinkRoutes:
             data = resp.json()
             assert data["chatId"] == 99001
             assert data["userId"] == uid
+            registry_path = (
+                settings.runtime_instance_data_dir
+                and os.path.join(
+                    settings.runtime_instance_data_dir,
+                    "config",
+                    "integration-links.json",
+                )
+            )
+            assert registry_path
+            registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+            assert registry["links"] == [
+                {"externalId": "99001", "provider": "telegram", "userId": uid}
+            ]
+            assert not os.path.realpath(registry_path).startswith(
+                os.path.realpath(settings.data_dir) + os.sep
+            )
+            with get_user_session_factory(uid)() as db:
+                assert db.scalar(select(TelegramLink)) is None
 
     def test_lookup_returns_linked_user(self):
         os.environ.pop("TELEGRAM_LINK_SECRET", None)
@@ -155,7 +179,7 @@ class TestTelegramLinkRoutes:
         finally:
             os.environ.pop("TELEGRAM_LINK_SECRET", None)
 
-    def test_link_returns_404_for_nonexistent_user(self):
+    def test_link_rejects_a_different_session_user(self):
         os.environ.pop("TELEGRAM_LINK_SECRET", None)
         with managed_test_client("tg-nouser-") as client:
             _, headers = _register(client)
@@ -167,7 +191,30 @@ class TestTelegramLinkRoutes:
                 },
                 headers=headers,
             )
-            assert resp.status_code == 404
+            assert resp.status_code == 403
+
+    def test_me_migrates_legacy_link_copy_verify_delete(self):
+        os.environ.pop("TELEGRAM_LINK_SECRET", None)
+        with managed_test_client("tg-legacy-migrate-") as client:
+            uid, headers = _register(client)
+            with get_user_session_factory(uid)() as db:
+                db.add(TelegramLink(chat_id=99010, user_id=uid))
+                db.commit()
+
+            response = client.get("/api/auth/me", headers=headers)
+            assert response.status_code == 200, response.text
+
+            with get_user_session_factory(uid)() as db:
+                assert db.scalar(select(TelegramLink)) is None
+            registry_path = os.path.join(
+                settings.runtime_instance_data_dir,
+                "config",
+                "integration-links.json",
+            )
+            registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
+            assert registry["links"] == [
+                {"externalId": "99010", "provider": "telegram", "userId": uid}
+            ]
 
     def test_link_replaces_existing_for_same_user(self):
         os.environ.pop("TELEGRAM_LINK_SECRET", None)

@@ -4,15 +4,20 @@ import logging
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.db import get_db
-from anima_server.models import TelegramLink, User
+from anima_server.models import User
 from anima_server.schemas.telegram import (
     TelegramLinkRequest,
     TelegramLinkResponse,
+)
+from anima_server.services.integration_registry import (
+    link_integration,
+    lookup_integration,
+    migrate_legacy_integration_links,
+    unlink_integration,
 )
 
 logger = logging.getLogger(__name__)
@@ -26,7 +31,12 @@ def link_telegram(
     request: Request,
     db: Session = Depends(get_db),
 ) -> TelegramLinkResponse:
-    require_unlocked_session(request)
+    session = require_unlocked_session(request)
+    if session.user_id != payload.userId:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Session user mismatch.",
+        )
 
     link_secret = os.environ.get("TELEGRAM_LINK_SECRET")
     if link_secret and (not payload.linkSecret or payload.linkSecret != link_secret):
@@ -42,18 +52,12 @@ def link_telegram(
             detail=f"User {payload.userId} not found.",
         )
 
-    # Remove existing links for this chat_id or user_id (one-to-one mapping)
-    for existing in db.scalars(
-        select(TelegramLink).where(
-            (TelegramLink.chat_id == payload.chatId) | (TelegramLink.user_id == payload.userId)
-        )
-    ).all():
-        db.delete(existing)
-    db.flush()
-
-    link = TelegramLink(chat_id=payload.chatId, user_id=payload.userId)
-    db.add(link)
-    db.commit()
+    migrate_legacy_integration_links(db, user_id=payload.userId)
+    link_integration(
+        provider="telegram",
+        external_id=str(payload.chatId),
+        user_id=payload.userId,
+    )
 
     return TelegramLinkResponse(chatId=payload.chatId, userId=payload.userId)
 
@@ -64,15 +68,15 @@ def lookup_telegram(
     chatId: int = Query(),
     db: Session = Depends(get_db),
 ) -> TelegramLinkResponse:
-    require_unlocked_session(request)
-
-    link = db.scalar(select(TelegramLink).where(TelegramLink.chat_id == chatId))
-    if link is None:
+    session = require_unlocked_session(request)
+    migrate_legacy_integration_links(db, user_id=session.user_id)
+    link = lookup_integration(provider="telegram", external_id=str(chatId))
+    if link is None or link.user_id != session.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="No link found for this chat.",
         )
-    return TelegramLinkResponse(chatId=link.chat_id, userId=link.user_id)
+    return TelegramLinkResponse(chatId=int(link.external_id), userId=link.user_id)
 
 
 @router.delete("/link")
@@ -81,11 +85,10 @@ def unlink_telegram(
     chatId: int = Query(),
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
-    require_unlocked_session(request)
-
-    link = db.scalar(select(TelegramLink).where(TelegramLink.chat_id == chatId))
-    if link:
-        db.delete(link)
-        db.commit()
+    session = require_unlocked_session(request)
+    migrate_legacy_integration_links(db, user_id=session.user_id)
+    link = lookup_integration(provider="telegram", external_id=str(chatId))
+    if link is not None and link.user_id == session.user_id:
+        unlink_integration(provider="telegram", external_id=str(chatId))
 
     return {"status": "unlinked"}

@@ -4,6 +4,7 @@ import hashlib
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
+from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -19,6 +20,9 @@ from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
 )
+
+if TYPE_CHECKING:
+    from anima_server.services.corefs.asset_authority import CoreFsByteSource
 
 
 class DocumentStoragePathError(ValueError):
@@ -49,10 +53,58 @@ def resolve_document_storage_path(storage_path: str, *, user_id: int) -> Path:
     return resolved_path
 
 
+def resolve_document_byte_source(
+    document: RuntimeDocument,
+    *,
+    user_id: int,
+) -> str | CoreFsByteSource:
+    """Select canonical bytes after cutover; otherwise retain legacy authority."""
+    from anima_server.services.corefs.asset_authority import (
+        active_asset_authority_session,
+        open_corefs_byte_source,
+    )
+    from anima_server.services.corefs.diary_migration import migration_opaque_id
+
+    session = active_asset_authority_session(user_id)
+    if session is not None:
+        object_uri = document.storage_path
+        if not object_uri.startswith("corefs://object/"):
+            stable_id = migration_opaque_id("document", str(document.id))
+            object_uri = f"corefs://object/{stable_id}"
+        return open_corefs_byte_source(
+            session=session,
+            object_uri=object_uri,
+            expected_kinds=frozenset({"attachment"}),
+        )
+    return str(resolve_document_storage_path(document.storage_path, user_id=user_id))
+
+
 def register_document(
     db: Session,
     registration: DocumentRegistration,
 ) -> RuntimeDocument:
+    from anima_server.services.corefs.asset_authority import (
+        CoreFsSourceError,
+        active_asset_authority_session,
+        open_corefs_byte_source,
+        require_legacy_asset_mutation_allowed,
+    )
+
+    session = active_asset_authority_session(registration.user_id)
+    if session is not None:
+        source = open_corefs_byte_source(
+            session=session,
+            object_uri=registration.storage_path,
+            expected_kinds=frozenset({"attachment"}),
+        )
+        if (
+            source.content_type != registration.mime_type
+            or source.content_sha256 != registration.sha256
+            or source.size != registration.size_bytes
+        ):
+            raise CoreFsSourceError("Canonical document registration changed identity.")
+    else:
+        require_legacy_asset_mutation_allowed(registration.user_id)
     existing = db.scalar(
         select(RuntimeDocument).where(
             RuntimeDocument.user_id == registration.user_id,

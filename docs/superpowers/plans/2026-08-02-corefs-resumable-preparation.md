@@ -1,14 +1,33 @@
 # CoreFS Resumable Preparation Implementation Plan
 
+> **First-release supersession (2026-08-16):** The resumable native preparation
+> primitive remains part of CoreFS, but all pre-release browser-draft handoff,
+> plaintext cleanup, legacy SQL/runtime migration, and release-package census
+> work below is historical. No supported ANIMA desktop release or user data
+> predates portable Core release 1, so the supported product starts greenfield
+> and establishes CoreFS authority before publishing the first unlock session.
+> Removed files and commands in Tasks 8 and 10 must not be restored as release
+> requirements. Compatibility begins with the first supported release.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace PCF-004's aggregate in-memory validation-batch transport with an authenticated, encrypted, crash-resumable preparation protocol that handles writing corpora larger than 1 GiB while preserving one exact-CAS inactive-catalog publication.
+**Goal:** Replace PCF-004's aggregate in-memory validation-batch transport with an authenticated, encrypted, crash-resumable preparation protocol that handles writing corpora larger than 1 GiB while preserving one exact-CAS inactive-catalog publication, then remove imported plaintext browser drafts only after native packaged-desktop writer exclusion is proven.
 
-**Architecture:** Rust owns all durable preparation state, prepared-object descriptors, validation, recovery, terminal receipts, and the single `VALIDATION_HEAD` transition. PyO3 exposes only session-guarded one-object and lifecycle operations. Python inventories SQLCipher writing sources, streams one canonical object at a time, and holds a `BEGIN IMMEDIATE` source fence from final reconciliation through native finalization. Public CoreFS mutation remains frozen and legacy SQLCipher remains authoritative until PCF-008.
+**Architecture:** Rust owns all durable preparation state, prepared-object descriptors, validation, recovery, terminal receipts, and the single `VALIDATION_HEAD` transition. PyO3 exposes only session-guarded one-object and lifecycle operations. Python inventories SQLCipher writing sources, streams one canonical object at a time, and holds a `BEGIN IMMEDIATE` source fence from final reconciliation through native finalization. The Tauri host owns a separate device-local process lease and two-start cleanup epoch before the desktop may delete an exact completed localStorage draft. Public CoreFS mutation remains frozen and legacy SQLCipher remains authoritative until PCF-008.
 
-**Tech Stack:** Rust 1.75 (`anima-corefs`, PyO3 `anima-core`), Python 3.12/FastAPI/SQLAlchemy/Alembic/SQLCipher, pytest, Bun workspace validation.
+**Tech Stack:** Rust 1.75 (`anima-corefs`, PyO3 `anima-core`, Tauri desktop host), Python 3.12/FastAPI/SQLAlchemy/Alembic/SQLCipher, pytest, Bun workspace validation.
 
 **Plan Review:** Approved on 2026-08-02 after three focused independent passes; all consequential findings were corrected before execution handoff.
+
+**Draft-cleanup revision:** Independently reviewed and explicitly approved by the user on 2026-08-13; Task 10 is cleared for implementation.
+
+**Evidence sequencing revision:** Explicitly approved by the user on
+2026-08-13. PCF-004 closes on completed implementation, local validation, and
+independent review. PCF-008 inherits the protected final signed Windows,
+macOS, DEB, and RPM replacement-install executions plus artifact-digest
+recording as a mandatory pre-cutover and first-release gate. The requirement is
+deferred, not waived; the paid workflow remains triggerless until separately
+authorized during PCF-008.
 
 ---
 
@@ -146,27 +165,27 @@ git -c commit.gpgsign=false commit -m "corefs: persist resumable preparation sta
 - Modify: `packages/anima-corefs/src/transaction.rs`
 - Modify: `packages/anima-corefs/src/transaction/converter.rs`
 
-- [ ] **Step 1: Write failing bounded-object tests**
+- [x] **Step 1: Write failing bounded-object tests**
 
 Exercise a new `PrepareObjectRequest` with one `Read` body. Prove deterministic resume for an already prepared `(object_id, revision, content_hash)`, rejection of different content at the same logical revision, descriptor-segment rollover, exact prepared-count/byte accounting, stable-role and graph metadata retention, and no mutation of `VALIDATION_HEAD`.
 
 Add a test-only small metadata limit that prepares enough objects to represent a logical corpus above 1 GiB without allocating 1 GiB. Track the maximum body simultaneously owned by the harness and assert it never exceeds one object plus fixed buffers.
 
-- [ ] **Step 2: Extract reusable converter validation from whole-body ownership**
+- [x] **Step 2: Extract reusable converter validation from whole-body ownership**
 
 Refactor `converter.rs` so ID, name, kind/format, policy, reference, role, revision, and graph validation can operate on metadata plus prepared descriptors. Keep `ValidationBatch` only until Task 6 removes the production caller; do not make the new preparation API wrap or rebuild a `ValidationBatch`.
 
-- [ ] **Step 3: Implement immutable prepared-object descriptors**
+- [x] **Step 3: Implement immutable prepared-object descriptors**
 
 Stream the one input through the existing envelope/object preparation path, validate the durable ciphertext with bounded reads, then persist the wrapped DEK, physical name, hashes, sizes, kind, revision, policy, and reference metadata in an encrypted descriptor segment. Publish a new snapshot and pointer only after both the immutable object and descriptor segment are durable.
 
 On resume, re-open and authenticate the descriptor chain rather than accepting an in-memory `PreparedObjectRevision` from Python.
 
-- [ ] **Step 4: Add reconciliation and bounded status APIs**
+- [x] **Step 4: Add reconciliation and bounded status APIs**
 
 Return counts, total plaintext/ciphertext bytes, next cursor, descriptor roots, and missing/conflicting logical identities. Page results under explicit response limits; never return the complete descriptor set for a maximum-size preparation.
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::prepare_object -- --nocapture
@@ -186,25 +205,25 @@ git -c commit.gpgsign=false commit -m "corefs: prepare converter objects increme
 - Modify: `packages/anima-corefs/src/transaction/converter.rs`
 - Test: `packages/anima-corefs/tests/validation_batch.rs`
 
-- [ ] **Step 1: Write failing seal/finalize tests**
+- [x] **Step 1: Write failing seal/finalize tests**
 
 Cover incomplete descriptors, duplicate IDs/roles, missing references, folder cycles, descriptor/intent root mismatch, changed source generation/digest, changed expected validation head, object tampering, and retry after a crash immediately before and after `VALIDATION_HEAD` publication. Assert unsuccessful seal/finalize leaves the head unchanged; successful finalization increments it once; a post-head retry returns the same committed outcome instead of publishing again.
 
-- [ ] **Step 2: Persist a separately segmented final intent**
+- [x] **Step 2: Persist a separately segmented final intent**
 
 Seal folder/object ordering and final catalog metadata into bounded encrypted intent segments. The ready snapshot authenticates only the ordered segment roots/indexes, expected source generation/digest, exact expected validation head, and aggregate counts. It must not embed the entire intent.
 
-- [ ] **Step 3: Reconstruct finalization entirely from durable state**
+- [x] **Step 3: Reconstruct finalization entirely from durable state**
 
 Under the kernel lock, re-read the exact preparation pointer, source fence token supplied by the server, validation head, descriptor chain, intent chain, and every referenced encrypted object. Revalidate ciphertext in bounded chunks, reconstruct internal `PreparedObjectRevision` values, reuse converter graph checks, build the bounded catalog, and call the existing single validation-generation publication primitive.
 
 Finalization may read ciphertext multiple times within bounds; it must never materialize decrypted corpus bodies or a corpus-wide body vector.
 
-- [ ] **Step 4: Add committed-outcome recovery**
+- [x] **Step 4: Add committed-outcome recovery**
 
 Record the intended validation generation/catalog hash before publication. Implement and durably publish the deterministic completion receipt in this task. If restart finds that exact generation authoritative, publish/return that receipt. If a different head won, report a typed conflict and preserve the preparation for disposition.
 
-- [ ] **Step 5: Run transaction and integration tests**
+- [x] **Step 5: Run transaction and integration tests**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::seal_finalize -- --nocapture
@@ -213,7 +232,7 @@ cargo test -p anima-corefs --test validation_batch --no-fail-fast
 cargo test -p anima-corefs --lib --no-fail-fast
 ```
 
-- [ ] **Step 6: Commit exact finalization**
+- [x] **Step 6: Commit exact finalization**
 
 ```powershell
 git add packages/anima-corefs/src/transaction.rs packages/anima-corefs/src/transaction/converter.rs packages/anima-corefs/src/transaction/preparation.rs packages/anima-corefs/src/transaction/preparation_tests.rs packages/anima-corefs/tests/validation_batch.rs
@@ -229,23 +248,23 @@ git -c commit.gpgsign=false commit -m "corefs: finalize prepared catalogs atomic
 - Modify: `packages/anima-corefs/src/transaction.rs`
 - Modify: `packages/anima-corefs/tests/rotation.rs`
 
-- [ ] **Step 1: Write failing terminal-state and rotation tests**
+- [x] **Step 1: Write failing terminal-state and rotation tests**
 
 Cover idempotent abandon, crash before/after abandonment receipt/head removal, completed receipt replay from Task 4, active-preparation rotation rejection, corrupt-pointer rotation rejection, Core-global hash-addressed quarantine, quarantine name independence from pointer content, conservative keyring retention enforcement, and later safe GC eligibility without physical deletion.
 
-- [ ] **Step 2: Implement deterministic abandonment receipts**
+- [x] **Step 2: Implement deterministic abandonment receipts**
 
 Completion receipts and post-head completion recovery are implemented in Task 4. Here, derive abandonment receipt identity from authenticated preparation identity plus the abandoned terminal outcome. Publish the receipt before clearing `PREPARATION_HEAD` when needed for retry proof; on restart, reconcile receipt and pointer into exactly one abandoned outcome without disturbing an existing completed receipt.
 
-- [ ] **Step 3: Implement operator-only corrupt-pointer quarantine**
+- [x] **Step 3: Implement operator-only corrupt-pointer quarantine**
 
 Hash the raw pointer bytes first and move/copy them only to the fixed Core-global quarantine directory under that hash. Do not parse a preparation ID to choose the destination. At quarantine time, durably record the complete set of keyring generations then available through trusted session state. Require explicit operator action, durable quarantine publication, and retention of that entire conservative key set before allowing new preparation activation.
 
-- [ ] **Step 4: Gate FRK rotation and cleanup**
+- [x] **Step 4: Gate FRK rotation and cleanup**
 
 Reject rotation while a preparation is active or its pointer cannot be authenticated. After approved quarantine, allow rotation only while every key generation captured from trusted session state at quarantine remains retained; never infer a narrower set from corrupt pointer fields. PCF-010 may narrow/retire that conservative set only after authenticated recovery or independent proof of safety. Record unreachable prepared objects for PCF-010 retention-aware GC; do not delete them in this task.
 
-- [ ] **Step 5: Run and commit lifecycle coverage**
+- [x] **Step 5: Run and commit lifecycle coverage**
 
 ```powershell
 cargo test -p anima-corefs preparation_tests::terminal -- --nocapture
@@ -263,7 +282,7 @@ git -c commit.gpgsign=false commit -m "corefs: close preparation lifecycle safel
 - Modify: `packages/anima-core/Cargo.toml`
 - Modify: `packages/anima-corefs/src/transaction.rs`
 
-- [ ] **Step 1: Write failing PyO3 boundary tests**
+- [x] **Step 1: Write failing PyO3 boundary tests**
 
 Add tests for these versioned methods:
 
@@ -279,11 +298,11 @@ preparation_quarantine_corrupt_pointer_v1
 
 Assert every method acquires `CorefsOperationGuard`; close waits for an in-flight operation; new calls fail after close begins; Python receives typed conflict/corruption/source-fence errors; and `prepare_object` accepts exactly one bytes-like body per call. Prove no new method accepts `Vec<Vec<u8>>`, `Vec<PyBytes>`, or a corpus-wide JSON body list.
 
-- [ ] **Step 2: Implement minimal wire mappings**
+- [x] **Step 2: Implement minimal wire mappings**
 
 Use bounded JSON only for metadata/status/intent pages and one Python buffer for one object. Convert native outcomes to the existing wire-dictionary style without exposing keys, wrapped DEKs, physical paths, or preparation secrets.
 
-- [ ] **Step 3: Run and commit PyO3 coverage**
+- [x] **Step 3: Run and commit PyO3 coverage**
 
 ```powershell
 cargo test -p anima-core --lib corefs_preparation -- --nocapture
@@ -297,36 +316,40 @@ git -c commit.gpgsign=false commit -m "core: expose bounded preparation sessions
 
 **Files:**
 
-- Create: `apps/server/alembic_core/versions/20260802_0001_add_corefs_writing_source_generation.py`
+- Create: `apps/server/alembic_core/versions/20260812_0001_add_corefs_writing_source_generation.py`
+- Modify: `apps/server/src/anima_server/db/session.py`
 - Modify: `apps/server/src/anima_server/models/agent_runtime.py`
 - Modify: `apps/server/src/anima_server/models/__init__.py`
 - Create: `apps/server/tests/test_corefs_writing_generation.py`
 - Modify: `apps/server/tests/test_corefs_migration.py`
 - Modify: `apps/server/tests/test_diary_api.py`
 
-- [ ] **Step 1: Write failing migration and mutation-generation tests**
+- [x] **Step 1: Write failing migration and mutation-generation tests**
 
 Test a fresh upgrade, upgrade from `20260721_0001`, downgrade/upgrade, and one head only. Exercise INSERT/UPDATE/DELETE for `diary_folders`, `diary_entries`, and `diary_attachments`; assert the per-user generation increments in the same transaction, rollback does not increment, cascades do not lose monotonicity, users remain isolated, and every existing diary service writer advances the value.
 
-- [ ] **Step 2: Add the source-state table and SQLite triggers**
+- [x] **Step 2: Add the source-state table and SQLite triggers**
 
 Create a small per-user table such as `corefs_writing_source_state(user_id PRIMARY KEY, generation NOT NULL)` and SQLite triggers on all three legacy writing tables. Each trigger must atomically insert generation `1` or increment the existing row using `NEW.user_id` or `OLD.user_id` as appropriate. The SQLAlchemy model is for typed reads; triggers are the authority so alternate writers cannot bypass the fence accidentally.
 
-- [ ] **Step 3: Prove `BEGIN IMMEDIATE` writer exclusion**
+- [x] **Step 3: Prove `BEGIN IMMEDIATE` writer exclusion**
 
 Using two independent SQLCipher connections, begin the finalization fence on one connection and assert a legacy write on the second cannot commit until the first commits/rolls back. Keep the test bounded with SQLite busy timeouts and deterministic synchronization, not sleeps.
 
-- [ ] **Step 4: Validate and commit the migration**
+- [x] **Step 4: Validate and commit the migration**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_diary_api.py -q
 uv run alembic -c apps/server/alembic_core.ini heads
 ```
 
-Expected Alembic output: exactly `20260802_0001 (head)`.
+Expected Alembic output: exactly `20260812_0001 (head)`. The reviewed plan originally reserved
+`20260802_0001`, but that revision was subsequently occupied by the dream claim-receipt migration;
+the source-generation migration therefore advances the existing linear chain instead of creating a
+duplicate revision or second head.
 
 ```powershell
-git add apps/server/alembic_core/versions/20260802_0001_add_corefs_writing_source_generation.py apps/server/src/anima_server/models/agent_runtime.py apps/server/src/anima_server/models/__init__.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_diary_api.py
+git add apps/server/alembic_core/versions/20260812_0001_add_corefs_writing_source_generation.py apps/server/src/anima_server/db/session.py apps/server/src/anima_server/models/agent_runtime.py apps/server/src/anima_server/models/__init__.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py apps/server/tests/test_diary_api.py
 git -c commit.gpgsign=false commit -m "server: fence legacy writing mutations"
 ```
 
@@ -341,15 +364,15 @@ git -c commit.gpgsign=false commit -m "server: fence legacy writing mutations"
 - Modify: `apps/server/src/anima_server/schemas/diary.py`
 - Modify: `packages/api-client/src/client.ts`
 - Modify: `packages/api-client/src/types.ts`
-- Modify: `apps/desktop/src/pages/Journal.tsx`
-- Modify: `apps/desktop/src/pages/journal/draft-migration.ts`
+- Modify: `apps/desktop/src/features/diary/DiaryWorkspace.tsx`
+- Create: `apps/desktop/src/features/diary/lib/draftMigration.ts`
 - Modify: `apps/server/tests/test_corefs_diary_migration.py`
 - Modify: `apps/server/tests/test_corefs_notes.py`
 - Modify: `apps/server/tests/conftest.py`
 - Modify: `packages/api-client/tests/client.test.ts`
 - Modify: `apps/desktop/tests/journal-draft-migration.test.ts`
 
-- [ ] **Step 1: Write failing bounded-orchestration tests**
+- [x] **Step 1: Write failing bounded-orchestration tests**
 
 Replace fake-session expectations for `validation_batch_parts_v1` with the preparation lifecycle. Test new migration, exact rerun, crash/restart after every object, reconcile-and-skip of durable matches, conflict on changed same-revision content, source mutation before seal, source mutation after seal, mutation blocked during the final fence, native finalization failure, post-head recovery, unlock retry, and draft-import retry.
 
@@ -357,7 +380,7 @@ Use spies/counters and generated small bodies to model an inventory whose logica
 
 Treat browser localStorage drafts as an external handoff source, not as rows protected by the SQLCipher fence. Add a mutation-between-seal-and-finalize test: the server may durably import the exact submitted draft revision/hash, but the client must retain a newer local draft and submit it as a later revision instead of deleting it on receipt for stale content.
 
-- [ ] **Step 2: Separate inventory from body production**
+- [x] **Step 2: Separate inventory from body production**
 
 In `writing_source.py`, add:
 
@@ -371,37 +394,37 @@ begin_writing_source_fence(...)
 
 Inventory computes deterministic folder/object ordering, IDs, revisions, metadata, attachment storage identities, counts, and a source digest without retaining bodies. The iterator re-reads one source row/blob, canonicalizes/sanitizes it, yields one body to native preparation, then releases it before advancing. Browser drafts are excluded from this SQLCipher inventory and enter only through the explicit handoff in Step 6.
 
-- [ ] **Step 3: Remove corpus-wide Python ownership**
+- [x] **Step 3: Remove corpus-wide Python ownership**
 
 Delete or reshape `PreparedWritingObject.content`, `PreparedWritingSnapshot.objects`, and `InactiveWritingCatalog.publish_native` so no path constructs `[item.content for item in self.objects]`. Attachment decryption must be scoped to the current yielded object. Post-publication verification must compare bounded metadata/hash inventories or stream one object at a time; it must not read the complete prepared corpus back into a tuple.
 
-- [ ] **Step 4: Implement resume/reconcile/seal**
+- [x] **Step 4: Implement resume/reconcile/seal**
 
 Begin/resume with the initial source generation and inventory digest. Page native status, skip exact durable descriptors, prepare missing objects one at a time, then re-read source generation/inventory. Any mismatch restarts reconciliation without sealing stale intent. Seal only the exact complete inventory.
 
-- [ ] **Step 5: Hold the SQLCipher source fence through publication**
+- [x] **Step 5: Hold the SQLCipher source fence through publication**
 
 Start `BEGIN IMMEDIATE` on a dedicated SQLCipher connection, recompute generation and inventory digest inside that transaction, and pass the exact fence values to native finalize. Keep the transaction open until native finalization and bounded result verification finish. On mismatch/failure, roll back and leave preparation resumable; on success, commit the read/fence transaction and journal the existing non-secret checkpoint.
 
-- [ ] **Step 6: Preserve unlock and API behavior**
+- [x] **Step 6: Preserve unlock and API behavior**
 
 Keep legacy SQLCipher authoritative and routes read-compatible before PCF-008. Unlock may resume a preparation but must not expose partial CoreFS state.
 
 For each browser localStorage draft import, require a stable draft ID, monotonic client revision, and SHA-256 of the exact submitted canonical body. Bind that immutable handoff token into the preparation source digest/intent and return it in the durable completion result. The client removes localStorage only when the completion token still matches its current draft ID/revision/hash; if the user edited during preparation, keep the newer local draft and retry it as a new revision. This external optimistic CAS complements, but is not claimed to be protected by, `BEGIN IMMEDIATE`.
 
-Extend the diary schema and generated-by-hand API client types with an explicit draft handoff request/result containing `draftId`, `clientRevision`, `contentSha256`, and the matching durable completion token. In `draft-migration.ts`, persist/increment the client revision alongside the local draft, hash the exact canonical payload submitted, and re-read localStorage before deletion. `Journal.tsx` must treat a stale completion token as a successful import of the old revision but keep/schedule the newer local revision. Add a deterministic desktop test that edits the draft while the mocked import is in flight and proves the newer value is neither deleted nor overwritten.
+Extend the diary schema and generated-by-hand API client types with an explicit draft handoff request/result containing `draftId`, `clientRevision`, `contentSha256`, and the matching durable completion token. In `features/diary/lib/draftMigration.ts`, persist/increment the client revision alongside the local draft, hash the exact canonical payload submitted, and re-read localStorage before deletion. `DiaryWorkspace.tsx` must treat a stale completion token as a successful import of the old revision but keep/schedule the newer local revision. Add a deterministic desktop test that edits the draft while the mocked import is in flight and proves the newer value is neither deleted nor overwritten.
 
-- [ ] **Step 7: Retire the aggregate production path after caller migration**
+- [x] **Step 7: Retire the aggregate production path after caller migration**
 
 Once `diary_migration.py` and its fakes use only the new preparation lifecycle, remove `CorefsSession.validation_batch_parts_v1` and `CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT` from `packages/anima-core/src/ffi.rs`. Keep crate-private converter helpers and explicitly test-only compatibility fixtures only if the Rust validation-batch tests still require them. Assert with a repository search test/check that no server code calls the aggregate API.
 
-- [ ] **Step 8: Run focused Python validation and commit**
+- [x] **Step 8: Run focused Python validation and commit**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/test_diary_api.py -q
 uv run ruff check apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py
 bun test packages/api-client/tests/client.test.ts apps/desktop/tests/journal-draft-migration.test.ts
-git add packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py packages/api-client/src/client.ts packages/api-client/src/types.ts packages/api-client/tests/client.test.ts apps/desktop/src/pages/Journal.tsx apps/desktop/src/pages/journal/draft-migration.ts apps/desktop/tests/journal-draft-migration.test.ts apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
+git add packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/writing_source.py apps/server/src/anima_server/services/corefs/diary_migration.py apps/server/src/anima_server/services/sessions.py apps/server/src/anima_server/api/routes/diary.py apps/server/src/anima_server/schemas/diary.py packages/api-client/src/client.ts packages/api-client/src/types.ts packages/api-client/tests/client.test.ts apps/desktop/src/features/diary/DiaryWorkspace.tsx apps/desktop/src/features/diary/lib/draftMigration.ts apps/desktop/tests/journal-draft-migration.test.ts apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/conftest.py
 git -c commit.gpgsign=false commit -m "server: stream resumable writing preparation"
 ```
 
@@ -411,12 +434,20 @@ git -c commit.gpgsign=false commit -m "server: stream resumable writing preparat
 
 - Modify: `packages/anima-corefs/src/transaction/preparation_tests.rs`
 - Modify: `packages/anima-core/src/ffi.rs`
+- Modify: `apps/server/src/anima_server/services/corefs/writing_source.py`
+- Modify: `apps/server/src/anima_server/services/vault.py`
 - Modify: `apps/server/tests/test_corefs_diary_migration.py`
-- Modify: `apps/desktop/tests/journal-corefs.test.ts`
+- Modify: `apps/server/tests/test_vault.py`
+- Modify: `apps/server/tests/test_diary_api.py`
+- Modify: `apps/desktop/src/features/diary/DiaryWorkspace.tsx`
+- Modify: `apps/desktop/src/features/diary/editor/BlockDragHandle.tsx`
+- Modify: `apps/desktop/src/features/diary/lib/draftMigration.ts`
+- Modify: `apps/desktop/tests/journal-draft-migration.test.ts`
+- Modify: `apps/desktop/tests/diary-turn-into-atom.test.ts`
 - Modify: `tickets/portable-core-filesystem/PCF-004-diary-notes.md`
 - Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
 
-- [ ] **Step 1: Run the full affected Rust gates**
+- [x] **Step 1: Run the full affected Rust gates**
 
 ```powershell
 cargo test -p anima-corefs --lib --no-fail-fast
@@ -429,18 +460,18 @@ cargo fmt --check
 
 Expected: all tests/checks pass. If strict Clippy exposes pre-existing untouched warnings, record exact files/lines and run a diff-scoped no-new-warning check; do not weaken lints.
 
-- [ ] **Step 2: Run the full affected Python/Desktop gates**
+- [x] **Step 2: Run the full affected Python/Desktop gates**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_diary_api.py apps/server/tests/test_corefs_diary_migration.py apps/server/tests/test_corefs_notes.py apps/server/tests/test_corefs_writing_generation.py apps/server/tests/test_corefs_migration.py -q
-bun test apps/desktop/tests/journal-corefs.test.ts apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-html.test.ts
+bun test apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-html.test.ts apps/desktop/tests/diary-turn-into-atom.test.ts
 bun run lint:server
 bun run build
 ```
 
 Smoke-check unlock/session resume, diary list/get, attachment retrieval, draft import, stable `core.journal`/`core.notes` role resolution, and `GET /health` against an isolated `ANIMA_DATA_DIR`.
 
-- [ ] **Step 3: Attempt repository-wide validation**
+- [x] **Step 3: Attempt repository-wide validation**
 
 ```powershell
 bun run test
@@ -450,20 +481,224 @@ git diff --check
 
 Record exact outcomes. A timeout without a summary is not a pass; diagnose any failure before editing and distinguish unrelated baseline failures from regressions.
 
-- [ ] **Step 4: Obtain independent implementation review**
+- [x] **Step 4: Obtain independent implementation review**
 
 Dispatch an independent reviewer with the approved spec, this plan, and the final diff. Require findings only for consequential correctness, security, privacy, data-loss, bounded-memory, crash-recovery, source-fence, and compatibility regressions. Resolve substantive findings test-first; disposition style/speculative/non-blocking churn with evidence.
 
-- [ ] **Step 5: Synchronize PCF-004 and PCF-000**
+- [x] **Step 5: Synchronize PCF-004 and PCF-000**
 
 Record changed paths, commands/results, independent review evidence, exact commit, and whether the protocol blocker is cleared. Do not mark PCF-004 done until every original diary/notes acceptance item plus the large-corpus protocol is green. Do not change parent ownership.
 
-- [ ] **Step 6: Commit final evidence**
+- [x] **Step 6: Commit final evidence**
 
 ```powershell
-git add packages/anima-corefs/src/transaction/preparation_tests.rs packages/anima-core/src/ffi.rs apps/server/tests/test_corefs_diary_migration.py apps/desktop/tests/journal-corefs.test.ts tickets/portable-core-filesystem/PCF-004-diary-notes.md tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md
+git add apps/server/src/anima_server/services/corefs/writing_source.py apps/server/tests/test_diary_api.py apps/desktop/src/features/diary/DiaryWorkspace.tsx apps/desktop/src/features/diary/editor/BlockDragHandle.tsx apps/desktop/src/features/diary/lib/draftMigration.ts apps/desktop/tests/journal-draft-migration.test.ts docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md tickets/portable-core-filesystem/PCF-004-diary-notes.md tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md
 git -c commit.gpgsign=false commit -m "tickets: record CoreFS preparation evidence"
 ```
+
+Task 9 validation and review are complete, but PCF-004 is blocked rather than
+done. A legacy browser tab can write the plaintext draft key without honoring a
+new Web Lock, and localStorage has no atomic compare-and-delete. The safe
+implementation retains that key and uses a non-sensitive digest/revision
+sidecar; this prevents data loss but does not satisfy the approved requirement
+to remove private authored content from plaintext localStorage. The proposed
+Task 10 protocol below preserves that requirement. Independent review and the
+explicit user-approval gate completed on 2026-08-13.
+
+## Task 10: Exclude legacy desktop writers before plaintext draft cleanup
+
+**Approval gate:** Do not implement this task until the proposed Section 11.1
+addendum in `2026-08-02-corefs-resumable-preparation-design.md` has passed
+independent review and the user explicitly approves it. Both gates completed on
+2026-08-13.
+
+**Files:**
+
+- Modify: `apps/desktop/src-tauri/Cargo.toml`
+- Modify: `apps/desktop/src-tauri/src/lib.rs`
+- Create: `apps/desktop/src-tauri/src/draft_cleanup.rs`
+- Create: `apps/desktop/src-tauri/tests/draft_cleanup_process.rs`
+- Modify: `apps/desktop/src-tauri/tauri.conf.json`
+- Modify: `apps/desktop/package.json`
+- Modify: `Cargo.lock`
+- Modify: `scripts/prepare-desktop-release.ts`
+- Create: `scripts/verify-desktop-release-contract.ts`
+- Create: `.github/workflows/desktop-draft-cleanup-authority.yml`
+- Create: `apps/desktop/src/lib/draftCleanupAuthority.ts`
+- Modify: `apps/desktop/src/features/diary/DiaryWorkspace.tsx`
+- Modify: `apps/desktop/src/features/diary/lib/draftMigration.ts`
+- Modify: `apps/desktop/tests/journal-draft-migration.test.ts`
+- Create: `apps/desktop/tests/journal-draft-cleanup-authority.test.ts`
+- Create: `apps/desktop/tests/desktop-release-contract.test.ts`
+- Modify: `tickets/portable-core-filesystem/PCF-004-diary-notes.md`
+- Modify: `tickets/portable-core-filesystem/PCF-000-portable-core-filesystem.md`
+
+- [x] **Step 1: Lock the supported release-package contract with failing tests**
+
+Add source-contract tests plus native release-package verification fixtures that
+require exactly one cleanup-capable target: MSI major upgrade with stable
+UpgradeCode on Windows, signed/notarized replacement PKG on macOS, and
+package-manager-owned DEB/RPM on Linux. Start from an installed older fixture,
+run the real upgrade, and prove the registered target resolves to the current
+binary while installer-owned prior, rollback, cache, and staging executables are
+absent or unlaunchable. Reject NSIS, AppImage, direct DMG execution, archives,
+copied bundles, portable binaries, side-by-side targets, ambiguous registration,
+wrong package ownership/signature, and symlinks outside the managed target.
+Tests must inspect actual produced packages and native registrations rather than
+only `tauri.conf.json` strings. Add a repository source contract proving the
+migration module is the sole product writer/remover for
+`anima:diary:draft:*`; any new writer must be rejected unless it participates in
+the same per-key Web Lock and reviewed protocol.
+
+For DEB/RPM, test a root-owned, package-owned signed installed-identity manifest
+containing the bundle/package identity plus canonical executable and desktop-
+entry paths/hashes. Verify its detached Ed25519 signature with the release key
+pinned in the binary. Missing, writable, symlinked, stale, extra, wrong-key, or
+tampered manifest/target files fail closed; old-to-current upgrade replaces the
+manifest atomically. Standard dpkg metadata alone is not a signature oracle.
+
+- [x] **Step 2: Implement replacement-only desktop packaging and its verifier**
+
+Replace `targets: "all"` and the generic package commands with the supported
+platform matrix only. Extend release preparation and CI so each native runner
+builds/installs an older fixture, upgrades through the current MSI/PKG/DEB/RPM,
+enumerates package-owned files and OS launch registrations, and blocks release
+publication on any alternate launchable residue. The verifier must rerun against
+the exact final signed/notarized artifacts. Installer failure to stop ANIMA or
+remove/make-unlaunchable every managed prior/staging executable must abort before
+registering the new target. No cleanup-capable release artifact may be
+published until PCF-008 runs this verifier successfully on Windows, macOS,
+Debian, and RPM against the final signed artifacts and records their digests.
+
+For the first cleanup-capable release only, the protected workflow may build an
+unpublished predecessor from the exact protected candidate source after it
+proves there is exactly one repository `desktop-v*` tag (that candidate) and no
+prior MSI/PKG/DEB/RPM release asset. Future releases must consume an immutable
+real predecessor and carry/test its signed host-identity key; the bootstrap path
+must fail once any installer-managed desktop artifact has been published.
+
+- [x] **Step 3: Write failing native authority and lifecycle tests**
+
+Extract platform adapters plus pure classification/transition helpers. Unit
+tests cover the domain-separated length-delimited installed-identity digest;
+Windows BootIdentifier, macOS boot-session UUID, and Linux boot ID; exact
+process-start identity; owner-only stable lock creation; first-run epoch arming;
+different-boot eligibility; and fail-closed missing/ambiguous identities. Real
+subprocess tests exercise exclusive kernel-lock launch denial before WebView
+creation, old/current process classification, denied process metadata, PID reuse
+or replacement, contender launch during capability consumption, epoch replay,
+and installed-target replacement after issue. Reject debug, relocated,
+unpackaged, arming-process, same-boot, wrong-package, and multi-host contexts.
+
+Test the exact NFC/UTF-8 canonical audience construction:
+storage-key digest, completion-token digest, then final audience digest with
+big-endian length/revision fields. Verify malformed hashes, wrong draft/revision,
+any requested/effective TTL above five seconds, expiry, replay, response loss,
+and concurrent double-consume all fail closed. Assert capabilities/digests never
+enter the epoch, filesystem, logs, tracing, metrics, or crash metadata.
+
+- [x] **Step 4: Implement the packaged Tauri cleanup authority**
+
+Add `fs4` as a direct desktop-host dependency. During Tauri setup, open and
+retain an owner-only exclusive kernel lock on the stable app-local cleanup lease
+before creating a WebView; a contender exits before frontend code runs. Persist
+only the versioned installed-identity digest, process-start identity, and native
+boot identity in the non-secret epoch. Require a different boot identity after
+arming. Implement native registered-target verification and process census with
+the exact per-OS identities from the spec both at issue and, under the authority
+mutex, immediately before atomic one-shot consumption.
+
+On Linux, verify the root-owned installed-identity manifest and detached
+signature with the embedded release public key, then match its canonical file
+hashes/identities to the live package-owned executable and desktop entry before
+issuing or consuming authority.
+
+Expose narrow commands that accept only the final audience digest. Keep opaque
+random capabilities and audience digests in process memory, enforce a maximum
+five-second monotonic TTL, remove the capability atomically before reporting
+successful consumption, and exclude all sensitive values from display/debug,
+logging, tracing, metrics, persistence, and crash reporting. Native never
+receives the storage key, completion-token fields, content hash, or draft body.
+
+- [x] **Step 5: Write failing desktop cleanup and crash regressions**
+
+Test that browser/debug/no-authority contexts retain plaintext, the arming run
+and same-boot restart retain plaintext, and a later-boot authorized run deletes
+only the exact completed raw value. Simulate a source write during import,
+authority issue, capability consumption, and the final re-read; every mismatch
+must retain the newer value and advance the monotonic revision. Cover malformed,
+expired, replayed, wrong-audience, response-loss, storage, Web Lock, and native
+invoke failures as bounded fail-closed retries. Assert no deletion occurs outside
+the per-draft Web Lock.
+
+Inject a crash after every storage operation. The required order is: remove the
+plaintext source, re-read and prove it absent, then best-effort remove the
+non-sensitive sidecar. A crash/failure before proven source absence retains the
+sidecar and retries from the exact source; a crash afterward may leave only an
+orphan sidecar, which is retained indefinitely. Assert an absent-source check
+followed by legacy source recreation preserves the sidecar revision across
+restart; absence alone never authorizes cleanup. The sidecar is removed only in
+the same post-reboot authorized critical section after verified source absence,
+never first while a source exists. Rejected/stale server revisions cannot strand
+plaintext indefinitely.
+
+- [x] **Step 6: Consume authority at the exact handoff boundary**
+
+Keep the current non-destructive digest/revision sidecar. After a matching
+durable completion, acquire native cleanup authority, reread and renormalize the
+source under the Web Lock, and remove source plus sidecar only if raw bytes,
+canonical hash, revision, and token still match. Any mismatch consumes or
+abandons the capability without deletion and schedules the newer revision.
+
+Derive the two canonical input digests and final audience in the frontend
+without logging or persisting them. After successful one-shot native consume,
+reread/re-normalize once more, remove only the source, and verify `getItem` is
+`null`; only then remove the sidecar. If the consume response is lost or any
+post-consume check/storage operation fails, keep all still-present source data
+and require a fresh exact import before another cleanup attempt. An absent source
+on startup leaves the orphan sidecar intact; only the authorized critical
+section that removed and verified the source may best-effort remove its sidecar.
+
+- [x] **Step 7: Run local Tauri, desktop, and repository gates**
+
+```powershell
+cargo test -p desktop --lib
+cargo test -p desktop --test draft_cleanup_process
+cargo clippy -p desktop --all-targets -- -D warnings
+bun test apps/desktop/tests/journal-draft-migration.test.ts apps/desktop/tests/journal-draft-cleanup-authority.test.ts apps/desktop/tests/desktop-release-contract.test.ts
+bun run build
+bun run test
+bun run check:repo
+git diff --check
+```
+
+The local gates above are complete. PCF-008 inherits the dedicated Windows,
+macOS, Debian, and RPM workflow, which must pass real package upgrade/
+registration verification and native subprocess launch/lock/census tests
+before cutover or release publication. It records artifact digests and exact
+workflow results; pure helper tests or a single host-OS Cargo run cannot satisfy
+that inherited gate.
+
+Record exact results. If strict desktop Clippy exposes untouched baseline
+warnings, record their exact locations and run a diff-scoped no-new-warning
+gate without weakening repository lints.
+
+- [x] **Step 8: Obtain independent implementation review and close the PCF-004 implementation slice**
+
+Review actual release-package replacement invariants, platform identity/process
+adapters, kernel launch-gate lifetime, reboot epoch, issue/consume census races,
+capability canonicalization/TTL/replay, source-first crash behavior, frontend
+raw-value recheck, browser/debug fail-closed behavior, and absence of private
+native state. Resolve substantive findings test-first. Mark PCF-004 done after
+the reviewer confirms the no-loss/plaintext-removal implementation and local
+gates, and child/parent tracking is synced. PCF-008 must remain blocked from
+cutover and release publication until all four final signed-package gates are
+evidenced with exact artifact digests.
+
+Task 10 implementation and independent review completed on 2026-08-13. The
+user subsequently approved the evidence-sequencing change above: PCF-004 may
+close, while the cost-bearing final package executions remain a mandatory
+PCF-008 first-release gate.
 
 ## Stop conditions
 

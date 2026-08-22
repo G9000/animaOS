@@ -178,6 +178,13 @@ def reactivate_thread_if_needed(
     ambiguous). Returns the ids of the threads that were closed so the caller
     can fire consolidation on them.
     """
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user_id) is not None:
+        raise RuntimeError("Legacy thread reactivation is disabled after CoreFS cutover.")
+
     displaced = _close_other_active_threads(
         db, user_id=user_id, keep_thread_id=thread.id)
 
@@ -443,6 +450,13 @@ def get_thread_messages_for_display(
     Active threads: query runtime_messages (all rows, including archived history).
     Archived threads (no PG messages): read from JSONL.
     """
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user_id) is not None:
+        raise RuntimeError("Legacy thread display is disabled after CoreFS cutover.")
+
     pg_messages = db.scalars(
         select(RuntimeMessage)
         .where(

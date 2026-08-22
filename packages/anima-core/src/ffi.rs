@@ -9,12 +9,16 @@ mod python {
     #![allow(clippy::useless_conversion)]
 
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+    use pyo3::buffer::PyBuffer;
     use pyo3::prelude::*;
+    #[cfg(test)]
+    use pyo3::types::PyByteArray;
     use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
     use pyo3::IntoPy;
     use serde::Deserialize;
     use serde_json::{json, Value};
     use std::collections::{BTreeMap, HashMap};
+    use std::fs::{File, OpenOptions};
     use std::io::{self, Read, Write};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Condvar, Mutex};
@@ -32,7 +36,6 @@ mod python {
     use crate::temporal::TemporalIndex;
 
     const CORE_FS_FFI_IN_MEMORY_LIMIT: usize = 16 * 1024 * 1024;
-    const CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT: usize = 1024 * 1024 * 1024;
 
     struct PyBinaryReader<'py> {
         inner: Bound<'py, PyAny>,
@@ -245,6 +248,150 @@ mod python {
         }
     }
 
+    pyo3::create_exception!(
+        anima_core,
+        CorefsPreparationConflictError,
+        pyo3::exceptions::PyException
+    );
+    pyo3::create_exception!(
+        anima_core,
+        CorefsPreparationCorruptionError,
+        pyo3::exceptions::PyException
+    );
+    pyo3::create_exception!(
+        anima_core,
+        CorefsPreparationSourceFenceError,
+        pyo3::exceptions::PyException
+    );
+
+    fn corefs_preparation_error(
+        error: anima_corefs::transaction::PreparationSessionError,
+    ) -> PyErr {
+        use anima_corefs::transaction::PreparationSessionError;
+
+        match error {
+            PreparationSessionError::Invalid(message)
+            | PreparationSessionError::Missing(message) => {
+                pyo3::exceptions::PyValueError::new_err(message)
+            }
+            PreparationSessionError::Corruption(message) => {
+                CorefsPreparationCorruptionError::new_err(message)
+            }
+            PreparationSessionError::Conflict(message) => {
+                CorefsPreparationConflictError::new_err(message)
+            }
+            PreparationSessionError::SourceFence(message) => {
+                CorefsPreparationSourceFenceError::new_err(message)
+            }
+            PreparationSessionError::Io(error) => {
+                pyo3::exceptions::PyOSError::new_err(error.to_string())
+            }
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationBeginWire {
+        scope: String,
+        expected_validation_generation: Option<u64>,
+        expected_validation_catalog_sha256: Option<String>,
+        source_owner_id: String,
+        source_schema_version: u16,
+        source_mutation_generation: u64,
+        source_inventory_sha256: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationCasWire {
+        pointer_sha256: String,
+        snapshot_sequence: u64,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationIdentityWire {
+        object_id: String,
+        revision: u64,
+        content_sha256: String,
+        preparation_ordinal: u64,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationObjectWire {
+        object_id: String,
+        revision: u64,
+        object_key_epoch: u32,
+        kind: String,
+        parent_id: String,
+        name: String,
+        content_type: String,
+        body_encoding: String,
+        body_length: u64,
+        content_sha256: String,
+        created_at: String,
+        updated_at: String,
+        source_character_count: Option<usize>,
+        #[serde(default)]
+        references: Vec<String>,
+        policy: String,
+        stable_role: Option<String>,
+        #[serde(default)]
+        graph_metadata: BTreeMap<String, Value>,
+        source_fingerprint_sha256: String,
+        converter_format_version: u16,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationPrepareObjectWire {
+        expected: PreparationCasWire,
+        object: PreparationObjectWire,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationReconciliationWire {
+        cursor_position: Option<u64>,
+        max_items: u32,
+        max_bytes: u32,
+        #[serde(default)]
+        expected: Vec<PreparationIdentityWire>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationSealWire {
+        expected: PreparationCasWire,
+        source_mutation_generation: u64,
+        source_inventory_sha256: String,
+        folders: Vec<ValidationBatchFolderWire>,
+        objects: Vec<PreparationIdentityWire>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationFinalizeWire {
+        preparation_id: String,
+        expected: PreparationCasWire,
+        source_mutation_generation: u64,
+        source_inventory_sha256: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationAbandonWire {
+        preparation_id: String,
+        expected: PreparationCasWire,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PreparationQuarantineWire {
+        expected_pointer_sha256: String,
+    }
+
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct ValidationBatchWire {
@@ -290,17 +437,837 @@ mod python {
         metadata: BTreeMap<String, Value>,
     }
 
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalMutationRequestWire {
+        version: u16,
+        principal: String,
+        commit_mode: String,
+        cutover_epoch: Option<u64>,
+        selected_generation: u64,
+        selected_catalog_hash: String,
+        timestamp_ms: u64,
+        timestamp: String,
+        mutation: LogicalMutationWire,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(
+        tag = "operation",
+        rename_all = "snake_case",
+        rename_all_fields = "camelCase",
+        deny_unknown_fields
+    )]
+    enum LogicalMutationWire {
+        ActivateAuthority,
+        Mkdir {
+            path: String,
+            #[serde(default)]
+            reserved_role: Option<String>,
+        },
+        CreateFile {
+            path: String,
+            #[serde(default)]
+            stable_id: Option<String>,
+            kind: String,
+            content_type: String,
+            body_encoding: String,
+        },
+        WriteFile {
+            target: LogicalMutationTargetWire,
+            expected_revision: u64,
+            content_type: String,
+            body_encoding: String,
+        },
+        ApplyPatch {
+            patch: String,
+            expected_revisions: BTreeMap<String, u64>,
+            add_formats: BTreeMap<String, LogicalPatchAddFormatWire>,
+            trash_folder: LogicalMutationTargetWire,
+        },
+        Move {
+            source: LogicalMutationTargetWire,
+            destination: String,
+            #[serde(default)]
+            expected_revision: Option<u64>,
+        },
+        Trash {
+            target: LogicalMutationTargetWire,
+            trash_folder: LogicalMutationTargetWire,
+            #[serde(default)]
+            expected_revision: Option<u64>,
+        },
+        Restore {
+            target: LogicalMutationTargetWire,
+            #[serde(default)]
+            destination: Option<String>,
+            #[serde(default)]
+            expected_revision: Option<u64>,
+        },
+    }
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum LogicalMutationTargetWire {
+        Path(LogicalMutationPathTargetWire),
+        StableId(LogicalMutationStableIdTargetWire),
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalMutationPathTargetWire {
+        path: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalMutationStableIdTargetWire {
+        stable_id: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct LogicalPatchAddFormatWire {
+        #[serde(default)]
+        stable_id: Option<String>,
+        kind: String,
+        content_type: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveSourceWire {
+        record_type: String,
+        record_path: String,
+        source_path: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveWriteWire {
+        payload_kind: String,
+        core_id: String,
+        owner_id: String,
+        soul_generation: Option<u64>,
+        filesystem_generation: Option<u64>,
+        filesystem_catalog_hash: Option<String>,
+        archive_id: Option<String>,
+        volume_set_id: Option<String>,
+        #[serde(default = "core_archive_default_volume_mode")]
+        volume_mode: String,
+        #[serde(default = "core_archive_default_volume_count")]
+        declared_volume_count: u32,
+        #[serde(default)]
+        volume_ordinal: u32,
+        #[serde(default)]
+        kdf_salt: Option<String>,
+        #[serde(default)]
+        nonce_prefix: Option<String>,
+        sources: Vec<CoreArchiveSourceWire>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveControllerVolumeWire {
+        ordinal: u32,
+        filename: String,
+        archive_id: String,
+        byte_length: u64,
+        sha256: String,
+        record_count: usize,
+        chunk_count: u64,
+        plaintext_bytes: u64,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct CoreArchiveControllerWire {
+        payload_kind: String,
+        core_id: String,
+        owner_id: String,
+        soul_generation: Option<u64>,
+        filesystem_generation: Option<u64>,
+        volume_set_id: String,
+        kdf_salt: String,
+        nonce_prefix: String,
+        volumes: Vec<CoreArchiveControllerVolumeWire>,
+    }
+
+    fn core_archive_default_volume_mode() -> String {
+        "single".to_owned()
+    }
+
+    const fn core_archive_default_volume_count() -> u32 {
+        1
+    }
+
     fn validation_batch_policy(
         value: &str,
     ) -> PyResult<anima_corefs::transaction::ValidationBatchPolicy> {
         match value {
             "user-write" => Ok(anima_corefs::transaction::ValidationBatchPolicy::UserWrite),
+            "shared-manage" => Ok(anima_corefs::transaction::ValidationBatchPolicy::SharedManage),
             "inherit" => Ok(anima_corefs::transaction::ValidationBatchPolicy::Inherit),
             "deny" => Ok(anima_corefs::transaction::ValidationBatchPolicy::Deny),
             _ => Err(pyo3::exceptions::PyValueError::new_err(
-                "validation batch policy must be user-write, inherit, or deny",
+                "validation batch policy must be user-write, shared-manage, inherit, or deny",
             )),
         }
+    }
+
+    fn decode_preparation_json<T: for<'de> Deserialize<'de>>(encoded: &str) -> PyResult<T> {
+        enforce_corefs_catalog_plaintext_limit(encoded.len())?;
+        serde_json::from_str(encoded)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+    }
+
+    fn preparation_cas_wire(
+        value: PreparationCasWire,
+    ) -> anima_corefs::transaction::PreparationCasV1 {
+        anima_corefs::transaction::PreparationCasV1 {
+            pointer_sha256: value.pointer_sha256,
+            snapshot_sequence: value.snapshot_sequence,
+        }
+    }
+
+    fn preparation_identity_wire(
+        value: PreparationIdentityWire,
+    ) -> anima_corefs::transaction::PreparationIdentityV1 {
+        anima_corefs::transaction::PreparationIdentityV1 {
+            object_id: value.object_id,
+            revision: value.revision,
+            content_sha256: value.content_sha256,
+            preparation_ordinal: value.preparation_ordinal,
+        }
+    }
+
+    fn preparation_folder_wire(
+        value: ValidationBatchFolderWire,
+    ) -> PyResult<anima_corefs::transaction::ValidationBatchFolder> {
+        Ok(anima_corefs::transaction::ValidationBatchFolder {
+            stable_id: value.stable_id,
+            parent_id: value.parent_id,
+            name: value.name,
+            role: value.role,
+            policy: validation_batch_policy(&value.policy)?,
+            metadata: value.metadata,
+        })
+    }
+
+    fn preparation_object_wire(
+        value: PreparationObjectWire,
+    ) -> PyResult<anima_corefs::transaction::PreparationObjectV1> {
+        let kind =
+            anima_corefs::crypto::ObjectKind::parse(&value.kind).map_err(corefs_value_error)?;
+        let body_encoding = match value.body_encoding.as_str() {
+            "utf-8" => anima_corefs::envelope::BodyEncoding::Utf8,
+            "binary" => anima_corefs::envelope::BodyEncoding::Binary,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "preparation object bodyEncoding must be utf-8 or binary",
+                ))
+            }
+        };
+        Ok(anima_corefs::transaction::PreparationObjectV1 {
+            object_id: value.object_id,
+            revision: value.revision,
+            object_key_epoch: value.object_key_epoch,
+            kind,
+            parent_id: value.parent_id,
+            name: value.name,
+            content_type: value.content_type,
+            body_encoding,
+            body_length: value.body_length,
+            content_sha256: value.content_sha256,
+            created_at: value.created_at,
+            updated_at: value.updated_at,
+            source_character_count: value.source_character_count,
+            references: value.references,
+            policy: validation_batch_policy(&value.policy)?,
+            stable_role: value.stable_role,
+            graph_metadata: value.graph_metadata,
+            source_fingerprint_sha256: value.source_fingerprint_sha256,
+            converter_format_version: value.converter_format_version,
+        })
+    }
+
+    fn validate_preparation_body_buffer(
+        request: &anima_corefs::transaction::PreparationObjectV1,
+        buffer_length: usize,
+    ) -> PyResult<()> {
+        let declared_length = usize::try_from(request.body_length).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(
+                "preparation object bodyLength does not fit this platform",
+            )
+        })?;
+        if buffer_length != declared_length {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "preparation object body length does not match bodyLength",
+            ));
+        }
+        let kind_limit = match request.kind {
+            anima_corefs::crypto::ObjectKind::Diary
+            | anima_corefs::crypto::ObjectKind::Draft
+            | anima_corefs::crypto::ObjectKind::Note => {
+                anima_corefs::transaction::MAX_WRITING_DOCUMENT_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Attachment => {
+                anima_corefs::transaction::MAX_WRITING_ATTACHMENT_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::GalleryAsset => {
+                anima_corefs::transaction::MAX_GALLERY_ASSET_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::KnowledgeSource => {
+                anima_corefs::transaction::MAX_KNOWLEDGE_SOURCE_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Thread => {
+                anima_corefs::transaction::MAX_THREAD_DOCUMENT_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::MessageSegment => {
+                anima_corefs::transaction::MAX_MESSAGE_SEGMENT_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::AccountProfile => {
+                anima_corefs::transaction::MAX_ACCOUNT_PROFILE_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Preferences => {
+                anima_corefs::transaction::MAX_PREFERENCES_BYTES
+            }
+            anima_corefs::crypto::ObjectKind::Task => anima_corefs::transaction::MAX_TASK_BYTES,
+            _ => 0,
+        };
+        if buffer_length > kind_limit {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "preparation object metadata or body exceeds kind-specific converter limits",
+            ));
+        }
+        Ok(())
+    }
+
+    fn preparation_to_py(py: Python<'_>, value: impl serde::Serialize) -> PyResult<PyObject> {
+        let value = serde_json::to_value(value)
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+        json_value_to_py(py, value)
+    }
+
+    fn core_archive_error(error: crate::core_archive::CoreArchiveError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.to_string())
+    }
+
+    fn core_archive_payload_kind(value: &str) -> PyResult<crate::core_archive::PayloadKind> {
+        match value {
+            "full" => Ok(crate::core_archive::PayloadKind::Full),
+            "soul" => Ok(crate::core_archive::PayloadKind::Soul),
+            "fs" => Ok(crate::core_archive::PayloadKind::Fs),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "ANIMA CORE archive payload kind must be full, soul, or fs",
+            )),
+        }
+    }
+
+    fn core_archive_record_type(value: &str) -> PyResult<crate::core_archive::RecordType> {
+        match value {
+            "manifest" => Ok(crate::core_archive::RecordType::Manifest),
+            "soul_database" => Ok(crate::core_archive::RecordType::SoulDatabase),
+            "catalog" => Ok(crate::core_archive::RecordType::Catalog),
+            "object" => Ok(crate::core_archive::RecordType::Object),
+            "keyslots" => Ok(crate::core_archive::RecordType::Keyslots),
+            "recovery" => Ok(crate::core_archive::RecordType::Recovery),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "ANIMA CORE archive record type is invalid",
+            )),
+        }
+    }
+
+    fn core_archive_volume_mode(value: &str) -> PyResult<crate::core_archive::VolumeMode> {
+        match value {
+            "single" => Ok(crate::core_archive::VolumeMode::Single),
+            "multipart" => Ok(crate::core_archive::VolumeMode::Multipart),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "ANIMA CORE archive volume mode must be single or multipart",
+            )),
+        }
+    }
+
+    fn core_archive_uuid(value: &str, label: &'static str) -> PyResult<uuid::Uuid> {
+        uuid::Uuid::parse_str(value).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "ANIMA CORE archive {label} is invalid"
+            ))
+        })
+    }
+
+    fn core_archive_sha256(value: &str, label: &'static str) -> PyResult<String> {
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "ANIMA CORE archive {label} is invalid"
+            )));
+        }
+        Ok(value.to_owned())
+    }
+
+    fn core_archive_hex<const N: usize>(value: &str, label: &'static str) -> PyResult<[u8; N]> {
+        if value.len() != N * 2
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "ANIMA CORE archive {label} is invalid"
+            )));
+        }
+        let mut decoded = [0u8; N];
+        for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+            let nibble = |byte: u8| match byte {
+                b'0'..=b'9' => byte - b'0',
+                b'a'..=b'f' => byte - b'a' + 10,
+                _ => unreachable!("validated lowercase hexadecimal"),
+            };
+            decoded[index] = (nibble(pair[0]) << 4) | nibble(pair[1]);
+        }
+        Ok(decoded)
+    }
+
+    fn core_archive_capture(
+        payload_kind: crate::core_archive::PayloadKind,
+        core_id: uuid::Uuid,
+        owner_id: uuid::Uuid,
+        soul_generation: Option<u64>,
+        filesystem_generation: Option<u64>,
+    ) -> PyResult<crate::core_archive::ArchiveCapture> {
+        match payload_kind {
+            crate::core_archive::PayloadKind::Full => {
+                Ok(crate::core_archive::ArchiveCapture::full(
+                    core_id,
+                    owner_id,
+                    soul_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "full ANIMA CORE archive requires a Soul generation",
+                        )
+                    })?,
+                    filesystem_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "full ANIMA CORE archive requires a filesystem generation",
+                        )
+                    })?,
+                ))
+            }
+            crate::core_archive::PayloadKind::Soul => {
+                if filesystem_generation.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "Soul archive cannot declare a filesystem generation",
+                    ));
+                }
+                Ok(crate::core_archive::ArchiveCapture::soul(
+                    core_id,
+                    owner_id,
+                    soul_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "Soul archive requires a Soul generation",
+                        )
+                    })?,
+                ))
+            }
+            crate::core_archive::PayloadKind::Fs => {
+                if soul_generation.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS archive cannot declare a Soul generation",
+                    ));
+                }
+                Ok(crate::core_archive::ArchiveCapture::fs(
+                    core_id,
+                    owner_id,
+                    filesystem_generation.ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS archive requires a filesystem generation",
+                        )
+                    })?,
+                ))
+            }
+        }
+    }
+
+    fn core_archive_summary_value(
+        summary: &crate::core_archive::ArchiveSummary,
+    ) -> serde_json::Value {
+        let payload_kind = match summary.payload_kind {
+            crate::core_archive::PayloadKind::Full => "full",
+            crate::core_archive::PayloadKind::Soul => "soul",
+            crate::core_archive::PayloadKind::Fs => "fs",
+        };
+        json!({
+            "version": 2,
+            "archiveId": summary.archive_id.to_string(),
+            "volumeSetId": summary.volume_set_id.to_string(),
+            "payloadKind": payload_kind,
+            "coreId": summary.capture.core_id.to_string(),
+            "ownerId": summary.capture.owner_id.to_string(),
+            "soulGeneration": summary.capture.soul_generation,
+            "filesystemGeneration": summary.capture.filesystem_generation,
+            "recordCount": summary.record_count,
+            "chunkCount": summary.chunk_count,
+            "plaintextBytes": summary.plaintext_bytes,
+            "maxBufferBytes": summary.max_buffer_bytes,
+        })
+    }
+
+    fn core_archive_record_value(
+        record: &crate::core_archive::ExtractedRecord,
+    ) -> serde_json::Value {
+        let record_type = match record.record_type {
+            crate::core_archive::RecordType::Manifest => "manifest",
+            crate::core_archive::RecordType::SoulDatabase => "soul_database",
+            crate::core_archive::RecordType::Catalog => "catalog",
+            crate::core_archive::RecordType::Object => "object",
+            crate::core_archive::RecordType::Keyslots => "keyslots",
+            crate::core_archive::RecordType::Recovery => "recovery",
+        };
+        json!({
+            "recordType": record_type,
+            "recordPath": record.record_path,
+            "plaintextLength": record.plaintext_length,
+            "recordHash": record.record_hash.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+        })
+    }
+
+    fn core_archive_extracted_value(
+        summary: &crate::core_archive::ArchiveSummary,
+        records: &[crate::core_archive::ExtractedRecord],
+    ) -> serde_json::Value {
+        let mut value = core_archive_summary_value(summary);
+        value
+            .as_object_mut()
+            .expect("archive summary is an object")
+            .insert(
+                "records".to_owned(),
+                serde_json::Value::Array(records.iter().map(core_archive_record_value).collect()),
+            );
+        value
+    }
+
+    #[pyfunction]
+    fn core_archive_write_v2(
+        py: Python<'_>,
+        output_path: &str,
+        passphrase: &[u8],
+        request_json: &str,
+    ) -> PyResult<PyObject> {
+        let wire: CoreArchiveWriteWire = decode_preparation_json(request_json)?;
+        let payload_kind = core_archive_payload_kind(&wire.payload_kind)?;
+        let core_id = core_archive_uuid(&wire.core_id, "Core ID")?;
+        let owner_id = core_archive_uuid(&wire.owner_id, "owner ID")?;
+        match payload_kind {
+            crate::core_archive::PayloadKind::Full | crate::core_archive::PayloadKind::Fs => {
+                core_archive_sha256(
+                    wire.filesystem_catalog_hash.as_deref().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "filesystem archive requires a catalog hash",
+                        )
+                    })?,
+                    "filesystem catalog hash",
+                )?;
+            }
+            crate::core_archive::PayloadKind::Soul => {
+                if wire.filesystem_catalog_hash.is_some() {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "Soul archive cannot declare a filesystem catalog hash",
+                    ));
+                }
+            }
+        }
+        let capture = core_archive_capture(
+            payload_kind,
+            core_id,
+            owner_id,
+            wire.soul_generation,
+            wire.filesystem_generation,
+        )?;
+        let archive_id = match wire.archive_id.as_deref() {
+            Some(value) => core_archive_uuid(value, "archive ID")?,
+            None => uuid::Uuid::new_v4(),
+        };
+        let volume_mode = core_archive_volume_mode(&wire.volume_mode)?;
+        let volume_set_id = match wire.volume_set_id.as_deref() {
+            Some(value) => core_archive_uuid(value, "volume-set ID")?,
+            None if volume_mode == crate::core_archive::VolumeMode::Single => archive_id,
+            None => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "multipart ANIMA CORE archive requires a volume-set ID",
+                ))
+            }
+        };
+        let set_crypto = match (
+            volume_mode,
+            wire.kdf_salt.as_deref(),
+            wire.nonce_prefix.as_deref(),
+        ) {
+            (crate::core_archive::VolumeMode::Single, None, None) => None,
+            (crate::core_archive::VolumeMode::Multipart, Some(salt), Some(prefix)) => {
+                Some(crate::core_archive::ArchiveSetCrypto {
+                    kdf_salt: core_archive_hex(salt, "KDF salt")?,
+                    nonce_prefix: core_archive_hex(prefix, "nonce prefix")?,
+                })
+            }
+            (crate::core_archive::VolumeMode::Single, _, _) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "single ANIMA CORE archive cannot declare multipart cryptography",
+                ))
+            }
+            (crate::core_archive::VolumeMode::Multipart, _, _) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "multipart ANIMA CORE archive requires one shared KDF salt and nonce prefix",
+                ))
+            }
+        };
+        let options = crate::core_archive::ArchiveWriteOptions {
+            payload_kind,
+            capture,
+            archive_id,
+            volume_set_id,
+            volume_mode,
+            declared_volume_count: wire.declared_volume_count,
+            volume_ordinal: wire.volume_ordinal,
+            set_crypto,
+        };
+        let sources = wire
+            .sources
+            .into_iter()
+            .map(|source| {
+                Ok(crate::core_archive::ArchiveSource {
+                    record_type: core_archive_record_type(&source.record_type)?,
+                    record_path: source.record_path,
+                    source_path: PathBuf::from(source.source_path),
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let output = PathBuf::from(output_path);
+        let result = py.allow_threads(|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)?;
+            let result =
+                crate::core_archive::write_archive(&mut file, passphrase, &options, sources);
+            match result {
+                Ok(summary) => {
+                    file.sync_all()?;
+                    Ok(summary)
+                }
+                Err(error) => {
+                    drop(file);
+                    let _ = std::fs::remove_file(&output);
+                    Err(error)
+                }
+            }
+        });
+        match result {
+            Ok(summary) => json_value_to_py(py, core_archive_summary_value(&summary)),
+            Err(error) => Err(core_archive_error(error)),
+        }
+    }
+
+    #[pyfunction]
+    fn core_archive_extract_v2(
+        py: Python<'_>,
+        input_path: &str,
+        passphrase: &[u8],
+        destination: &str,
+    ) -> PyResult<PyObject> {
+        let input = PathBuf::from(input_path);
+        let destination = PathBuf::from(destination);
+        let extracted = py
+            .allow_threads(|| {
+                let mut file = File::open(input)?;
+                crate::core_archive::extract_archive(&mut file, passphrase, &destination)
+            })
+            .map_err(core_archive_error)?;
+        json_value_to_py(
+            py,
+            core_archive_extracted_value(&extracted.summary, &extracted.records),
+        )
+    }
+
+    #[pyfunction]
+    fn core_archive_extract_volume_v2(
+        py: Python<'_>,
+        input_path: &str,
+        passphrase: &[u8],
+        destination: &str,
+        expected_volume_ordinal: u32,
+    ) -> PyResult<PyObject> {
+        let input = PathBuf::from(input_path);
+        let destination = PathBuf::from(destination);
+        let extracted = py
+            .allow_threads(|| {
+                let mut file = File::open(input)?;
+                crate::core_archive::extract_archive_volume(
+                    &mut file,
+                    passphrase,
+                    &destination,
+                    expected_volume_ordinal,
+                )
+            })
+            .map_err(core_archive_error)?;
+        json_value_to_py(
+            py,
+            core_archive_extracted_value(&extracted.summary, &extracted.records),
+        )
+    }
+
+    fn core_archive_controller_value(
+        controller: &crate::core_archive::MultipartController,
+    ) -> serde_json::Value {
+        let payload_kind = match controller.payload_kind {
+            crate::core_archive::PayloadKind::Full => "full",
+            crate::core_archive::PayloadKind::Soul => "soul",
+            crate::core_archive::PayloadKind::Fs => "fs",
+        };
+        json!({
+            "version": 2,
+            "volumeSetId": controller.volume_set_id.to_string(),
+            "payloadKind": payload_kind,
+            "coreId": controller.capture.core_id.to_string(),
+            "ownerId": controller.capture.owner_id.to_string(),
+            "soulGeneration": controller.capture.soul_generation,
+            "filesystemGeneration": controller.capture.filesystem_generation,
+            "volumes": controller.volumes.iter().map(|volume| json!({
+                "ordinal": volume.ordinal,
+                "filename": volume.filename,
+                "archiveId": volume.archive_id.to_string(),
+                "byteLength": volume.byte_length,
+                "sha256": volume.sha256.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                "recordCount": volume.record_count,
+                "chunkCount": volume.chunk_count,
+                "plaintextBytes": volume.plaintext_bytes,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
+    fn decode_core_archive_controller(
+        wire: CoreArchiveControllerWire,
+    ) -> PyResult<(
+        crate::core_archive::ArchiveSetCrypto,
+        crate::core_archive::MultipartController,
+    )> {
+        let payload_kind = core_archive_payload_kind(&wire.payload_kind)?;
+        let core_id = core_archive_uuid(&wire.core_id, "Core ID")?;
+        let owner_id = core_archive_uuid(&wire.owner_id, "owner ID")?;
+        let capture = core_archive_capture(
+            payload_kind,
+            core_id,
+            owner_id,
+            wire.soul_generation,
+            wire.filesystem_generation,
+        )?;
+        let crypto = crate::core_archive::ArchiveSetCrypto {
+            kdf_salt: core_archive_hex(&wire.kdf_salt, "KDF salt")?,
+            nonce_prefix: core_archive_hex(&wire.nonce_prefix, "nonce prefix")?,
+        };
+        let volumes = wire
+            .volumes
+            .into_iter()
+            .map(|volume| {
+                Ok(crate::core_archive::MultipartVolumeCommitment {
+                    ordinal: volume.ordinal,
+                    filename: volume.filename,
+                    archive_id: core_archive_uuid(&volume.archive_id, "volume archive ID")?,
+                    byte_length: volume.byte_length,
+                    sha256: core_archive_hex(&volume.sha256, "volume SHA-256")?,
+                    record_count: volume.record_count,
+                    chunk_count: volume.chunk_count,
+                    plaintext_bytes: volume.plaintext_bytes,
+                })
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        Ok((
+            crypto,
+            crate::core_archive::MultipartController {
+                volume_set_id: core_archive_uuid(&wire.volume_set_id, "volume-set ID")?,
+                payload_kind,
+                capture,
+                volumes,
+            },
+        ))
+    }
+
+    #[pyfunction]
+    fn core_archive_write_controller_v2(
+        py: Python<'_>,
+        output_path: &str,
+        passphrase: &[u8],
+        request_json: &str,
+    ) -> PyResult<PyObject> {
+        let wire: CoreArchiveControllerWire = decode_preparation_json(request_json)?;
+        let (crypto, controller) = decode_core_archive_controller(wire)?;
+        let output = PathBuf::from(output_path);
+        py.allow_threads(|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)?;
+            let result = crate::core_archive::write_multipart_controller(
+                &mut file,
+                passphrase,
+                &crypto,
+                &controller,
+            );
+            match result {
+                Ok(()) => {
+                    file.sync_all()?;
+                    Ok(())
+                }
+                Err(error) => {
+                    drop(file);
+                    let _ = std::fs::remove_file(&output);
+                    Err(error)
+                }
+            }
+        })
+        .map_err(core_archive_error)?;
+        json_value_to_py(py, core_archive_controller_value(&controller))
+    }
+
+    #[pyfunction]
+    fn core_archive_read_controller_v2(
+        py: Python<'_>,
+        input_path: &str,
+        passphrase: &[u8],
+    ) -> PyResult<PyObject> {
+        let input = PathBuf::from(input_path);
+        let controller = py
+            .allow_threads(|| {
+                let mut file = File::open(input)?;
+                crate::core_archive::read_multipart_controller(&mut file, passphrase)
+            })
+            .map_err(core_archive_error)?;
+        json_value_to_py(py, core_archive_controller_value(&controller))
+    }
+
+    #[pyfunction]
+    fn core_archive_extract_set_v2(
+        py: Python<'_>,
+        controller_path: &str,
+        passphrase: &[u8],
+        destination: &str,
+    ) -> PyResult<PyObject> {
+        let controller_path = PathBuf::from(controller_path);
+        let destination = PathBuf::from(destination);
+        let extracted = py
+            .allow_threads(|| {
+                crate::core_archive::extract_multipart_archive_set(
+                    &controller_path,
+                    passphrase,
+                    &destination,
+                )
+            })
+            .map_err(core_archive_error)?;
+        json_value_to_py(
+            py,
+            core_archive_extracted_value(&extracted.summary, &extracted.records),
+        )
     }
 
     fn decode_validation_batch_json(
@@ -421,6 +1388,278 @@ mod python {
         pyo3::exceptions::PyValueError::new_err(error.to_string())
     }
 
+    fn corefs_mutation_error(error: anima_corefs::logical::MutationError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(error.code())
+    }
+
+    struct StrictMutationValidator {
+        body_encoding: anima_corefs::envelope::BodyEncoding,
+    }
+
+    impl anima_corefs::logical::ContentFormatValidator for StrictMutationValidator {
+        fn validate(
+            &self,
+            _kind: anima_corefs::crypto::ObjectKind,
+            content_type: &str,
+            bytes: &[u8],
+        ) -> Result<
+            anima_corefs::logical::ValidatedContent,
+            anima_corefs::logical::ContentValidationError,
+        > {
+            if self.body_encoding == anima_corefs::envelope::BodyEncoding::Utf8
+                && std::str::from_utf8(bytes).is_err()
+            {
+                return Err(anima_corefs::logical::ContentValidationError::Rejected(
+                    "invalid_utf8",
+                ));
+            }
+            anima_corefs::logical::ValidatedContent::new(
+                bytes.to_vec(),
+                content_type,
+                self.body_encoding,
+            )
+        }
+    }
+
+    fn mutation_body_encoding(value: &str) -> PyResult<anima_corefs::envelope::BodyEncoding> {
+        match value {
+            "utf-8" => Ok(anima_corefs::envelope::BodyEncoding::Utf8),
+            "binary" => Ok(anima_corefs::envelope::BodyEncoding::Binary),
+            _ => Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS mutation bodyEncoding must be utf-8 or binary",
+            )),
+        }
+    }
+
+    fn logical_mutation_target(
+        target: LogicalMutationTargetWire,
+    ) -> anima_corefs::logical::MutationTarget {
+        match target {
+            LogicalMutationTargetWire::Path(target) => {
+                anima_corefs::logical::MutationTarget::Path(target.path)
+            }
+            LogicalMutationTargetWire::StableId(target) => {
+                anima_corefs::logical::MutationTarget::StableId(target.stable_id)
+            }
+        }
+    }
+
+    fn logical_mutation_request(
+        wire: LogicalMutationRequestWire,
+        body: Option<Vec<u8>>,
+    ) -> PyResult<(
+        anima_corefs::logical::MutationPrincipal,
+        anima_corefs::logical::MutationCommitMode,
+        u64,
+        String,
+        anima_corefs::logical::MutationStamp,
+        anima_corefs::logical::LogicalMutation,
+        StrictMutationValidator,
+    )> {
+        if wire.version != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS logical mutation version must be 1",
+            ));
+        }
+        let principal = match wire.principal.as_str() {
+            "user" => anima_corefs::logical::MutationPrincipal::User,
+            "anima" | "client" => anima_corefs::logical::MutationPrincipal::Anima,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "CoreFS logical mutation principal is invalid",
+                ))
+            }
+        };
+        let commit_mode = match (wire.commit_mode.as_str(), wire.cutover_epoch) {
+            ("first", Some(epoch)) if epoch > 0 => {
+                anima_corefs::logical::MutationCommitMode::FirstMutation {
+                    cutover_epoch: epoch,
+                }
+            }
+            ("normal", None) => anima_corefs::logical::MutationCommitMode::Normal,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "CoreFS logical mutation commit mode is invalid",
+                ))
+            }
+        };
+        if wire.selected_generation == 0
+            || wire.selected_catalog_hash.len() != 64
+            || !wire
+                .selected_catalog_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS logical mutation selected snapshot is invalid",
+            ));
+        }
+        let stamp = anima_corefs::logical::MutationStamp::new(wire.timestamp_ms, wire.timestamp)
+            .map_err(corefs_mutation_error)?;
+        let mut body = body;
+        let (mutation, body_encoding) = match wire.mutation {
+            LogicalMutationWire::ActivateAuthority => (
+                anima_corefs::logical::LogicalMutation::ActivateAuthority,
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::Mkdir {
+                path,
+                reserved_role,
+            } => (
+                anima_corefs::logical::LogicalMutation::Mkdir {
+                    path,
+                    reserved_role,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::CreateFile {
+                path,
+                stable_id,
+                kind,
+                content_type,
+                body_encoding,
+            } => (
+                anima_corefs::logical::LogicalMutation::Create {
+                    path,
+                    stable_id,
+                    kind: anima_corefs::crypto::ObjectKind::parse(&kind)
+                        .map_err(corefs_value_error)?,
+                    content_type,
+                    bytes: body.take().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS create_file mutation requires a body",
+                        )
+                    })?,
+                },
+                mutation_body_encoding(&body_encoding)?,
+            ),
+            LogicalMutationWire::WriteFile {
+                target,
+                expected_revision,
+                content_type,
+                body_encoding,
+            } => (
+                anima_corefs::logical::LogicalMutation::Write {
+                    target: logical_mutation_target(target),
+                    expected_revision,
+                    content_type,
+                    bytes: body.take().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "CoreFS write_file mutation requires a body",
+                        )
+                    })?,
+                },
+                mutation_body_encoding(&body_encoding)?,
+            ),
+            LogicalMutationWire::ApplyPatch {
+                patch,
+                expected_revisions,
+                add_formats,
+                trash_folder,
+            } => (
+                anima_corefs::logical::LogicalMutation::ApplyPatch {
+                    patch,
+                    expected_revisions,
+                    add_formats: add_formats
+                        .into_iter()
+                        .map(|(path, format)| {
+                            Ok((
+                                path,
+                                anima_corefs::logical::PatchAddFormat {
+                                    stable_id: format.stable_id,
+                                    kind: anima_corefs::crypto::ObjectKind::parse(&format.kind)
+                                        .map_err(corefs_value_error)?,
+                                    content_type: format.content_type,
+                                },
+                            ))
+                        })
+                        .collect::<PyResult<BTreeMap<_, _>>>()?,
+                    trash_folder: logical_mutation_target(trash_folder),
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::Move {
+                source,
+                destination,
+                expected_revision,
+            } => (
+                anima_corefs::logical::LogicalMutation::Move {
+                    source: logical_mutation_target(source),
+                    destination,
+                    expected_revision,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::Trash {
+                target,
+                trash_folder,
+                expected_revision,
+            } => (
+                anima_corefs::logical::LogicalMutation::Trash {
+                    target: logical_mutation_target(target),
+                    trash_folder: logical_mutation_target(trash_folder),
+                    expected_revision,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+            LogicalMutationWire::Restore {
+                target,
+                destination,
+                expected_revision,
+            } => (
+                anima_corefs::logical::LogicalMutation::Restore {
+                    target: logical_mutation_target(target),
+                    destination,
+                    expected_revision,
+                },
+                require_no_mutation_body(&body)?,
+            ),
+        };
+        Ok((
+            principal,
+            commit_mode,
+            wire.selected_generation,
+            wire.selected_catalog_hash,
+            stamp,
+            mutation,
+            StrictMutationValidator { body_encoding },
+        ))
+    }
+
+    fn require_no_mutation_body(
+        body: &Option<Vec<u8>>,
+    ) -> PyResult<anima_corefs::envelope::BodyEncoding> {
+        if body.is_some() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS mutation body is not allowed for this operation",
+            ));
+        }
+        Ok(anima_corefs::envelope::BodyEncoding::Utf8)
+    }
+
+    fn logical_mutation_result_to_py(
+        py: Python<'_>,
+        result: anima_corefs::logical::MutationResult,
+    ) -> PyResult<PyObject> {
+        json_value_to_py(
+            py,
+            json!({
+                "ok": true,
+                "generation": result.generation,
+                "catalogHash": result.catalog_hash,
+                "atomic": result.atomic,
+                "cutoverCommitted": result.cutover_committed,
+                "recoveryPending": result.recovery_pending,
+                "invalidationDelivered": result.invalidation_delivered,
+                "changes": result.changes.into_iter().map(|change| json!({
+                    "stableId": change.stable_id,
+                    "revision": change.revision,
+                    "contentHash": change.content_hash,
+                })).collect::<Vec<_>>(),
+            }),
+        )
+    }
+
     fn corefs_validated_limits(
         read_chunk_bytes: Option<usize>,
         walk_depth: Option<usize>,
@@ -446,6 +1685,29 @@ mod python {
         selected_generation: u64,
         selected_catalog_hash: &str,
     ) -> PyResult<anima_corefs::logical::CoreFsReadSnapshot> {
+        if let Some(committed) = coordinator
+            .load_committed(&keys.inner)
+            .map_err(corefs_commit_error)?
+        {
+            if committed.catalog().cutover_marker().is_some() {
+                let head = committed.head();
+                if head.generation() != selected_generation
+                    || head.catalog_hash() != selected_catalog_hash
+                {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "CoreFS authoritative snapshot no longer matches selected generation/catalog hash",
+                    ));
+                }
+                let keyring = anima_corefs::rotation::FrkKeyring::new([&keys.inner])
+                    .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+                return anima_corefs::logical::CoreFsReadSnapshot::open_committed(
+                    coordinator,
+                    &committed,
+                    &keyring,
+                )
+                .map_err(corefs_logical_error);
+            }
+        }
         let selected = coordinator
             .load_validation_snapshot(&keys.inner)
             .map_err(corefs_commit_error)?
@@ -463,6 +1725,33 @@ mod python {
             .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
         anima_corefs::logical::CoreFsReadSnapshot::open(coordinator, &selected, &keyring)
             .map_err(corefs_logical_error)
+    }
+
+    fn corefs_selected_read_head(
+        coordinator: &anima_corefs::transaction::CoreCommitCoordinator,
+        keys: &PyCorefsSubkeys,
+    ) -> PyResult<(u64, String)> {
+        if let Some(committed) = coordinator
+            .load_committed(&keys.inner)
+            .map_err(corefs_commit_error)?
+        {
+            if committed.catalog().cutover_marker().is_some() {
+                return Ok((
+                    committed.head().generation(),
+                    committed.head().catalog_hash().to_owned(),
+                ));
+            }
+        }
+        let selected = coordinator
+            .load_validation_snapshot(&keys.inner)
+            .map_err(corefs_commit_error)?
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
+            })?;
+        Ok((
+            selected.head().generation(),
+            selected.head().catalog_hash().to_owned(),
+        ))
     }
 
     fn corefs_open_read_snapshot(
@@ -877,27 +2166,420 @@ mod python {
             self.begin_close_native();
         }
 
+        fn preparation_begin_or_resume_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationBeginWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationBeginV1 {
+                scope: wire.scope,
+                expected_validation_generation: wire.expected_validation_generation,
+                expected_validation_catalog_sha256: wire.expected_validation_catalog_sha256,
+                source_owner_id: wire.source_owner_id,
+                source_schema_version: wire.source_schema_version,
+                source_mutation_generation: wire.source_mutation_generation,
+                source_inventory_sha256: wire.source_inventory_sha256,
+            };
+            let status = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_begin_or_resume_v1(&keys.inner, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, status)
+        }
+
+        #[pyo3(signature = (keys, reconciliation_json = None))]
+        fn preparation_status_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            reconciliation_json: Option<&str>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let status = py
+                .allow_threads(|| self.coordinator.preparation_status_v1(&keys.inner))
+                .map_err(corefs_preparation_error)?;
+            let mut value = serde_json::to_value(status)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            if let Some(encoded) = reconciliation_json {
+                let wire: PreparationReconciliationWire = decode_preparation_json(encoded)?;
+                let request = anima_corefs::transaction::PreparationReconciliationV1 {
+                    cursor_position: wire.cursor_position,
+                    max_items: wire.max_items,
+                    max_bytes: wire.max_bytes,
+                    expected: wire
+                        .expected
+                        .into_iter()
+                        .map(preparation_identity_wire)
+                        .collect(),
+                };
+                let page = py
+                    .allow_threads(|| {
+                        self.coordinator
+                            .preparation_reconciliation_v1(&keys.inner, &request)
+                    })
+                    .map_err(corefs_preparation_error)?;
+                value
+                    .as_object_mut()
+                    .expect("preparation status serializes as an object")
+                    .insert(
+                        "reconciliation".to_owned(),
+                        serde_json::to_value(page).map_err(|error| {
+                            pyo3::exceptions::PyValueError::new_err(error.to_string())
+                        })?,
+                    );
+            }
+            json_value_to_py(py, value)
+        }
+
+        /// Prepare one bounded object, including PCF-007 account, task, and
+        /// preferences documents validated by the native CoreFS converter.
+        fn preparation_prepare_object_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+            body: PyBuffer<u8>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationPrepareObjectWire = decode_preparation_json(request_json)?;
+            let expected = preparation_cas_wire(wire.expected);
+            let request = preparation_object_wire(wire.object)?;
+            validate_preparation_body_buffer(&request, body.len_bytes())?;
+            let body = body.to_vec(py)?;
+            let outcome = py
+                .allow_threads(|| {
+                    let mut reader = io::Cursor::new(body.as_slice());
+                    self.coordinator.preparation_prepare_object_v1(
+                        &keys.inner,
+                        &expected,
+                        &request,
+                        &mut reader,
+                    )
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, outcome)
+        }
+
+        fn preparation_seal_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationSealWire = decode_preparation_json(request_json)?;
+            let expected = preparation_cas_wire(wire.expected);
+            let request = anima_corefs::transaction::PreparationSealV1 {
+                source_mutation_generation: wire.source_mutation_generation,
+                source_inventory_sha256: wire.source_inventory_sha256,
+                folders: wire
+                    .folders
+                    .into_iter()
+                    .map(preparation_folder_wire)
+                    .collect::<PyResult<Vec<_>>>()?,
+                objects: wire
+                    .objects
+                    .into_iter()
+                    .map(preparation_identity_wire)
+                    .collect(),
+            };
+            let status = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_seal_v1(&keys.inner, &expected, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, status)
+        }
+
+        fn preparation_finalize_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationFinalizeWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationFinalizeV1 {
+                preparation_id: wire.preparation_id,
+                expected: preparation_cas_wire(wire.expected),
+                source_mutation_generation: wire.source_mutation_generation,
+                source_inventory_sha256: wire.source_inventory_sha256,
+            };
+            let receipt = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_finalize_v1(&keys.inner, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, receipt)
+        }
+
+        fn preparation_abandon_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationAbandonWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationAbandonV1 {
+                preparation_id: wire.preparation_id,
+                expected: preparation_cas_wire(wire.expected),
+            };
+            let receipt = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .preparation_abandon_v1(&keys.inner, &request)
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, receipt)
+        }
+
+        fn preparation_quarantine_corrupt_pointer_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            active_keys: &PyCorefsSubkeys,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: PreparationQuarantineWire = decode_preparation_json(request_json)?;
+            let request = anima_corefs::transaction::PreparationQuarantineV1 {
+                expected_pointer_sha256: wire.expected_pointer_sha256,
+            };
+            let keyring = anima_corefs::rotation::FrkKeyring::new(
+                retained_keys.iter().map(|keys| &keys.inner),
+            )
+            .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))?;
+            let receipt = py
+                .allow_threads(|| {
+                    self.coordinator.preparation_quarantine_corrupt_pointer_v1(
+                        &keyring,
+                        &active_keys.inner,
+                        &request,
+                    )
+                })
+                .map_err(corefs_preparation_error)?;
+            preparation_to_py(py, receipt)
+        }
+
         fn validation_snapshot(
             &self,
             py: Python<'_>,
             keys: &PyCorefsSubkeys,
         ) -> PyResult<PyObject> {
             let _operation = self.acquire_operation()?;
-            let selected = self
-                .coordinator
-                .load_validation_snapshot(&keys.inner)
-                .map_err(corefs_commit_error)?
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
-                })?;
-            let head = selected.head();
+            let (generation, catalog_hash) =
+                corefs_selected_read_head(self.coordinator.as_ref(), keys)?;
             json_value_to_py(
                 py,
                 json!({
-                    "generation": head.generation(),
-                    "catalogHash": head.catalog_hash(),
+                    "generation": generation,
+                    "catalogHash": catalog_hash,
                 }),
             )
+        }
+
+        /// Executes one optimistic logical mutation against the selected
+        /// authenticated snapshot. The caller must supply the manifest-owned
+        /// first-cutover epoch only while consuming the one-way cutover grant;
+        /// normal mutations require an already authenticated marked HEAD.
+        #[pyo3(signature = (keys, request_json, body = None))]
+        fn logical_mutate_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            request_json: &str,
+            body: Option<PyBuffer<u8>>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let wire: LogicalMutationRequestWire = decode_preparation_json(request_json)?;
+            let body = match body {
+                Some(body) => {
+                    enforce_corefs_in_memory_limit(body.len_bytes())?;
+                    Some(body.to_vec(py)?)
+                }
+                None => None,
+            };
+            let (
+                principal,
+                commit_mode,
+                selected_generation,
+                selected_catalog_hash,
+                stamp,
+                mutation,
+                validator,
+            ) = logical_mutation_request(wire, body)?;
+            let result = py
+                .allow_threads(|| {
+                    anima_corefs::logical::CoreFsMutationExecutor::new(
+                        self.coordinator.as_ref(),
+                        &keys.inner,
+                    )
+                    .execute(
+                        principal,
+                        selected_generation,
+                        &selected_catalog_hash,
+                        commit_mode,
+                        mutation,
+                        stamp,
+                        &validator,
+                    )
+                })
+                .map_err(corefs_mutation_error)?;
+            logical_mutation_result_to_py(py, result)
+        }
+
+        /// Returns the authenticated irreversible marker from committed
+        /// `fs/HEAD`, recovering incomplete receipt publication first. An
+        /// inactive validation catalog can never produce this authority.
+        fn authoritative_cutover_v1(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let committed = py
+                .allow_threads(|| self.coordinator.load_committed(&keys.inner))
+                .map_err(corefs_commit_error)?;
+            let value = match committed {
+                Some(committed) => match committed.catalog().cutover_marker() {
+                    Some(marker) => json!({
+                        "version": 1,
+                        "legacyRollbackDisabled": marker.legacy_rollback_disabled(),
+                        "cutoverEpoch": marker.epoch(),
+                        "generation": committed.head().generation(),
+                        "catalogHash": committed.head().catalog_hash(),
+                    }),
+                    None => Value::Null,
+                },
+                None => Value::Null,
+            };
+            json_value_to_py(py, value)
+        }
+
+        /// Returns a committed, authenticated physical inventory suitable for
+        /// a V2 archive. Loading the committed catalog also establishes the
+        /// session object-validation lease, so unreachable object residue is
+        /// never selected and later substitution invalidates the session.
+        fn archive_inventory_v2(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let committed = py
+                .allow_threads(|| self.coordinator.load_committed(&keys.inner))
+                .map_err(corefs_commit_error)?
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "ANIMA CORE has no committed filesystem snapshot",
+                    )
+                })?;
+            let generation = committed.head().generation();
+            let catalog_hash = committed.head().catalog_hash();
+            let catalog_name = format!("catalog-{generation:020}-{catalog_hash}.acore");
+            let mut sources = vec![
+                json!({
+                    "recordType": "catalog",
+                    "recordPath": "fs/HEAD",
+                    "sourcePath": self.canonical_root.join("fs").join("HEAD").to_string_lossy(),
+                }),
+                json!({
+                    "recordType": "catalog",
+                    "recordPath": format!("fs/catalogs/{catalog_name}"),
+                    "sourcePath": self.canonical_root.join("fs").join("catalogs").join(&catalog_name).to_string_lossy(),
+                }),
+            ];
+            for name in ["CUTOVER_RECEIPT", "CUTOVER_COMPLETE"] {
+                let source_path = self.canonical_root.join("fs").join(name);
+                if source_path.is_file() {
+                    sources.push(json!({
+                        "recordType": "catalog",
+                        "recordPath": format!("fs/{name}"),
+                        "sourcePath": source_path.to_string_lossy(),
+                    }));
+                }
+            }
+            for entry in committed.catalog().entries() {
+                let Some(object) = entry.object_payload() else {
+                    continue;
+                };
+                let physical_name = object.physical_name().as_str();
+                sources.push(json!({
+                    "recordType": "object",
+                    "recordPath": format!("objects/{physical_name}"),
+                    "sourcePath": self.canonical_root.join("objects").join(physical_name).to_string_lossy(),
+                }));
+            }
+            json_value_to_py(
+                py,
+                json!({
+                    "version": 1,
+                    "generation": generation,
+                    "catalogHash": catalog_hash,
+                    "sources": sources,
+                }),
+            )
+        }
+
+        /// Streams a previously inspected V2 archive while retaining a live
+        /// session operation and authenticated committed-catalog lease for the
+        /// complete native write. Session close/release therefore drains this
+        /// export instead of invalidating its object set mid-stream.
+        fn archive_write_v2(
+            &self,
+            py: Python<'_>,
+            keys: &PyCorefsSubkeys,
+            output_path: &str,
+            passphrase: &[u8],
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let request: CoreArchiveWriteWire = decode_preparation_json(request_json)?;
+            let payload_kind = core_archive_payload_kind(&request.payload_kind)?;
+            let committed = if payload_kind != crate::core_archive::PayloadKind::Soul {
+                let committed = py
+                    .allow_threads(|| self.coordinator.load_committed(&keys.inner))
+                    .map_err(corefs_commit_error)?
+                    .ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "ANIMA CORE has no committed filesystem snapshot",
+                        )
+                    })?;
+                let expected_generation = request.filesystem_generation.ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "filesystem archive requires a committed generation",
+                    )
+                })?;
+                let expected_hash = core_archive_sha256(
+                    request.filesystem_catalog_hash.as_deref().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "filesystem archive requires a catalog hash",
+                        )
+                    })?,
+                    "filesystem catalog hash",
+                )?;
+                if committed.head().generation() != expected_generation
+                    || committed.head().catalog_hash() != expected_hash
+                {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "committed filesystem snapshot changed before archive streaming",
+                    ));
+                }
+                Some(committed)
+            } else {
+                None
+            };
+            let result = core_archive_write_v2(py, output_path, passphrase, request_json);
+            drop(committed);
+            result
         }
 
         fn validation_batch_v1(
@@ -908,45 +2590,6 @@ mod python {
         ) -> PyResult<PyObject> {
             let _operation = self.acquire_operation()?;
             let batch = decode_validation_batch_json(batch_json)?;
-            let outcome = py
-                .allow_threads(|| self.coordinator.apply_validation_batch(&keys.inner, batch))
-                .map_err(corefs_validation_batch_error)?;
-            let head = outcome.snapshot().head();
-            json_value_to_py(
-                py,
-                json!({
-                    "generation": head.generation(),
-                    "catalogHash": head.catalog_hash(),
-                    "published": outcome.published(),
-                }),
-            )
-        }
-
-        /// Apply a bounded metadata graph with object bodies carried separately as bytes.
-        ///
-        /// Keeping bodies outside JSON avoids base64 expansion and the catalog plaintext
-        /// ceiling while preserving the strict 16 MiB bound on graph metadata.
-        fn validation_batch_parts_v1(
-            &self,
-            py: Python<'_>,
-            keys: &PyCorefsSubkeys,
-            batch_json: &str,
-            content_parts: Vec<Vec<u8>>,
-        ) -> PyResult<PyObject> {
-            let _operation = self.acquire_operation()?;
-            let aggregate_bytes = content_parts.iter().try_fold(0_usize, |total, part| {
-                total.checked_add(part.len()).ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "validation content parts aggregate size overflow",
-                    )
-                })
-            })?;
-            if aggregate_bytes > CORE_FS_VALIDATION_BODY_AGGREGATE_LIMIT {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    "validation content parts exceed the 1 GiB aggregate limit",
-                ));
-            }
-            let batch = decode_validation_batch_parts_json(batch_json, Some(content_parts))?;
             let outcome = py
                 .allow_threads(|| self.coordinator.apply_validation_batch(&keys.inner, batch))
                 .map_err(corefs_validation_batch_error)?;
@@ -2105,18 +3748,12 @@ mod python {
     ) -> PyResult<PyObject> {
         let coordinator = anima_corefs::transaction::CoreCommitCoordinator::new(core_root, core_id)
             .map_err(corefs_commit_error)?;
-        let selected = coordinator
-            .load_validation_snapshot(&keys.inner)
-            .map_err(corefs_commit_error)?
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("CoreFS validation snapshot is missing")
-            })?;
-        let head = selected.head();
+        let (generation, catalog_hash) = corefs_selected_read_head(&coordinator, keys)?;
         json_value_to_py(
             py,
             json!({
-                "generation": head.generation(),
-                "catalogHash": head.catalog_hash(),
+                "generation": generation,
+                "catalogHash": catalog_hash,
             }),
         )
     }
@@ -3959,6 +5596,18 @@ mod python {
         m.add_class::<PyCorefsWrappedRootKey>()?;
         m.add_class::<PyCorefsWrappedObjectDek>()?;
         m.add_class::<PyCorefsSession>()?;
+        m.add(
+            "CorefsPreparationConflictError",
+            m.py().get_type_bound::<CorefsPreparationConflictError>(),
+        )?;
+        m.add(
+            "CorefsPreparationCorruptionError",
+            m.py().get_type_bound::<CorefsPreparationCorruptionError>(),
+        )?;
+        m.add(
+            "CorefsPreparationSourceFenceError",
+            m.py().get_type_bound::<CorefsPreparationSourceFenceError>(),
+        )?;
         m.add_function(wrap_pyfunction!(corefs_atomic_publish, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_manifest_keyslot_aad, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_soul_keyslot_aad, m)?)?;
@@ -3990,6 +5639,12 @@ mod python {
         m.add_function(wrap_pyfunction!(corefs_encrypt_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_decrypt_catalog, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_catalog_physical_name, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_write_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_extract_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_extract_volume_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_write_controller_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_read_controller_v2, m)?)?;
+        m.add_function(wrap_pyfunction!(core_archive_extract_set_v2, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_validation_snapshot, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_stat_v1, m)?)?;
         m.add_function(wrap_pyfunction!(corefs_list_v1, m)?)?;
@@ -4145,6 +5800,422 @@ mod python {
             Python::with_gil(f)
         }
 
+        mod corefs_preparation {
+            use super::*;
+
+            const FFI_SOURCE: &str = include_str!("ffi.rs");
+
+            fn session_methods() -> &'static str {
+                FFI_SOURCE
+                    .split("impl PyCorefsSession {")
+                    .nth(2)
+                    .expect("PyCorefsSession pymethods impl must exist")
+                    .split("#[pyclass(name = \"CorefsSubkeys\")]")
+                    .next()
+                    .expect("CorefsSubkeys must follow session methods")
+            }
+
+            #[test]
+            fn exposes_only_the_versioned_bounded_preparation_surface() {
+                for method in [
+                    "fn preparation_begin_or_resume_v1(",
+                    "fn preparation_status_v1(",
+                    "fn preparation_prepare_object_v1(",
+                    "fn preparation_seal_v1(",
+                    "fn preparation_finalize_v1(",
+                    "fn preparation_abandon_v1(",
+                    "fn preparation_quarantine_corrupt_pointer_v1(",
+                ] {
+                    assert!(session_methods().contains(method), "missing {method}");
+                }
+            }
+
+            #[test]
+            fn one_object_method_has_no_aggregate_body_transport() {
+                let method = session_methods()
+                    .split("fn preparation_prepare_object_v1(")
+                    .nth(1)
+                    .expect("preparation_prepare_object_v1 must exist")
+                    .split("\n        fn preparation_seal_v1(")
+                    .next()
+                    .expect("preparation_seal_v1 must follow prepare_object");
+                assert!(method.contains("body: PyBuffer<u8>"));
+                for forbidden in [
+                    "Vec<Vec<u8>>",
+                    "Vec<PyBytes",
+                    "content_parts",
+                    "contentBodies",
+                ] {
+                    assert!(
+                        !method.contains(forbidden),
+                        "one-object preparation accepted forbidden aggregate transport {forbidden}"
+                    );
+                }
+            }
+
+            #[test]
+            fn every_preparation_method_rejects_after_close_begins() {
+                let (_root, session) = super::corefs_session::native_session(
+                    "preparation-closed",
+                    "ffi-preparation-closed",
+                );
+                session.begin_close_native();
+
+                with_python(|py| {
+                    let keys = Py::new(
+                        py,
+                        PyCorefsSubkeys {
+                            inner: derive_corefs_subkeys(
+                                &SecretBytes::new(vec![0x71; 32]).unwrap(),
+                                1,
+                            )
+                            .unwrap(),
+                        },
+                    )
+                    .unwrap();
+                    let assert_closed = |error: PyErr| {
+                        assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                        assert!(error.to_string().contains("CoreFS session"));
+                    };
+
+                    assert_closed(
+                        session
+                            .preparation_begin_or_resume_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_status_v1(py, &keys.borrow(py), None)
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_prepare_object_v1(
+                                py,
+                                &keys.borrow(py),
+                                "{}",
+                                PyBuffer::get_bound(&PyBytes::new_bound(py, b"one body")).unwrap(),
+                            )
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_seal_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_finalize_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_abandon_v1(py, &keys.borrow(py), "{}")
+                            .unwrap_err(),
+                    );
+                    assert_closed(
+                        session
+                            .preparation_quarantine_corrupt_pointer_v1(
+                                py,
+                                vec![keys.borrow(py)],
+                                &keys.borrow(py),
+                                "{}",
+                            )
+                            .unwrap_err(),
+                    );
+                });
+                session.close_native().unwrap();
+            }
+
+            #[test]
+            fn begin_status_and_newer_source_reconciliation_are_secret_free() {
+                let (_root, session) =
+                    super::corefs_session::native_session("preparation-roundtrip", OBJECT_ID);
+                let keys = PyCorefsSubkeys {
+                    inner: derive_corefs_subkeys(&SecretBytes::new(vec![0x72; 32]).unwrap(), 1)
+                        .unwrap(),
+                };
+                let owner_id = OpaqueId::derive_migration("owner", b"ffi-preparation").unwrap();
+                let request = |generation: u64, digest: char| {
+                    json!({
+                        "scope": "pcf004-writing-v1",
+                        "expectedValidationGeneration": null,
+                        "expectedValidationCatalogSha256": null,
+                        "sourceOwnerId": owner_id.as_str(),
+                        "sourceSchemaVersion": 1,
+                        "sourceMutationGeneration": generation,
+                        "sourceInventorySha256": digest.to_string().repeat(64),
+                    })
+                    .to_string()
+                };
+
+                with_python(|py| {
+                    let begun = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(1, 'a'))
+                        .unwrap();
+                    let begun = begun.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        begun
+                            .get_item("disposition")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "begun"
+                    );
+                    for secret in [
+                        "snapshotCiphertextSha256",
+                        "physicalName",
+                        "wrappedObjectDek",
+                        "requiredFrkVersion",
+                    ] {
+                        assert!(begun.get_item(secret).unwrap().is_none());
+                    }
+
+                    let reconciled = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(2, 'b'))
+                        .unwrap();
+                    let reconciled = reconciled.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        reconciled
+                            .get_item("disposition")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "reconciled"
+                    );
+                    assert_eq!(
+                        reconciled
+                            .get_item("sourceMutationGeneration")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        2
+                    );
+
+                    let stale = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(1, 'a'))
+                        .unwrap_err();
+                    assert!(stale.is_instance_of::<CorefsPreparationSourceFenceError>(py));
+                    let conflict = session
+                        .preparation_begin_or_resume_v1(py, &keys, &request(2, 'c'))
+                        .unwrap_err();
+                    assert!(conflict.is_instance_of::<CorefsPreparationConflictError>(py));
+                });
+            }
+
+            #[test]
+            fn prepares_exactly_one_body_and_pages_reconciliation_metadata() {
+                let (_root, session) =
+                    super::corefs_session::native_session("preparation-one-body", OBJECT_ID);
+                let keys = PyCorefsSubkeys {
+                    inner: derive_corefs_subkeys(&SecretBytes::new(vec![0x73; 32]).unwrap(), 1)
+                        .unwrap(),
+                };
+                let owner_id = OpaqueId::derive_migration("owner", b"ffi-one-body").unwrap();
+                let parent_id = OpaqueId::derive_migration("folder", b"ffi-parent").unwrap();
+                let object_id = OpaqueId::derive_migration("diary", b"ffi-object").unwrap();
+                let inventory_hash = "a".repeat(64);
+
+                with_python(|py| {
+                    let begun = session
+                        .preparation_begin_or_resume_v1(
+                            py,
+                            &keys,
+                            &json!({
+                                "scope": "pcf004-writing-v1",
+                                "expectedValidationGeneration": null,
+                                "expectedValidationCatalogSha256": null,
+                                "sourceOwnerId": owner_id.as_str(),
+                                "sourceSchemaVersion": 1,
+                                "sourceMutationGeneration": 1,
+                                "sourceInventorySha256": inventory_hash,
+                            })
+                            .to_string(),
+                        )
+                        .unwrap();
+                    let begun = begun.bind(py).downcast::<PyDict>().unwrap();
+                    let pointer_sha256 = begun
+                        .get_item("pointerSha256")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap();
+                    let snapshot_sequence = begun
+                        .get_item("snapshotSequence")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap();
+                    let request = json!({
+                        "expected": {
+                            "pointerSha256": pointer_sha256,
+                            "snapshotSequence": snapshot_sequence,
+                        },
+                        "object": {
+                            "objectId": object_id.as_str(),
+                            "revision": 1,
+                            "objectKeyEpoch": 1,
+                            "kind": "diary",
+                            "parentId": parent_id.as_str(),
+                            "name": "entry.diary.json",
+                            "contentType": "application/vnd.anima.diary+json;version=1",
+                            "bodyEncoding": "utf-8",
+                            "bodyLength": 5,
+                            "contentSha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                            "createdAt": "2026-08-12T00:00:00Z",
+                            "updatedAt": "2026-08-12T00:00:00Z",
+                            "sourceCharacterCount": 5,
+                            "references": [],
+                            "policy": "inherit",
+                            "stableRole": null,
+                            "graphMetadata": {"order": 1},
+                            "sourceFingerprintSha256": "c".repeat(64),
+                            "converterFormatVersion": 1,
+                        },
+                    })
+                    .to_string();
+                    let prepared = session
+                        .preparation_prepare_object_v1(
+                            py,
+                            &keys,
+                            &request,
+                            PyBuffer::get_bound(&PyBytes::new_bound(py, b"hello")).unwrap(),
+                        )
+                        .unwrap();
+                    let prepared = prepared.bind(py).downcast::<PyDict>().unwrap();
+                    let summary_value = prepared.get_item("prepared").unwrap().unwrap();
+                    let summary = summary_value.downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        prepared
+                            .get_item("disposition")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        "prepared"
+                    );
+                    assert!(
+                        summary
+                            .get_item("ciphertextBytes")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap()
+                            > 0
+                    );
+                    for secret in ["physicalName", "wrappedObjectDek", "objectKeyBinding"] {
+                        assert!(summary.get_item(secret).unwrap().is_none());
+                    }
+                    let ordinal = summary
+                        .get_item("preparationOrdinal")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap();
+                    let page = session
+                        .preparation_status_v1(
+                            py,
+                            &keys,
+                            Some(
+                                &json!({
+                                    "cursorPosition": null,
+                                    "maxItems": 10,
+                                    "maxBytes": 65536,
+                                    "expected": [{
+                                        "objectId": object_id.as_str(),
+                                        "revision": 1,
+                                        "contentSha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+                                        "preparationOrdinal": ordinal,
+                                    }],
+                                })
+                                .to_string(),
+                            ),
+                        )
+                        .unwrap();
+                    let page = page.bind(py).downcast::<PyDict>().unwrap();
+                    let reconciliation_value = page.get_item("reconciliation").unwrap().unwrap();
+                    let reconciliation = reconciliation_value.downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        reconciliation
+                            .get_item("preparedCount")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u32>()
+                            .unwrap(),
+                        1
+                    );
+                    assert_eq!(
+                        reconciliation
+                            .get_item("missing")
+                            .unwrap()
+                            .unwrap()
+                            .downcast::<PyList>()
+                            .unwrap()
+                            .len(),
+                        0
+                    );
+                });
+            }
+
+            #[test]
+            fn native_error_categories_remain_typed_in_python() {
+                with_python(|py| {
+                    let conflict = corefs_preparation_error(
+                        anima_corefs::transaction::PreparationSessionError::Conflict(
+                            "conflict".to_owned(),
+                        ),
+                    );
+                    assert!(conflict.is_instance_of::<CorefsPreparationConflictError>(py));
+                    let corrupt = corefs_preparation_error(
+                        anima_corefs::transaction::PreparationSessionError::Corruption(
+                            "corrupt".to_owned(),
+                        ),
+                    );
+                    assert!(corrupt.is_instance_of::<CorefsPreparationCorruptionError>(py));
+                    let source = corefs_preparation_error(
+                        anima_corefs::transaction::PreparationSessionError::SourceFence(
+                            "source".to_owned(),
+                        ),
+                    );
+                    assert!(source.is_instance_of::<CorefsPreparationSourceFenceError>(py));
+                });
+            }
+
+            #[test]
+            fn python_wrapper_accepts_one_bytes_like_buffer() {
+                let root = tempfile::tempdir().unwrap();
+                let core_root = root.path().join("bytes-like");
+                fs::create_dir_all(&core_root).unwrap();
+                let session =
+                    super::corefs_session::isolated_session_for_test(&core_root, OBJECT_ID);
+                session.begin_close_native();
+
+                with_python(|py| {
+                    let session = Py::new(py, session).unwrap();
+                    let keys = Py::new(
+                        py,
+                        PyCorefsSubkeys {
+                            inner: derive_corefs_subkeys(
+                                &SecretBytes::new(vec![0x74; 32]).unwrap(),
+                                1,
+                            )
+                            .unwrap(),
+                        },
+                    )
+                    .unwrap();
+                    let body = PyByteArray::new_bound(py, b"one bytes-like body");
+                    let error = session
+                        .bind(py)
+                        .call_method1("preparation_prepare_object_v1", (keys.bind(py), "{}", body))
+                        .unwrap_err();
+                    assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                });
+            }
+        }
+
         mod corefs_session {
             use super::*;
 
@@ -4204,7 +6275,7 @@ mod python {
                 }
             }
 
-            fn isolated_session_for_test(
+            pub(super) fn isolated_session_for_test(
                 core_root: &std::path::Path,
                 core_id: &str,
             ) -> PyCorefsSession {
@@ -4236,7 +6307,7 @@ mod python {
                 })
             }
 
-            fn native_session(
+            pub(super) fn native_session(
                 name: &str,
                 core_id: &str,
             ) -> (tempfile::TempDir, Arc<PyCorefsSession>) {
@@ -4307,6 +6378,102 @@ mod python {
             }
 
             #[test]
+            fn authoritative_cutover_binding_ignores_validation_until_marked_head_commits() {
+                let fixture = logical_fixture("cutover-authority-binding");
+                let session = isolated_session_for_test(
+                    std::path::Path::new(fixture.root_path()),
+                    LOGICAL_CORE_ID,
+                );
+
+                with_python(|py| {
+                    let absent = session.authoritative_cutover_v1(py, &fixture.keys).unwrap();
+                    assert!(absent.bind(py).is_none());
+                });
+
+                let entries = fixture.selected.catalog().entries().to_vec();
+                session
+                    .coordinator_for_test()
+                    .commit_first_mutation(
+                        &fixture.keys.inner,
+                        73,
+                        &[],
+                        &[],
+                        |_, generation| CatalogGeneration::new(generation, entries),
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+
+                with_python(|py| {
+                    let authority = session.authoritative_cutover_v1(py, &fixture.keys).unwrap();
+                    let authority = authority.bind(py).downcast::<PyDict>().unwrap();
+                    assert!(authority
+                        .get_item("legacyRollbackDisabled")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<bool>()
+                        .unwrap());
+                    assert_eq!(
+                        authority
+                            .get_item("cutoverEpoch")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        73
+                    );
+                    let generation = authority
+                        .get_item("generation")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap();
+                    let catalog_hash = authority
+                        .get_item("catalogHash")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap();
+                    assert_eq!(generation, 2);
+
+                    let selected = session.validation_snapshot(py, &fixture.keys).unwrap();
+                    let selected = selected.bind(py).downcast::<PyDict>().unwrap();
+                    assert_eq!(
+                        selected
+                            .get_item("generation")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        generation
+                    );
+                    assert_eq!(
+                        selected
+                            .get_item("catalogHash")
+                            .unwrap()
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        catalog_hash
+                    );
+                    let stat = session
+                        .stat_v1(
+                            py,
+                            &fixture.keys,
+                            generation,
+                            &catalog_hash,
+                            "Notes/Alpha.md",
+                        )
+                        .unwrap();
+                    let stat = serde_json::from_slice::<serde_json::Value>(
+                        stat.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                    )
+                    .unwrap();
+                    assert_eq!(stat["result"]["stableId"], LOGICAL_OBJECT_ID);
+                    assert_eq!(stat["result"]["generation"], 2);
+                });
+            }
+
+            #[test]
             fn two_calls_in_one_native_session_reuse_one_coordinator() {
                 let fixture = logical_fixture("same-session");
                 let session =
@@ -4350,9 +6517,7 @@ mod python {
                 .to_string();
 
                 with_python(|py| {
-                    let outcome = session
-                        .validation_batch_parts_v1(py, &keys, &batch, Vec::new())
-                        .unwrap();
+                    let outcome = session.validation_batch_v1(py, &keys, &batch).unwrap();
                     let outcome = outcome.bind(py).downcast::<PyDict>().unwrap();
                     assert_eq!(
                         outcome
@@ -5167,6 +7332,117 @@ mod python {
                         anima_corefs::logical::CORE_FS_MIGRATION_WRITE_FROZEN
                     );
                 }
+            });
+        }
+
+        #[test]
+        fn corefs_session_first_mutation_consumes_cutover_then_advances_head() {
+            with_python(|py| {
+                let fixture = logical_fixture("mutation-binding");
+                let session = PyCorefsSession::new(fixture.root_path(), LOGICAL_CORE_ID).unwrap();
+                let first_request = json!({
+                    "version": 1,
+                    "principal": "user",
+                    "commitMode": "first",
+                    "cutoverEpoch": 91,
+                    "selectedGeneration": fixture.selected.head().generation(),
+                    "selectedCatalogHash": fixture.selected.head().catalog_hash(),
+                    "timestampMs": 1_700_000_000_000_u64,
+                    "timestamp": "2026-08-13T20:15:00Z",
+                    "mutation": {
+                        "operation": "mkdir",
+                        "path": "Notes/Projects"
+                    }
+                })
+                .to_string();
+                let first = session
+                    .logical_mutate_v1(py, &fixture.keys, &first_request, None)
+                    .unwrap();
+                let first = first.bind(py).downcast::<PyDict>().unwrap();
+                assert!(first
+                    .get_item("cutoverCommitted")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+                assert_eq!(
+                    first
+                        .get_item("generation")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    2
+                );
+                let catalog_hash = first
+                    .get_item("catalogHash")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap();
+
+                let normal_request = json!({
+                    "version": 1,
+                    "principal": "anima",
+                    "commitMode": "normal",
+                    "selectedGeneration": 2,
+                    "selectedCatalogHash": catalog_hash,
+                    "timestampMs": 1_700_000_000_001_u64,
+                    "timestamp": "2026-08-13T20:15:01Z",
+                    "mutation": {
+                        "operation": "create_file",
+                        "path": "Notes/Projects/task.json",
+                        "stableId": "01J10000000000000000000009",
+                        "kind": "task",
+                        "contentType": "application/vnd.anima.task+json;version=1",
+                        "bodyEncoding": "utf-8"
+                    }
+                })
+                .to_string();
+                let body = PyBuffer::get_bound(&PyBytes::new_bound(py, b"{}")).unwrap();
+                let normal = session
+                    .logical_mutate_v1(py, &fixture.keys, &normal_request, Some(body))
+                    .unwrap();
+                let normal = normal.bind(py).downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    normal
+                        .get_item("generation")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    3
+                );
+                assert!(!normal
+                    .get_item("cutoverCommitted")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<bool>()
+                    .unwrap());
+                let changes = normal.get_item("changes").unwrap().unwrap();
+                let changes = changes.downcast::<PyList>().unwrap();
+                let change = changes.get_item(0).unwrap();
+                let change = change.downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    change
+                        .get_item("stableId")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    "01J10000000000000000000009"
+                );
+                let marker = session.authoritative_cutover_v1(py, &fixture.keys).unwrap();
+                let marker = marker.bind(py).downcast::<PyDict>().unwrap();
+                assert_eq!(
+                    marker
+                        .get_item("cutoverEpoch")
+                        .unwrap()
+                        .unwrap()
+                        .extract::<u64>()
+                        .unwrap(),
+                    91
+                );
             });
         }
 
@@ -7316,6 +9592,120 @@ mod python {
                     .add_rule("r1", ".*", "bogus", "user", "slot", "value")
                     .is_err());
             });
+        }
+
+        #[test]
+        fn archive_binding_rejects_stale_committed_catalog_before_streaming() {
+            let fixture = logical_fixture("archive-stale-catalog-binding");
+            let session = corefs_session::isolated_session_for_test(
+                std::path::Path::new(fixture.root_path()),
+                LOGICAL_CORE_ID,
+            );
+            let entries = fixture.selected.catalog().entries().to_vec();
+            let committed = session
+                .coordinator_for_test()
+                .commit_first_mutation(
+                    &fixture.keys.inner,
+                    73,
+                    &[],
+                    &[],
+                    |_, generation| CatalogGeneration::new(generation, entries),
+                    |_| Ok(()),
+                )
+                .unwrap();
+            let output = fixture._root.path().join("must-not-exist.anima-core");
+            let request = json!({
+                "payloadKind": "fs",
+                "coreId": "018f0f4e-4ee4-7aa5-8eb2-1eb7699855bd",
+                "ownerId": "018f0f4e-4ee4-7aa5-8eb2-1eb7699855be",
+                "soulGeneration": null,
+                "filesystemGeneration": committed.generation(),
+                "filesystemCatalogHash": "0".repeat(64),
+                "volumeMode": "single",
+                "declaredVolumeCount": 1,
+                "volumeOrdinal": 0,
+                "sources": []
+            })
+            .to_string();
+
+            with_python(|py| {
+                let error = session
+                    .archive_write_v2(
+                        py,
+                        &fixture.keys,
+                        output.to_str().unwrap(),
+                        b"correct horse battery staple",
+                        &request,
+                    )
+                    .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("committed filesystem snapshot changed"));
+            });
+            assert!(!output.exists());
+        }
+    }
+}
+
+#[cfg(test)]
+mod corefs_preparation_contract {
+    const FFI_SOURCE: &str = include_str!("ffi.rs");
+
+    fn session_methods() -> &'static str {
+        FFI_SOURCE
+            .split("impl PyCorefsSession {")
+            .nth(2)
+            .expect("PyCorefsSession pymethods impl must exist")
+            .split("#[pyclass(name = \"CorefsSubkeys\")]")
+            .next()
+            .expect("CorefsSubkeys must follow session methods")
+    }
+
+    #[test]
+    fn exposes_only_the_versioned_bounded_preparation_surface() {
+        for method in [
+            "fn preparation_begin_or_resume_v1(",
+            "fn preparation_status_v1(",
+            "fn preparation_prepare_object_v1(",
+            "fn preparation_seal_v1(",
+            "fn preparation_finalize_v1(",
+            "fn preparation_abandon_v1(",
+            "fn preparation_quarantine_corrupt_pointer_v1(",
+        ] {
+            assert!(session_methods().contains(method), "missing {method}");
+        }
+    }
+
+    #[test]
+    fn one_object_method_has_no_aggregate_body_transport() {
+        let method = session_methods()
+            .split("fn preparation_prepare_object_v1(")
+            .nth(1)
+            .expect("preparation_prepare_object_v1 must exist")
+            .split("\n        fn preparation_seal_v1(")
+            .next()
+            .expect("preparation_seal_v1 must follow prepare_object");
+        assert!(method.contains("body: PyBuffer<u8>"));
+        let length_check = method
+            .find("body.len_bytes()")
+            .expect("the borrowed buffer length must be checked");
+        let body_copy = method
+            .find("body.to_vec(py)?")
+            .expect("the bounded body may be copied after validation");
+        assert!(
+            length_check < body_copy,
+            "the FFI must reject oversized bodies before copying them"
+        );
+        for forbidden in [
+            "Vec<Vec<u8>>",
+            "Vec<PyBytes",
+            "content_parts",
+            "contentBodies",
+        ] {
+            assert!(
+                !method.contains(forbidden),
+                "one-object preparation accepted forbidden aggregate transport {forbidden}"
+            );
         }
     }
 }

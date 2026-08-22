@@ -16,19 +16,25 @@ use sha2::{Digest, Sha256};
 use crate::crypto::{derive_corefs_subkeys, ObjectKind, SecretBytes};
 use crate::envelope::BodyEncoding;
 use crate::publication::PublicationPhase;
+use crate::rotation::FrkKeyring;
 
-use super::converter::ValidationBatchPolicy;
+use super::converter::{
+    ValidationBatch, ValidationBatchFolder, ValidationBatchMode, ValidationBatchObject,
+    ValidationBatchPolicy,
+};
 use super::preparation::{
     manifest_root, publish_immutable_preparation_record_with_hook,
     publish_preparation_head_with_hook, FinalIntentEntry, FinalIntentSegment,
-    PreparationBeginRequest, PreparationCas, PreparationError, PreparationHeadRecord,
-    PreparationIdentity, PreparationOpenDisposition, PreparationPageLimits,
-    PreparationPublicationTarget, PreparationReceipt, PreparationReceiptOutcome,
+    PreparationAbandonRequest, PreparationBeginRequest, PreparationCas, PreparationError,
+    PreparationFinalizeRequest, PreparationHeadRecord, PreparationIdentity,
+    PreparationOpenDisposition, PreparationPageLimits, PreparationPublicationTarget,
+    PreparationQuarantineRequest, PreparationReceipt, PreparationReceiptOutcome,
     PreparationReconciliationCursor, PreparationReconciliationRequest,
-    PreparationReconciliationTestInstrumentation, PreparationReferenceKind,
-    PreparationSegmentReference, PreparationSnapshot, PreparationState, PreparationTestLimits,
-    PrepareObjectDisposition, PrepareObjectRequest, PreparedObjectDescriptor,
-    PreparedObjectDescriptorSegment, WrappedObjectDekWire, MAX_FINAL_INTENT_ENTRY_BYTES,
+    PreparationReconciliationTestInstrumentation, PreparationReferenceKind, PreparationSealRequest,
+    PreparationSegmentReference, PreparationSnapshot, PreparationState, PreparationStatus,
+    PreparationTestLimits, PrepareObjectDisposition, PrepareObjectRequest,
+    PreparedObjectDescriptor, PreparedObjectDescriptorSegment, WrappedObjectDekWire,
+    MAX_FINAL_INTENT_ENTRY_BYTES, MAX_PREPARATION_HEAD_ENVELOPE_SIZE,
 };
 use super::{CoreCommitCoordinator, PreparationTestInstrumentation};
 
@@ -142,6 +148,11 @@ fn snapshot() -> PreparationSnapshot {
         manifest_segments: vec![segment_reference(0)],
         final_intent_root_sha256: None,
         final_intent_segments: Vec::new(),
+        canonical_intent_sha256: None,
+        intended_validation_generation: None,
+        intended_validation_catalog_sha256: None,
+        final_intent_entry_count: None,
+        final_intent_folder_count: None,
     }
 }
 
@@ -222,6 +233,7 @@ fn receipt() -> PreparationReceipt {
         pointer_sha256: HASH_B.to_owned(),
         validation_generation: Some(5),
         validation_catalog_sha256: Some(HASH_C.to_owned()),
+        retained_frk_versions: Vec::new(),
     }
 }
 
@@ -286,6 +298,25 @@ mod formats {
         let mut tampered = sealed.as_bytes().to_vec();
         *tampered.last_mut().unwrap() ^= 0x01;
         assert!(PreparationSnapshot::open(&tampered, &current_keys, CORE_ID, 3).is_err());
+    }
+
+    #[test]
+    fn preparation_records_accept_the_manifest_uuid_core_identity() {
+        let core_id = "019c5d48-5e99-7e4d-9e91-9ce9fdccb127";
+        let current_keys = keys(3);
+        let mut value = snapshot();
+        value.core_id = core_id.to_owned();
+
+        let sealed = value.seal(&current_keys).unwrap();
+        assert_eq!(
+            PreparationSnapshot::open(sealed.as_bytes(), &current_keys, core_id, 3)
+                .unwrap()
+                .core_id,
+            core_id
+        );
+
+        value.core_id = "invalid:core".to_owned();
+        assert!(value.encode().is_err());
     }
 
     #[test]
@@ -560,6 +591,12 @@ fn install_snapshot_with_references(
         item_count: 1,
         plaintext_bytes: descriptor_plaintext_bytes,
     };
+    let intent_reference = PreparationSegmentReference {
+        segment_index: 0,
+        ciphertext_sha256: intent_hash,
+        item_count: 1,
+        plaintext_bytes: intent_plaintext_bytes,
+    };
     let next_snapshot = PreparationSnapshot {
         schema_version: 1,
         core_id: CORE_ID.to_owned(),
@@ -581,13 +618,13 @@ fn install_snapshot_with_references(
         total_ciphertext_bytes: 1024,
         manifest_root_sha256: manifest_root(std::slice::from_ref(&descriptor_reference)),
         manifest_segments: vec![descriptor_reference],
-        final_intent_root_sha256: Some(HASH_A.to_owned()),
-        final_intent_segments: vec![PreparationSegmentReference {
-            segment_index: 0,
-            ciphertext_sha256: intent_hash,
-            item_count: 1,
-            plaintext_bytes: intent_plaintext_bytes,
-        }],
+        final_intent_root_sha256: Some(manifest_root(std::slice::from_ref(&intent_reference))),
+        final_intent_segments: vec![intent_reference],
+        canonical_intent_sha256: None,
+        intended_validation_generation: None,
+        intended_validation_catalog_sha256: None,
+        final_intent_entry_count: None,
+        final_intent_folder_count: None,
     };
     let sealed_snapshot = next_snapshot.seal(&keys(3)).unwrap();
     let snapshot_hash = sha256_hex(sealed_snapshot.as_bytes());
@@ -1663,6 +1700,48 @@ mod prepare_object {
     }
 
     #[test]
+    fn reconciliation_pages_can_return_a_valid_large_metadata_descriptor() {
+        let test_core = TestCore::new("prepare-page-large-metadata");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let body = br#"{"html":"hello"}"#;
+        let mut request = object_request(body);
+        request.graph_metadata =
+            BTreeMap::from([("large".to_owned(), Value::String("x".repeat(96 * 1024)))]);
+        coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &request,
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+
+        let page = coordinator
+            .reconcile_prepared_objects(
+                &keys(3),
+                &PreparationReconciliationRequest {
+                    cursor: None,
+                    limits: PreparationPageLimits {
+                        max_items: 1,
+                        max_bytes: 2 * 1024 * 1024,
+                    },
+                    expected: Vec::new(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(page.items.len(), 1);
+        assert!(page.encoded_bytes > 64 * 1024);
+        assert!(page.encoded_bytes <= 2 * 1024 * 1024);
+    }
+
+    #[test]
     fn reconciliation_count_limit_applies_across_items_missing_and_conflicting_identities() {
         let test_core = TestCore::new("prepare-page-count");
         let coordinator = test_core.coordinator(CORE_ID);
@@ -1966,5 +2045,1314 @@ mod bounded_large_corpus {
         );
         assert_eq!(instrumentation.live_bytes(), 0);
         assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+    }
+}
+
+mod seal_finalize {
+    use super::*;
+
+    fn native_id(domain: &str, value: &str) -> String {
+        crate::id::OpaqueId::derive_migration(domain, value.as_bytes())
+            .unwrap()
+            .as_str()
+            .to_owned()
+    }
+
+    fn initial_begin_request() -> PreparationBeginRequest {
+        let mut request = begin_request();
+        request.expected_validation_generation = None;
+        request.expected_validation_catalog_sha256 = None;
+        request
+    }
+
+    fn writing_folders() -> Vec<ValidationBatchFolder> {
+        vec![
+            ValidationBatchFolder {
+                stable_id: native_id("seal-folder", "root"),
+                parent_id: None,
+                name: "Core".to_owned(),
+                role: None,
+                policy: ValidationBatchPolicy::UserWrite,
+                metadata: BTreeMap::new(),
+            },
+            ValidationBatchFolder {
+                stable_id: STABLE_ID_TWO.to_owned(),
+                parent_id: Some(native_id("seal-folder", "root")),
+                name: "Journal".to_owned(),
+                role: Some("core.journal".to_owned()),
+                policy: ValidationBatchPolicy::UserWrite,
+                metadata: BTreeMap::new(),
+            },
+            ValidationBatchFolder {
+                stable_id: native_id("seal-folder", "notes"),
+                parent_id: Some(native_id("seal-folder", "root")),
+                name: "Notes".to_owned(),
+                role: Some("core.notes".to_owned()),
+                policy: ValidationBatchPolicy::UserWrite,
+                metadata: BTreeMap::new(),
+            },
+        ]
+    }
+
+    fn prepare_one(
+        label: &str,
+    ) -> (
+        TestCore,
+        CoreCommitCoordinator,
+        PreparationStatus,
+        PreparationIdentity,
+    ) {
+        let test_core = TestCore::new(label);
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &initial_begin_request())
+            .unwrap();
+        let body = br#"{"html":"hello"}"#;
+        let request = super::prepare_object::object_request(body);
+        let outcome = coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &request,
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+        let identity = PreparationIdentity {
+            object_id: outcome.prepared.object_id,
+            revision: outcome.prepared.revision,
+            content_sha256: outcome.prepared.content_sha256,
+            preparation_ordinal: outcome.prepared.preparation_ordinal,
+        };
+        (test_core, coordinator, outcome.status, identity)
+    }
+
+    pub(super) fn seal_one(label: &str) -> (TestCore, CoreCommitCoordinator, PreparationStatus) {
+        let (test_core, coordinator, collecting, identity) = prepare_one(label);
+        let ready = coordinator
+            .seal_preparation(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: collecting.pointer_sha256,
+                    snapshot_sequence: collecting.snapshot_sequence,
+                },
+                &PreparationSealRequest {
+                    source_mutation_generation: 42,
+                    source_inventory_sha256: HASH_B.to_owned(),
+                    folders: writing_folders(),
+                    objects: vec![identity],
+                },
+            )
+            .unwrap();
+        (test_core, coordinator, ready)
+    }
+
+    pub(super) fn finalize_request(ready: &PreparationStatus) -> PreparationFinalizeRequest {
+        PreparationFinalizeRequest {
+            preparation_id: ready.preparation_id.clone(),
+            expected: PreparationCas {
+                pointer_sha256: ready.pointer_sha256.clone(),
+                snapshot_sequence: ready.snapshot_sequence,
+            },
+            source_mutation_generation: 42,
+            source_inventory_sha256: HASH_B.to_owned(),
+        }
+    }
+
+    fn entry(index: u8) -> FinalIntentEntry {
+        let stable_id = crate::id::OpaqueId::derive_migration("final-intent", &[index])
+            .unwrap()
+            .as_str()
+            .to_owned();
+        let canonical_catalog_entry_json =
+            format!(r#"{{"kind":"object","stableId":"{stable_id}"}}"#);
+        FinalIntentEntry {
+            ordinal: u64::from(index),
+            stable_id,
+            canonical_catalog_entry_sha256: sha256_hex(canonical_catalog_entry_json.as_bytes()),
+            canonical_catalog_entry_json,
+        }
+    }
+
+    #[test]
+    fn final_intent_is_segmented_and_durable_without_publishing_validation_head() {
+        let test_core = TestCore::new("stage-final-intent");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let entries = vec![entry(0), entry(1), entry(2)];
+
+        let staged = coordinator
+            .stage_final_intent_with_limits(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &entries,
+                2,
+            )
+            .unwrap();
+
+        assert_eq!(staged.state, PreparationState::Collecting);
+        assert_eq!(staged.snapshot_sequence, 2);
+        assert_eq!(staged.next_intent_segment, 2);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+        let intent_dir = test_core
+            .fs_path()
+            .join("preparations")
+            .join(&staged.preparation_id)
+            .join("intent");
+        assert_eq!(std::fs::read_dir(intent_dir).unwrap().count(), 2);
+
+        let restarted = test_core.coordinator(CORE_ID);
+        let resumed = restarted.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(resumed.preparation_id, staged.preparation_id);
+        assert_eq!(resumed.snapshot_sequence, staged.snapshot_sequence);
+        assert_eq!(resumed.pointer_sha256, staged.pointer_sha256);
+        assert_eq!(resumed.next_intent_segment, staged.next_intent_segment);
+        assert_eq!(resumed.disposition, PreparationOpenDisposition::Resumed);
+    }
+
+    #[test]
+    fn final_intent_staging_rejects_noncanonical_duplicate_and_stale_inputs() {
+        let test_core = TestCore::new("stage-final-intent-invalid");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let cas = PreparationCas {
+            pointer_sha256: begun.pointer_sha256.clone(),
+            snapshot_sequence: begun.snapshot_sequence,
+        };
+
+        let mut noncanonical = entry(0);
+        noncanonical.canonical_catalog_entry_json = format!(
+            "{{ \"kind\": \"object\", \"stableId\": \"{}\" }}",
+            noncanonical.stable_id
+        );
+        noncanonical.canonical_catalog_entry_sha256 =
+            sha256_hex(noncanonical.canonical_catalog_entry_json.as_bytes());
+        assert!(matches!(
+            coordinator.stage_final_intent(&keys(3), &cas, &[noncanonical]),
+            Err(PreparationError::InvalidFormat(
+                "non-canonical final-intent entry"
+            ))
+        ));
+
+        let duplicate = entry(0);
+        assert!(matches!(
+            coordinator.stage_final_intent(&keys(3), &cas, &[duplicate.clone(), duplicate]),
+            Err(PreparationError::InvalidFormat("duplicate stable ID"))
+        ));
+
+        let staged = coordinator
+            .stage_final_intent(&keys(3), &cas, &[entry(0)])
+            .unwrap();
+        assert!(matches!(
+            coordinator.stage_final_intent(&keys(3), &cas, &[entry(0)]),
+            Err(PreparationError::CasConflict)
+        ));
+        let resumed = coordinator.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(resumed.preparation_id, staged.preparation_id);
+        assert_eq!(resumed.snapshot_sequence, staged.snapshot_sequence);
+        assert_eq!(resumed.pointer_sha256, staged.pointer_sha256);
+        assert_eq!(resumed.next_intent_segment, staged.next_intent_segment);
+    }
+
+    #[test]
+    fn seal_validates_descriptor_coverage_roles_cycles_and_source_fence_without_publication() {
+        let (test_core, coordinator, collecting, identity) = prepare_one("seal-invalid-graph");
+        let cas = PreparationCas {
+            pointer_sha256: collecting.pointer_sha256.clone(),
+            snapshot_sequence: collecting.snapshot_sequence,
+        };
+        let base = PreparationSealRequest {
+            source_mutation_generation: 42,
+            source_inventory_sha256: HASH_B.to_owned(),
+            folders: writing_folders(),
+            objects: vec![identity],
+        };
+
+        let mut incomplete = base.clone();
+        incomplete.objects.clear();
+        assert!(matches!(
+            coordinator.seal_preparation(&keys(3), &cas, &incomplete),
+            Err(PreparationError::FinalIntentMismatch)
+        ));
+
+        let mut duplicate_role = base.clone();
+        duplicate_role.folders[2].role = Some("core.journal".to_owned());
+        assert!(matches!(
+            coordinator.seal_preparation(&keys(3), &cas, &duplicate_role),
+            Err(PreparationError::Converter(_))
+        ));
+
+        let cycle_a = native_id("seal-folder", "cycle-a");
+        let cycle_b = native_id("seal-folder", "cycle-b");
+        let mut cycle = base.clone();
+        cycle.folders.extend([
+            ValidationBatchFolder {
+                stable_id: cycle_a.clone(),
+                parent_id: Some(cycle_b.clone()),
+                name: "Cycle A".to_owned(),
+                role: None,
+                policy: ValidationBatchPolicy::Inherit,
+                metadata: BTreeMap::new(),
+            },
+            ValidationBatchFolder {
+                stable_id: cycle_b,
+                parent_id: Some(cycle_a),
+                name: "Cycle B".to_owned(),
+                role: None,
+                policy: ValidationBatchPolicy::Inherit,
+                metadata: BTreeMap::new(),
+            },
+        ]);
+        assert!(matches!(
+            coordinator.seal_preparation(&keys(3), &cas, &cycle),
+            Err(PreparationError::Converter(_))
+        ));
+
+        let mut changed_source = base;
+        changed_source.source_mutation_generation += 1;
+        assert!(matches!(
+            coordinator.seal_preparation(&keys(3), &cas, &changed_source),
+            Err(PreparationError::SourceChanged)
+        ));
+
+        let unchanged = coordinator.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(unchanged.state, PreparationState::Collecting);
+        assert_eq!(unchanged.pointer_sha256, collecting.pointer_sha256);
+        assert_eq!(unchanged.snapshot_sequence, collecting.snapshot_sequence);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+    }
+
+    #[test]
+    fn seal_rejects_missing_object_references_without_changing_either_pointer() {
+        let test_core = TestCore::new("seal-missing-reference");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &initial_begin_request())
+            .unwrap();
+        let body = br#"{"html":"hello"}"#;
+        let mut object = super::prepare_object::object_request(body);
+        object.references = vec![native_id("seal-object", "missing")];
+        let prepared = coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &object,
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+        let collecting = prepared.status;
+        let result = coordinator.seal_preparation(
+            &keys(3),
+            &PreparationCas {
+                pointer_sha256: collecting.pointer_sha256.clone(),
+                snapshot_sequence: collecting.snapshot_sequence,
+            },
+            &PreparationSealRequest {
+                source_mutation_generation: 42,
+                source_inventory_sha256: HASH_B.to_owned(),
+                folders: writing_folders(),
+                objects: vec![PreparationIdentity {
+                    object_id: prepared.prepared.object_id,
+                    revision: prepared.prepared.revision,
+                    content_sha256: prepared.prepared.content_sha256,
+                    preparation_ordinal: prepared.prepared.preparation_ordinal,
+                }],
+            },
+        );
+        assert!(matches!(result, Err(PreparationError::Converter(_))));
+        let unchanged = coordinator.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(unchanged.pointer_sha256, collecting.pointer_sha256);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+    }
+
+    #[test]
+    fn ready_snapshot_finalizes_one_generation_and_returns_deterministic_receipt_on_retry() {
+        let (test_core, coordinator, ready) = seal_one("seal-finalize-success");
+        assert_eq!(ready.state, PreparationState::Ready);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+        assert!(!test_core.fs_path().join("HEAD").exists());
+
+        let request = finalize_request(&ready);
+        let receipt = coordinator
+            .finalize_preparation(&keys(3), &request)
+            .unwrap();
+        assert_eq!(receipt.outcome, PreparationReceiptOutcome::Completed);
+        assert_eq!(receipt.validation_generation, Some(1));
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert!(!test_core.fs_path().join("HEAD").exists());
+        let validation = coordinator
+            .load_validation_snapshot(&keys(3))
+            .unwrap()
+            .unwrap();
+        assert_eq!(validation.head().generation(), 1);
+        assert_eq!(validation.catalog().entries().len(), 4);
+
+        let restarted = test_core.coordinator(CORE_ID);
+        let retried = restarted.finalize_preparation(&keys(3), &request).unwrap();
+        assert_eq!(retried.receipt_id, receipt.receipt_id);
+        assert_eq!(retried.pointer_sha256, receipt.pointer_sha256);
+        assert_eq!(retried.validation_generation, receipt.validation_generation);
+        assert_eq!(
+            restarted
+                .load_validation_snapshot(&keys(3))
+                .unwrap()
+                .unwrap()
+                .head()
+                .generation(),
+            1
+        );
+    }
+
+    #[test]
+    fn exact_existing_validation_head_advances_by_one_generation() {
+        let test_core = TestCore::new("seal-finalize-advance");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let old_body = br#"{"html":"old"}"#;
+        let initial = coordinator
+            .apply_validation_batch(
+                &keys(3),
+                ValidationBatch {
+                    mode: ValidationBatchMode::Initialize,
+                    folders: writing_folders(),
+                    objects: vec![ValidationBatchObject {
+                        stable_id: STABLE_ID.to_owned(),
+                        parent_id: STABLE_ID_TWO.to_owned(),
+                        name: "entry.diary.json".to_owned(),
+                        kind: ObjectKind::Diary,
+                        content_type: "application/vnd.anima.diary+json;version=1".to_owned(),
+                        body_encoding: BodyEncoding::Utf8,
+                        content: old_body.to_vec(),
+                        created_at: "2026-08-02T00:00:00Z".to_owned(),
+                        updated_at: "2026-08-02T00:00:00Z".to_owned(),
+                        source_character_count: Some(3),
+                        expected_revision: None,
+                        references: Vec::new(),
+                        policy: ValidationBatchPolicy::Inherit,
+                        metadata: BTreeMap::from([("order".to_owned(), Value::from(1))]),
+                    }],
+                },
+            )
+            .unwrap();
+        let mut begin = begin_request();
+        begin.expected_validation_generation = Some(initial.snapshot().head().generation());
+        begin.expected_validation_catalog_sha256 =
+            Some(initial.snapshot().head().catalog_hash().to_owned());
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &begin)
+            .unwrap();
+        let body = br#"{"html":"hello"}"#;
+        let mut object = super::prepare_object::object_request(body);
+        object.revision = 2;
+        let prepared = coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &object,
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+        let ready = coordinator
+            .seal_preparation(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: prepared.status.pointer_sha256,
+                    snapshot_sequence: prepared.status.snapshot_sequence,
+                },
+                &PreparationSealRequest {
+                    source_mutation_generation: 42,
+                    source_inventory_sha256: HASH_B.to_owned(),
+                    folders: writing_folders(),
+                    objects: vec![PreparationIdentity {
+                        object_id: prepared.prepared.object_id,
+                        revision: prepared.prepared.revision,
+                        content_sha256: prepared.prepared.content_sha256,
+                        preparation_ordinal: prepared.prepared.preparation_ordinal,
+                    }],
+                },
+            )
+            .unwrap();
+        let receipt = coordinator
+            .finalize_preparation(&keys(3), &finalize_request(&ready))
+            .unwrap();
+        assert_eq!(receipt.validation_generation, Some(2));
+        assert_eq!(
+            coordinator
+                .load_validation_snapshot(&keys(3))
+                .unwrap()
+                .unwrap()
+                .head()
+                .generation(),
+            2
+        );
+        assert!(!test_core.fs_path().join("HEAD").exists());
+    }
+
+    #[test]
+    fn object_tampering_after_seal_preserves_ready_pointer_and_validation_head() {
+        let (test_core, coordinator, ready) = seal_one("seal-finalize-tamper");
+        let object_path = std::fs::read_dir(test_core.root.join("objects"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_file())
+            .unwrap();
+        let mut encoded = std::fs::read(&object_path).unwrap();
+        *encoded.last_mut().unwrap() ^= 0x01;
+        std::fs::write(object_path, encoded).unwrap();
+
+        assert!(coordinator
+            .finalize_preparation(&keys(3), &finalize_request(&ready))
+            .is_err());
+        let unchanged = coordinator.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(unchanged.state, PreparationState::Ready);
+        assert_eq!(unchanged.pointer_sha256, ready.pointer_sha256);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+    }
+
+    #[test]
+    fn a_different_validation_head_winner_is_a_typed_conflict_and_preserves_ready_state() {
+        let (test_core, coordinator, ready) = seal_one("seal-validation-race");
+        let racer_body = br#"{"html":"racer"}"#;
+        let racer = ValidationBatch {
+            mode: ValidationBatchMode::Initialize,
+            folders: writing_folders(),
+            objects: vec![ValidationBatchObject {
+                stable_id: native_id("seal-object", "racer"),
+                parent_id: STABLE_ID_TWO.to_owned(),
+                name: "racer.diary.json".to_owned(),
+                kind: ObjectKind::Diary,
+                content_type: "application/vnd.anima.diary+json;version=1".to_owned(),
+                body_encoding: BodyEncoding::Utf8,
+                content: racer_body.to_vec(),
+                created_at: "2026-08-02T00:00:00Z".to_owned(),
+                updated_at: "2026-08-02T00:00:00Z".to_owned(),
+                source_character_count: Some(5),
+                expected_revision: None,
+                references: Vec::new(),
+                policy: ValidationBatchPolicy::Inherit,
+                metadata: BTreeMap::new(),
+            }],
+        };
+        let raced = coordinator.apply_validation_batch(&keys(3), racer).unwrap();
+        assert_eq!(raced.snapshot().head().generation(), 1);
+
+        assert!(matches!(
+            coordinator.finalize_preparation(&keys(3), &finalize_request(&ready)),
+            Err(PreparationError::ValidationHeadConflict)
+        ));
+        let unchanged = coordinator.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(unchanged.state, PreparationState::Ready);
+        assert_eq!(unchanged.pointer_sha256, ready.pointer_sha256);
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert_eq!(
+            coordinator
+                .load_validation_snapshot(&keys(3))
+                .unwrap()
+                .unwrap()
+                .head()
+                .generation(),
+            1
+        );
+    }
+
+    #[test]
+    fn descriptor_or_intent_root_mismatch_fails_closed_before_validation_publication() {
+        for (label, corrupt_descriptor_root) in [
+            ("seal-descriptor-root-mismatch", true),
+            ("seal-intent-root-mismatch", false),
+        ] {
+            let (test_core, coordinator, ready) = seal_one(label);
+            let pointer = std::fs::read(test_core.fs_path().join("PREPARATION_HEAD")).unwrap();
+            let head = PreparationHeadRecord::open(&pointer, &keys(3), CORE_ID, 3).unwrap();
+            let snapshots_path = test_core
+                .fs_path()
+                .join("preparations")
+                .join(&ready.preparation_id)
+                .join("snapshots");
+            let encoded = std::fs::read(snapshots_path.join(format!(
+                "{:020}-{}.prep.acore",
+                head.snapshot_sequence, head.snapshot_ciphertext_sha256
+            )))
+            .unwrap();
+            let mut snapshot = PreparationSnapshot::open(&encoded, &keys(3), CORE_ID, 3).unwrap();
+            if corrupt_descriptor_root {
+                snapshot.manifest_root_sha256 = HASH_A.to_owned();
+            } else {
+                snapshot.final_intent_root_sha256 = Some(HASH_A.to_owned());
+            }
+            let sealed = snapshot.seal(&keys(3)).unwrap();
+            let replacement_hash = sha256_hex(sealed.as_bytes());
+            let snapshots = Dir::open_ambient_dir(&snapshots_path, ambient_authority()).unwrap();
+            publish_immutable_preparation_record_with_hook(&snapshots, &sealed, &mut |_| Ok(()))
+                .unwrap();
+            let replacement_head = PreparationHeadRecord {
+                snapshot_ciphertext_sha256: replacement_hash,
+                ..head
+            };
+            publish_preparation_head_with_hook(
+                &Dir::open_ambient_dir(test_core.fs_path(), ambient_authority()).unwrap(),
+                &replacement_head.seal(&keys(3)).unwrap(),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+
+            assert!(matches!(
+                coordinator.finalize_preparation(&keys(3), &finalize_request(&ready)),
+                Err(PreparationError::CorruptSnapshot)
+            ));
+            assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+            assert!(!test_core.fs_path().join("HEAD").exists());
+        }
+    }
+
+    #[test]
+    fn newer_source_explicitly_returns_ready_preparation_to_collecting() {
+        let (test_core, coordinator, ready) = seal_one("seal-return-to-collecting");
+        let mut changed = initial_begin_request();
+        changed.source_mutation_generation = 43;
+        changed.source_inventory_sha256 = HASH_C.to_owned();
+        let collecting = coordinator
+            .reconcile_preparation_source(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: ready.pointer_sha256,
+                    snapshot_sequence: ready.snapshot_sequence,
+                },
+                &changed,
+            )
+            .unwrap();
+        assert_eq!(collecting.state, PreparationState::Collecting);
+        assert_eq!(collecting.source_mutation_generation, 43);
+        assert_eq!(collecting.source_inventory_sha256, HASH_C);
+        assert_eq!(collecting.next_intent_segment, 0);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+    }
+
+    #[test]
+    fn finalize_rejects_source_drift_after_seal_and_preserves_ready_state() {
+        let (test_core, coordinator, ready) = seal_one("seal-source-drift");
+        let mut request = finalize_request(&ready);
+        request.source_inventory_sha256 = HASH_C.to_owned();
+        assert!(matches!(
+            coordinator.finalize_preparation(&keys(3), &request),
+            Err(PreparationError::SourceChanged)
+        ));
+        let unchanged = coordinator.load_preparation_status(&keys(3)).unwrap();
+        assert_eq!(unchanged.state, PreparationState::Ready);
+        assert_eq!(unchanged.pointer_sha256, ready.pointer_sha256);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+    }
+}
+
+mod post_head_recovery {
+    use super::*;
+
+    #[test]
+    fn retry_after_durable_validation_head_completes_without_republishing() {
+        let (test_core, coordinator, ready) = super::seal_finalize::seal_one("post-head-retry");
+        let request = super::seal_finalize::finalize_request(&ready);
+        let mut failed = false;
+        let result =
+            coordinator.finalize_preparation_with_hook(&keys(3), &request, &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::ValidationHead
+                    && phase == PublicationPhase::DestinationSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("crash after validation head"));
+                }
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(test_core.fs_path().join("VALIDATION_HEAD").exists());
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert_eq!(
+            coordinator
+                .load_validation_snapshot(&keys(3))
+                .unwrap()
+                .unwrap()
+                .head()
+                .generation(),
+            1
+        );
+
+        let restarted = test_core.coordinator(CORE_ID);
+        let receipt = restarted.finalize_preparation(&keys(3), &request).unwrap();
+        assert_eq!(receipt.validation_generation, Some(1));
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert_eq!(
+            restarted
+                .load_validation_snapshot(&keys(3))
+                .unwrap()
+                .unwrap()
+                .head()
+                .generation(),
+            1
+        );
+    }
+
+    #[test]
+    fn retry_before_validation_head_publication_still_commits_only_generation_one() {
+        let (test_core, coordinator, ready) = super::seal_finalize::seal_one("before-head-retry");
+        let request = super::seal_finalize::finalize_request(&ready);
+        let mut failed = false;
+        let result =
+            coordinator.finalize_preparation_with_hook(&keys(3), &request, &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::ValidationHead
+                    && phase == PublicationPhase::PayloadSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("crash before validation head"));
+                }
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        let receipt = coordinator
+            .finalize_preparation(&keys(3), &request)
+            .unwrap();
+        assert_eq!(receipt.validation_generation, Some(1));
+        assert_eq!(
+            coordinator
+                .load_validation_snapshot(&keys(3))
+                .unwrap()
+                .unwrap()
+                .head()
+                .generation(),
+            1
+        );
+    }
+
+    #[test]
+    fn durable_receipt_and_pointer_clear_seams_retry_to_the_same_completion() {
+        for (label, failure_target, failure_phase) in [
+            (
+                "receipt-durable-retry",
+                PreparationPublicationTarget::Receipt,
+                PublicationPhase::DestinationSynced,
+            ),
+            (
+                "clear-visible-retry",
+                PreparationPublicationTarget::Clear,
+                PublicationPhase::DestinationPublished,
+            ),
+        ] {
+            let (test_core, coordinator, ready) = super::seal_finalize::seal_one(label);
+            let request = super::seal_finalize::finalize_request(&ready);
+            let mut failed = false;
+            let result = coordinator.finalize_preparation_with_hook(
+                &keys(3),
+                &request,
+                &mut |target, phase| {
+                    if !failed && target == failure_target && phase == failure_phase {
+                        failed = true;
+                        return Err(io::Error::other("terminal seam"));
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(failed);
+            assert!(test_core.fs_path().join("VALIDATION_HEAD").exists());
+
+            let restarted = test_core.coordinator(CORE_ID);
+            let receipt = restarted.finalize_preparation(&keys(3), &request).unwrap();
+            assert_eq!(receipt.validation_generation, Some(1));
+            assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+            assert_eq!(
+                restarted
+                    .load_validation_snapshot(&keys(3))
+                    .unwrap()
+                    .unwrap()
+                    .head()
+                    .generation(),
+                1
+            );
+        }
+    }
+}
+
+mod terminal {
+    use super::*;
+
+    fn begin_collecting(
+        label: &str,
+    ) -> (TestCore, CoreCommitCoordinator, PreparationStatus, PathBuf) {
+        let test_core = TestCore::new(label);
+        let coordinator = test_core.coordinator(CORE_ID);
+        let mut request = begin_request();
+        request.expected_validation_generation = None;
+        request.expected_validation_catalog_sha256 = None;
+        let begun = coordinator
+            .begin_or_resume_preparation(&keys(3), &request)
+            .unwrap();
+        let body = br#"{"html":"abandon me"}"#;
+        let prepared = coordinator
+            .prepare_object(
+                &keys(3),
+                &PreparationCas {
+                    pointer_sha256: begun.pointer_sha256,
+                    snapshot_sequence: begun.snapshot_sequence,
+                },
+                &super::prepare_object::object_request(body),
+                &mut Cursor::new(body),
+            )
+            .unwrap();
+        let object_path = std::fs::read_dir(test_core.root.join("objects"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.is_file())
+            .unwrap();
+        (test_core, coordinator, prepared.status, object_path)
+    }
+
+    fn abandon_request(status: &PreparationStatus) -> PreparationAbandonRequest {
+        PreparationAbandonRequest {
+            preparation_id: status.preparation_id.clone(),
+            expected: PreparationCas {
+                pointer_sha256: status.pointer_sha256.clone(),
+                snapshot_sequence: status.snapshot_sequence,
+            },
+        }
+    }
+
+    #[test]
+    fn abandonment_is_idempotent_across_receipt_and_clear_crash_seams_without_deletion() {
+        for (label, target, phase) in [
+            (
+                "abandon-receipt-durable",
+                PreparationPublicationTarget::Receipt,
+                PublicationPhase::DestinationSynced,
+            ),
+            (
+                "abandon-pointer-cleared",
+                PreparationPublicationTarget::Clear,
+                PublicationPhase::DestinationPublished,
+            ),
+        ] {
+            let (test_core, coordinator, status, object_path) = begin_collecting(label);
+            let request = abandon_request(&status);
+            let mut failed = false;
+            let result = coordinator.abandon_preparation_with_hook(
+                &keys(3),
+                &request,
+                &mut |observed_target, observed_phase| {
+                    if !failed && observed_target == target && observed_phase == phase {
+                        failed = true;
+                        return Err(io::Error::other("abandonment crash seam"));
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(failed);
+            assert!(
+                object_path.exists(),
+                "abandonment physically deleted an object"
+            );
+            assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+
+            let restarted = test_core.coordinator(CORE_ID);
+            let receipt = restarted.abandon_preparation(&keys(3), &request).unwrap();
+            assert_eq!(receipt.outcome, PreparationReceiptOutcome::Abandoned);
+            assert_eq!(receipt.validation_generation, None);
+            assert_eq!(receipt.validation_catalog_sha256, None);
+            assert!(receipt.retained_frk_versions.is_empty());
+            assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+            assert!(object_path.exists());
+            restarted
+                .ensure_preparation_rotation_allowed_locked(&FrkKeyring::new([&keys(3)]).unwrap())
+                .unwrap();
+
+            let replayed = restarted.abandon_preparation(&keys(3), &request).unwrap();
+            assert_eq!(replayed, receipt);
+        }
+    }
+
+    #[test]
+    fn abandonment_never_overrides_a_durable_completed_receipt() {
+        let (test_core, coordinator, ready) =
+            super::seal_finalize::seal_one("abandon-completed-conflict");
+        let finalize = super::seal_finalize::finalize_request(&ready);
+        let mut failed = false;
+        let result = coordinator.finalize_preparation_with_hook(
+            &keys(3),
+            &finalize,
+            &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::Receipt
+                    && phase == PublicationPhase::DestinationSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("completed receipt durable"));
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        assert!(matches!(
+            coordinator.abandon_preparation(
+                &keys(3),
+                &PreparationAbandonRequest {
+                    preparation_id: ready.preparation_id.clone(),
+                    expected: PreparationCas {
+                        pointer_sha256: ready.pointer_sha256.clone(),
+                        snapshot_sequence: ready.snapshot_sequence,
+                    },
+                },
+            ),
+            Err(PreparationError::ReceiptConflict)
+        ));
+        let completed = coordinator
+            .finalize_preparation(&keys(3), &finalize)
+            .unwrap();
+        assert_eq!(completed.outcome, PreparationReceiptOutcome::Completed);
+        coordinator
+            .ensure_preparation_rotation_allowed_locked(&FrkKeyring::new([&keys(3)]).unwrap())
+            .unwrap();
+    }
+
+    #[test]
+    fn abandonment_cannot_clear_ready_state_after_validation_head_publication() {
+        let (test_core, coordinator, ready) =
+            super::seal_finalize::seal_one("abandon-after-validation-head");
+        let finalize = super::seal_finalize::finalize_request(&ready);
+        let mut failed = false;
+        let result = coordinator.finalize_preparation_with_hook(
+            &keys(3),
+            &finalize,
+            &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::ValidationHead
+                    && phase == PublicationPhase::DestinationSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("crash after validation head"));
+                }
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(test_core.fs_path().join("VALIDATION_HEAD").exists());
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        assert!(matches!(
+            coordinator.abandon_preparation(&keys(3), &abandon_request(&ready)),
+            Err(PreparationError::ValidationHeadConflict)
+        ));
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        let completed = coordinator
+            .finalize_preparation(&keys(3), &finalize)
+            .unwrap();
+        assert_eq!(completed.outcome, PreparationReceiptOutcome::Completed);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+    }
+
+    #[test]
+    fn finalization_cannot_override_a_durable_abandoned_receipt() {
+        let (test_core, coordinator, ready) =
+            super::seal_finalize::seal_one("finalize-after-abandoned-receipt");
+        let abandon = abandon_request(&ready);
+        let mut failed = false;
+        let result =
+            coordinator.abandon_preparation_with_hook(&keys(3), &abandon, &mut |target, phase| {
+                if !failed
+                    && target == PreparationPublicationTarget::Receipt
+                    && phase == PublicationPhase::DestinationSynced
+                {
+                    failed = true;
+                    return Err(io::Error::other("crash after abandoned receipt"));
+                }
+                Ok(())
+            });
+        assert!(result.is_err());
+        assert!(failed);
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+
+        assert!(matches!(
+            coordinator
+                .finalize_preparation(&keys(3), &super::seal_finalize::finalize_request(&ready),),
+            Err(PreparationError::ReceiptConflict)
+        ));
+        assert!(!test_core.fs_path().join("VALIDATION_HEAD").exists());
+        assert!(test_core.fs_path().join("PREPARATION_HEAD").exists());
+
+        let abandoned = coordinator.abandon_preparation(&keys(3), &abandon).unwrap();
+        assert_eq!(abandoned.outcome, PreparationReceiptOutcome::Abandoned);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+    }
+
+    #[test]
+    fn corrupt_pointer_quarantine_is_hash_addressed_and_retains_the_trusted_keyring() {
+        let test_core = TestCore::new("quarantine-hash-addressed");
+        let coordinator = test_core.coordinator(CORE_ID);
+        coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let corrupt_pointer = b"../../caller-controlled-preparation-id";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        let pointer_sha256 = sha256_hex(corrupt_pointer);
+        let retained = keys(2);
+        let active = keys(3);
+        let keyring = FrkKeyring::new([&retained, &active]).unwrap();
+        let request = PreparationQuarantineRequest {
+            expected_pointer_sha256: pointer_sha256.clone(),
+        };
+
+        let receipt = coordinator
+            .quarantine_preparation(&keyring, &active, &request)
+            .unwrap();
+        assert_eq!(receipt.outcome, PreparationReceiptOutcome::Quarantined);
+        assert_eq!(receipt.pointer_sha256, pointer_sha256);
+        assert_eq!(receipt.retained_frk_versions, vec![2, 3]);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert_eq!(
+            std::fs::read(
+                test_core
+                    .fs_path()
+                    .join("preparation-quarantine")
+                    .join(format!("{}.prep-pointer", receipt.pointer_sha256)),
+            )
+            .unwrap(),
+            corrupt_pointer
+        );
+        assert!(!test_core
+            .fs_path()
+            .join("caller-controlled-preparation-id")
+            .exists());
+
+        let replayed = coordinator
+            .quarantine_preparation(&keyring, &active, &request)
+            .unwrap();
+        assert_eq!(replayed, receipt);
+        assert_eq!(
+            coordinator
+                .quarantined_preparation_frk_versions(&keyring)
+                .unwrap(),
+            vec![2, 3]
+        );
+    }
+
+    #[test]
+    fn quarantine_requires_corrupt_bytes_and_an_exact_raw_pointer_hash() {
+        let test_core = TestCore::new("quarantine-exact-corrupt-pointer");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let active = keys(3);
+        let keyring = FrkKeyring::new([&active]).unwrap();
+        let status = coordinator
+            .begin_or_resume_preparation(&active, &begin_request())
+            .unwrap();
+        assert!(matches!(
+            coordinator.quarantine_preparation(
+                &keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: status.pointer_sha256,
+                },
+            ),
+            Err(PreparationError::ActiveConflict(
+                "authenticated preparation must be abandoned"
+            ))
+        ));
+
+        let corrupt_pointer = b"corrupt-but-bounded";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.quarantine_preparation(
+                &keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: HASH_A.to_owned(),
+                },
+            ),
+            Err(PreparationError::CasConflict)
+        ));
+        assert_eq!(
+            std::fs::read(test_core.fs_path().join("PREPARATION_HEAD")).unwrap(),
+            corrupt_pointer
+        );
+    }
+
+    #[test]
+    fn quarantine_retries_exactly_across_pointer_receipt_and_clear_crash_seams() {
+        for (label, target, phase) in [
+            (
+                "quarantine-pointer-durable",
+                PreparationPublicationTarget::QuarantinePointer,
+                PublicationPhase::DestinationSynced,
+            ),
+            (
+                "quarantine-receipt-durable",
+                PreparationPublicationTarget::QuarantineReceipt,
+                PublicationPhase::DestinationSynced,
+            ),
+            (
+                "quarantine-head-cleared",
+                PreparationPublicationTarget::Clear,
+                PublicationPhase::DestinationPublished,
+            ),
+        ] {
+            let test_core = TestCore::new(label);
+            let coordinator = test_core.coordinator(CORE_ID);
+            coordinator
+                .begin_or_resume_preparation(&keys(3), &begin_request())
+                .unwrap();
+            let corrupt_pointer = format!("corrupt-{label}").into_bytes();
+            std::fs::write(
+                test_core.fs_path().join("PREPARATION_HEAD"),
+                &corrupt_pointer,
+            )
+            .unwrap();
+            let request = PreparationQuarantineRequest {
+                expected_pointer_sha256: sha256_hex(&corrupt_pointer),
+            };
+            let retained = keys(2);
+            let active = keys(3);
+            let keyring = FrkKeyring::new([&retained, &active]).unwrap();
+            let mut failed = false;
+            let result = coordinator.quarantine_preparation_with_hook(
+                &keyring,
+                &active,
+                &request,
+                &mut |observed_target, observed_phase| {
+                    if !failed && observed_target == target && observed_phase == phase {
+                        failed = true;
+                        return Err(io::Error::other("quarantine crash seam"));
+                    }
+                    Ok(())
+                },
+            );
+            assert!(result.is_err());
+            assert!(failed);
+
+            let restarted = test_core.coordinator(CORE_ID);
+            let receipt = restarted
+                .quarantine_preparation(&keyring, &active, &request)
+                .unwrap();
+            assert_eq!(receipt.outcome, PreparationReceiptOutcome::Quarantined);
+            assert_eq!(receipt.retained_frk_versions, vec![2, 3]);
+            assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+            assert!(test_core
+                .fs_path()
+                .join("preparation-quarantine")
+                .join(format!(
+                    "{}.prep-quarantine.acore",
+                    request.expected_pointer_sha256
+                ))
+                .is_file());
+        }
+    }
+
+    #[test]
+    fn active_preparation_blocks_rotation_and_quarantine_retains_every_captured_key() {
+        let test_core = TestCore::new("rotation-preparation-gate");
+        let coordinator = test_core.coordinator(CORE_ID);
+        coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let active = keys(3);
+        let pending = keys(4);
+        let active_keyring = FrkKeyring::new([&active, &pending]).unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&active_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::PreparationActive
+            ))
+        ));
+
+        let corrupt_pointer = b"corrupt-active-preparation";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&active_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::PreparationActive
+            ))
+        ));
+
+        let retained = keys(2);
+        let quarantine_keyring = FrkKeyring::new([&retained, &active]).unwrap();
+        coordinator
+            .quarantine_preparation(
+                &quarantine_keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: sha256_hex(corrupt_pointer),
+                },
+            )
+            .unwrap();
+        std::fs::write(
+            test_core
+                .fs_path()
+                .join("preparation-quarantine")
+                .join(format!(".{HASH_A}.prep-pointer.123.tmp")),
+            b"interrupted immutable-publication staging file",
+        )
+        .unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&active_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::QuarantinedPreparationRequiresVersion(2)
+            ))
+        ));
+        let complete_keyring = FrkKeyring::new([&retained, &active, &pending]).unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&complete_keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::CoreNotInitialized)
+        ));
+    }
+
+    #[test]
+    fn oversized_corrupt_preparation_pointer_can_be_quarantined() {
+        let test_core = TestCore::new("oversized-corrupt-preparation-pointer");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let active = keys(3);
+        let keyring = FrkKeyring::new([&active]).unwrap();
+        let corrupt_pointer = vec![0xa5; MAX_PREPARATION_HEAD_ENVELOPE_SIZE + 1];
+        let pointer_sha256 = sha256_hex(&corrupt_pointer);
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            &corrupt_pointer,
+        )
+        .unwrap();
+
+        let receipt = coordinator
+            .quarantine_preparation(
+                &keyring,
+                &active,
+                &PreparationQuarantineRequest {
+                    expected_pointer_sha256: pointer_sha256.clone(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(receipt.pointer_sha256, pointer_sha256);
+        assert!(!test_core.fs_path().join("PREPARATION_HEAD").exists());
+        assert_eq!(
+            std::fs::read(
+                test_core
+                    .fs_path()
+                    .join("preparation-quarantine")
+                    .join(format!("{pointer_sha256}.prep-pointer"))
+            )
+            .unwrap(),
+            corrupt_pointer
+        );
+    }
+
+    #[test]
+    fn terminal_calls_are_rejected_after_session_close_admission_stops() {
+        let (_test_core, coordinator, status, _object_path) =
+            begin_collecting("terminal-session-close");
+        coordinator.begin_object_lease_release().unwrap();
+        assert!(matches!(
+            coordinator.abandon_preparation(&keys(3), &abandon_request(&status)),
+            Err(PreparationError::Commit(
+                super::super::CommitError::ObjectLeaseReleaseInProgress
+            ))
+        ));
+    }
+
+    #[test]
+    fn orphaned_quarantine_record_blocks_rotation_fail_closed() {
+        let test_core = TestCore::new("orphaned-quarantine-record");
+        let coordinator = test_core.coordinator(CORE_ID);
+        let quarantine = test_core.fs_path().join("preparation-quarantine");
+        std::fs::create_dir_all(&quarantine).unwrap();
+        std::fs::write(
+            quarantine.join(format!("{HASH_A}.prep-pointer")),
+            b"orphaned corrupt pointer",
+        )
+        .unwrap();
+        let active = keys(3);
+        let pending = keys(4);
+        let keyring = FrkKeyring::new([&active, &pending]).unwrap();
+
+        assert!(matches!(
+            coordinator.rotate_frk(&keyring, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::QuarantinedPreparationCorrupt
+            ))
+        ));
+    }
+}
+
+mod quarantine {
+    use super::*;
+
+    #[test]
+    fn explicit_operator_transition_is_exact_replayable_and_retention_bound() {
+        let test_core = TestCore::new("quarantine-module-contract");
+        let coordinator = test_core.coordinator(CORE_ID);
+        coordinator
+            .begin_or_resume_preparation(&keys(3), &begin_request())
+            .unwrap();
+        let corrupt_pointer = b"bounded corrupt pointer for operator quarantine";
+        std::fs::write(
+            test_core.fs_path().join("PREPARATION_HEAD"),
+            corrupt_pointer,
+        )
+        .unwrap();
+        let request = PreparationQuarantineRequest {
+            expected_pointer_sha256: sha256_hex(corrupt_pointer),
+        };
+        let retained = keys(2);
+        let active = keys(3);
+        let pending = keys(4);
+        let keyring = FrkKeyring::new([&retained, &active]).unwrap();
+        let receipt = coordinator
+            .quarantine_preparation(&keyring, &active, &request)
+            .unwrap();
+        assert_eq!(
+            coordinator
+                .quarantine_preparation(&keyring, &active, &request)
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(receipt.retained_frk_versions, vec![2, 3]);
+
+        let missing_retained = FrkKeyring::new([&active, &pending]).unwrap();
+        assert!(matches!(
+            coordinator.rotate_frk(&missing_retained, &pending, 1, |_| Ok(())),
+            Err(super::super::CommitError::Rotation(
+                crate::rotation::RotationError::QuarantinedPreparationRequiresVersion(2)
+            ))
+        ));
     }
 }

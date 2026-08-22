@@ -11,6 +11,21 @@
 
 ---
 
+## Approved greenfield-release amendment (2026-08-16)
+
+The user confirmed that no supported installation or user data predates the
+Portable Core release. The first supported release is therefore greenfield:
+it creates Soul, CoreFS, and Runtime directly in their canonical locations and
+does not ship compatibility for unreleased SQLCipher/PostgreSQL layouts,
+transcript archives, browser drafts, vault JSON, or `anima_capsule` artifacts.
+Developers reset disposable pre-release state.
+
+This amendment supersedes every legacy-source migration, shadow-authority,
+writer-exclusion, paid package-evidence, first-write cutover, and later legacy
+schema-retirement requirement below. It does not supersede current-format
+transaction recovery, authenticated archive version rejection, active-Core
+replacement rollback, retention, backup, or cryptographic safety.
+
 ## 1. Goal
 
 Turn `.anima/` into the complete portable identity and user-owned experience, excluding device capabilities and external credentials, with two canonical forms of durable state:
@@ -30,6 +45,7 @@ Embedded PostgreSQL remains the operational engine, but its data directory moves
 - Give the agent unrestricted shell access to `.anima/` or the host filesystem.
 - Change the meaning of memory promotion, Soul Writer, or consolidation.
 - Preserve legacy app-specific database schemas as long-term compatibility APIs.
+- Import or upgrade unreleased/pre-Portable-Core application data or archive formats.
 
 ## 3. Terminology
 
@@ -690,7 +706,19 @@ The implementation plan must maintain a checked inventory of every persisted des
 
 Before cutover, an automated/static inventory test must enumerate browser storage keys, persisted server settings, Tauri app-data files, and credential calls. Any persisted key absent from the approved classification fails the migration gate; it cannot default silently to portable or device-local.
 
-## 13. Migration Design
+## 13. Greenfield Bootstrap and Historical Migration Record
+
+The normative first-release path creates one canonical Soul database, one
+empty authenticated CoreFS catalog with all required stable app-folder roles,
+and one fresh machine-local Runtime. Registration publishes password/recovery
+keyslots for the Soul and Filesystem Root keys before accepting private
+content. There is no legacy source inventory, shadow catalog, converter
+journal, accept/reject migration state, or first-write authority flip.
+
+Sections 13.1 through 13.4 below are retained only as the historical design
+record that produced the current code. They are non-normative after the
+2026-08-16 amendment and must be removed from production implementation and
+tests before PCF-008 closes.
 
 ### 13.1 Migration Principles
 
@@ -816,7 +844,7 @@ Metrics:
 - reused versus rebuilt index entries
 - failed/corrupt objects
 - stale-index duration after writes
-- migration counts, conflicts, and verification failures
+- greenfield bootstrap and current-format restore verification failures
 
 ## 16. Testing Strategy
 
@@ -928,5 +956,6 @@ The redesign is complete only when:
 - desktop and agent edits converge through CoreFS
 - startup exposes progressive readiness and remains usable before expensive indexes finish
 - locked canonical Core bytes reveal no seeded private plaintext
-- legacy migration and rollback tests pass
+- greenfield bootstrap, current-format transfer, retained-Core rollback, and
+  unsupported pre-release input rejection tests pass
 - architecture and product documentation consistently describe Core, Soul, Core Filesystem, and Runtime

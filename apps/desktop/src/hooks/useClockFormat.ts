@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
+import {
+  getPortablePreference,
+  PORTABLE_PREFERENCES_CHANGED_EVENT,
+  setPortablePreference,
+} from "../lib/portablePreferences";
 
 export type ClockFormat = "12h" | "24h";
 
-const STORAGE_KEY = "anima_clock_format";
 const EVENT_NAME = "anima:clockformat";
 
 function read(): ClockFormat {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    if (v === "12h" || v === "24h") return v;
-  } catch {}
-  return "24h";
+  return getPortablePreference<ClockFormat>("clockFormat", "24h");
 }
 
 export function useClockFormat() {
@@ -21,13 +21,16 @@ export function useClockFormat() {
       setFormatState((e as CustomEvent<ClockFormat>).detail);
     };
     window.addEventListener(EVENT_NAME, handler);
-    return () => window.removeEventListener(EVENT_NAME, handler);
+    const refresh = () => setFormatState(read());
+    globalThis.addEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+    return () => {
+      window.removeEventListener(EVENT_NAME, handler);
+      globalThis.removeEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+    };
   }, []);
 
   const setFormat = (f: ClockFormat) => {
-    try {
-      localStorage.setItem(STORAGE_KEY, f);
-    } catch {}
+    setPortablePreference("clockFormat", f);
     setFormatState(f);
     window.dispatchEvent(new CustomEvent<ClockFormat>(EVENT_NAME, { detail: f }));
   };

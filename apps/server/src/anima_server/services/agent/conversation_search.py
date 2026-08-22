@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -100,6 +100,38 @@ async def search_conversation_history(
     query_lower = query.lower().strip()
     parsed_start = _parse_date(start_date)
     parsed_end = _parse_date(end_date)
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        list_canonical_threads,
+    )
+
+    authority_session = active_conversation_authority_session(user_id)
+    if authority_session is not None:
+        role_filter = role_filter.strip().lower()
+        hits: list[ConversationHit] = []
+        for view in list_canonical_threads(session=authority_session):
+            for message in view.messages:
+                if role_filter in {"user", "assistant"} and message.role != role_filter:
+                    continue
+                message_date = datetime.fromisoformat(message.created_at).date()
+                if parsed_start is not None and message_date < parsed_start:
+                    continue
+                if parsed_end is not None and message_date > parsed_end:
+                    continue
+                score = _text_overlap_score(query_lower, message.content.lower())
+                if query_lower and score < 0.3:
+                    continue
+                hits.append(
+                    ConversationHit(
+                        source="message",
+                        role=message.role,
+                        content=message.content[:500],
+                        date=message_date.isoformat(),
+                        score=score if query_lower else 0.5,
+                    )
+                )
+        hits.sort(key=lambda hit: hit.score, reverse=True)
+        return hits[:limit]
 
     message_hits = _search_messages(
         runtime_db,

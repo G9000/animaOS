@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { DashboardNode } from "./nodes/node-types";
-
-const STORAGE_KEY = "anima_dashboard_node_positions";
+import {
+  getPortablePreference,
+  PORTABLE_PREFERENCES_CHANGED_EVENT,
+  setPortablePreference,
+} from "../../lib/portablePreferences";
 
 type SavedNode = { x: number; y: number; width?: number; height?: number };
 
@@ -9,17 +12,22 @@ export function useNodePositions(nodes: DashboardNode[] | null) {
   const [hydratedNodes, setHydratedNodes] = useState<DashboardNode[] | null>(
     null,
   );
+  const [preferenceRevision, setPreferenceRevision] = useState(0);
+
+  useEffect(() => {
+    const refresh = () => setPreferenceRevision((current) => current + 1);
+    globalThis.addEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+    return () =>
+      globalThis.removeEventListener(PORTABLE_PREFERENCES_CHANGED_EVENT, refresh);
+  }, []);
 
   useEffect(() => {
     if (!nodes) return;
 
-    let saved: Record<string, SavedNode> = {};
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) saved = JSON.parse(raw);
-    } catch {
-      saved = {};
-    }
+    const saved = getPortablePreference<Record<string, SavedNode>>(
+      "dashboardNodePositions",
+      {},
+    );
 
     const next = nodes.map((node) => {
       const s = saved[node.id];
@@ -33,7 +41,7 @@ export function useNodePositions(nodes: DashboardNode[] | null) {
     });
 
     setHydratedNodes(next);
-  }, [nodes]);
+  }, [nodes, preferenceRevision]);
 
   const persistPositions = useCallback(
     (updated: DashboardNode[]) => {
@@ -46,11 +54,7 @@ export function useNodePositions(nodes: DashboardNode[] | null) {
           ...(node.height != null ? { height: node.height } : {}),
         };
       }
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(positions));
-      } catch {
-        // ignore
-      }
+      setPortablePreference("dashboardNodePositions", positions);
       setHydratedNodes(updated);
     },
     [],

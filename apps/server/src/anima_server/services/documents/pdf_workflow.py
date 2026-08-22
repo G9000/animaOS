@@ -30,6 +30,7 @@ from anima_server.services.documents.indexing import (
     get_unembedded_chunks,
 )
 from anima_server.services.documents.models import (
+    DocumentInput,
     DocumentRegistration,
     ExtractedDocumentChunk,
 )
@@ -45,7 +46,7 @@ from anima_server.services.documents.store import (
     list_document_chunks,
     register_document,
     replace_document_chunks,
-    resolve_document_storage_path,
+    resolve_document_byte_source,
 )
 from anima_server.services.ingestion.adapters.documents import sync_document_source
 from anima_server.services.workflows import (
@@ -75,7 +76,7 @@ PDF_WORKFLOW_TYPE = "pdf_ingestion"
 TERMINAL_WORKFLOW_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 JsonObject = dict[str, Any]
-ExtractTextFn = Callable[[str], ExtractionOutcome]
+ExtractTextFn = Callable[[DocumentInput], ExtractionOutcome]
 ChunkTextFn = Callable[[Sequence[PageText]], Sequence[ExtractedDocumentChunk]]
 EmbeddingFn = Callable[[str], list[float] | None]
 SummarizeFn = Callable[[RuntimeDocument, list[RuntimeDocumentChunk]], JsonObject]
@@ -345,11 +346,11 @@ def run_pdf_ingestion_until_wait_or_done(
                 document=document,
             )
             if reusable_chunks is None:
-                storage_path = resolve_document_storage_path(
-                    document.storage_path,
+                source = resolve_document_byte_source(
+                    document,
                     user_id=run.user_id,
                 )
-                outcome = dependencies.extract_text(str(storage_path))
+                outcome = dependencies.extract_text(source)
                 pages = list(outcome.pages)
                 parse_quality = outcome.parse_quality
             else:

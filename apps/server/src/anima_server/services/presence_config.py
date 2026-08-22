@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -51,18 +53,27 @@ class PresenceConfigValues:
 
 
 def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValues:
-    row = db.scalar(
-        select(PresenceConfig).where(PresenceConfig.user_id == user_id)
+    """Read portable presence from CoreFS; require unlock once authority is active."""
+    from anima_server.services.corefs.authority import AuthorityState, read_authority_record
+    from anima_server.services.corefs.preferences import (
+        active_preference_authority_session,
+        read_canonical_presence_values,
     )
+
+    authority_session = active_preference_authority_session(user_id)
+    if authority_session is not None:
+        return read_canonical_presence_values(session=authority_session)
+    if read_authority_record().state is AuthorityState.AUTHORITATIVE:
+        raise RuntimeError("Canonical presence preferences require an unlocked CoreFS session.")
+
+    row = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
     if row is None:
         return PresenceConfigValues(user_id=user_id)
     return _to_values(row)
 
 
 def get_or_create_presence_config(db: Session, user_id: int) -> PresenceConfig:
-    row = db.scalar(
-        select(PresenceConfig).where(PresenceConfig.user_id == user_id)
-    )
+    row = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
     if row is not None:
         return row
 
@@ -93,9 +104,7 @@ def update_presence_config(
             setattr(row, model_key, bool(updates[payload_key]))
 
     if "customInstruction" in updates:
-        row.custom_instruction = _normalize_instruction(
-            updates.get("customInstruction")
-        )
+        row.custom_instruction = _normalize_instruction(updates.get("customInstruction"))
 
     for payload_key, model_key in (
         ("quietHoursStart", "quiet_hours_start"),
@@ -109,6 +118,111 @@ def update_presence_config(
 
     db.flush()
     return _to_values(row)
+
+
+def apply_presence_config_updates(
+    current: PresenceConfigValues,
+    updates: Mapping[str, object],
+) -> PresenceConfigValues:
+    """Apply the API patch without touching either persistence backend."""
+    changed: dict[str, Any] = {}
+    field_map = {
+        "enabled": "enabled",
+        "mainChatEnabled": "main_chat_enabled",
+        "homeGreetingContextEnabled": "home_greeting_context_enabled",
+        "taskNudgesEnabled": "task_nudges_enabled",
+        "memoryNudgesEnabled": "memory_nudges_enabled",
+        "checkInNudgesEnabled": "checkin_nudges_enabled",
+        "initiativeEnabled": "initiative_enabled",
+    }
+    for payload_key, value_key in field_map.items():
+        if payload_key in updates:
+            changed[value_key] = bool(updates[payload_key])
+    if "customInstruction" in updates:
+        changed["custom_instruction"] = _normalize_instruction(updates.get("customInstruction"))
+    for payload_key, value_key in (
+        ("quietHoursStart", "quiet_hours_start"),
+        ("quietHoursEnd", "quiet_hours_end"),
+    ):
+        if payload_key in updates:
+            changed[value_key] = _normalize_quiet_hour(updates.get(payload_key))
+    if "dreamSharing" in updates:
+        changed["dream_sharing"] = _normalize_dream_sharing(updates.get("dreamSharing"))
+    return replace(current, **changed)
+
+
+def presence_config_values_to_mapping(values: PresenceConfigValues) -> dict[str, object]:
+    return {
+        "enabled": values.enabled,
+        "mainChatEnabled": values.main_chat_enabled,
+        "homeGreetingContextEnabled": values.home_greeting_context_enabled,
+        "taskNudgesEnabled": values.task_nudges_enabled,
+        "memoryNudgesEnabled": values.memory_nudges_enabled,
+        "checkInNudgesEnabled": values.checkin_nudges_enabled,
+        "customInstruction": values.custom_instruction,
+        "initiativeEnabled": values.initiative_enabled,
+        "quietHoursStart": values.quiet_hours_start,
+        "quietHoursEnd": values.quiet_hours_end,
+        "dreamSharing": values.dream_sharing,
+    }
+
+
+def presence_config_values_from_mapping(
+    *,
+    user_id: int,
+    values: Mapping[str, object],
+) -> PresenceConfigValues:
+    expected = {
+        "enabled",
+        "mainChatEnabled",
+        "homeGreetingContextEnabled",
+        "taskNudgesEnabled",
+        "memoryNudgesEnabled",
+        "checkInNudgesEnabled",
+        "customInstruction",
+        "initiativeEnabled",
+        "quietHoursStart",
+        "quietHoursEnd",
+        "dreamSharing",
+    }
+    if set(values) != expected:
+        raise ValueError("Canonical presence preference fields are invalid.")
+    boolean_keys = expected - {
+        "customInstruction",
+        "quietHoursStart",
+        "quietHoursEnd",
+        "dreamSharing",
+    }
+    if any(not isinstance(values[key], bool) for key in boolean_keys):
+        raise ValueError("Canonical presence preference booleans are invalid.")
+    instruction = values["customInstruction"]
+    if instruction is not None and (not isinstance(instruction, str) or not instruction.strip()):
+        raise ValueError("Canonical presence custom instruction is invalid.")
+    quiet_start = values["quietHoursStart"]
+    quiet_end = values["quietHoursEnd"]
+    if any(
+        value is not None
+        and (isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 23)
+        for value in (quiet_start, quiet_end)
+    ):
+        raise ValueError("Canonical presence quiet hours are invalid.")
+    dream_sharing = values["dreamSharing"]
+    if dream_sharing not in _DREAM_SHARING_MODES:
+        raise ValueError("Canonical dream-sharing preference is invalid.")
+    return PresenceConfigValues(
+        user_id=user_id,
+        enabled=values["enabled"],
+        main_chat_enabled=values["mainChatEnabled"],
+        home_greeting_context_enabled=values["homeGreetingContextEnabled"],
+        task_nudges_enabled=values["taskNudgesEnabled"],
+        memory_nudges_enabled=values["memoryNudgesEnabled"],
+        checkin_nudges_enabled=values["checkInNudgesEnabled"],
+        custom_instruction=instruction,
+        initiative_enabled=values["initiativeEnabled"],
+        quiet_hours_start=quiet_start,
+        quiet_hours_end=quiet_end,
+        dream_sharing=dream_sharing,
+    )
 
 
 _DREAM_SHARING_MODES = ("off", "on_ask", "ambient")

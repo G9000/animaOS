@@ -2786,10 +2786,7 @@ mod lease_candidate_tests {
                     phase: PublicationPhase::TemporaryCreated,
                 })
             {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "injected pre-HEAD failure",
-                ))
+                Err(std::io::Error::other("injected pre-HEAD failure"))
             } else {
                 Ok(())
             }
@@ -2880,9 +2877,7 @@ mod lease_candidate_tests {
         commit_unchanged(&coordinator, &keys, &prepared, &mut probe);
 
         assert!(
-            stages
-                .iter()
-                .any(|stage| *stage == CommitStage::LeaseObjectValidated),
+            stages.contains(&CommitStage::LeaseObjectValidated),
             "unsupported platform skipped the complete safe-open scan"
         );
         assert_eq!(factory.monitor_attempts.load(Ordering::SeqCst), 0);
@@ -3118,7 +3113,7 @@ mod lease_candidate_tests {
         coordinator
             .commit_with_probe(
                 &keys,
-                &[third.clone()],
+                std::slice::from_ref(&third),
                 &preconditions,
                 |_, generation| {
                     let mut catalog = two_object_catalog(generation, &first, &second);
@@ -3190,7 +3185,7 @@ mod lease_candidate_tests {
         coordinator
             .commit_with_probe(
                 &keys,
-                &[second.clone()],
+                std::slice::from_ref(&second),
                 &preconditions,
                 |_, generation| Ok(two_object_catalog(generation, &prepared, &second)),
                 |_| Ok(()),

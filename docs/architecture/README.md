@@ -6,11 +6,11 @@ category: architecture
 
 # AnimaOS Architecture Documentation
 
-AnimaOS is a privacy-first, portable AI companion system. It wraps the agent's durable identity, long-term memory, emotional state, and consciousness inside a single encrypted `.anima/` directory backed by SQLite + SQLCipher. High-churn runtime state such as active messages, runs, pending memory work, and pgvector retrieval caches lives in a local PostgreSQL runtime store, started through embedded `pgserver` by default unless `ANIMA_RUNTIME_DATABASE_URL` is configured. The system runs as a local FastAPI server (Python) that communicates with open LLM providers (Ollama, OpenRouter, vLLM) and exposes a REST/SSE API consumed by a Tauri desktop frontend.
+AnimaOS is a privacy-first, portable AI companion system. ANIMA CORE is one encrypted `.anima/` directory containing SQLCipher Soul identity/memory plus authenticated CoreFS catalogs and objects for canonical authored content. High-churn execution, queues, approvals, sealed/rebuildable projections, checkpoints, and retrieval indexes live in machine-local PostgreSQL outside the Core, started through embedded `pgserver` by default unless `ANIMA_RUNTIME_DATABASE_URL` is configured. The local FastAPI server exposes REST/SSE APIs to a Tauri desktop frontend and can use local or explicitly configured remote LLM providers.
 
-The core design thesis is **"portable encrypted AI"**: copy the `.anima/` directory to a USB drive, plug it into a new machine, enter your passphrase, and the AI wakes up with its durable memories and identity intact. Runtime PostgreSQL is local operational state and can be rebuilt, replayed, or promoted from SQLCipher and transcript sources depending on the table. There is no cloud database and no Docker requirement.
+The core design thesis is **"portable encrypted AI"**: export or restore a verified full ANIMA CORE, unlock it on another machine, and the AI wakes with its identity, memories, conversation history, diary, sources, and other canonical content intact. Runtime PostgreSQL, device configuration, installed-client grants, and OS credentials are excluded and rebuild or require reapproval. There is no cloud database and no Docker requirement.
 
-The server is structured as a classic three-layer application: **API routes (FastAPI) -> Service layer (agent services) -> Persistence (SQLAlchemy + SQLCipher soul DB + PostgreSQL runtime DB)**. On top of this foundation sits a sophisticated consciousness system with self-model, emotional intelligence, intentional agency, and inner monologue capabilities.
+The server is structured as **API routes (FastAPI) → domain/agent services → explicit persistence authorities (SQLCipher Soul, native CoreFS, or machine-local Runtime PostgreSQL)**. A path or ORM model does not choose authority implicitly; migrated product families commit through authenticated CoreFS transactions, while Soul promotion remains gated by consolidation.
 
 ## Document Index
 
@@ -18,7 +18,7 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | Document | Contents |
 |----------|----------|
 | [Directory Structure](system/directory-structure.md) | Top-level folder layout and purpose of each directory |
-| [ANIMA CORE Filesystem Target Architecture](system/anima-core-filesystem.md) | Planned end-to-end topology and flows for Soul, CoreFS, Runtime, tools, permissions, indexing, and local transfer |
+| [ANIMA CORE Filesystem Architecture](system/anima-core-filesystem.md) | Implemented topology and gated first-release flows for Soul, CoreFS, Runtime, tools, permissions, indexing, cutover, and local transfer |
 | [Gateway + Runtime Boundary](system/gateway-runtime-boundary.md) | Product boundary for single-user local-first, gateway-auth split, and future multi-device extensions |
 | [External Integration Boundary](system/external-integration-boundary.md) | Difference between server-side capability modules and `apps/anima-mod` integrations |
 | [Local Runtime Daemon](system/local-runtime-daemon.md) | Background runtime supervisor so Anima can keep running after the desktop UI closes |
@@ -48,8 +48,8 @@ The server is structured as a classic three-layer application: **API routes (Fas
 | [Local Action Module](agent/capability-modules/action-local.md) | Governed local execution, automation, approval rings, and audit |
 | [Presence Core Module](agent/capability-modules/presence-core.md) | Ambient awareness, follow-ups, nudges, quiet hours, and proactive policy |
 | [Camera Perception Module](agent/capability-modules/perception-camera.md) | First concrete perception module for consented one-frame webcam sight |
-| [Document Processing](agent/document-processing.md) | PDF upload, checkpointed ingestion, runtime document storage, pgvector RAG, chat grounding, and citation pills |
-| [Source Ingestion](agent/source-ingestion.md) | Universal source registry, artifacts/spans, OKF concept bundles, LLM-wiki compilation, search, linting, and memory boundary |
+| [Document Processing](agent/document-processing.md) | CoreFS PDF originals, checkpointed Runtime parsing/index projections, pgvector RAG, grounding, and citations |
+| [Source Ingestion](agent/source-ingestion.md) | CoreFS source authority, Runtime artifacts/spans, OKF concepts, compilation, search, linting, and Soul-promotion boundary |
 | [Agent Tools](agent/agent-tools.md) | The 17 tools available to the LLM agent |
 
 ### Memory Architecture (`memory/`)
@@ -77,79 +77,61 @@ The server is structured as a classic three-layer application: **API routes (Fas
 
 ```mermaid
 flowchart TD
-    subgraph Client["Desktop Client (Tauri + React)"]
-        FE[Frontend UI]
+    subgraph Product["animaOS product"]
+        Desktop["Desktop<br/>Tauri + React"]
+        Animus["Animus host-file CLI"]
+        Mod["Approved local mods/clients"]
     end
 
     subgraph Server["AnimaOS Server (FastAPI)"]
-        subgraph MW["Middleware"]
-            CORS[CORS Middleware]
-            Nonce[Sidecar Nonce Middleware]
-        end
-
-        subgraph API["API Layer"]
-            Auth["/api/auth"]
-            Chat["/api/chat"]
-            Memory["/api/memory"]
-            Knowledge["/api/knowledge"]
-            Consc["/api/consciousness"]
-            Soul["/api/soul"]
-            Tasks["/api/tasks"]
-            Users["/api/users"]
-            Vault["/api/vault"]
-            Config["/api/config"]
-            Core["/api/core"]
-            DB["/api/db"]
-        end
-
-        subgraph Services["Service Layer"]
-            AgentRT["Agent Runtime"]
-            MemStack["Memory Stack"]
-            SourceIngest["Source Ingestion"]
-            Consciousness["Consciousness Layer"]
-            LLMLayer["LLM Clients"]
-            CryptoLayer["Crypto & Auth"]
-        end
-
-        subgraph Persistence["Database Layer"]
-            Models["SQLAlchemy Models"]
-            SoulSession["Per-User SQLCipher Sessions"]
-            RuntimeDB["Local PostgreSQL Runtime DB"]
-        end
+        Middleware["CORS + sidecar nonce + restart signal"]
+        API["Auth, domain, CoreFS, transfer APIs"]
+        Services["Agent, memory, content, migration services"]
+        SoulWriter["Consolidation / Soul Writer"]
+        CoreFacade["CoreFS logical facade + authority gate"]
     end
 
-    subgraph External["External"]
-        Ollama["Ollama (local)"]
-        OpenRouter["OpenRouter (API)"]
-        VLLM["vLLM (local)"]
+    subgraph Native["Rust authority"]
+        CoreEngine["anima-corefs<br/>catalogs, crypto, transactions, trash"]
+        FileTools["anima-file-tools<br/>bounded HostFS/CoreFS algorithms"]
     end
 
-    subgraph Storage["Disk"]
-        AnimaDir[".anima/ directory"]
-        SQLiteDB["SQLite + SQLCipher Soul DBs"]
+    subgraph Portable["Portable ANIMA CORE (.anima/)"]
         Manifest["manifest.json"]
+        Soul["soul/soul.db<br/>SQLCipher identity and memory"]
+        CoreFS["fs/HEAD + encrypted catalogs/objects<br/>canonical authored content"]
     end
 
-    FE -->|"HTTP + SSE + x-anima-nonce"| MW
-    MW --> API
+    subgraph Local["Machine-local"]
+        Runtime["PostgreSQL Runtime<br/>runs, queues, sealed projections, indexes"]
+        Device["Platform app data<br/>active-Core pointer, Runtime binding, grants/config"]
+        Credentials["OS credential store"]
+    end
+
+    Desktop -->|"HTTP/SSE + x-anima-nonce"| Middleware
+    Middleware --> API
     API --> Services
-    Services --> Persistence
-    Persistence --> SQLiteDB
-    Persistence --> RuntimeDB
-    CryptoLayer --> Manifest
-    LLMLayer -->|"OpenAI-compatible API"| Ollama
-    LLMLayer -->|"OpenAI-compatible API"| OpenRouter
-    LLMLayer -->|"OpenAI-compatible API"| VLLM
-    SQLiteDB --> AnimaDir
-    Manifest --> AnimaDir
+    Services --> CoreFacade
+    CoreFacade --> CoreEngine
+    CoreEngine --> CoreFS
+    CoreEngine --> FileTools
+    Services --> Runtime
+    SoulWriter --> Soul
+    Services --> SoulWriter
+    Manifest --> Soul
+    Manifest --> CoreFS
+    Device --> Runtime
+    Device --> Credentials
+    Mod --> API
+    Animus --> FileTools
 ```
 
 ## Key Design Decisions
 
-1. **Single-thread-per-user model**: Per-user asyncio locks serialize conversation turns, preventing race conditions at the cost of queuing concurrent requests from the same user.
-2. **AnimaCompanion as cache layer**: The runtime is stateless; `AnimaCompanion` caches memory blocks and history between turns, invalidating via a version counter.
+1. **Per-thread turn coordination**: thread-scoped locks serialize one visible conversation while allowing independent runtime work without sharing canonical mutation state.
+2. **Runtime as projection, not authority**: process caches and PostgreSQL rows may be discarded; canonical visible content is re-read from CoreFS and durable identity/memory from Soul.
 3. **Tool-driven agent architecture**: The agent uses structured tools with inline `thinking` kwargs and usually ends with `send_message`. `ToolRulesSolver` enforces ordering and approval rules. Max 6 steps per turn.
 4. **Supersession instead of mutation**: Memory items are never deleted; updates create new rows and set `superseded_by` on the old one.
-5. **Dual local stores**: Each user gets an encrypted SQLCipher soul database for durable identity and memory, while the local PostgreSQL runtime DB handles active messages, queues, and rebuildable retrieval caches.
-6. **Field-level encryption with domain DEKs**: Data segmented into 5 cryptographic domains for fine-grained access control.
+5. **Three explicit authorities**: SQLCipher Soul owns durable identity/memory; native CoreFS owns portable authored content; machine-local PostgreSQL owns only operational coordination and rebuildable projections.
+6. **Independent key hierarchy**: Soul and CoreFS roots use separate wrapped generations; domain/object DEKs and archive keys remain purpose-bound.
 7. **Hybrid search**: Combines vector similarity (cosine on embeddings) with keyword matching using adaptive filtering.

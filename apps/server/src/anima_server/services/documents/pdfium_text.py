@@ -8,16 +8,23 @@ Docling produces the durable artifact (see parsing.py).
 
 from __future__ import annotations
 
+from anima_server.services.documents.models import DocumentInput
 from anima_server.services.documents.pdf_text import PageText, normalize_pdf_page_text
 
 
-def extract_pdf_text_pdfium(path: str) -> list[PageText]:
+def extract_pdf_text_pdfium(source: DocumentInput) -> list[PageText]:
     import pypdfium2 as pdfium
 
+    label = source if isinstance(source, str) else f"CoreFS object {source.name}"
+    pdfium_source = (
+        source
+        if isinstance(source, str)
+        else source.read_all(max_bytes=100 * 1024 * 1024)
+    )
     try:
-        document = pdfium.PdfDocument(path)
+        document = pdfium.PdfDocument(pdfium_source)
     except Exception as exc:
-        raise RuntimeError(f"Failed to read PDF file {path}: {exc}") from exc
+        raise RuntimeError(f"Failed to read PDF file {label}: {exc}") from exc
 
     try:
         pages: list[PageText] = []
@@ -36,7 +43,7 @@ def extract_pdf_text_pdfium(path: str) -> list[PageText]:
         document.close()
 
     if not pages:
-        raise RuntimeError(f"PDF contains no extractable text: {path}")
+        raise RuntimeError(f"PDF contains no extractable text: {label}")
     return pages
 
 

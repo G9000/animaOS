@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getDaemonStatus, getDaemonLogs, restartDaemon, setDaemonBackground, setDaemonLock, startDaemon, stopDaemon, setDaemonControlToken } from "../../lib/daemon";
+import { getDaemonStatus, getDaemonLogs, restartDaemon, setDaemonBackground, setDaemonLock, startDaemon, stopDaemon } from "../../lib/daemon";
 import type { DaemonStatusResponse } from "@anima/daemon-contracts";
 import { glass } from "@anima/standard-templates";
 
@@ -29,7 +29,6 @@ export default function DaemonSettings({ recoveryMode = false }: DaemonSettingsP
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [isPolling, setIsPolling] = useState(true);
   const [busy, setBusy] = useState<ActionState | null>(null);
-  const [tokenValue, setTokenValue] = useState("");
   const [logLines, setLogLines] = useState<string[]>([]);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
@@ -57,14 +56,6 @@ export default function DaemonSettings({ recoveryMode = false }: DaemonSettingsP
       window.clearInterval(interval);
     };
   }, [isPolling, loadStatus]);
-
-  useEffect(() => {
-    try {
-      setTokenValue(localStorage.getItem("anima_daemon_control_token") ?? "");
-    } catch {
-      setTokenValue("");
-    }
-  }, []);
 
   const isBusy = useMemo(() => busy !== null, [busy]);
 
@@ -232,21 +223,14 @@ export default function DaemonSettings({ recoveryMode = false }: DaemonSettingsP
           )}
         </div>
 
-        <label className="space-y-2 block">
+        <div className="space-y-2">
           <span className="font-mono text-caption uppercase tracking-caps-3 text-foreground/60">
-            Daemon control token (localStorage)
+            Daemon control credential
           </span>
-          <input
-            value={tokenValue}
-            onChange={(event) => {
-              const value = event.target.value;
-              setTokenValue(value);
-              setDaemonControlToken(value);
-            }}
-            className="w-full border border-hairline-strong bg-background/25 px-3 py-2 font-mono text-xs outline-none"
-            placeholder="Optional for token-guarded daemon mode"
-          />
-        </label>
+          <p className="text-sm text-foreground/55">
+            Stored by the operating system and never exposed in browser storage.
+          </p>
+        </div>
 
         {actionMessage ? (
           <p className="text-sm font-mono text-foreground/65">{actionMessage}</p>
@@ -266,4 +250,3 @@ export default function DaemonSettings({ recoveryMode = false }: DaemonSettingsP
     </div>
   );
 }
-
