@@ -367,7 +367,7 @@ def test_native_shadow_publication_and_diary_only_rerun_preserve_conversations(
             corefs_keys=keys,
             content_authority={
                 "version": 1,
-                "state": "cutover_complete",
+                "state": "authoritative",
                 "families": ["conversations"],
                 "generation": first.generation,
                 "catalogHash": first.catalog_hash,
@@ -479,7 +479,7 @@ def test_authority_gate_requires_exact_authenticated_cutover_shape() -> None:
             corefs_keys=object(),
             content_authority={
                 "version": 1,
-                "state": "cutover_complete",
+                "state": "authoritative",
                 "families": ["conversations"],
                 "generation": 3,
                 "catalogHash": "a" * 64,

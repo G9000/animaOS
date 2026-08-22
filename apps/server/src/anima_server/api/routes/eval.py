@@ -220,7 +220,7 @@ def _persist_imported_transcript(
     if message_count <= 0:
         return _ImportedTranscriptResult(messages_imported=0)
 
-    thread = get_or_create_thread(runtime_db, payload.userId)
+    thread = get_or_create_thread(runtime_db, payload.userId, eval_import=True)
     sequence_id = reserve_message_sequences(
         runtime_db,
         thread_id=thread.id,
@@ -243,6 +243,7 @@ def _persist_imported_transcript(
                 content_text=_with_session_date(turn.content, session.date),
                 source="eval_import",
                 is_archived_history=True,
+                eval_import=True,
             )
             message.is_in_context = False
             runtime_db.add(message)

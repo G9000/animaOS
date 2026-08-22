@@ -1456,10 +1456,13 @@ def test_retrieval_root_rejects_overlapping_unbound_machine_data(
         settings.runtime_instance_data_dir = original_runtime_instance_data_dir
 
 
-def test_embedded_runtime_reuses_relocated_legacy_pg_until_cutover(
+def test_embedded_runtime_never_adopts_core_internal_pg_data(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path: Path,
 ) -> None:
+    """Greenfield first release: an unsupported pre-release `runtime/pg_data`
+    inside the portable Core is never adopted, relocated, or deleted; embedded
+    PostgreSQL always starts on the fresh machine-local instance directory."""
     app_data = managed_tmp_path / "machine-app-data"
     core = managed_tmp_path / "portable" / ".anima"
     core.mkdir(parents=True)
@@ -1510,10 +1513,10 @@ def test_embedded_runtime_reuses_relocated_legacy_pg_until_cutover(
             / record["core_id"]
             / "instances"
             / record["local_instance_id"]
-            / "legacy-runtime-source"
+            / "runtime"
             / "pg_data"
         ]
-        assert not legacy_pg.exists()
+        assert legacy_pg.exists()
         main_module._release_runtime_instance_claim()
     finally:
         settings.data_dir = original_data_dir

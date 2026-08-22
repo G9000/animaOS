@@ -54,8 +54,18 @@ def _refresh_run_status(db: Session, run: RuntimeRun) -> str:
     return run.status
 
 
-def get_or_create_thread(db: Session, user_id: int) -> RuntimeThread:
-    _reject_legacy_conversation_mutation(user_id)
+def get_or_create_thread(
+    db: Session,
+    user_id: int,
+    *,
+    eval_import: bool = False,
+) -> RuntimeThread:
+    # eval_import may be passed only by the ANIMA_EVAL_RESET_ENABLED-gated
+    # transcript import: that flag marks the whole data directory as a
+    # disposable eval environment, where benchmark history deliberately lives
+    # in Runtime rows instead of canonical CoreFS conversations.
+    if not eval_import:
+        _reject_legacy_conversation_mutation(user_id)
     thread = db.scalar(
         select(RuntimeThread).where(
             RuntimeThread.user_id == user_id,
@@ -631,8 +641,12 @@ def append_message(
     source: str | None = None,
     is_in_context: bool = True,
     is_archived_history: bool = False,
+    eval_import: bool = False,
 ) -> RuntimeMessage:
-    _reject_legacy_conversation_mutation(int(thread.user_id))
+    # See get_or_create_thread: eval_import is reserved for the
+    # ANIMA_EVAL_RESET_ENABLED-gated disposable-environment transcript import.
+    if not eval_import:
+        _reject_legacy_conversation_mutation(int(thread.user_id))
     return _append_runtime_message(
         db,
         thread=thread,

@@ -206,7 +206,7 @@ def test_encrypted_core_opens_with_correct_passphrase_and_round_trips_data(
         assert items.status_code == 200
         assert any(item["content"] == SENTINEL_ROUND_TRIP for item in items.json())
 
-    raw_db = (isolated_runtime_root / "users" / str(user_id) / "anima.db").read_bytes()
+    raw_db = (isolated_runtime_root / "soul" / "soul.db").read_bytes()
     assert SENTINEL_ROUND_TRIP.encode("utf-8") not in raw_db
 
 
@@ -372,7 +372,7 @@ def test_legacy_plaintext_soul_is_rewritten_on_first_read_without_data_loss(
         assert second_read.status_code == 200
         assert second_read.json()["content"] == SENTINEL_SOUL_MIGRATION
 
-    raw_db = (isolated_runtime_root / "users" / str(user_id) / "anima.db").read_bytes()
+    raw_db = (isolated_runtime_root / "soul" / "soul.db").read_bytes()
     assert SENTINEL_SOUL_MIGRATION.encode("utf-8") not in raw_db
 
 

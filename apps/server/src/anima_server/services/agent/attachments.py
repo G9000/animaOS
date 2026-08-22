@@ -136,6 +136,7 @@ def resolve_corefs_chat_attachment(*, session: Any, object_uri: str) -> StoredAt
         kind="image",
         mime_type=source.content_type,
         path=_corefs_provider_path(int(session.user_id), source.stable_id),
+        filename=source.name or None,
         size_bytes=source.size,
         sha256=source.content_sha256,
         storage_path=object_uri,

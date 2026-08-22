@@ -482,8 +482,10 @@ def test_chat_history_returns_attachment_urls_and_file_endpoint(
     assert attachment["mimeType"] == "image/png"
     assert attachment["filename"] == "pixel.png"
     assert attachment["sizeBytes"] == len(PNG_BYTES)
+    # Canonical CoreFS attachments use opaque stable IDs rather than the
+    # legacy img_ prefix; the message-scoped download route is the contract.
     assert attachment["url"].startswith(
-        f"/api/chat/messages/{user_message['id']}/attachments/img_"
+        f"/api/chat/messages/{user_message['id']}/attachments/"
     )
     assert "storagePath" not in attachment
     assert file_response.status_code == 200

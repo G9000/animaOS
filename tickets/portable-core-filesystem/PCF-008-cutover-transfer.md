@@ -1,6 +1,6 @@
 # PCF-008 - Cutover, transfer, and first-release validation
 
-- Status: in_progress
+- Status: done
 - Priority: P0
 - Scope: greenfield authority, local ANIMA CORE transfer/recovery, release validation
 - Parent: `PCF-000`
@@ -10,9 +10,9 @@
 - Spec: `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md#approved-greenfield-release-amendment-2026-08-16`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-16 16:56 MYT
+- Updated: 2026-08-23 07:45 MYT
 - Started: 2026-08-13 18:41 MYT
-- Completed:
+- Completed: 2026-08-23 07:45 MYT
 
 ## Goal
 
@@ -597,10 +597,45 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   12 locally. The ticket remains `in_progress` for Step 11 safe temporary
   smoke/initiative closeout; push and PR metadata update are the user-
   authorized publication actions next.
+- 2026-08-23 07:40 MYT - Ran the deferred Step 11 full validation against the
+  merged stack (PRs #142-#147, squash-merged to `main` 2026-08-22 as
+  `1a99fe0b`) and fixed everything it exposed. The complete server suite had
+  last run before the greenfield amendment; on merged main it failed `178`
+  tests with two production root causes: greenfield session bootstrap
+  hard-failed Soul-only sessions (breaking Soul-scoped password change and the
+  retained legacy-credential upgrade), and presence/consent readers let
+  `AuthorityStateError` escape when no first-release manifest exists. Also
+  fixed: the eval-gated transcript import was rejected on every greenfield
+  account (explicit `eval_import` bypass, documented against the disposable
+  `ANIMA_EVAL_RESET_ENABLED` boundary); canonical chat history listed every
+  thread instead of the active one, so clear/reset never emptied the desktop
+  pane; canonical attachment metadata dropped the original filename. Stale
+  tests pinning removed pre-release behavior were rewritten to the greenfield
+  contract (runtime never adopts a Core-internal `pg_data`; canonical
+  reference-only runtime rows; `authoritative` marker state; canonical Soul
+  path), store-lifecycle unit tests now stub content-authority reconciliation,
+  three retrieval tests no longer write real index files into the repository
+  root, and a new committed release smoke (`test_pcf008_greenfield_smoke.py`)
+  drives one continuous journey: health, register/unlock, diary/tasks/
+  presence/threads, relock/re-login persistence, full V2 export and verified
+  same-volume import staging, Soul-only `filesystem_missing` and CoreFS-only
+  `recovery_only` staging, and the closed V1 reattachment boundary.
 
 ## Validation
 
 - Commands:
+  - Step 11 full validation on merged main (2026-08-23):
+    `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` — complete server suite
+    `3539 passed, 6 skipped, 0 failed` after the recorded fixes (the first run
+    on the merged tree failed `178`); `bun run test:desktop` (`346 passed`);
+    `cargo test -p anima-corefs` (complete native suite incl. integration/doc
+    tests); `cargo test -p anima-core core_archive` (`7 passed`);
+    `cargo check -p anima-corefs -p anima-core -p desktop --all-targets`;
+    root `bun run build` (server + desktop + animus); `bun run lint`;
+    `bun run check:repo`; `git diff --check`; isolated temporary database
+    Alembic upgrade + current at core head `20260812_0001`; committed release
+    smoke `apps/server/tests/test_pcf008_greenfield_smoke.py` (`1 passed`,
+    full journey).
   - greenfield replacement validation: server authority/transfer/registry/
     preference/security modules (`44 passed`), rewritten diary/document/
     knowledge/task/thread/user API modules (`19 passed`), state inventory
@@ -924,6 +959,10 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   - The macOS host compiles the Python-enabled PyO3 binding; native authority
     transaction behavior is covered in Rust and the installed extension is
     exercised through the greenfield server authority/API tests.
-  - Residual work: Step 11 safe temporary smoke coverage and initiative-level
-    closeout remain. No paid cross-version workflow or legacy fixture is
-    required, and no real user Core or external system was mutated.
+  - Step 11 completed 2026-08-23 against the merged stack: complete server,
+    desktop, and native suites plus root lint/build, repository organization,
+    an isolated Alembic upgrade to core head `20260812_0001`, and the committed
+    continuous-journey release smoke all pass. No paid cross-version workflow
+    or legacy fixture was required, and no real user Core or external system
+    was mutated. Greenfield-unreachable legacy code paths found during the
+    closeout review are recorded on PCF-009 for gated retirement.
