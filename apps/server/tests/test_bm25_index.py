@@ -1,5 +1,6 @@
 """Tests for BM25 index -- F1 hybrid search."""
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -162,10 +163,16 @@ class TestModuleLevelCache:
 
 
 class TestRustBackedKeywordSearch:
-    def test_bm25_search_uses_rust_memory_index_when_clean(self, monkeypatch: pytest.MonkeyPatch):
+    def test_bm25_search_uses_rust_memory_index_when_clean(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
         search_calls: list[dict[str, object]] = []
 
-        monkeypatch.setattr(bm25_module.anima_core_retrieval, "get_retrieval_root", lambda: "indices")
+        monkeypatch.setattr(
+            bm25_module.anima_core_retrieval,
+            "get_retrieval_root",
+            lambda: tmp_path / "indices",
+        )
         monkeypatch.setattr(
             bm25_module.anima_core_retrieval,
             "is_retrieval_family_dirty",
@@ -196,12 +203,16 @@ class TestRustBackedKeywordSearch:
         assert search_calls[0]["query"] == "coffee"
 
     def test_bm25_search_falls_back_when_memory_family_is_dirty(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         fallback_index = BM25Index()
         fallback_index.build([(42, "user likes coffee")])
 
-        monkeypatch.setattr(bm25_module.anima_core_retrieval, "get_retrieval_root", lambda: "indices")
+        monkeypatch.setattr(
+            bm25_module.anima_core_retrieval,
+            "get_retrieval_root",
+            lambda: tmp_path / "indices",
+        )
         monkeypatch.setattr(
             bm25_module.anima_core_retrieval,
             "is_retrieval_family_dirty",

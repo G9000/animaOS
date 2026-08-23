@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs import logical
-from anima_server.services.corefs.content_authority import authenticated_content_authority
+from anima_server.services.corefs.content_authority import (
+    CoreFsAuthorityUnavailable,
+    authenticated_content_authority,
+)
 from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.formats import TaskDocument, decode_task_document
 
@@ -19,7 +22,7 @@ _MAX_TASKS = 10_000
 _MAX_TASK_BODY_BYTES = 1024 * 1024
 
 
-class TaskAuthorityError(RuntimeError):
+class TaskAuthorityError(RuntimeError, CoreFsAuthorityUnavailable):
     pass
 
 
@@ -73,7 +76,14 @@ def task_authority_selection(session: object) -> TaskAuthoritySelection | None:
 
 
 def task_corefs_authority_active(session: object) -> bool:
-    return task_authority_selection(session) is not None
+    """True when canonical CoreFS is the required task authority.
+
+    Covers both a canonical-capable session and an FS-locked session on an
+    activated Core, which must fail closed instead of writing legacy rows.
+    """
+    from anima_server.services.corefs.content_authority import core_content_authority_active
+
+    return task_authority_selection(session) is not None or core_content_authority_active()
 
 
 def list_canonical_tasks(*, session: Any) -> tuple[TaskDocument, ...]:

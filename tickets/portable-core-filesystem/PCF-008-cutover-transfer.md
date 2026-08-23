@@ -1,6 +1,6 @@
 # PCF-008 - Cutover, transfer, and first-release validation
 
-- Status: in_progress
+- Status: done
 - Priority: P0
 - Scope: greenfield authority, local ANIMA CORE transfer/recovery, release validation
 - Parent: `PCF-000`
@@ -10,9 +10,9 @@
 - Spec: `docs/superpowers/specs/2026-07-12-portable-core-filesystem-design.md#approved-greenfield-release-amendment-2026-08-16`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-8-cutover-transfer-and-first-release-validation`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-16 16:56 MYT
+- Updated: 2026-08-23 07:45 MYT
 - Started: 2026-08-13 18:41 MYT
-- Completed:
+- Completed: 2026-08-23 07:45 MYT
 
 ## Goal
 
@@ -597,10 +597,100 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   12 locally. The ticket remains `in_progress` for Step 11 safe temporary
   smoke/initiative closeout; push and PR metadata update are the user-
   authorized publication actions next.
+- 2026-08-23 07:40 MYT - Ran the deferred Step 11 full validation against the
+  merged stack (PRs #142-#147, squash-merged to `main` 2026-08-22 as
+  `1a99fe0b`) and fixed everything it exposed. The complete server suite had
+  last run before the greenfield amendment; on merged main it failed `178`
+  tests with two production root causes: greenfield session bootstrap
+  hard-failed Soul-only sessions (breaking Soul-scoped password change and the
+  retained legacy-credential upgrade), and presence/consent readers let
+  `AuthorityStateError` escape when no first-release manifest exists. Also
+  fixed: the eval-gated transcript import was rejected on every greenfield
+  account (explicit `eval_import` bypass, documented against the disposable
+  `ANIMA_EVAL_RESET_ENABLED` boundary); canonical chat history listed every
+  thread instead of the active one, so clear/reset never emptied the desktop
+  pane; canonical attachment metadata dropped the original filename. Stale
+  tests pinning removed pre-release behavior were rewritten to the greenfield
+  contract (runtime never adopts a Core-internal `pg_data`; canonical
+  reference-only runtime rows; `authoritative` marker state; canonical Soul
+  path), store-lifecycle unit tests now stub content-authority reconciliation,
+  three retrieval tests no longer write real index files into the repository
+  root, and a new committed release smoke (`test_pcf008_greenfield_smoke.py`)
+  drives one continuous journey: health, register/unlock, diary/tasks/
+  presence/threads, relock/re-login persistence, full V2 export and verified
+  same-volume import staging, Soul-only `filesystem_missing` and CoreFS-only
+  `recovery_only` staging, and the closed V1 reattachment boundary.
+- 2026-08-23 09:00 MYT - Addressed both PR #148 current-head Codex P1
+  findings. A Core-level authority gate now makes every content family fail
+  closed for sessions without CoreFS capability once the manifest is
+  authoritative (route predicates, both legacy mutation guards, and background
+  legacy skips return one stable 409 through a shared
+  `CoreFsAuthorityUnavailable` handler), so the retained legacy-credential
+  upgrade window can no longer fork legacy diary/task/asset/conversation
+  state. Presence/consent reads distinguish a never-activated environment
+  (legacy fallback with initiative gates defaulting off) from an unparseable
+  manifest, which now fails closed. Both fixes carry focused regressions and
+  the full server suite passes after the round.
+- 2026-08-23 09:30 MYT - Addressed the second-pass Codex P1: the authority
+  module now latches every manifest path the process has read or created, so
+  a manifest that disappears after observation fails closed instead of being
+  read as a never-activated environment that would reopen legacy branches and
+  legacy consent defaults mid-process. The presence regression covers
+  observe/delete/fail-closed, and the complete server suite passes on the
+  final head.
+- 2026-08-23 10:20 MYT - Addressed the third-pass Codex P1 pair. The authority
+  latch now records the irreversible authoritative state per manifest path, so
+  an in-place parseable downgrade (an empty object, a missing release field, or
+  an older pending record) fails closed instead of reopening legacy branches
+  and legacy consent defaults. Asset, document, and knowledge reads route
+  through one fail-closed accessor, so a session that cannot serve canonical
+  assets on an activated Core can no longer fall back to Runtime rows and
+  plaintext files and resurface content canonical state superseded or deleted;
+  the locked case returns the same stable 409. Both carry regressions,
+  including one proving a still-unlocked canonical session keeps serving reads
+  normally.
+- 2026-08-23 11:10 MYT - Addressed the fourth-pass Codex P1 trio, which shared
+  one root cause: activation itself now latches authority at the single
+  `_write_record` choke point rather than relying on a later read, and all
+  nineteen route branches that tested `asset_authority_selection` directly
+  now use a gated `asset_corefs_authority_active` predicate. That closes the
+  PDF upload writing a plaintext file before its workflow and the avatar
+  endpoint falling through to the legacy directory, which the earlier
+  selector-only fix had missed. Regressions now cover the activation-write
+  latch and prove an FS-locked upload creates no plaintext file and cannot
+  serve legacy avatar bytes.
+- 2026-08-23 11:50 MYT - Addressed the fifth-pass Codex P1: startup now
+  carries the authority state it already loaded into the latch, so a restart
+  against an already-activated Core is protected before its first
+  authority-dependent request rather than only after one. A regression
+  activates a manifest, restarts through `ensure_core_manifest()`, replaces
+  the manifest with parseable non-authoritative JSON with no intervening
+  authority read, and proves the read fails closed.
+- 2026-08-23 12:30 MYT - Addressed the sixth-pass Codex P1, a lock-order
+  inversion introduced by the previous round's own fix: startup held the
+  manifest lock while taking the authority lock, while authority writes take
+  them in the opposite order, so a concurrent login and account discovery
+  could deadlock and pin both process-wide locks. The startup latch now runs
+  after the manifest lock is released, and a scan confirmed no other
+  manifest-update callback reaches authority code. The regression forces the
+  exact interleaving with events and was verified red (blocked ~60s) against
+  the reintroduced inversion before passing green.
 
 ## Validation
 
 - Commands:
+  - Step 11 full validation on merged main (2026-08-23):
+    `ANIMA_CORE_REQUIRE_ENCRYPTION=false bun run test` — complete server suite
+    `3539 passed, 6 skipped, 0 failed` after the recorded fixes (the first run
+    on the merged tree failed `178`); `bun run test:desktop` (`346 passed`);
+    `cargo test -p anima-corefs` (complete native suite incl. integration/doc
+    tests); `cargo test -p anima-core core_archive` (`7 passed`);
+    `cargo check -p anima-corefs -p anima-core -p desktop --all-targets`;
+    root `bun run build` (server + desktop + animus); `bun run lint`;
+    `bun run check:repo`; `git diff --check`; isolated temporary database
+    Alembic upgrade + current at core head `20260812_0001`; committed release
+    smoke `apps/server/tests/test_pcf008_greenfield_smoke.py` (`1 passed`,
+    full journey).
   - greenfield replacement validation: server authority/transfer/registry/
     preference/security modules (`44 passed`), rewritten diary/document/
     knowledge/task/thread/user API modules (`19 passed`), state inventory
@@ -924,6 +1014,10 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   - The macOS host compiles the Python-enabled PyO3 binding; native authority
     transaction behavior is covered in Rust and the installed extension is
     exercised through the greenfield server authority/API tests.
-  - Residual work: Step 11 safe temporary smoke coverage and initiative-level
-    closeout remain. No paid cross-version workflow or legacy fixture is
-    required, and no real user Core or external system was mutated.
+  - Step 11 completed 2026-08-23 against the merged stack: complete server,
+    desktop, and native suites plus root lint/build, repository organization,
+    an isolated Alembic upgrade to core head `20260812_0001`, and the committed
+    continuous-journey release smoke all pass. No paid cross-version workflow
+    or legacy fixture was required, and no real user Core or external system
+    was mutated. Greenfield-unreachable legacy code paths found during the
+    closeout review are recorded on PCF-009 for gated retirement.

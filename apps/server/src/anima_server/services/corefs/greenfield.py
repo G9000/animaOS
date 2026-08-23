@@ -17,16 +17,20 @@ class GreenfieldBootstrapError(RuntimeError):
     pass
 
 
-def bootstrap_greenfield_content(session: Any) -> dict[str, object]:
-    """Prepare the current-release catalog and activate it before login returns."""
+def bootstrap_greenfield_content(session: Any) -> dict[str, object] | None:
+    """Prepare the current-release catalog and activate it before login returns.
+
+    Sessions without CoreFS capability publish FS-locked instead of failing:
+    Soul-scoped credential replacement deliberately clears CoreFS keys, and a
+    pre-upgrade legacy-credential account has none to derive. Every content
+    API already fails closed without the session's content-authority marker.
+    """
     if (
         session.corefs_session is None
         or session.corefs_keys is None
         or session.runtime_index is None
     ):
-        raise GreenfieldBootstrapError(
-            "The first portable Core release requires encrypted CoreFS key material."
-        )
+        return None
 
     authority = reconcile_content_authority(
         corefs_session=session.corefs_session,

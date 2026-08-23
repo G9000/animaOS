@@ -84,7 +84,7 @@ def test_authenticated_document_source_streams_exact_snapshot_without_host_path(
         corefs_keys=object(),
         content_authority={
             "version": 1,
-            "state": "cutover_complete",
+            "state": "authoritative",
             "families": ["assets", "documents", "knowledge"],
             "generation": 4,
             "catalogHash": "a" * 64,

@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-9-later-release-soul-cleanup-and-legacy-retirement`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-07-12 06:07 MYT
+- Updated: 2026-08-23 06:40 MYT
 - Started:
 - Completed:
 
@@ -36,6 +36,19 @@ In a separate later release, remove converted app data and obsolete ORM mappings
 ## Activity Log
 
 - 2026-07-12 06:07 MYT - Ticket created as an explicitly deferred later-release cleanup.
+- 2026-08-23 06:40 MYT - Recorded three greenfield-unreachable legacy code
+  paths found during PCF-008 closeout review as retirement candidates for this
+  ticket: (1) `apps/server/src/anima_server/services/vault.py` retains the
+  full V1 vault/capsule import-export machinery (about 2.9k lines) although
+  only `export_database_snapshot`/`restore_database_snapshot` are still
+  imported (by `db/user_store.py`); (2)
+  `db/user_store.py:_migrate_legacy_shared_database_locked` still recognizes a
+  legacy shared `anima.db` at the configured `database_url` and migrates it
+  into the canonical Soul path at startup, before any release-field authority
+  check; (3) `services/agent/inner_monologue.py:run_quick_reflection` falls
+  back to the shared `SessionLocal` when no `db_factory` is passed (all
+  production call sites pass one). None is reachable on a greenfield install;
+  retire them here under this ticket's gates.
 
 ## Validation
 

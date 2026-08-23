@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs import logical
-from anima_server.services.corefs.content_authority import authenticated_content_authority
+from anima_server.services.corefs.content_authority import (
+    CoreFsAuthorityUnavailable,
+    authenticated_content_authority,
+)
 from anima_server.services.corefs.diary_migration import (
     PreparedWritingFolder,
     PreparedWritingObject,
@@ -32,7 +35,7 @@ _NEW_FOLDER_PREFIX = re.compile(r"^(\d{1,16})--")
 _MAX_WRITING_OBJECTS = 50_000
 
 
-class WritingAuthorityError(RuntimeError):
+class WritingAuthorityError(RuntimeError, CoreFsAuthorityUnavailable):
     pass
 
 
@@ -115,7 +118,14 @@ def writing_authority_selection(session: object) -> WritingAuthoritySelection | 
 
 
 def writing_corefs_authority_active(session: object) -> bool:
-    return writing_authority_selection(session) is not None
+    """True when canonical CoreFS is the required writing authority.
+
+    Covers both a canonical-capable session and an FS-locked session on an
+    activated Core, which must fail closed instead of writing legacy rows.
+    """
+    from anima_server.services.corefs.content_authority import core_content_authority_active
+
+    return writing_authority_selection(session) is not None or core_content_authority_active()
 
 
 def active_writing_authority_session(user_id: int) -> object | None:
@@ -125,7 +135,7 @@ def active_writing_authority_session(user_id: int) -> object | None:
         (
             session
             for session in reversed(active_unlock_sessions(user_id))
-            if writing_corefs_authority_active(session)
+            if writing_authority_selection(session) is not None
         ),
         None,
     )

@@ -13,6 +13,7 @@ from anima_server.config import settings
 from anima_server.services.core import get_core_id, get_owner_id
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.content_authority import (
+    CoreFsAuthorityUnavailable,
     authenticated_content_authority,
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
@@ -34,7 +35,7 @@ _account_locks_guard = RLock()
 _account_locks: dict[int, RLock] = {}
 
 
-class AccountProfileAuthorityError(RuntimeError):
+class AccountProfileAuthorityError(RuntimeError, CoreFsAuthorityUnavailable):
     pass
 
 
@@ -44,7 +45,7 @@ class CanonicalAccountProfileRecord:
     revision: int
 
 
-def account_profile_corefs_authority_active(session: object) -> bool:
+def _account_marker_active(session: object) -> bool:
     marker = getattr(session, "content_authority", None)
     return (
         isinstance(marker, dict)
@@ -55,8 +56,21 @@ def account_profile_corefs_authority_active(session: object) -> bool:
     )
 
 
+def account_profile_corefs_authority_active(session: object) -> bool:
+    """True when canonical CoreFS is the required account authority.
+
+    Covers both a canonical-capable session and an FS-locked session on an
+    activated Core, which must fail closed instead of writing legacy rows.
+    """
+    from anima_server.services.corefs.content_authority import core_content_authority_active
+
+    return _account_marker_active(session) or core_content_authority_active()
+
+
 def authoritative_setup_complete(*, session: Any, legacy_value: bool) -> bool:
-    if not account_profile_corefs_authority_active(session):
+    # Reads a boolean hint only: an FS-locked session keeps the legacy value
+    # rather than failing authentication flows closed.
+    if not _account_marker_active(session):
         return legacy_value
     profile = read_account_profile_for_session(session)
     if profile is None:

@@ -44,7 +44,22 @@ def ensure_core_manifest() -> dict[str, object]:
         manifest["encryption_mode"] = _detect_encryption_mode()
         manifest["encryption_version"] = 1
         _write_manifest(manifest)
-        return manifest
+        path = get_manifest_path()
+
+    # Latch the manifest for this process, carrying the authority state it
+    # already holds: once startup has created or opened it, later absence or a
+    # parseable downgrade is damage that authority and consent reads must fail
+    # closed on rather than reading as a fresh never-activated environment.
+    #
+    # This runs AFTER releasing the manifest lock on purpose. Authority writes
+    # take the authority lock and then the manifest lock (reconcile ->
+    # _write_record -> update_core_manifest), so taking the authority lock
+    # while still holding the manifest lock inverts that order and deadlocks a
+    # concurrent login against account discovery.
+    from anima_server.services.corefs.authority import latch_manifest_authority
+
+    latch_manifest_authority(manifest, path)
+    return manifest
 
 
 def update_core_manifest(

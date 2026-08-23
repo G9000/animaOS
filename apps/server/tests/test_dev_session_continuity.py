@@ -26,6 +26,16 @@ from anima_server.services.sessions import UnlockSessionStore
 from fastapi import HTTPException
 
 
+@pytest.fixture(autouse=True)
+def _skip_content_authority_reconcile(monkeypatch: pytest.MonkeyPatch):
+    """These store-lifecycle tests use fake native sessions with no Core
+    manifest; content-authority reconciliation has its own API-level coverage."""
+    monkeypatch.setattr(
+        "anima_server.services.corefs.authority.reconcile_content_authority",
+        lambda **_kwargs: None,
+    )
+
+
 def _payload(*, token: str = "token-one") -> dict[str, object]:
     encoded_key = base64.b64encode(b"k" * 32).decode("ascii")
     return {

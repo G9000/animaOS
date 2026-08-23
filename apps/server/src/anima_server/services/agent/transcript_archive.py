@@ -87,11 +87,12 @@ def export_transcript(
     episode_ids: list[str] | None = None,
     summary: str | None = None,
 ) -> TranscriptExportResult:
+    from anima_server.services.corefs.content_authority import core_content_authority_active
     from anima_server.services.corefs.conversation_authority import (
         active_conversation_authority_session,
     )
 
-    if active_conversation_authority_session(user_id) is not None:
+    if active_conversation_authority_session(user_id) is not None or core_content_authority_active():
         raise RuntimeError("Legacy transcript export is disabled after CoreFS conversation cutover.")
     transcripts_dir.mkdir(parents=True, exist_ok=True)
 

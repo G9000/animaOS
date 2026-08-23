@@ -54,7 +54,10 @@ class PresenceConfigValues:
 
 def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValues:
     """Read portable presence from CoreFS; require unlock once authority is active."""
-    from anima_server.services.corefs.authority import AuthorityState, read_authority_record
+    from anima_server.services.corefs.authority import (
+        AuthorityState,
+        core_authority_state_or_none,
+    )
     from anima_server.services.corefs.preferences import (
         active_preference_authority_session,
         read_canonical_presence_values,
@@ -63,7 +66,12 @@ def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValue
     authority_session = active_preference_authority_session(user_id)
     if authority_session is not None:
         return read_canonical_presence_values(session=authority_session)
-    if read_authority_record().state is AuthorityState.AUTHORITATIVE:
+    # An environment that never activated first-release authority (no manifest,
+    # or a pre-release manifest that fails closed at unlock) keeps the legacy
+    # row fallback; an activated Core requires the canonical read above, and a
+    # damaged/unparseable manifest raises here so consent gates fail closed
+    # instead of reverting to legacy defaults.
+    if core_authority_state_or_none() is AuthorityState.AUTHORITATIVE:
         raise RuntimeError("Canonical presence preferences require an unlocked CoreFS session.")
 
     row = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))

@@ -60,12 +60,12 @@ def resolve_document_byte_source(
 ) -> str | CoreFsByteSource:
     """Select canonical bytes after cutover; otherwise retain legacy authority."""
     from anima_server.services.corefs.asset_authority import (
-        active_asset_authority_session,
+        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
     )
     from anima_server.services.corefs.diary_migration import migration_opaque_id
 
-    session = active_asset_authority_session(user_id)
+    session = canonical_asset_session_or_legacy(user_id)
     if session is not None:
         object_uri = document.storage_path
         if not object_uri.startswith("corefs://object/"):
@@ -85,12 +85,12 @@ def register_document(
 ) -> RuntimeDocument:
     from anima_server.services.corefs.asset_authority import (
         CoreFsSourceError,
-        active_asset_authority_session,
+        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
         require_legacy_asset_mutation_allowed,
     )
 
-    session = active_asset_authority_session(registration.user_id)
+    session = canonical_asset_session_or_legacy(registration.user_id)
     if session is not None:
         source = open_corefs_byte_source(
             session=session,

@@ -291,3 +291,40 @@ def test_authoritative_presence_uses_only_canonical_preferences(
         )
         assert decoded.values["presence"]["enabled"] is True
         assert decoded.values["presence"]["customInstruction"] == "Canonical value"
+
+
+def test_presence_read_fails_closed_on_unparseable_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    managed_tmp_path,
+) -> None:
+    """A damaged manifest must not let consent reads fall back to legacy
+    defaults (PR #148 review, P1); only a genuinely never-activated
+    environment may use the legacy row fallback."""
+    from unittest.mock import MagicMock
+
+    from anima_server.config import settings
+    from anima_server.services.corefs.authority import AuthorityStateError
+
+    core = managed_tmp_path / "core"
+    core.mkdir()
+    monkeypatch.setattr(settings, "data_dir", core)
+
+    # Never-activated environment: no manifest file -> legacy defaults with
+    # every initiative gate off.
+    db = MagicMock()
+    db.scalar.return_value = None
+    values = get_presence_config_values(db, 7)
+    assert values.initiative_enabled is False
+
+    # Damaged manifest: fail closed instead of reverting consent to defaults.
+    (core / "manifest.json").write_text("{ this is not json", encoding="utf-8")
+    with pytest.raises(AuthorityStateError):
+        get_presence_config_values(db, 7)
+
+    # A manifest this process has observed must also fail closed if it later
+    # disappears; absence only means never-activated before first observation.
+    (core / "manifest.json").write_text("{}", encoding="utf-8")
+    assert get_presence_config_values(db, 7).initiative_enabled is False
+    (core / "manifest.json").unlink()
+    with pytest.raises(AuthorityStateError):
+        get_presence_config_values(db, 7)

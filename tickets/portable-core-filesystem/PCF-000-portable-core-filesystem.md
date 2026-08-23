@@ -11,7 +11,7 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-16 16:56 MYT
+- Updated: 2026-08-23 07:45 MYT
 - Started: 2026-07-13 21:27 MYT
 - Completed:
 
@@ -30,7 +30,7 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-005 | Canonical threads, messages, and transcript merge | done | PCF-003 |
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | done | PCF-003, PCF-005 |
 | PCF-007 | Account profile, tasks, preferences, and credentials | done | PCF-004, PCF-006 |
-| PCF-008 | Cutover, transfer, and first-release validation | in_progress | PCF-001 through PCF-007 |
+| PCF-008 | Cutover, transfer, and first-release validation | done | PCF-001 through PCF-007 |
 | PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
 | PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
 | PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | done | none |
@@ -87,6 +87,9 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 - PCF-006 - Gallery, attachments, documents, and knowledge sources (completed locally 2026-08-13 12:41 MYT).
 - PCF-007 - Account profile, tasks, preferences, and credentials (completed locally 2026-08-13 18:40 MYT).
 - PCF-011 - Windows lease-diagnostic CI flake (completed locally 2026-08-13 12:52 MYT).
+- PCF-008 - Cutover, transfer, and first-release validation (stack PRs
+  #142-#147 merged 2026-08-22; Step 11 full validation and closeout completed
+  2026-08-23 07:45 MYT).
 
 ## Activity Log
 
@@ -594,6 +597,18 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   `0981463f` and completed its local commit step. The child and parent remain
   `in_progress`; publication does not close the remaining safe-smoke and
   initiative-closeout acceptance.
+- 2026-08-23 07:45 MYT - PCF-008 is done. The verified ticket stack (PRs
+  #142-#147) merged to `main` 2026-08-22 as squash `1a99fe0b`, and the
+  deferred Step 11 full validation ran against that merged tree: it exposed
+  `178` server-test failures whose root causes (Soul-only session bootstrap,
+  presence authority reads, eval transcript import, canonical chat
+  history/attachment metadata, stale pre-release test expectations, and a
+  repository-root test-isolation leak) were fixed and re-validated, and a
+  committed continuous-journey release smoke now covers the feasible Step 11
+  smoke list. First-release scope is complete; the parent remains
+  `in_progress` only for the separately gated later-release children PCF-009
+  (Soul cleanup/legacy retirement, with newly recorded retirement candidates)
+  and PCF-010 (retained-catalog GC and key retirement).
 
 ## Validation
 

@@ -72,6 +72,7 @@ from anima_server.services.corefs.asset_authority import (
 from anima_server.services.corefs.conversation_authority import (
     canonical_message_api_id,
     conversation_corefs_authority_active,
+    get_active_canonical_thread,
     list_canonical_threads,
 )
 from anima_server.services.corefs.conversation_mutations import (
@@ -246,11 +247,10 @@ async def get_chat_history(
 ) -> list[ChatHistoryMessage]:
     unlock_session = await require_unlocked_user_async(request, userId)
     if conversation_corefs_authority_active(unlock_session):
-        canonical = [
-            message
-            for view in list_canonical_threads(session=unlock_session)
-            for message in view.messages
-        ]
+        # Match the legacy contract: history is the ACTIVE thread's transcript,
+        # so reset/clear rotating to a fresh thread empties the chat pane.
+        active_view = get_active_canonical_thread(session=unlock_session)
+        canonical = list(active_view.messages) if active_view is not None else []
         canonical.sort(key=lambda message: (message.created_at, message.sequence))
         try:
             return [

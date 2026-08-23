@@ -13,6 +13,16 @@ from anima_server.services.corefs.indexer import (
 from anima_server.services.sessions import UnlockSessionStore
 
 
+@pytest.fixture(autouse=True)
+def _skip_content_authority_reconcile(monkeypatch: pytest.MonkeyPatch):
+    """Index-lifecycle tests use fake native sessions with no Core manifest;
+    content-authority reconciliation has its own API-level coverage."""
+    monkeypatch.setattr(
+        "anima_server.services.corefs.authority.reconcile_content_authority",
+        lambda **_kwargs: None,
+    )
+
+
 def test_indexer_publishes_catalog_before_text_and_semantic_readiness() -> None:
     index = CoreFSProgressiveIndex("core-index")
 

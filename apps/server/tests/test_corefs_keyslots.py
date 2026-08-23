@@ -1118,8 +1118,8 @@ def test_fs_only_credentials_rotate_without_soul_database_or_unlock_session() ->
         unlock_session_store.clear()
         clear_sqlcipher_key()
         dispose_all_user_engines()
-        user_dir = settings.data_dir / "users" / "0"
-        shutil.rmtree(user_dir)
+        soul_dir = settings.data_dir / "soul"
+        shutil.rmtree(soul_dir)
 
         password_change = client.post(
             "/api/auth/corefs/change-password",
@@ -1149,7 +1149,7 @@ def test_fs_only_credentials_rotate_without_soul_database_or_unlock_session() ->
         )
         assert confirmed.status_code == 200
         assert confirmed.json() == {"success": True, "scope": "fs"}
-        assert not user_dir.exists()
+        assert not soul_dir.exists()
 
 
 def test_fs_recovery_prepare_maps_invalid_current_phrase_to_unauthorized() -> None:

@@ -25,6 +25,10 @@ from anima_server.services.agent.state import (
     AgentRetrievalStats,
     AgentRetrievalTrace,
 )
+from anima_server.services.corefs.conversation_authority import (
+    get_active_canonical_thread,
+    list_canonical_threads,
+)
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
@@ -248,25 +252,42 @@ def test_chat_reset_clears_scaffold_thread_state() -> None:
             headers=headers,
             json={"userId": user_id},
         )
+        history_after_reset = client.get(
+            "/api/chat/history",
+            headers=headers,
+            params={"userId": user_id, "limit": 10},
+        )
         after_reset = client.post(
             "/api/chat",
             headers=headers,
             json={"message": "again", "userId": user_id},
         )
+        # Canonical CoreFS threads carry the authoritative lifecycle: the
+        # pre-reset thread is closed and a fresh active thread takes over.
+        session = unlock_session_store.resolve(str(user["unlockToken"]))
+        assert session is not None
+        views = list_canonical_threads(session=session)
+        assert sorted(view.document.status for view in views) == ["active", "closed"]
+        active = next(view for view in views if view.document.status == "active")
+        assert next(message.content for message in active.messages) == "again"
+        # Runtime rows are sealed per-thread references; each turn recorded
+        # its run/step, and no visible bodies leak into Runtime.
         rt_factory = get_runtime_session_factory()
-        session = rt_factory()
+        session_db = rt_factory()
         try:
-            threads = session.query(RuntimeThread).order_by(RuntimeThread.id).all()
-            assert len(threads) == 2
-            assert [thread.status for thread in threads] == ["closed", "active"]
-            assert session.query(RuntimeMessage).count() == 6
-            assert session.query(RuntimeRun).count() == 2
-            assert session.query(RuntimeStep).count() == 2
+            assert session_db.query(RuntimeThread).count() == 2
+            assert session_db.query(RuntimeRun).count() == 2
+            assert session_db.query(RuntimeStep).count() == 2
+            messages = session_db.query(RuntimeMessage).all()
+            assert len(messages) == 4
+            assert all(message.content_text in (None, "") for message in messages)
         finally:
-            session.close()
+            session_db.close()
 
     assert reset_response.status_code == 200
     assert reset_response.json() == {"status": "reset"}
+    assert history_after_reset.status_code == 200
+    assert history_after_reset.json() == []
     assert "turn 1" in after_reset.json()["response"]
 
 
@@ -366,11 +387,18 @@ def test_chat_persists_runtime_rows() -> None:
         assert run.stop_reason == "terminal_tool"
         assert step.run_id == run.id
         assert step.step_index == 0
-        assert thread.next_message_sequence == 4
-        assert [message.role for message in messages] == ["user", "assistant", "tool"]
-        assert messages[0].content_text == "hello"
-        assert "turn 1" in messages[1].content_text
-        assert "turn 1" in messages[2].content_text
+        # Canonical CoreFS holds the visible transcript; Runtime rows retain
+        # only sealed references with null bodies.
+        assert thread.next_message_sequence == 3
+        assert [message.role for message in messages] == ["user", "assistant"]
+        assert all(message.content_text in (None, "") for message in messages)
+        session = unlock_session_store.resolve(str(user["unlockToken"]))
+        assert session is not None
+        view = get_active_canonical_thread(session=session)
+        assert view is not None
+        assert [message.role for message in view.messages] == ["user", "assistant"]
+        assert view.messages[0].content == "hello"
+        assert "turn 1" in view.messages[1].content
 
 
 def test_chat_stream_returns_sse_events() -> None:
@@ -1020,100 +1048,76 @@ def test_chat_invalid_persona_template_returns_error() -> None:
 
 
 def test_chat_compacts_thread_context_into_summary() -> None:
-    original_provider = settings.agent_provider
-    original_model = settings.agent_model
-    original_max_tokens = settings.agent_max_tokens
-    original_trigger_ratio = settings.agent_compaction_trigger_ratio
-    original_keep_last_messages = settings.agent_compaction_keep_last_messages
+    """Legacy-mode compaction folds older in-context rows into one summary row.
 
-    try:
-        settings.agent_provider = "scaffold"
-        settings.agent_model = "llama3.2"
-        settings.agent_max_tokens = 60
-        settings.agent_compaction_trigger_ratio = 0.5
-        settings.agent_compaction_keep_last_messages = 2
-        invalidate_agent_runtime_cache()
+    Post-greenfield, canonical CoreFS accounts skip this path (turn context is
+    bounded from canonical snapshots), so the compaction module is exercised
+    directly against seeded legacy-style Runtime rows.
+    """
+    from anima_server.services.agent.compaction import compact_thread_context
+    from anima_server.services.agent.persistence import append_message, get_or_create_thread
+    from anima_server.services.agent.sequencing import reserve_message_sequences
 
-        from unittest.mock import patch as _patch
+    rt_factory = get_runtime_session_factory()
+    with rt_factory() as runtime_db:
+        thread = get_or_create_thread(runtime_db, 7)
+        run = RuntimeRun(
+            thread_id=thread.id,
+            user_id=7,
+            provider="scaffold",
+            model="test",
+            mode="blocking",
+            status="completed",
+        )
+        runtime_db.add(run)
+        runtime_db.flush()
 
-        # Pin a tiny context budget so a few short messages trigger
-        # compaction (the legacy fallback no longer lets agent_max_tokens
-        # double as the context budget).
-        with _patch(
-            "anima_server.services.agent.service.resolve_context_budget_tokens",
-            return_value=60,
-        ), _client() as client:
-            user = _register_user(client, username="compact-me")
-            headers = {"x-anima-unlock": str(user["unlockToken"])}
-            user_id = int(user["id"])
-
-            first = client.post(
-                "/api/chat",
-                headers=headers,
-                json={
-                    "message": "first message with enough text to trigger compaction later",
-                    "userId": user_id,
-                },
+        texts = [
+            ("user", "first message with enough text to trigger compaction later"),
+            ("assistant", "first reply with enough text to trigger compaction later"),
+            ("user", "second message with enough text to trigger compaction later"),
+            ("assistant", "second reply with enough text to trigger compaction later"),
+            ("user", "third message with enough text to trigger compaction later"),
+            ("assistant", "third reply with enough text to trigger compaction later"),
+        ]
+        sequence_id = reserve_message_sequences(
+            runtime_db, thread_id=thread.id, count=len(texts)
+        )
+        for offset, (role, text) in enumerate(texts):
+            append_message(
+                runtime_db,
+                thread=thread,
+                run_id=run.id,
+                step_id=None,
+                sequence_id=sequence_id + offset,
+                role=role,
+                content_text=text,
             )
-            second = client.post(
-                "/api/chat",
-                headers=headers,
-                json={
-                    "message": "second message with enough text to trigger compaction later",
-                    "userId": user_id,
-                },
-            )
-            third = client.post(
-                "/api/chat",
-                headers=headers,
-                json={
-                    "message": "third message with enough text to trigger compaction later",
-                    "userId": user_id,
-                },
-            )
+        runtime_db.commit()
 
-            rt_factory = get_runtime_session_factory()
-            session = rt_factory()
-            try:
-                all_messages = (
-                    session.query(RuntimeMessage)
-                    .order_by(RuntimeMessage.sequence_id)
-                    .all()
-                )
-                thread = session.query(RuntimeThread).one()
-                in_context_messages = (
-                    session.query(RuntimeMessage)
-                    .filter(RuntimeMessage.is_in_context.is_(True))
-                    .order_by(RuntimeMessage.sequence_id)
-                    .all()
-                )
-                compacted_messages = (
-                    session.query(RuntimeMessage)
-                    .filter(RuntimeMessage.is_in_context.is_(False))
-                    .order_by(RuntimeMessage.sequence_id)
-                    .all()
-                )
-            finally:
-                session.close()
-    finally:
-        settings.agent_provider = original_provider
-        settings.agent_model = original_model
-        settings.agent_max_tokens = original_max_tokens
-        settings.agent_compaction_trigger_ratio = original_trigger_ratio
-        settings.agent_compaction_keep_last_messages = original_keep_last_messages
-        invalidate_agent_runtime_cache()
+        result = compact_thread_context(
+            runtime_db,
+            thread=thread,
+            run_id=run.id,
+            trigger_token_limit=1,
+            keep_last_messages=2,
+            reserved_prompt_tokens=0,
+        )
+        assert result is not None
+        runtime_db.commit()
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert third.status_code == 200
-    assert "turn 3" in third.json()["response"]
-    summary_messages = [message for message in in_context_messages if message.role == "summary"]
-    assert len(summary_messages) == 1
-    # Summary text is now stored in the runtime DB (plaintext in test mode).
-    assert summary_messages[0].content_text
-    assert thread.next_message_sequence == all_messages[-1].sequence_id + 1
-    assert any(message.role == "user" for message in compacted_messages)
-    assert any(message.role == "assistant" for message in compacted_messages)
+        all_messages = (
+            runtime_db.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
+        )
+        in_context_messages = [m for m in all_messages if m.is_in_context]
+        compacted_messages = [m for m in all_messages if not m.is_in_context]
+
+        summary_messages = [m for m in in_context_messages if m.role == "summary"]
+        assert len(summary_messages) == 1
+        assert summary_messages[0].content_text
+        assert thread.next_message_sequence == all_messages[-1].sequence_id + 1
+        assert any(m.role == "user" for m in compacted_messages)
+        assert any(m.role == "assistant" for m in compacted_messages)
 
 
 def test_sleep_endpoint_maps_task_run_results_to_counts() -> None:

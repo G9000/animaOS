@@ -379,10 +379,10 @@ def _load_owned_document_chunks(
 
 def _active_document_index(ctx: Any) -> Any | None:
     from anima_server.services.corefs.asset_authority import (
-        active_asset_authority_session,
+        canonical_asset_session_or_legacy,
     )
 
-    session = active_asset_authority_session(ctx.user_id)
+    session = canonical_asset_session_or_legacy(ctx.user_id)
     index = getattr(session, "runtime_index", None) if session is not None else None
     return index
 

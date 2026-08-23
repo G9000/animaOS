@@ -11,7 +11,12 @@ from anima_server.models import SoulKeyslot, User
 from anima_server.services.agent.llm import LLMInvocationError
 from anima_server.services.core import get_manifest_path, update_core_manifest
 from anima_server.services.corefs.keyslots import manifest_has_versioned_key_hierarchy
-from anima_server.services.sessions import get_active_dek, get_sqlcipher_key, set_sqlcipher_key
+from anima_server.services.sessions import (
+    get_active_dek,
+    get_sqlcipher_key,
+    set_sqlcipher_key,
+    unlock_session_store,
+)
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 
@@ -454,3 +459,109 @@ def test_create_ai_chat_hides_provider_error_details() -> None:
     assert response.status_code == 503
     assert response.json() == {"error": "AI provider error occurred"}
     log_exception.assert_called_once()
+
+
+def test_fs_locked_session_on_activated_core_fails_content_closed() -> None:
+    """A session without CoreFS capability on an activated Core must not reach
+    a legacy content branch (PR #148 review, P1): legacy writes would fork
+    state the canonical catalog never sees. The reachable path is the retained
+    legacy-credential upgrade window, whose Soul-only login must stay valid
+    for the credential upgrade itself while content fails closed."""
+    with managed_test_client("anima-auth-fs-locked-") as client:
+        registered = _register_user(client, password="pw123456")
+        user_id = int(registered["id"])
+        headers = {"x-anima-unlock": str(registered["unlockToken"])}
+
+        folder = client.post(
+            "/api/diary/folders",
+            headers=headers,
+            json={"userId": user_id, "name": "Before"},
+        )
+        assert folder.status_code == 201, folder.text
+
+        with get_user_session_factory(0)() as db:
+            db.query(SoulKeyslot).delete()
+            db.commit()
+
+        def make_legacy(manifest: dict[str, object]) -> None:
+            manifest["keyslots"] = []
+            manifest.pop("active_password_credential_generation", None)
+            manifest.pop("active_recovery_credential_generation", None)
+            manifest.pop("frk_rotation", None)
+
+        update_core_manifest(make_legacy)
+        # Drop every canonical session so only the FS-locked login remains;
+        # otherwise a still-unlocked session legitimately serves canonical
+        # reads and the locked path is never exercised.
+        unlock_session_store.clear()
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "pw123456"},
+        )
+        assert login.status_code == 200, login.text
+        locked_headers = {"x-anima-unlock": str(login.json()["unlockToken"])}
+
+        # Authentication survives for the credential upgrade, but content
+        # routes fail closed instead of writing or serving legacy state.
+        assert client.get("/api/auth/me", headers=locked_headers).status_code == 200
+        blocked_entry = client.post(
+            "/api/diary",
+            headers=locked_headers,
+            json={
+                "userId": user_id,
+                "entryDate": "2026-08-23",
+                "title": "Must not fork",
+                "body": "This body must never reach legacy SQL.",
+            },
+        )
+        assert blocked_entry.status_code in {400, 409}, blocked_entry.text
+        blocked_task = client.post(
+            "/api/tasks",
+            headers=locked_headers,
+            json={"userId": user_id, "text": "Must not fork", "priority": 1},
+        )
+        assert blocked_task.status_code in {400, 409}, blocked_task.text
+        blocked_history = client.get(
+            "/api/chat/history",
+            headers=locked_headers,
+            params={"userId": user_id, "limit": 10},
+        )
+        assert blocked_history.status_code in {400, 409}, blocked_history.text
+
+        # Asset/document/knowledge READS must also fail closed rather than
+        # falling back to Runtime rows and plaintext files, which could
+        # resurface content canonical state superseded or deleted.
+        blocked_knowledge = client.get(
+            "/api/knowledge/sources",
+            headers=locked_headers,
+            params={"userId": user_id},
+        )
+        assert blocked_knowledge.status_code == 409, blocked_knowledge.text
+        assert (
+            blocked_knowledge.json()["details"]["code"]
+            == "corefs_content_authority_unavailable"
+        )
+
+        # A PDF upload must fail before any plaintext document file is written.
+        documents_root = settings.data_dir / "users" / str(user_id) / "documents"
+        before = set(documents_root.rglob("*")) if documents_root.exists() else set()
+        blocked_upload = client.post(
+            "/api/documents/pdf",
+            headers=locked_headers,
+            data={"userId": str(user_id)},
+            files={"file": ("locked.pdf", b"%PDF-1.4 locked", "application/pdf")},
+        )
+        assert blocked_upload.status_code in {400, 409}, blocked_upload.text
+        after = set(documents_root.rglob("*")) if documents_root.exists() else set()
+        assert after == before, "an FS-locked upload must not create plaintext files"
+
+        # The avatar endpoint must not fall through to the legacy directory.
+        avatar_dir = settings.data_dir / "users" / str(user_id) / "avatars"
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        (avatar_dir / "agent.png").write_bytes(b"legacy-avatar-bytes")
+        blocked_avatar = client.get(
+            f"/api/consciousness/{user_id}/agent-profile/avatar",
+            headers=locked_headers,
+        )
+        assert blocked_avatar.status_code in {404, 409}, blocked_avatar.status_code
+        assert b"legacy-avatar-bytes" not in blocked_avatar.content

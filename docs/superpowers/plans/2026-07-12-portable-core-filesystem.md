@@ -1165,7 +1165,7 @@ The prior migration/capsule/package matrix is historical evidence only. Replace
 it with clean-bootstrap, unsupported-input rejection, current-format V2
 transfer, and canonical-authority coverage after compatibility code is removed.
 
-- [ ] **Step 11: Run full validation**
+- [x] **Step 11: Run full validation**
 
 ```powershell
 $env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test
@@ -1189,6 +1189,19 @@ fixture smoke operations listed below; no real user Core, pointer, or recovery
 activation may be used.
 
 Then start the app, verify `GET /health`, and smoke-test unlock/auth, chat, thread history, diary/drafts, notes through CoreFS, gallery, document upload/reindex, tasks, settings, memory promotion/provenance, lock, restart, Runtime deletion/rebuild, a full single-file transfer, FAT32-like multipart transfer, scoped credential replacement, degraded Soul-only `filesystem_missing` recovery, CoreFS-only recovery/export mode plus V1 reattachment rejection, interrupted removable-media export, interrupted active-Core pointer swap, rollback to the retained old Core, and clean-environment restore.
+
+Completion (2026-08-23): the full validation ran against the merged greenfield
+stack and everything it exposed was fixed (see PCF-008's activity log for the
+root causes). The smoke list is satisfied by a committed continuous-journey
+release smoke (`apps/server/tests/test_pcf008_greenfield_smoke.py` — health,
+register/unlock, diary/tasks/presence/threads content, relock/re-login
+persistence, full V2 export plus verified same-volume import staging,
+Soul-only `filesystem_missing` and CoreFS-only `recovery_only` staging, and
+V1 reattachment rejection) together with the dedicated deterministic suites
+for multipart/FAT32 publication, interrupted export/import/pointer-swap crash
+seams, retained-Core rollback, scoped credential replacement, recovery
+browsing/re-export, Runtime deletion/rebuild, and restart continuity. No real
+user Core, pointer, or recovery activation was touched.
 
 - [x] **Step 12: Commit the greenfield first-release authority**
 

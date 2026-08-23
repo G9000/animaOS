@@ -11,7 +11,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs import logical
-from anima_server.services.corefs.content_authority import authenticated_content_authority
+from anima_server.services.corefs.content_authority import (
+    CoreFsAuthorityUnavailable,
+    authenticated_content_authority,
+)
 from anima_server.services.corefs.messages import (
     ConversationFormatError,
     EncodedMessageSegment,
@@ -36,6 +39,10 @@ class ConversationAuthoritySelection:
     @property
     def snapshot(self) -> logical.CoreFsValidationSnapshot:
         return logical.CoreFsValidationSnapshot(self.generation, self.catalog_hash)
+
+
+class ConversationAuthorityError(PermissionError, CoreFsAuthorityUnavailable):
+    """Raised when canonical conversation authority cannot serve a session."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,7 +99,16 @@ def conversation_authority_selection(
 
 
 def conversation_corefs_authority_active(session: object) -> bool:
-    return conversation_authority_selection(session) is not None
+    """Return whether canonical CoreFS is the required conversation authority.
+
+    True either when this session can reach canonical conversations or when
+    the Core manifest is authoritative — an FS-locked session on an activated
+    Core must take the canonical branch (and fail closed there) instead of
+    writing legacy state the canonical catalog never sees.
+    """
+    from anima_server.services.corefs.content_authority import core_content_authority_active
+
+    return conversation_authority_selection(session) is not None or core_content_authority_active()
 
 
 def active_conversation_authority_session(user_id: int) -> object | None:
@@ -102,18 +118,20 @@ def active_conversation_authority_session(user_id: int) -> object | None:
         (
             session
             for session in reversed(active_unlock_sessions(user_id))
-            if conversation_corefs_authority_active(session)
+            if conversation_authority_selection(session) is not None
         ),
         None,
     )
 
 
 def any_conversation_corefs_authority_active() -> bool:
-    """Return true when any live unlock has accepted conversation cutover."""
+    """Return true when canonical conversation authority governs this Core."""
+    from anima_server.services.corefs.content_authority import core_content_authority_active
     from anima_server.services.sessions import all_active_unlock_sessions
 
-    return any(
-        conversation_corefs_authority_active(session) for session in all_active_unlock_sessions()
+    return core_content_authority_active() or any(
+        conversation_authority_selection(session) is not None
+        for session in all_active_unlock_sessions()
     )
 
 
@@ -449,10 +467,10 @@ def _require_selection(session: object) -> ConversationAuthoritySelection:
     try:
         marker = authenticated_content_authority(session, family="conversations")
     except RuntimeError as exc:
-        raise PermissionError("CoreFS conversation authority could not be refreshed") from exc
+        raise ConversationAuthorityError("CoreFS conversation authority could not be refreshed") from exc
     if marker is None:
-        raise PermissionError("CoreFS conversation authority is not active")
+        raise ConversationAuthorityError("CoreFS conversation authority is not active")
     selection = conversation_authority_selection(session)
     if selection is None:
-        raise PermissionError("CoreFS conversation authority is not active")
+        raise ConversationAuthorityError("CoreFS conversation authority is not active")
     return selection

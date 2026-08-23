@@ -1070,7 +1070,9 @@ class TestHybridSearchIntegration:
             }
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(self):
+    async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(
+        self, tmp_path: Path
+    ):
         """The live hybrid path should use the Rust memory index when it is clean."""
         from anima_server.services import anima_core_retrieval as retrieval_module
         from anima_server.services.agent import bm25_index as bm25_module
@@ -1089,7 +1091,9 @@ class TestHybridSearchIntegration:
                     "anima_server.services.agent.embeddings.generate_embedding",
                     side_effect=mock_embed_fail,
                 ),
-                patch.object(retrieval_module, "get_retrieval_root", return_value=Path("indices")),
+                patch.object(
+                    retrieval_module, "get_retrieval_root", return_value=tmp_path / "indices"
+                ),
                 patch.object(retrieval_module, "is_retrieval_family_dirty", return_value=False),
                 patch.object(
                     retrieval_module,
@@ -1115,7 +1119,9 @@ class TestHybridSearchIntegration:
                 mock_search.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_semantic_search_uses_rust_memory_index_when_available(self):
+    async def test_semantic_search_uses_rust_memory_index_when_available(
+        self, tmp_path: Path
+    ):
         """The semantic leg should prefer Rust-backed vector search when available."""
         from anima_server.services import anima_core_retrieval as retrieval_module
         from anima_server.services.agent.embeddings import semantic_search
@@ -1134,7 +1140,9 @@ class TestHybridSearchIntegration:
                     "anima_server.services.agent.embeddings.generate_embedding",
                     side_effect=mock_embed,
                 ),
-                patch.object(retrieval_module, "get_retrieval_root", return_value=Path("indices")),
+                patch.object(
+                    retrieval_module, "get_retrieval_root", return_value=tmp_path / "indices"
+                ),
                 patch.object(retrieval_module, "is_retrieval_family_dirty", return_value=False),
                 patch.object(
                     retrieval_module,
@@ -1161,7 +1169,9 @@ class TestHybridSearchIntegration:
                 mock_search.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_semantic_search_falls_back_when_rust_vector_search_has_no_hits(self):
+    async def test_semantic_search_falls_back_when_rust_vector_search_has_no_hits(
+        self, tmp_path: Path
+    ):
         """Rust semantic search should not suppress the existing vector-store fallback."""
         from anima_server.services import anima_core_retrieval as retrieval_module
         from anima_server.services.agent.embeddings import semantic_search
@@ -1179,7 +1189,9 @@ class TestHybridSearchIntegration:
                     "anima_server.services.agent.embeddings.generate_embedding",
                     side_effect=mock_embed,
                 ),
-                patch.object(retrieval_module, "get_retrieval_root", return_value=Path("indices")),
+                patch.object(
+                    retrieval_module, "get_retrieval_root", return_value=tmp_path / "indices"
+                ),
                 patch.object(retrieval_module, "is_retrieval_family_dirty", return_value=False),
                 patch.object(retrieval_module, "memory_index_vector_search", return_value=[]),
                 patch(

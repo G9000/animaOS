@@ -42,13 +42,13 @@ def read_attachment_bytes(path: str) -> bytes:
     if corefs_match is not None:
         from anima_server.services.corefs.asset_authority import (
             CoreFsSourceError,
-            active_asset_authority_session,
+            canonical_asset_session_or_legacy,
             open_corefs_byte_source,
         )
 
         user_id = int(corefs_match.group(1))
         stable_id = corefs_match.group(2)
-        session = active_asset_authority_session(user_id)
+        session = canonical_asset_session_or_legacy(user_id)
         if session is None:
             raise AttachmentReadError("Canonical image attachment is unavailable.")
         try:
@@ -136,6 +136,7 @@ def resolve_corefs_chat_attachment(*, session: Any, object_uri: str) -> StoredAt
         kind="image",
         mime_type=source.content_type,
         path=_corefs_provider_path(int(session.user_id), source.stable_id),
+        filename=source.name or None,
         size_bytes=source.size,
         sha256=source.content_sha256,
         storage_path=object_uri,
