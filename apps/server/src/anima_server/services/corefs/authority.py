@@ -19,16 +19,37 @@ _AUTHORITY_FIELD = "corefs_authority"
 _AUTHORITY_VERSION = 1
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 _authority_lock = RLock()
-# Manifest paths this process has successfully read (or created at startup).
-# Once observed, a missing manifest file is damage and must fail closed, not
-# read as a never-activated environment (PR #148 review, P1).
+# Manifest paths this process has successfully read (or created at startup),
+# plus those observed in the irreversible authoritative state. Once observed,
+# a manifest that disappears or reports a lesser state is damage and must fail
+# closed, not read as a never-activated environment (PR #148 review, P1).
 _observed_manifest_paths: set[str] = set()
+_observed_authoritative_paths: set[str] = set()
 
 
-def mark_manifest_observed(path: Any = None) -> None:
-    resolved = get_manifest_path() if path is None else path
+def mark_manifest_observed(path: Any = None, *, authoritative: bool = False) -> None:
+    resolved = str(get_manifest_path() if path is None else path)
     with _authority_lock:
-        _observed_manifest_paths.add(str(resolved))
+        _observed_manifest_paths.add(resolved)
+        if authoritative:
+            _observed_authoritative_paths.add(resolved)
+
+
+def _reject_authority_regression(path: Any, state: AuthorityState | None) -> None:
+    """Reject a manifest that lost authority this process already observed.
+
+    CoreFS activation is irreversible, so a manifest replaced in place with
+    valid JSON that reports a lesser state — an empty object, a manifest
+    without the release field, or an older pending-activation record — is
+    damage rather than evidence that authority was never activated.
+    """
+    resolved = str(path)
+    with _authority_lock:
+        was_authoritative = resolved in _observed_authoritative_paths
+    if was_authoritative and state is not AuthorityState.AUTHORITATIVE:
+        raise AuthorityStateError(
+            "ANIMA CORE manifest lost CoreFS authority this process already observed"
+        )
 
 CONTENT_AUTHORITY_FAMILIES = (
     "account",
@@ -88,10 +109,14 @@ def read_authority_record() -> AuthorityRecord:
         raise AuthorityStateError("ANIMA CORE manifest is invalid")
     mark_manifest_observed(path)
     if manifest.get(_RELEASE_FIELD) != PORTABLE_CORE_RELEASE:
+        _reject_authority_regression(path, None)
         raise AuthorityStateError(
             "This pre-release Core is not supported; create a new first-release ANIMA CORE."
         )
-    return _record_from_manifest(manifest)
+    record = _record_from_manifest(manifest)
+    _reject_authority_regression(path, record.state)
+    mark_manifest_observed(path, authoritative=record.state is AuthorityState.AUTHORITATIVE)
+    return record
 
 
 def core_authority_state_or_none() -> AuthorityState | None:
@@ -101,10 +126,10 @@ def core_authority_state_or_none() -> AuthorityState | None:
     without the first-release field, means no CoreFS authority was ever
     activated in this environment (fresh bootstrap, pre-registration, or an
     unsupported pre-release Core that fails closed at unlock). A manifest that
-    exists but cannot be parsed — or one this process already observed that
-    has since disappeared — is indistinguishable damage and raises so consent
-    and authority decisions fail closed rather than falling back to legacy
-    state.
+    cannot be parsed, one this process already observed that has since
+    disappeared, or one that lost previously observed authority raises instead,
+    so consent and authority decisions fail closed rather than falling back to
+    legacy state.
     """
     path = get_manifest_path()
     if not path.is_file():
@@ -122,9 +147,14 @@ def core_authority_state_or_none() -> AuthorityState | None:
     if not isinstance(manifest, dict):
         raise AuthorityStateError("ANIMA CORE manifest is invalid")
     mark_manifest_observed(path)
-    if manifest.get(_RELEASE_FIELD) != PORTABLE_CORE_RELEASE:
-        return None
-    return _record_from_manifest(manifest).state
+    state = (
+        _record_from_manifest(manifest).state
+        if manifest.get(_RELEASE_FIELD) == PORTABLE_CORE_RELEASE
+        else None
+    )
+    _reject_authority_regression(path, state)
+    mark_manifest_observed(path, authoritative=state is AuthorityState.AUTHORITATIVE)
+    return state
 
 
 def prepare_authority_activation(*, generation: int, catalog_hash: str) -> AuthorityRecord:

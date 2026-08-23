@@ -11,7 +11,12 @@ from anima_server.models import SoulKeyslot, User
 from anima_server.services.agent.llm import LLMInvocationError
 from anima_server.services.core import get_manifest_path, update_core_manifest
 from anima_server.services.corefs.keyslots import manifest_has_versioned_key_hierarchy
-from anima_server.services.sessions import get_active_dek, get_sqlcipher_key, set_sqlcipher_key
+from anima_server.services.sessions import (
+    get_active_dek,
+    get_sqlcipher_key,
+    set_sqlcipher_key,
+    unlock_session_store,
+)
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
 
@@ -485,6 +490,10 @@ def test_fs_locked_session_on_activated_core_fails_content_closed() -> None:
             manifest.pop("frk_rotation", None)
 
         update_core_manifest(make_legacy)
+        # Drop every canonical session so only the FS-locked login remains;
+        # otherwise a still-unlocked session legitimately serves canonical
+        # reads and the locked path is never exercised.
+        unlock_session_store.clear()
         login = client.post(
             "/api/auth/login",
             json={"username": "alice", "password": "pw123456"},
@@ -518,3 +527,17 @@ def test_fs_locked_session_on_activated_core_fails_content_closed() -> None:
             params={"userId": user_id, "limit": 10},
         )
         assert blocked_history.status_code in {400, 409}, blocked_history.text
+
+        # Asset/document/knowledge READS must also fail closed rather than
+        # falling back to Runtime rows and plaintext files, which could
+        # resurface content canonical state superseded or deleted.
+        blocked_knowledge = client.get(
+            "/api/knowledge/sources",
+            headers=locked_headers,
+            params={"userId": user_id},
+        )
+        assert blocked_knowledge.status_code == 409, blocked_knowledge.text
+        assert (
+            blocked_knowledge.json()["details"]["code"]
+            == "corefs_content_authority_unavailable"
+        )

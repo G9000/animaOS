@@ -638,6 +638,17 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   legacy consent defaults mid-process. The presence regression covers
   observe/delete/fail-closed, and the complete server suite passes on the
   final head.
+- 2026-08-23 10:20 MYT - Addressed the third-pass Codex P1 pair. The authority
+  latch now records the irreversible authoritative state per manifest path, so
+  an in-place parseable downgrade (an empty object, a missing release field, or
+  an older pending record) fails closed instead of reopening legacy branches
+  and legacy consent defaults. Asset, document, and knowledge reads route
+  through one fail-closed accessor, so a session that cannot serve canonical
+  assets on an activated Core can no longer fall back to Runtime rows and
+  plaintext files and resurface content canonical state superseded or deleted;
+  the locked case returns the same stable 409. Both carry regressions,
+  including one proving a still-unlocked canonical session keeps serving reads
+  normally.
 
 ## Validation
 

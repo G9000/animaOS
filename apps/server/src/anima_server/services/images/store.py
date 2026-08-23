@@ -137,12 +137,12 @@ def resolve_image_byte_source(
     user_id: int,
 ) -> Path | CoreFsByteSource:
     from anima_server.services.corefs.asset_authority import (
-        active_asset_authority_session,
+        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
     )
     from anima_server.services.corefs.diary_migration import migration_opaque_id
 
-    session = active_asset_authority_session(user_id)
+    session = canonical_asset_session_or_legacy(user_id)
     if session is not None:
         stable_id = migration_opaque_id("image-asset", str(asset.id))
         return open_corefs_byte_source(
@@ -160,12 +160,12 @@ def resolve_projected_image_byte_source(
 ) -> CoreFsByteSource | None:
     """Resolve an image from unlock memory without consulting Runtime rows."""
     from anima_server.services.corefs.asset_authority import (
-        active_asset_authority_session,
+        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
     )
     from anima_server.services.corefs.image_authority import canonical_image_projection
 
-    session = active_asset_authority_session(user_id)
+    session = canonical_asset_session_or_legacy(user_id)
     if session is None:
         return None
     projection = canonical_image_projection(
@@ -190,12 +190,12 @@ def resolve_projected_image_byte_source(
 
 def resolve_identity_avatar_byte_source(*, user_id: int) -> CoreFsByteSource | None:
     from anima_server.services.corefs.asset_authority import (
-        active_asset_authority_session,
+        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
     )
     from anima_server.services.corefs.diary_migration import migration_opaque_id
 
-    session = active_asset_authority_session(user_id)
+    session = canonical_asset_session_or_legacy(user_id)
     if session is None:
         return None
     stable_id = migration_opaque_id("identity-avatar", "agent-profile")

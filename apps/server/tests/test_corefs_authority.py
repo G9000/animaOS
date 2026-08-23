@@ -76,3 +76,66 @@ def test_greenfield_activation_is_content_preserving_and_idempotent(
     )
     assert reconcile_content_authority(corefs_session=native, keys=keys) == marker
     assert read_authority_record().state is AuthorityState.AUTHORITATIVE
+
+
+def test_observed_authority_cannot_be_downgraded_by_a_parseable_manifest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """CoreFS activation is irreversible (PR #148 review, P1).
+
+    Latching only the manifest path let a parseable in-place replacement —
+    `{}`, a manifest without the release field, or an older pending record —
+    report a non-authoritative state, which reopened legacy content branches
+    and legacy consent defaults mid-process.
+    """
+    from anima_server.services.corefs.authority import core_authority_state_or_none
+
+    manifest = tmp_path / "manifest.json"
+    monkeypatch.setattr(
+        "anima_server.services.corefs.authority.get_manifest_path", lambda: manifest
+    )
+
+    authoritative = {
+        "portable_core_release": 1,
+        "corefs_authority": {
+            "version": 1,
+            "state": "authoritative",
+            "authorityEpoch": 7,
+            "authoritativeGeneration": 3,
+            "authoritativeCatalogHash": "a" * 64,
+            "preparedGeneration": 2,
+            "preparedCatalogHash": "b" * 64,
+        },
+    }
+    manifest.write_text(json.dumps(authoritative), encoding="utf-8")
+    assert core_authority_state_or_none() is AuthorityState.AUTHORITATIVE
+
+    # A manifest whose release field is gone reaches the regression check
+    # directly; structurally damaged records fail closed slightly earlier.
+    manifest.write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(AuthorityStateError, match="already observed"):
+        core_authority_state_or_none()
+
+    for downgrade in (
+        {"portable_core_release": 1},
+        {
+            "portable_core_release": 1,
+            "corefs_authority": {
+                "version": 1,
+                "state": "pending_activation",
+                "authorityEpoch": 7,
+                "preparedGeneration": 2,
+                "preparedCatalogHash": "b" * 64,
+            },
+        },
+    ):
+        manifest.write_text(json.dumps(downgrade), encoding="utf-8")
+        with pytest.raises(AuthorityStateError):
+            core_authority_state_or_none()
+        with pytest.raises(AuthorityStateError):
+            read_authority_record()
+
+    # Restoring the authoritative record clears the damage.
+    manifest.write_text(json.dumps(authoritative), encoding="utf-8")
+    assert core_authority_state_or_none() is AuthorityState.AUTHORITATIVE

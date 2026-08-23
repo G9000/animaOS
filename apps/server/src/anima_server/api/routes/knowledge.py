@@ -1039,10 +1039,10 @@ def _source_summary(source: RuntimeSource) -> dict[str, Any]:
 
 def _active_knowledge_index(user_id: int) -> Any | None:
     from anima_server.services.corefs.asset_authority import (
-        active_asset_authority_session,
+        canonical_asset_session_or_legacy,
     )
 
-    session = active_asset_authority_session(user_id)
+    session = canonical_asset_session_or_legacy(user_id)
     return canonical_knowledge_view(session=session) if session is not None else None
 
 
