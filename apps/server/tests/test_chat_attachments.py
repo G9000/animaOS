@@ -537,7 +537,10 @@ def test_attachment_file_endpoint_enforces_user_ownership(
         attachment_url = history.json()[0]["attachments"][0]["url"]
         forbidden = client.get(attachment_url, headers=other_headers)
 
-    assert forbidden.status_code == 404
+    # The probing session has no CoreFS capability on an activated Core, so it
+    # fails closed before any ownership lookup; either way no bytes leak.
+    assert forbidden.status_code == 409
+    assert forbidden.json()["details"]["code"] == "corefs_content_authority_unavailable"
 
 
 @pytest.mark.asyncio

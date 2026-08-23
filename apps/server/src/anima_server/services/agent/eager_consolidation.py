@@ -65,11 +65,12 @@ async def on_thread_close(
     soul_db_factory: Callable[..., object] | None = None,
 ) -> None:
     """Run consolidation and archival after a thread is closed."""
+    from anima_server.services.corefs.content_authority import core_content_authority_active
     from anima_server.services.corefs.conversation_authority import (
         active_conversation_authority_session,
     )
 
-    if active_conversation_authority_session(user_id) is not None:
+    if active_conversation_authority_session(user_id) is not None or core_content_authority_active():
         return
     resolved_runtime_db_factory = runtime_db_factory or _get_runtime_db_factory()
     resolved_soul_db_factory = soul_db_factory or _get_soul_db_factory(user_id)

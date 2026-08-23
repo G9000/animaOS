@@ -10,6 +10,32 @@ from anima_server.services.corefs.authority import reconcile_content_authority
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 
 
+class CoreFsAuthorityUnavailable(Exception):
+    """Marker mixin: canonical CoreFS authority cannot serve this session.
+
+    Family authority errors mix this in so the application-level handler can
+    return one stable 409 instead of a 500 when an FS-locked session reaches a
+    canonical branch on an activated Core.
+    """
+
+
+def core_content_authority_active() -> bool:
+    """Return whether the Core manifest holds activated CoreFS content authority.
+
+    Once true, canonical CoreFS is the only permitted content authority for
+    every session — an FS-locked session (for example after a Soul-scoped
+    credential replacement) must fail closed on content routes rather than
+    reach a legacy branch and fork state the canonical catalog never sees.
+    An unparseable manifest raises so callers fail closed.
+    """
+    from anima_server.services.corefs.authority import (
+        AuthorityState,
+        core_authority_state_or_none,
+    )
+
+    return core_authority_state_or_none() is AuthorityState.AUTHORITATIVE
+
+
 def authenticated_content_authority(
     session: Any,
     *,

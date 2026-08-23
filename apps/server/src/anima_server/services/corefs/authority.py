@@ -83,6 +83,30 @@ def read_authority_record() -> AuthorityRecord:
     return _record_from_manifest(manifest)
 
 
+def core_authority_state_or_none() -> AuthorityState | None:
+    """Return the first-release authority state, or None before one exists.
+
+    A missing manifest or a parseable manifest without the first-release field
+    means no CoreFS authority was ever activated in this environment (fresh
+    bootstrap, pre-registration, or an unsupported pre-release Core that fails
+    closed at unlock). A manifest that exists but cannot be parsed is
+    indistinguishable damage and keeps raising so consent and authority
+    decisions fail closed rather than falling back to legacy state.
+    """
+    path = get_manifest_path()
+    if not path.is_file():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AuthorityStateError("ANIMA CORE manifest is unavailable or invalid") from exc
+    if not isinstance(manifest, dict):
+        raise AuthorityStateError("ANIMA CORE manifest is invalid")
+    if manifest.get(_RELEASE_FIELD) != PORTABLE_CORE_RELEASE:
+        return None
+    return _record_from_manifest(manifest).state
+
+
 def prepare_authority_activation(*, generation: int, catalog_hash: str) -> AuthorityRecord:
     _validate_snapshot(generation, catalog_hash)
     with _authority_lock:

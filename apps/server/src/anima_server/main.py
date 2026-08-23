@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,6 +69,7 @@ from .services.corefs.active_core_registry import (
     initialize_active_core_after_manifest,
     resolve_active_core_for_startup,
 )
+from .services.corefs.content_authority import CoreFsAuthorityUnavailable
 from .services.corefs.instance_registry import (
     RuntimeInstanceBinding,
     RuntimeInstanceRegistry,
@@ -447,6 +448,23 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(CoreFsAuthorityUnavailable)
+    async def corefs_authority_unavailable_handler(
+        _request: Request,
+        exc: Exception,
+    ) -> JSONResponse:
+        # Family authority errors reach here when a session cannot use
+        # canonical CoreFS content on an activated Core (for example an
+        # FS-locked session after a Soul-scoped credential replacement).
+        # They fail closed as a stable conflict instead of a 500.
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={
+                "error": "Request failed",
+                "details": {"code": "corefs_content_authority_unavailable"},
+            },
+        )
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(

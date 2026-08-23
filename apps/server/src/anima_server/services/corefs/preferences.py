@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.services.corefs import logical
 from anima_server.services.corefs.content_authority import (
+    CoreFsAuthorityUnavailable,
     authenticated_content_authority,
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
@@ -48,11 +49,11 @@ _locks_guard = RLock()
 _locks: dict[int, RLock] = {}
 
 
-class PortablePreferenceError(RuntimeError):
+class PortablePreferenceError(RuntimeError, CoreFsAuthorityUnavailable):
     pass
 
 
-def portable_preference_corefs_authority_active(session: object) -> bool:
+def _preference_marker_active(session: object) -> bool:
     marker = getattr(session, "content_authority", None)
     return (
         isinstance(marker, dict)
@@ -63,6 +64,17 @@ def portable_preference_corefs_authority_active(session: object) -> bool:
     )
 
 
+def portable_preference_corefs_authority_active(session: object) -> bool:
+    """True when canonical CoreFS is the required preference authority.
+
+    Covers both a canonical-capable session and an FS-locked session on an
+    activated Core, which must fail closed instead of writing legacy rows.
+    """
+    from anima_server.services.corefs.content_authority import core_content_authority_active
+
+    return _preference_marker_active(session) or core_content_authority_active()
+
+
 def active_preference_authority_session(user_id: int) -> object | None:
     from anima_server.services.sessions import active_unlock_sessions
 
@@ -70,7 +82,7 @@ def active_preference_authority_session(user_id: int) -> object | None:
         (
             session
             for session in reversed(active_unlock_sessions(user_id))
-            if portable_preference_corefs_authority_active(session)
+            if _preference_marker_active(session)
         ),
         None,
     )

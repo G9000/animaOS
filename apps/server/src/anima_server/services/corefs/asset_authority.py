@@ -155,7 +155,9 @@ def active_asset_authority_session(user_id: int) -> object | None:
 
 
 def require_legacy_asset_mutation_allowed(user_id: int) -> None:
-    if active_asset_authority_session(user_id) is not None:
+    from anima_server.services.corefs.content_authority import core_content_authority_active
+
+    if active_asset_authority_session(user_id) is not None or core_content_authority_active():
         raise CoreFsSourceError("Legacy asset mutation is disabled after CoreFS cutover.")
 
 

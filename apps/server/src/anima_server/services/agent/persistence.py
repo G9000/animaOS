@@ -41,11 +41,12 @@ TERMINAL_RUN_STATUSES = ("cancelled", "failed")
 
 
 def _reject_legacy_conversation_mutation(user_id: int) -> None:
+    from anima_server.services.corefs.content_authority import core_content_authority_active
     from anima_server.services.corefs.conversation_authority import (
         active_conversation_authority_session,
     )
 
-    if active_conversation_authority_session(user_id) is not None:
+    if active_conversation_authority_session(user_id) is not None or core_content_authority_active():
         raise RuntimeError("Legacy conversation mutation is disabled after CoreFS cutover.")
 
 
