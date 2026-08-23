@@ -23,7 +23,7 @@ from anima_server.models.runtime import (
 )
 from anima_server.services.corefs.asset_authority import (
     CoreFsSourceError,
-    asset_authority_selection,
+    asset_corefs_authority_active,
     open_corefs_byte_source,
 )
 from anima_server.services.corefs.asset_mutations import (
@@ -162,7 +162,7 @@ async def upload_pdf_document(
         )
 
     sha256 = hashlib.sha256(data).hexdigest()
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         existing = runtime_db.scalar(
             select(RuntimeDocument).where(
                 RuntimeDocument.user_id == userId,
@@ -244,7 +244,7 @@ async def start_pdf_workflow(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, payload.userId)
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         try:
             source = open_corefs_byte_source(
                 session=session,

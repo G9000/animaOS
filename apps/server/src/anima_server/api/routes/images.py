@@ -16,7 +16,7 @@ from anima_server.schemas.images import ImageRetentionUpdate
 from anima_server.services.agent.companion import invalidate_companion
 from anima_server.services.corefs.asset_authority import (
     CoreFsByteSource,
-    asset_authority_selection,
+    asset_corefs_authority_active,
 )
 from anima_server.services.corefs.asset_mutations import (
     AssetMutationError,
@@ -162,7 +162,7 @@ async def forget_image_asset_endpoint(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     unlock_session = await require_unlocked_session_async(request)
-    if asset_authority_selection(unlock_session) is not None:
+    if asset_corefs_authority_active(unlock_session):
         try:
             forgotten = forget_canonical_image(
                 session=unlock_session,
@@ -208,7 +208,7 @@ async def update_image_retention(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
     unlock_session = await require_unlocked_session_async(request)
-    if asset_authority_selection(unlock_session) is not None:
+    if asset_corefs_authority_active(unlock_session):
         try:
             retention_state = set_canonical_image_retention(
                 session=unlock_session,

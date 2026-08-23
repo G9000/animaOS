@@ -20,7 +20,7 @@ from anima_server.services.corefs.account_profile import (
 )
 from anima_server.services.corefs.asset_authority import (
     CoreFsSourceError,
-    asset_authority_selection,
+    asset_corefs_authority_active,
     open_corefs_byte_source,
     read_canonical_asset_catalog,
 )
@@ -865,7 +865,7 @@ async def get_agent_profile(
     except AccountProfileAuthorityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     avatar_url = profile.avatar_url
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         try:
             avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
         except CoreFsSourceError as exc:
@@ -902,7 +902,7 @@ async def get_agent_biography_preview(
         user_id=user_id,
         runtime_db=runtime_db,
     )
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         try:
             preview["avatarUrl"] = _canonical_agent_avatar_url(
                 session=session,
@@ -1113,7 +1113,7 @@ async def update_agent_profile(
             ) from exc
 
     avatar_url = profile.avatar_url
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         try:
             avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
         except CoreFsSourceError as exc:
@@ -1192,7 +1192,7 @@ async def upload_agent_avatar(
             status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
     avatar_url = _agent_avatar_url(user_id)
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         ext_map = {
             "image/png": ".png",
             "image/jpeg": ".jpg",
@@ -1260,7 +1260,7 @@ async def get_agent_avatar(
 
     from anima_server.services.storage import get_user_data_dir
 
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         try:
             if _canonical_agent_avatar_url(session=session, user_id=user_id) is None:
                 raise HTTPException(
@@ -1313,7 +1313,7 @@ async def delete_agent_avatar(
     """Delete the agent's custom avatar, reverting to default."""
     session = await require_unlocked_user_async(request, user_id)
 
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         try:
             trash_canonical_asset(
                 session=session,

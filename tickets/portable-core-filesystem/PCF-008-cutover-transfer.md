@@ -649,6 +649,16 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   the locked case returns the same stable 409. Both carry regressions,
   including one proving a still-unlocked canonical session keeps serving reads
   normally.
+- 2026-08-23 11:10 MYT - Addressed the fourth-pass Codex P1 trio, which shared
+  one root cause: activation itself now latches authority at the single
+  `_write_record` choke point rather than relying on a later read, and all
+  nineteen route branches that tested `asset_authority_selection` directly
+  now use a gated `asset_corefs_authority_active` predicate. That closes the
+  PDF upload writing a plaintext file before its workflow and the avatar
+  endpoint falling through to the legacy directory, which the earlier
+  selector-only fix had missed. Regressions now cover the activation-write
+  latch and prove an FS-locked upload creates no plaintext file and cannot
+  serve legacy avatar bytes.
 
 ## Validation
 

@@ -139,3 +139,47 @@ def test_observed_authority_cannot_be_downgraded_by_a_parseable_manifest(
     # Restoring the authoritative record clears the damage.
     manifest.write_text(json.dumps(authoritative), encoding="utf-8")
     assert core_authority_state_or_none() is AuthorityState.AUTHORITATIVE
+
+
+def test_activation_write_latches_authority_without_a_later_read(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Activation itself must latch the authoritative state (PR #148 review, P1).
+
+    Activation writes the record through `_write_record()` and returns without
+    a further authority read, so a Core first activated in this process would
+    otherwise have only its path latched — and a parseable non-authoritative
+    replacement before the next read would reopen legacy content branches.
+    """
+    from anima_server.services.corefs.authority import core_authority_state_or_none
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path / ".anima")
+    ensure_core_manifest()
+    update_core_manifest(lambda manifest: manifest.__setitem__("portable_core_release", 1))
+    native = anima_core.CorefsSession(
+        str(tmp_path / "core"),
+        migration_opaque_id("test-core", "activation-latch"),
+    )
+    keys = anima_core.corefs_derive_subkeys(anima_core.corefs_generate_root_key(), 1)
+    published = publish_catalog_native(
+        build_inactive_diary_catalog(user_id=7, folders=(), entries=()),
+        corefs_session=native,
+        keys=keys,
+    )
+    marker = activate_content_authority(
+        corefs_session=native,
+        keys=keys,
+        generation=int(published["generation"]),
+        catalog_hash=str(published["catalogHash"]),
+    )
+    assert marker["state"] == "authoritative"
+
+    # Replace the manifest with parseable non-authoritative JSON *without* any
+    # intervening authority read: the activation write must already have
+    # latched, so this fails closed instead of reporting "never activated".
+    from anima_server.services.core import get_manifest_path
+
+    get_manifest_path().write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(AuthorityStateError, match="already observed"):
+        core_authority_state_or_none()

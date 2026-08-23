@@ -170,7 +170,22 @@ def require_legacy_asset_mutation_allowed(user_id: int) -> None:
     from anima_server.services.corefs.content_authority import core_content_authority_active
 
     if active_asset_authority_session(user_id) is not None or core_content_authority_active():
-        raise CoreFsSourceError("Legacy asset mutation is disabled after CoreFS cutover.")
+        raise CoreFsAssetAuthorityLocked(
+            "Legacy asset mutation is disabled after CoreFS cutover."
+        )
+
+
+def asset_corefs_authority_active(session: object) -> bool:
+    """True when canonical CoreFS is the required asset authority.
+
+    Covers both a canonical-capable session and one that cannot serve
+    canonical assets on an activated Core: the latter must take the canonical
+    branch and fail closed inside it, never fall through to a legacy branch
+    that reads or writes plaintext document, image, or knowledge state.
+    """
+    from anima_server.services.corefs.content_authority import core_content_authority_active
+
+    return asset_authority_selection(session) is not None or core_content_authority_active()
 
 
 def canonical_asset_session_or_legacy(user_id: int) -> Any | None:

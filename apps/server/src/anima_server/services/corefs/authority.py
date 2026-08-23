@@ -315,6 +315,13 @@ def _write_record(record: AuthorityRecord, *, expected: AuthorityRecord) -> Auth
         manifest[_AUTHORITY_FIELD] = record.to_manifest()
 
     update_core_manifest(update)
+    # Latch at the single authority-write choke point: a Core first activated
+    # during this process must not depend on a later read to record its
+    # irreversible state (PR #148 review, P1).
+    mark_manifest_observed(
+        get_manifest_path(),
+        authoritative=record.state is AuthorityState.AUTHORITATIVE,
+    )
     return record
 
 

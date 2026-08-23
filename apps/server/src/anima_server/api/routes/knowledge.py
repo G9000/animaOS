@@ -36,7 +36,7 @@ from anima_server.models.runtime import (
     RuntimeSourceSpan,
 )
 from anima_server.services.agent.embeddings import generate_embedding
-from anima_server.services.corefs.asset_authority import asset_authority_selection
+from anima_server.services.corefs.asset_authority import asset_corefs_authority_active
 from anima_server.services.corefs.asset_mutations import AssetMutationError
 from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.knowledge_authority import (
@@ -167,7 +167,7 @@ async def ingest_text_source(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Text source is too large.",
         )
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         projection = publish_canonical_knowledge_source(
             session=session,
             document=_canonical_text_document(payload, kind="text"),
@@ -210,7 +210,7 @@ async def ingest_markdown_source(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Markdown source is too large.",
         )
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         projection = publish_canonical_knowledge_source(
             session=session,
             document=_canonical_text_document(payload, kind="markdown"),
@@ -280,7 +280,7 @@ async def ingest_web_capture_source(
                 f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
             ),
         )
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         document = _canonical_web_document(
             url=url,
             readable_text=payload.readableText,
@@ -359,7 +359,7 @@ async def ingest_html_source(
             ),
         )
 
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         try:
             html = data.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -410,7 +410,7 @@ async def reextract_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, userId)
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         selected = canonical_knowledge_document(
             session=session,
             source_id=source_id,
@@ -627,7 +627,7 @@ async def compile_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, userId)
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         projection = next(
             (
                 item
@@ -751,7 +751,7 @@ async def export_knowledge(
     session = await require_unlocked_user_async(request, userId)
     with tempfile.TemporaryDirectory(prefix="anima-okf-export-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
-        if asset_authority_selection(session) is not None:
+        if asset_corefs_authority_active(session):
             concepts = canonical_knowledge_view(
                 session=session
             ).knowledge_concept_projections()
@@ -823,7 +823,7 @@ async def import_knowledge(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle zip.",
             ) from exc
-        if asset_authority_selection(session) is not None:
+        if asset_corefs_authority_active(session):
             try:
                 concepts = read_portable_okf_bundle(bundle_dir=bundle_dir)
                 for concept in concepts:
@@ -882,7 +882,7 @@ async def lint_knowledge(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, payload.userId)
-    if asset_authority_selection(session) is not None:
+    if asset_corefs_authority_active(session):
         return {
             "findings": _canonical_lint_findings(
                 session=session,

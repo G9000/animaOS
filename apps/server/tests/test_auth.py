@@ -541,3 +541,27 @@ def test_fs_locked_session_on_activated_core_fails_content_closed() -> None:
             blocked_knowledge.json()["details"]["code"]
             == "corefs_content_authority_unavailable"
         )
+
+        # A PDF upload must fail before any plaintext document file is written.
+        documents_root = settings.data_dir / "users" / str(user_id) / "documents"
+        before = set(documents_root.rglob("*")) if documents_root.exists() else set()
+        blocked_upload = client.post(
+            "/api/documents/pdf",
+            headers=locked_headers,
+            data={"userId": str(user_id)},
+            files={"file": ("locked.pdf", b"%PDF-1.4 locked", "application/pdf")},
+        )
+        assert blocked_upload.status_code in {400, 409}, blocked_upload.text
+        after = set(documents_root.rglob("*")) if documents_root.exists() else set()
+        assert after == before, "an FS-locked upload must not create plaintext files"
+
+        # The avatar endpoint must not fall through to the legacy directory.
+        avatar_dir = settings.data_dir / "users" / str(user_id) / "avatars"
+        avatar_dir.mkdir(parents=True, exist_ok=True)
+        (avatar_dir / "agent.png").write_bytes(b"legacy-avatar-bytes")
+        blocked_avatar = client.get(
+            f"/api/consciousness/{user_id}/agent-profile/avatar",
+            headers=locked_headers,
+        )
+        assert blocked_avatar.status_code in {404, 409}, blocked_avatar.status_code
+        assert b"legacy-avatar-bytes" not in blocked_avatar.content
