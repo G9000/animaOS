@@ -666,6 +666,15 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   activates a manifest, restarts through `ensure_core_manifest()`, replaces
   the manifest with parseable non-authoritative JSON with no intervening
   authority read, and proves the read fails closed.
+- 2026-08-23 12:30 MYT - Addressed the sixth-pass Codex P1, a lock-order
+  inversion introduced by the previous round's own fix: startup held the
+  manifest lock while taking the authority lock, while authority writes take
+  them in the opposite order, so a concurrent login and account discovery
+  could deadlock and pin both process-wide locks. The startup latch now runs
+  after the manifest lock is released, and a scan confirmed no other
+  manifest-update callback reaches authority code. The regression forces the
+  exact interleaving with events and was verified red (blocked ~60s) against
+  the reintroduced inversion before passing green.
 
 ## Validation
 

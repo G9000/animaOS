@@ -228,3 +228,64 @@ def test_startup_latches_authority_from_an_already_activated_manifest(
     get_manifest_path().write_text(json.dumps({}), encoding="utf-8")
     with pytest.raises(AuthorityStateError, match="already observed"):
         core_authority_state_or_none()
+
+
+def test_startup_latch_does_not_invert_the_authority_and_manifest_lock_order(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Startup must not hold the manifest lock while taking the authority lock.
+
+    Authority writes take the authority lock and then the manifest lock
+    (`reconcile_content_authority` -> `_write_record` -> `update_core_manifest`),
+    so latching under the manifest lock inverts that order and deadlocks a
+    concurrent login against account discovery (PR #148 review, P1). This
+    forces the exact interleaving and fails by timing out if it regresses.
+    """
+    import threading
+
+    from anima_server.services import core as core_mod
+    from anima_server.services.corefs import authority as authority_mod
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path / ".anima")
+
+    writer_inside_manifest_lock = threading.Event()
+    holder_has_authority_lock = threading.Event()
+    failures: list[BaseException] = []
+    real_write_manifest = core_mod._write_manifest
+
+    def instrumented_write_manifest(manifest: dict[str, object]) -> None:
+        real_write_manifest(manifest)
+        # Still inside ensure_core_manifest's manifest-lock scope.
+        writer_inside_manifest_lock.set()
+        holder_has_authority_lock.wait(10)
+
+    monkeypatch.setattr(core_mod, "_write_manifest", instrumented_write_manifest)
+
+    def hold_authority_then_manifest() -> None:
+        # Mirrors an authority write racing startup.
+        try:
+            writer_inside_manifest_lock.wait(10)
+            with authority_mod._authority_lock:
+                holder_has_authority_lock.set()
+                with core_mod._manifest_lock:
+                    pass
+        except BaseException as exc:  # pragma: no cover - reported below
+            failures.append(exc)
+
+    def run_startup() -> None:
+        try:
+            ensure_core_manifest()
+        except BaseException as exc:  # pragma: no cover - reported below
+            failures.append(exc)
+
+    startup = threading.Thread(target=run_startup, daemon=True)
+    holder = threading.Thread(target=hold_authority_then_manifest, daemon=True)
+    startup.start()
+    holder.start()
+    startup.join(30)
+    holder.join(30)
+
+    assert not startup.is_alive(), "startup deadlocked holding the manifest lock"
+    assert not holder.is_alive(), "authority writer deadlocked waiting for the manifest lock"
+    assert failures == []
