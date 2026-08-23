@@ -659,6 +659,13 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   selector-only fix had missed. Regressions now cover the activation-write
   latch and prove an FS-locked upload creates no plaintext file and cannot
   serve legacy avatar bytes.
+- 2026-08-23 11:50 MYT - Addressed the fifth-pass Codex P1: startup now
+  carries the authority state it already loaded into the latch, so a restart
+  against an already-activated Core is protected before its first
+  authority-dependent request rather than only after one. A regression
+  activates a manifest, restarts through `ensure_core_manifest()`, replaces
+  the manifest with parseable non-authoritative JSON with no intervening
+  authority read, and proves the read fails closed.
 
 ## Validation
 

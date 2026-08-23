@@ -183,3 +183,48 @@ def test_activation_write_latches_authority_without_a_later_read(
     get_manifest_path().write_text(json.dumps({}), encoding="utf-8")
     with pytest.raises(AuthorityStateError, match="already observed"):
         core_authority_state_or_none()
+
+
+def test_startup_latches_authority_from_an_already_activated_manifest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Restart against an activated Core must latch before the first read.
+
+    `ensure_core_manifest()` loads the manifest at startup, so it has to carry
+    the authority state it already holds (PR #148 review, P1); otherwise a
+    parseable non-authoritative replacement before the first
+    authority-dependent request would reopen legacy content and consent
+    fallbacks.
+    """
+    from anima_server.services.core import get_manifest_path
+    from anima_server.services.corefs.authority import core_authority_state_or_none
+
+    core = tmp_path / ".anima"
+    monkeypatch.setattr(settings, "data_dir", core)
+    core.mkdir(parents=True)
+    (core / "manifest.json").write_text(
+        json.dumps(
+            {
+                "core_id": "01930000000000000000000000",
+                "portable_core_release": 1,
+                "corefs_authority": {
+                    "version": 1,
+                    "state": "authoritative",
+                    "authorityEpoch": 11,
+                    "authoritativeGeneration": 4,
+                    "authoritativeCatalogHash": "c" * 64,
+                    "preparedGeneration": 3,
+                    "preparedCatalogHash": "d" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    # Startup: loads the activated manifest, with no authority read after it.
+    ensure_core_manifest()
+
+    get_manifest_path().write_text(json.dumps({}), encoding="utf-8")
+    with pytest.raises(AuthorityStateError, match="already observed"):
+        core_authority_state_or_none()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import secrets
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -33,6 +34,23 @@ def mark_manifest_observed(path: Any = None, *, authoritative: bool = False) -> 
         _observed_manifest_paths.add(resolved)
         if authoritative:
             _observed_authoritative_paths.add(resolved)
+
+
+def latch_manifest_authority(manifest: object, path: Any = None) -> None:
+    """Latch authority from an already-loaded manifest mapping.
+
+    Startup loads the manifest before any authority read, so it must pass the
+    state it already holds: otherwise a restart against an already-activated
+    Core latches only the path, and a parseable non-authoritative replacement
+    before the first authority-dependent request would reopen legacy content
+    and consent fallbacks (PR #148 review, P1). A malformed authority record
+    only skips the latch here; the next read still fails closed on it.
+    """
+    authoritative = False
+    if isinstance(manifest, dict) and manifest.get(_RELEASE_FIELD) == PORTABLE_CORE_RELEASE:
+        with suppress(AuthorityStateError):
+            authoritative = _record_from_manifest(manifest).state is AuthorityState.AUTHORITATIVE
+    mark_manifest_observed(path, authoritative=authoritative)
 
 
 def _reject_authority_regression(path: Any, state: AuthorityState | None) -> None:
