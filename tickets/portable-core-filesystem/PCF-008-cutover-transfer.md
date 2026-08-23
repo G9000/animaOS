@@ -620,6 +620,17 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   presence/threads, relock/re-login persistence, full V2 export and verified
   same-volume import staging, Soul-only `filesystem_missing` and CoreFS-only
   `recovery_only` staging, and the closed V1 reattachment boundary.
+- 2026-08-23 09:00 MYT - Addressed both PR #148 current-head Codex P1
+  findings. A Core-level authority gate now makes every content family fail
+  closed for sessions without CoreFS capability once the manifest is
+  authoritative (route predicates, both legacy mutation guards, and background
+  legacy skips return one stable 409 through a shared
+  `CoreFsAuthorityUnavailable` handler), so the retained legacy-credential
+  upgrade window can no longer fork legacy diary/task/asset/conversation
+  state. Presence/consent reads distinguish a never-activated environment
+  (legacy fallback with initiative gates defaulting off) from an unparseable
+  manifest, which now fails closed. Both fixes carry focused regressions and
+  the full server suite passes after the round.
 
 ## Validation
 
