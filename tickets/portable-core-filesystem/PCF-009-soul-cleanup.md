@@ -9,7 +9,7 @@
 - PRD: `docs/prds/portable-core-filesystem-v1.md`
 - Plan: `docs/superpowers/plans/2026-07-12-portable-core-filesystem.md#task-9-later-release-soul-cleanup-and-legacy-retirement`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-23 06:40 MYT
+- Updated: 2026-08-23 18:30 MYT
 - Started:
 - Completed:
 
@@ -49,6 +49,27 @@ In a separate later release, remove converted app data and obsolete ORM mappings
   back to the shared `SessionLocal` when no `db_factory` is passed (all
   production call sites pass one). None is reachable on a greenfield install;
   retire them here under this ticket's gates.
+
+- 2026-08-23 18:30 MYT - Post-merge independent review of PR #148 recorded
+  eight non-blocking quality findings against the authority boundary, deferred
+  here rather than patched the same day the first release merged: (1) three
+  copies of the manifest parse/latch/regression sequence in
+  `corefs/authority.py` (`read_authority_record`, `core_authority_state_or_none`,
+  `latch_manifest_authority`) that must stay in sync; (2) two parallel latch
+  sets where one dict would make the subset invariant unbreakable; (3) the
+  conversation-cutover guard inlined verbatim at five sites
+  (`eager_consolidation`, `persistence`, `thread_manager` x2,
+  `transcript_archive`); (4) six near-identical `*_corefs_authority_active`
+  wrappers plus nine redundant function-level imports; (5) `_account_marker_active`
+  and `_preference_marker_active` validating markers more weakly than the
+  shared `_marker_allows`; (6) an unreachable `require_legacy_asset_mutation_allowed`
+  call after `canonical_asset_session_or_legacy` in `documents/store.py` and
+  `ingestion/sources.py`; (7) `core_authority_state_or_none` re-reading and
+  re-parsing the manifest on every content-route call despite the in-process
+  latch, several times per agent turn pre-activation; (8) chat history decoding
+  every archived thread to serve only the active one. Items 1-6 are
+  consolidation work; 7 needs a cache with explicit invalidation because naive
+  short-circuiting would remove the damage detection PR #148 rounds 2-3 added.
 
 ## Validation
 

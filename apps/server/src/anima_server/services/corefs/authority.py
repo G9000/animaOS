@@ -69,6 +69,7 @@ def _reject_authority_regression(path: Any, state: AuthorityState | None) -> Non
             "ANIMA CORE manifest lost CoreFS authority this process already observed"
         )
 
+
 CONTENT_AUTHORITY_FAMILIES = (
     "account",
     "assets",
@@ -87,8 +88,22 @@ class AuthorityState(StrEnum):
     AUTHORITATIVE = "authoritative"
 
 
-class AuthorityStateError(RuntimeError):
-    pass
+class CoreFsAuthorityUnavailable(Exception):
+    """Marker mixin: canonical CoreFS authority cannot serve this request.
+
+    Lives here, the dependency-free end of the corefs graph, so both authority
+    state errors and the per-family content errors can carry it. The
+    application-level handler turns it into one stable 409 instead of a 500.
+    """
+
+
+class AuthorityStateError(RuntimeError, CoreFsAuthorityUnavailable):
+    """Raised when the Core manifest cannot establish trustworthy authority.
+
+    Carries the shared marker: a damaged, vanished, or downgraded manifest must
+    fail closed as a stable conflict rather than escaping as an unhandled 500
+    from content and consent reads.
+    """
 
 
 @dataclass(frozen=True, slots=True)

@@ -328,3 +328,32 @@ def test_presence_read_fails_closed_on_unparseable_manifest(
     (core / "manifest.json").unlink()
     with pytest.raises(AuthorityStateError):
         get_presence_config_values(db, 7)
+
+
+def test_damaged_manifest_returns_conflict_not_server_error() -> None:
+    """A damaged manifest must fail closed as a stable 409, not an unhandled 500.
+
+    Post-merge review: `AuthorityStateError` was handled nowhere outside its
+    module, so `GET /api/presence/{id}` escaped as a server error while diary
+    and tasks already returned 409. It now carries the shared
+    `CoreFsAuthorityUnavailable` marker and lands on the same handler.
+    """
+    from anima_server.services.core import get_manifest_path
+
+    with managed_test_client("anima-damaged-manifest-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "alice", "password": "pw123456", "name": "Alice"},
+        )
+        assert registered.status_code == 201, registered.text
+        payload = registered.json()
+        user_id = int(payload["id"])
+        headers = {"x-anima-unlock": str(payload["unlockToken"])}
+
+        get_manifest_path().write_text("{ not valid json", encoding="utf-8")
+
+        response = client.get(f"/api/presence/{user_id}", headers=headers)
+        assert response.status_code == 409, response.text
+        assert (
+            response.json()["details"]["code"] == "corefs_content_authority_unavailable"
+        )
