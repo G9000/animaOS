@@ -631,6 +631,13 @@ Ship greenfield Portable Core authority, provide safe cold/live current-format t
   (legacy fallback with initiative gates defaulting off) from an unparseable
   manifest, which now fails closed. Both fixes carry focused regressions and
   the full server suite passes after the round.
+- 2026-08-23 09:30 MYT - Addressed the second-pass Codex P1: the authority
+  module now latches every manifest path the process has read or created, so
+  a manifest that disappears after observation fails closed instead of being
+  read as a never-activated environment that would reopen legacy branches and
+  legacy consent defaults mid-process. The presence regression covers
+  observe/delete/fail-closed, and the complete server suite passes on the
+  final head.
 
 ## Validation
 

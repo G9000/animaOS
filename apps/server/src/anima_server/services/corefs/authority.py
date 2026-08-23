@@ -19,6 +19,16 @@ _AUTHORITY_FIELD = "corefs_authority"
 _AUTHORITY_VERSION = 1
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 _authority_lock = RLock()
+# Manifest paths this process has successfully read (or created at startup).
+# Once observed, a missing manifest file is damage and must fail closed, not
+# read as a never-activated environment (PR #148 review, P1).
+_observed_manifest_paths: set[str] = set()
+
+
+def mark_manifest_observed(path: Any = None) -> None:
+    resolved = get_manifest_path() if path is None else path
+    with _authority_lock:
+        _observed_manifest_paths.add(str(resolved))
 
 CONTENT_AUTHORITY_FAMILIES = (
     "account",
@@ -76,6 +86,7 @@ def read_authority_record() -> AuthorityRecord:
         raise AuthorityStateError("ANIMA CORE manifest is unavailable or invalid") from exc
     if not isinstance(manifest, dict):
         raise AuthorityStateError("ANIMA CORE manifest is invalid")
+    mark_manifest_observed(path)
     if manifest.get(_RELEASE_FIELD) != PORTABLE_CORE_RELEASE:
         raise AuthorityStateError(
             "This pre-release Core is not supported; create a new first-release ANIMA CORE."
@@ -86,15 +97,23 @@ def read_authority_record() -> AuthorityRecord:
 def core_authority_state_or_none() -> AuthorityState | None:
     """Return the first-release authority state, or None before one exists.
 
-    A missing manifest or a parseable manifest without the first-release field
-    means no CoreFS authority was ever activated in this environment (fresh
-    bootstrap, pre-registration, or an unsupported pre-release Core that fails
-    closed at unlock). A manifest that exists but cannot be parsed is
-    indistinguishable damage and keeps raising so consent and authority
-    decisions fail closed rather than falling back to legacy state.
+    A manifest that never existed in this process, or a parseable manifest
+    without the first-release field, means no CoreFS authority was ever
+    activated in this environment (fresh bootstrap, pre-registration, or an
+    unsupported pre-release Core that fails closed at unlock). A manifest that
+    exists but cannot be parsed — or one this process already observed that
+    has since disappeared — is indistinguishable damage and raises so consent
+    and authority decisions fail closed rather than falling back to legacy
+    state.
     """
     path = get_manifest_path()
     if not path.is_file():
+        with _authority_lock:
+            observed = str(path) in _observed_manifest_paths
+        if observed:
+            raise AuthorityStateError(
+                "ANIMA CORE manifest disappeared after this process observed it"
+            )
         return None
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -102,6 +121,7 @@ def core_authority_state_or_none() -> AuthorityState | None:
         raise AuthorityStateError("ANIMA CORE manifest is unavailable or invalid") from exc
     if not isinstance(manifest, dict):
         raise AuthorityStateError("ANIMA CORE manifest is invalid")
+    mark_manifest_observed(path)
     if manifest.get(_RELEASE_FIELD) != PORTABLE_CORE_RELEASE:
         return None
     return _record_from_manifest(manifest).state

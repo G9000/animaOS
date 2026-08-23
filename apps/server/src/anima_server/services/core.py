@@ -44,6 +44,13 @@ def ensure_core_manifest() -> dict[str, object]:
         manifest["encryption_mode"] = _detect_encryption_mode()
         manifest["encryption_version"] = 1
         _write_manifest(manifest)
+        # Latch the manifest's existence for this process: once startup has
+        # created or opened it, later absence is damage that authority and
+        # consent reads must fail closed on rather than reading as a fresh
+        # never-activated environment.
+        from anima_server.services.corefs.authority import mark_manifest_observed
+
+        mark_manifest_observed(get_manifest_path())
         return manifest
 
 
