@@ -5,18 +5,17 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from anima_server.services.corefs.authority import reconcile_content_authority
+from anima_server.services.corefs.authority import (
+    CoreFsAuthorityUnavailable,
+    reconcile_content_authority,
+)
+
+# Re-exported: the marker is defined in authority.py (dependency-free end of
+# the graph) so AuthorityStateError can carry it too. Importers keep using
+# content_authority.CoreFsAuthorityUnavailable.
+__all__ = ["CoreFsAuthorityUnavailable"]
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
-
-
-class CoreFsAuthorityUnavailable(Exception):
-    """Marker mixin: canonical CoreFS authority cannot serve this session.
-
-    Family authority errors mix this in so the application-level handler can
-    return one stable 409 instead of a 500 when an FS-locked session reaches a
-    canonical branch on an activated Core.
-    """
 
 
 def core_content_authority_active() -> bool:

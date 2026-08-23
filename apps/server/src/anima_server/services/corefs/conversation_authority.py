@@ -129,10 +129,13 @@ def any_conversation_corefs_authority_active() -> bool:
     from anima_server.services.corefs.content_authority import core_content_authority_active
     from anima_server.services.sessions import all_active_unlock_sessions
 
-    return core_content_authority_active() or any(
+    # Cheap in-memory scan first; only fall through to the manifest read when
+    # no live session already proves canonical authority (matches the sibling
+    # predicates and keeps this off the disk on a recurring background tick).
+    return any(
         conversation_authority_selection(session) is not None
         for session in all_active_unlock_sessions()
-    )
+    ) or core_content_authority_active()
 
 
 def list_canonical_threads(*, session: Any) -> tuple[CanonicalThreadView, ...]:
