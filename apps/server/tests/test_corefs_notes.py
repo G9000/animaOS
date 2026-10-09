@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.formats import (
     CoreFormatError,
     decode_draft_document,
@@ -9,6 +8,7 @@ from anima_server.services.corefs.formats import (
     encode_draft_document,
     encode_note_document,
 )
+from corefs_catalog_test_support import migration_opaque_id
 
 
 @pytest.mark.parametrize("content_type", ["text/markdown", "text/html"])

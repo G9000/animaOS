@@ -36,7 +36,6 @@ from anima_server.contracts.auth import (
     UserResponse,
 )
 from anima_server.db import dispose_all_user_engines, get_db
-from anima_server.db.session import get_user_session_factory
 from anima_server.db.user_store import (
     InvalidCredentialsError,
     authenticate_account,
@@ -46,7 +45,7 @@ from anima_server.db.user_store import (
 from anima_server.services.auth import (
     get_user_by_id,
     normalize_username,
-    serialize_user,
+    serialize_soul_owner,
 )
 from anima_server.services.corefs.account_profile import (
     read_account_profile_for_session,
@@ -64,10 +63,7 @@ from anima_server.services.corefs.credentials import (
     prepare_filesystem_recovery_credential,
     prepare_recovery_credential,
 )
-from anima_server.services.corefs.legacy_soul import migrate_legacy_soul_file
 from anima_server.services.corefs.types import PayloadScope
-from anima_server.services.integration_registry import migrate_legacy_integration_links
-from anima_server.services.regeneration_work import migrate_legacy_regeneration_flags
 from anima_server.services.sessions import unlock_session_store
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -77,13 +73,6 @@ _FAILED_LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 _LOGIN_RATE_LIMIT = 5
 _LOGIN_RATE_LIMIT_WINDOW_SECONDS = 60.0
 _FS_CREDENTIAL_ADMISSION = FsCredentialAdmission()
-
-
-def _migrate_legacy_device_state(user_id: int) -> None:
-    with get_user_session_factory(user_id)() as db:
-        migrate_legacy_integration_links(db, user_id=user_id)
-        migrate_legacy_soul_file(db, user_id=user_id)
-        migrate_legacy_regeneration_flags(db, user_id=user_id)
 
 
 def _prune_failed_login_attempts(now: float) -> None:
@@ -230,11 +219,6 @@ def login(
         deks,
         corefs_keys=corefs_keys,
     )
-    try:
-        _migrate_legacy_device_state(user_id)
-    except Exception:
-        unlock_session_store.revoke(token)
-        raise
     return {**response, "unlockToken": token, "message": "Login successful"}
 
 
@@ -247,17 +231,14 @@ def me(
     if session is None:
         raise HTTPException(status_code=401, detail="Session locked.")
 
-    _migrate_legacy_device_state(session.user_id)
-
     profile = read_account_profile_for_session(session)
     if profile is not None:
         return serialize_account_profile(profile)
 
-    user = get_user_by_id(db, session.user_id)
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    return serialize_user(user)
+    owner = get_user_by_id(db, session.user_id)
+    if owner is None:
+        raise HTTPException(status_code=404, detail="Core owner not found")
+    return serialize_soul_owner(owner)
 
 
 @router.post("/logout", response_model=LogoutResponse)

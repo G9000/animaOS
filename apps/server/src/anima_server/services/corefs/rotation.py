@@ -10,6 +10,7 @@ import anima_core
 
 from anima_server.services.core import get_manifest_path, update_core_manifest
 from anima_server.services.corefs import keyslots, logical
+from anima_server.services.corefs.maintenance_coordination import serialized_core_maintenance
 from anima_server.services.corefs.types import (
     KeyPurpose,
     KeyslotStatus,
@@ -288,6 +289,7 @@ def _mark_verifying(*, pending_version: int) -> None:
     update_core_manifest(mark)
 
 
+@serialized_core_maintenance
 def rotate_or_resume_frk(
     session: UnlockSession,
     *,

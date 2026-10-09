@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs.asset_mutations import upsert_canonical_binary_asset
-from anima_server.services.corefs.diary_migration import (
-    migration_opaque_id,
+from anima_server.services.corefs.catalog_reader import (
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
+    stable_opaque_id,
 )
 from anima_server.services.corefs.indexer import (
     CoreFSKnowledgeConceptProjection,
@@ -77,10 +77,7 @@ class CanonicalKnowledgeProjectionView:
         terms = tuple(dict.fromkeys(query.casefold().split()))
         ranked = [
             (
-                sum(
-                    f"{item.title}\n{item.body_markdown}".casefold().count(term)
-                    for term in terms
-                ),
+                sum(f"{item.title}\n{item.body_markdown}".casefold().count(term) for term in terms),
                 item,
             )
             for item in self._concepts
@@ -97,7 +94,7 @@ def publish_canonical_knowledge_source(
     replace_existing: bool = False,
 ) -> CoreFSKnowledgeSourceProjection:
     body = encode_knowledge_document(document)
-    resolved_stable_id = stable_id or migration_opaque_id(
+    resolved_stable_id = stable_id or stable_opaque_id(
         "knowledge-live-source",
         _document_identity(document),
     )
@@ -253,7 +250,10 @@ def decode_knowledge_document(body: bytes) -> CanonicalKnowledgeDocument:
         payload["sourceMediaType"],
         payload["sourceUri"],
     )
-    if not all(isinstance(value, str) and value for value in values) or payload["format"] != _FORMAT:
+    if (
+        not all(isinstance(value, str) and value for value in values)
+        or payload["format"] != _FORMAT
+    ):
         raise ValueError("Canonical knowledge-source document is invalid.")
     return CanonicalKnowledgeDocument(
         source_kind=payload["sourceKind"],

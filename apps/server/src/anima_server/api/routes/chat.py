@@ -9,7 +9,7 @@ from datetime import datetime
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from starlette.types import Receive, Scope, Send
@@ -17,7 +17,7 @@ from starlette.types import Receive, Scope, Send
 from anima_server.api.deps.unlock import require_unlocked_session_async, require_unlocked_user_async
 from anima_server.db import get_db, get_runtime_db
 from anima_server.db.session import build_session_factory_for_db
-from anima_server.models import MemoryItem, Task
+from anima_server.models import MemoryItem
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun, RuntimeThread
 from anima_server.schemas.chat import (
     ApprovalRequest,
@@ -39,9 +39,7 @@ from anima_server.services.agent import (
     dry_run_agent,
     ensure_agent_ready,
     ensure_image_attachments_supported,
-    list_agent_history,
     normalize_document_only_user_message,
-    reset_agent_thread,
     run_agent,
     stream_agent,
     stream_approve_or_deny,
@@ -51,17 +49,13 @@ from anima_server.services.agent.attachments import (
     AttachmentTooLargeError,
     AttachmentValidationError,
     resolve_corefs_chat_attachment,
-    resolve_message_attachment,
     validate_chat_attachment_inputs,
 )
 from anima_server.services.agent.llm import LLMConfigError, LLMInvocationError
 from anima_server.services.agent.memory_store import get_current_focus
 from anima_server.services.agent.runtime_types import UsageStats
 from anima_server.services.agent.state import (
-    extract_stored_pills,
-    extract_stored_retrieval,
     serialize_agent_retrieval,
-    serialize_public_attachments,
 )
 from anima_server.services.agent.streaming import summarize_usage
 from anima_server.services.agent.system_prompt import PromptTemplateError
@@ -83,6 +77,7 @@ from anima_server.services.corefs.logical import CoreFsMutationUnavailable
 from anima_server.services.corefs.messages import ConversationFormatError
 from anima_server.services.corefs.runtime_sealing import RuntimeSealingLocked
 from anima_server.services.corefs.sealed_runtime import runtime_index_for_sensitive_write
+from anima_server.services.corefs.task_authority import list_canonical_tasks
 
 logger = logging.getLogger(__name__)
 
@@ -102,9 +97,7 @@ class _ClosingStreamingResponse(StreamingResponse):
                 await self.body_iterator.aclose()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        spec_version = tuple(
-            map(int, scope.get("asgi", {}).get("spec_version", "2.0").split("."))
-        )
+        spec_version = tuple(map(int, scope.get("asgi", {}).get("spec_version", "2.0").split(".")))
         if spec_version >= (2, 4):
             await super().__call__(scope, receive, send)
             return
@@ -154,7 +147,10 @@ async def send_message(
     if not payload.stream:
         try:
             result = await run_agent(
-                message, payload.userId, db, runtime_db,
+                message,
+                payload.userId,
+                db,
+                runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
@@ -205,7 +201,10 @@ async def send_message(
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
             service_stream = stream_agent(
-                message, payload.userId, db, runtime_db,
+                message,
+                payload.userId,
+                db,
+                runtime_db,
                 source=payload.source,
                 thread_id=payload.threadId,
                 attachments=payload.attachments,
@@ -243,61 +242,42 @@ async def get_chat_history(
     request: Request,
     userId: int = Query(ge=0),
     limit: int = Query(default=50, ge=1, le=200),
-    runtime_db: Session = Depends(get_runtime_db),
 ) -> list[ChatHistoryMessage]:
     unlock_session = await require_unlocked_user_async(request, userId)
-    if conversation_corefs_authority_active(unlock_session):
-        # Match the legacy contract: history is the ACTIVE thread's transcript,
-        # so reset/clear rotating to a fresh thread empties the chat pane.
-        active_view = get_active_canonical_thread(session=unlock_session)
-        canonical = list(active_view.messages) if active_view is not None else []
-        canonical.sort(key=lambda message: (message.created_at, message.sequence))
-        try:
-            return [
-                ChatHistoryMessage(
-                    id=canonical_message_api_id(message),
-                    userId=userId,
-                    role=message.role,
-                    content=message.content,
-                    createdAt=datetime.fromisoformat(message.created_at),
-                    attachments=[
-                        resolve_corefs_chat_attachment(
-                            session=unlock_session,
-                            object_uri=uri,
-                        ).to_public_dict(message_id=canonical_message_api_id(message))
-                        for uri in message.attachment_uris
-                    ]
-                    if message.role == "user"
-                    else [],
-                    pills=[],
-                )
-                for message in canonical[-limit:]
-            ]
-        except (AttachmentReadError, CoreFsSourceError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Canonical chat attachment authority is unavailable.",
-            ) from exc
-    rows = list_agent_history(userId, runtime_db, limit=limit)
-    return [
-        ChatHistoryMessage(
-            id=row.id,
-            userId=userId,
-            role="assistant" if row.role == "tool" else row.role,
-            content=row.content_text or "",
-            createdAt=row.created_at,
-            source=getattr(row, "source", None),
-            retrieval=extract_stored_retrieval(row.content_json),
-            attachments=serialize_public_attachments(
-                row.content_json,
-                message_id=row.id,
-            )
-            if row.role == "user"
-            else [],
-            pills=extract_stored_pills(row.content_json),
+    if not conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_conversation_authority_required"},
         )
-        for row in rows
-    ]
+    active_view = get_active_canonical_thread(session=unlock_session)
+    canonical = list(active_view.messages) if active_view is not None else []
+    canonical.sort(key=lambda message: (message.created_at, message.sequence))
+    try:
+        return [
+            ChatHistoryMessage(
+                id=canonical_message_api_id(message),
+                userId=userId,
+                role=message.role,
+                content=message.content,
+                createdAt=datetime.fromisoformat(message.created_at),
+                attachments=[
+                    resolve_corefs_chat_attachment(
+                        session=unlock_session,
+                        object_uri=uri,
+                    ).to_public_dict(message_id=canonical_message_api_id(message))
+                    for uri in message.attachment_uris
+                ]
+                if message.role == "user"
+                else [],
+                pills=[],
+            )
+            for message in canonical[-limit:]
+        ]
+    except (AttachmentReadError, CoreFsSourceError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Canonical chat attachment authority is unavailable.",
+        ) from exc
 
 
 @router.get("/messages/{message_id}/attachments/{attachment_id}")
@@ -305,84 +285,66 @@ async def get_message_attachment(
     message_id: int,
     attachment_id: str,
     request: Request,
-    runtime_db: Session = Depends(get_runtime_db),
 ) -> Response:
     unlock_session = await require_unlocked_session_async(request)
-    if conversation_corefs_authority_active(unlock_session):
-        matches = [
-            message
-            for view in list_canonical_threads(session=unlock_session)
-            for message in view.messages
-            if canonical_message_api_id(message) == message_id and message.role == "user"
-        ]
-        object_uri = f"corefs://object/{attachment_id}"
-        if len(matches) != 1 or object_uri not in matches[0].attachment_uris:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Attachment not found",
-            )
-        try:
-            source = open_corefs_byte_source(
-                session=unlock_session,
-                object_uri=object_uri,
-                expected_kinds=frozenset({"attachment", "gallery-asset"}),
-            )
-        except CoreFsSourceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Canonical chat attachment authority is unavailable.",
-            ) from exc
-        return StreamingResponse(
-            source.iter_chunks(),
-            media_type=source.content_type,
+    if not conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_conversation_authority_required"},
         )
-    message = runtime_db.get(RuntimeMessage, message_id)
-    if (
-        message is None
-        or message.user_id != unlock_session.user_id
-        or message.role != "user"
-    ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
-
-    resolved = resolve_message_attachment(
-        runtime_db,
-        message=message,
-        attachment_id=attachment_id,
+    matches = [
+        message
+        for view in list_canonical_threads(session=unlock_session)
+        for message in view.messages
+        if canonical_message_api_id(message) == message_id and message.role == "user"
+    ]
+    object_uri = f"corefs://object/{attachment_id}"
+    if len(matches) != 1 or object_uri not in matches[0].attachment_uris:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attachment not found",
+        )
+    try:
+        source = open_corefs_byte_source(
+            session=unlock_session,
+            object_uri=object_uri,
+            expected_kinds=frozenset({"attachment", "gallery-asset"}),
+        )
+    except CoreFsSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Canonical chat attachment authority is unavailable.",
+        ) from exc
+    return StreamingResponse(
+        source.iter_chunks(),
+        media_type=source.content_type,
     )
-    if resolved is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
-
-    path, mime_type = resolved
-    if not path.exists() or not path.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
-
-    return FileResponse(path, media_type=mime_type)
 
 
 @router.delete("/history", response_model=ChatHistoryClearResponse)
 async def clear_chat_history(
     payload: ChatResetRequest,
     request: Request,
-    db: Session = Depends(get_db),
-    runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatHistoryClearResponse:
     unlock_session = await require_unlocked_user_async(request, payload.userId)
-    if conversation_corefs_authority_active(unlock_session):
-        try:
-            create_canonical_thread(session=unlock_session, force_new=True)
-        except (
-            ConversationFormatError,
-            ConversationMutationError,
-            CoreFsMutationUnavailable,
-            PermissionError,
-            ValueError,
-        ) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
-            ) from exc
-        return ChatHistoryClearResponse(status="cleared")
-    await reset_agent_thread(payload.userId, runtime_db, db=db)
+    if not conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_conversation_authority_required"},
+        )
+    try:
+        create_canonical_thread(session=unlock_session, force_new=True)
+    except (
+        ConversationFormatError,
+        ConversationMutationError,
+        CoreFsMutationUnavailable,
+        PermissionError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
+        ) from exc
     return ChatHistoryClearResponse(status="cleared")
 
 
@@ -390,26 +352,26 @@ async def clear_chat_history(
 async def reset_chat_thread(
     payload: ChatResetRequest,
     request: Request,
-    db: Session = Depends(get_db),
-    runtime_db: Session = Depends(get_runtime_db),
 ) -> ChatResetResponse:
     unlock_session = await require_unlocked_user_async(request, payload.userId)
-    if conversation_corefs_authority_active(unlock_session):
-        try:
-            create_canonical_thread(session=unlock_session, force_new=True)
-        except (
-            ConversationFormatError,
-            ConversationMutationError,
-            CoreFsMutationUnavailable,
-            PermissionError,
-            ValueError,
-        ) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
-            ) from exc
-        return ChatResetResponse(status="reset")
-    await reset_agent_thread(payload.userId, runtime_db, db=db)
+    if not conversation_corefs_authority_active(unlock_session):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "corefs_conversation_authority_required"},
+        )
+    try:
+        create_canonical_thread(session=unlock_session, force_new=True)
+    except (
+        ConversationFormatError,
+        ConversationMutationError,
+        CoreFsMutationUnavailable,
+        PermissionError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": str(exc) or "corefs_conversation_mutation_failed"},
+        ) from exc
     return ChatResetResponse(status="reset")
 
 
@@ -499,9 +461,7 @@ async def acknowledge_greeting_dream(
         acknowledge_dream,
     )
 
-    acknowledged = acknowledge_dream(
-        db, user_id=userId, dream_id=dreamId, token=claimToken
-    )
+    acknowledged = acknowledge_dream(db, user_id=userId, dream_id=dreamId, token=claimToken)
     db.commit()
     return {"acknowledged": acknowledged}
 
@@ -589,22 +549,17 @@ async def get_reflection(
 async def get_nudges(
     request: Request,
     userId: int = Query(ge=0),
-    db: Session = Depends(get_db),
 ) -> dict[str, list[dict[str, object]]]:
-    await require_unlocked_user_async(request, userId)
+    unlock_session = await require_unlocked_user_async(request, userId)
 
     nudges: list[dict[str, object]] = []
 
-    overdue_count = (
-        db.scalar(
-            select(func.count(Task.id)).where(
-                Task.user_id == userId,
-                Task.done.is_(False),
-                Task.due_date.isnot(None),
-                Task.due_date < func.date("now"),
-            )
-        )
-        or 0
+    from datetime import UTC
+
+    today = datetime.now(UTC).date().isoformat()
+    overdue_count = sum(
+        not task.done and task.due_date is not None and task.due_date < today
+        for task in list_canonical_tasks(session=unlock_session)
     )
     if overdue_count:
         nudges.append(
@@ -673,18 +628,15 @@ async def get_home(
     db: Session = Depends(get_db),
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, object]:
-    await require_unlocked_user_async(request, userId)
+    unlock_session = await require_unlocked_user_async(request, userId)
 
     focus = get_current_focus(db, user_id=userId)
 
-    tasks = list(
-        db.scalars(
-            select(Task)
-            .where(Task.user_id == userId, Task.done.is_(False))
-            .order_by(Task.priority.desc(), Task.created_at.desc())
-            .limit(10)
-        ).all()
-    )
+    tasks = sorted(
+        (task for task in list_canonical_tasks(session=unlock_session) if not task.done),
+        key=lambda task: (task.priority, task.created_at or ""),
+        reverse=True,
+    )[:10]
 
     memory_count = (
         db.scalar(
@@ -742,7 +694,7 @@ async def get_home(
         "currentFocus": focus,
         "tasks": [
             {
-                "id": t.id,
+                "id": t.legacy_id,
                 "text": t.text,
                 "done": t.done,
                 "priority": t.priority,
@@ -872,9 +824,7 @@ async def trigger_sleep_tasks(
     if issued_ids:
         with runtime_db_factory() as rt_db:
             rows = rt_db.scalars(
-                select(RuntimeBackgroundTaskRun).where(
-                    RuntimeBackgroundTaskRun.id.in_(issued_ids)
-                )
+                select(RuntimeBackgroundTaskRun).where(RuntimeBackgroundTaskRun.id.in_(issued_ids))
             ).all()
         for row in rows:
             result_json = row.result_json if isinstance(row.result_json, dict) else {}
@@ -888,9 +838,9 @@ async def trigger_sleep_tasks(
             elif row.task_type == "embedding_backfill":
                 # Report the actual maintenance done (memories embedded + vectors
                 # re-synced), not a hard-coded 0.
-                embeddings_backfilled = int(
-                    result_json.get("backfilled", 0) or 0
-                ) + int(result_json.get("resynced", 0) or 0)
+                embeddings_backfilled = int(result_json.get("backfilled", 0) or 0) + int(
+                    result_json.get("resynced", 0) or 0
+                )
             if row.error_message:
                 errors.append(f"{row.task_type}: {row.error_message}")
 

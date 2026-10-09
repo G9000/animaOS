@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-import base64
 import json
 import logging
 import os
@@ -73,84 +72,14 @@ def update_core_manifest(
         return manifest
 
 
-def get_sqlcipher_kdf_salt() -> bytes:
-    """Return the salt used for SQLCipher key derivation via Argon2id.
-
-    The salt is stored in the manifest as base64.  On first call (no salt
-    present) a fresh 16-byte random salt is generated and persisted.
-    """
-    from anima_server.services.crypto import SALT_LENGTH
-
-    with _manifest_lock:
-        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
-        encoded = manifest.get("sqlcipher_kdf_salt")
-        if encoded:
-            return base64.b64decode(encoded)
-
-        salt = os.urandom(SALT_LENGTH)
-        manifest["sqlcipher_kdf_salt"] = base64.b64encode(salt).decode("ascii")
-        _write_manifest(manifest)
-        return salt
-
-
 # ---------------------------------------------------------------------------
 # Unified passphrase — wrapped SQLCipher key stored in manifest
 # ---------------------------------------------------------------------------
 
 
-def store_wrapped_sqlcipher_key(wrapped: dict[str, object]) -> None:
-    """Persist a wrapped SQLCipher raw key in the manifest.
-
-    Called once at registration when no ANIMA_CORE_PASSPHRASE is set.
-    The wrapped key can only be recovered with the user's password.
-    """
-    with _manifest_lock:
-        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
-        manifest["wrapped_sqlcipher_key"] = wrapped
-        _write_manifest(manifest)
-
-
-def get_wrapped_sqlcipher_key() -> dict[str, object] | None:
-    """Return the wrapped SQLCipher key from the manifest, or None."""
-    path = get_manifest_path()
-    if not path.is_file():
-        return None
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    key_data = manifest.get("wrapped_sqlcipher_key")
-    if not isinstance(key_data, dict):
-        return None
-    return key_data
-
-
-def has_wrapped_sqlcipher_key() -> bool:
-    """Return True if the manifest has a wrapped SQLCipher key (unified mode)."""
-    return get_wrapped_sqlcipher_key() is not None
-
-
-def store_recovery_sqlcipher_key(wrapped: dict[str, object]) -> None:
-    """Persist a recovery-wrapped SQLCipher key in the manifest."""
-    with _manifest_lock:
-        manifest = _load_manifest(now=datetime.now(UTC).isoformat())
-        manifest["recovery_sqlcipher_key"] = wrapped
-        _write_manifest(manifest)
-
-
-def get_recovery_sqlcipher_key() -> dict[str, object] | None:
-    """Return the recovery-wrapped SQLCipher key from the manifest, or None."""
-    path = get_manifest_path()
-    if not path.is_file():
-        return None
-    manifest = json.loads(path.read_text(encoding="utf-8"))
-    key_data = manifest.get("recovery_sqlcipher_key")
-    if not isinstance(key_data, dict):
-        return None
-    return key_data
-
-
 def _detect_encryption_mode() -> str:
     """Determine the current encryption mode based on settings."""
-    has_passphrase = bool(settings.core_passphrase.strip())
-    has_unified = has_wrapped_sqlcipher_key()
+    has_unified = has_supported_soul_keyslots()
     sqlcipher_available = False
     try:
         import sqlcipher3  # noqa: F401
@@ -159,11 +88,25 @@ def _detect_encryption_mode() -> str:
     except ImportError:
         pass
 
-    if (has_passphrase or has_unified) and sqlcipher_available:
+    if has_unified and sqlcipher_available:
         return "sqlcipher+field"
-    if has_passphrase or has_unified:
+    if has_unified:
         return "field"
     return "none"
+
+
+def has_supported_soul_keyslots() -> bool:
+    """Report declared current Soul keyslots; authentication still unwraps them."""
+    path = get_manifest_path()
+    if not path.is_file():
+        return False
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    return manifest.get("portable_core_release") == 1 and any(
+        isinstance(slot, dict)
+        and slot.get("purpose") == "soul"
+        and slot.get("status") in {"active", "pending", "decrypt-only"}
+        for slot in manifest.get("keyslots", [])
+    )
 
 
 def get_core_birth_date() -> str:
@@ -305,12 +248,14 @@ def _load_manifest(*, now: str) -> dict[str, object]:
     # binding and manifest keyslots make that locator unnecessary.
     manifest.pop("user_index", None)
     manifest.setdefault("next_user_id", _detect_next_user_id())
+    if manifest.get("portable_core_release") == 1 and not manifest.get("owner_id"):
+        raise ValueError("Supported Core opaque owner binding is missing")
     manifest.setdefault("owner_id", str(uuid.uuid7()))
-    legacy_owner = manifest.get("owner_user_id")
-    if legacy_owner is not None:
-        binding = manifest.setdefault("owner_binding", {"legacy_user_id": int(legacy_owner)})
+    local_owner = manifest.get("owner_user_id")
+    if local_owner is not None:
+        binding = manifest.get("owner_binding")
         if not isinstance(binding, dict) or int(binding.get("legacy_user_id", -1)) != int(
-            legacy_owner
+            local_owner
         ):
             raise ValueError("opaque owner ID has an ambiguous local owner binding")
     manifest.setdefault("keyslots_version", 1)

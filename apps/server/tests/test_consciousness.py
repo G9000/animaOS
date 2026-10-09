@@ -7,15 +7,134 @@ import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import AgentThread, User
+from anima_server.models import SoulOwner
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+_canonical_tasks: list[tuple[int, object]] = []
+
+
+def _tasks_for_user(user_id):
+    return [task for owner, task in _canonical_tasks if owner == user_id]
+
+
+def _seed_canonical_task(*, user_id, text, priority=2, due_date=None, done=False):
+    from anima_server.services.corefs.formats import TaskDocument
+
+    timestamp = datetime.now(UTC).isoformat()
+    task = TaskDocument(
+        format_version=1,
+        stable_id=f"task-{len(_canonical_tasks) + 1}",
+        legacy_id=len(_canonical_tasks) + 1,
+        text=text,
+        priority=priority,
+        due_date=due_date,
+        done=done,
+        completed_at=timestamp if done else None,
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+    _canonical_tasks.append((user_id, task))
+    return task
+
+
+@pytest.fixture(autouse=True)
+def _canonical_task_boundary(monkeypatch):
+    from dataclasses import replace
+
+    from anima_server.services.corefs import task_authority, task_mutations
+
+    _canonical_tasks.clear()
+    monkeypatch.setattr(
+        task_authority,
+        "require_active_task_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(
+        task_authority,
+        "list_canonical_tasks",
+        lambda *, session: tuple(_tasks_for_user(session.user_id)),
+    )
+    monkeypatch.setattr(
+        task_mutations,
+        "create_canonical_task",
+        lambda *, session, **values: _seed_canonical_task(user_id=session.user_id, **values),
+    )
+
+    def update(*, session, legacy_id, text, priority, done, due_date, due_date_present):
+        for index, (owner, task) in enumerate(_canonical_tasks):
+            if owner != session.user_id or task.legacy_id != legacy_id:
+                continue
+            patch = {"updated_at": datetime.now(UTC).isoformat()}
+            for field, value in (("text", text), ("priority", priority), ("done", done)):
+                if value is not None:
+                    patch[field] = value
+            if due_date_present:
+                patch["due_date"] = due_date
+            if done is not None:
+                patch["completed_at"] = patch["updated_at"] if done else None
+            updated = replace(task, **patch)
+            _canonical_tasks[index] = (owner, updated)
+            return updated
+        return None
+
+    def delete(*, session, legacy_id):
+        for index, (owner, task) in enumerate(_canonical_tasks):
+            if owner == session.user_id and task.legacy_id == legacy_id:
+                del _canonical_tasks[index]
+                return True
+        return False
+
+    monkeypatch.setattr(task_mutations, "update_canonical_task", update)
+    monkeypatch.setattr(task_mutations, "delete_canonical_task", delete)
+    yield
+    _canonical_tasks.clear()
+
+
+@pytest.fixture(autouse=True)
+def _canonical_presence_boundary(monkeypatch):
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import preferences
+    from anima_server.services.presence_config import PresenceConfigValues
+
+    monkeypatch.setattr(
+        preferences,
+        "active_preference_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(
+        preferences,
+        "read_canonical_presence_values",
+        lambda *, session: PresenceConfigValues(user_id=session.user_id),
+    )
+    from anima_server.services.agent import memory_blocks, proactive
+    from anima_server.services.corefs import conversation_authority
+
+    for module in (proactive, memory_blocks):
+        monkeypatch.setattr(
+            module,
+            "require_active_task_authority_session",
+            lambda user_id: SimpleNamespace(user_id=user_id),
+        )
+        monkeypatch.setattr(
+            module,
+            "list_canonical_tasks",
+            lambda *, session: tuple(_tasks_for_user(session.user_id)),
+        )
+    monkeypatch.setattr(
+        conversation_authority,
+        "active_conversation_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(conversation_authority, "list_canonical_threads", lambda *, session: ())
 
 
 @contextmanager
@@ -42,14 +161,11 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _setup(db: Session) -> tuple[User, AgentThread]:
-    user = User(username="consciousness-test",
-                display_name="Tester", password_hash="x")
+def _setup(db: Session) -> tuple[SoulOwner, SimpleNamespace]:
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     db.add(user)
     db.flush()
-    thread = AgentThread(user_id=user.id, status="active")
-    db.add(thread)
-    db.flush()
+    thread = SimpleNamespace(id=1, user_id=user.id, status="active")
     return user, thread
 
 
@@ -395,8 +511,7 @@ def test_complete_nonexistent_intention() -> None:
         from anima_server.services.agent.self_model import seed_self_model
 
         seed_self_model(db, user_id=user.id)
-        found = complete_intention(
-            db, user_id=user.id, title="nonexistent goal")
+        found = complete_intention(db, user_id=user.id, title="nonexistent goal")
         assert found is False
 
 
@@ -533,8 +648,7 @@ def test_expire_working_memory_items_removes_expired() -> None:
         removed = expire_working_memory_items(db, user_id=user.id)
         assert removed == 1
 
-        block = get_self_model_block(
-            db, user_id=user.id, section="working_memory")
+        block = get_self_model_block(db, user_id=user.id, section="working_memory")
         assert block is not None
         assert "project" not in block.content
         assert "meeting" in block.content
@@ -570,8 +684,7 @@ def test_expire_working_memory_noop_when_nothing_expired() -> None:
 def test_detect_correction_signal() -> None:
     from anima_server.services.agent.feedback_signals import detect_correction
 
-    signal = detect_correction(
-        "No, that's not what I asked. I want the summary.")
+    signal = detect_correction("No, that's not what I asked. I want the summary.")
     assert signal is not None
     assert signal.signal_type == "correction"
 
@@ -627,8 +740,7 @@ def test_record_feedback_signals_to_growth_log() -> None:
                 severity=0.7,
             ),
         ]
-        recorded = record_feedback_signals(
-            db, user_id=user.id, signals=signals)
+        recorded = record_feedback_signals(db, user_id=user.id, signals=signals)
         assert recorded == 1
 
         block = get_self_model_block(db, user_id=user.id, section="growth_log")
@@ -705,8 +817,7 @@ def test_apply_memory_correction_name() -> None:
         assert "Leo" in corrections[0]["new_content"]
 
         # The old memory should now be superseded
-        active = get_memory_items(
-            db, user_id=user.id, category="fact", active_only=True)
+        active = get_memory_items(db, user_id=user.id, category="fact", active_only=True)
         active_texts = [
             df(user.id, item.content, table="memory_items", field="content") for item in active
         ]
@@ -742,8 +853,7 @@ def test_apply_memory_correction_wrong_and_right() -> None:
         assert len(corrections) == 1
         assert "Berlin" in corrections[0]["new_content"]
 
-        active = get_memory_items(
-            db, user_id=user.id, category=None, active_only=True)
+        active = get_memory_items(db, user_id=user.id, category=None, active_only=True)
         active_texts = [
             df(user.id, item.content, table="memory_items", field="content") for item in active
         ]
@@ -1180,19 +1290,13 @@ def test_create_task_tool() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
-            result = create_task(
-                "Buy groceries", due_date="2026-04-01", priority="3")
+            result = create_task("Buy groceries", due_date="2026-04-01", priority="3")
             assert "Buy groceries" in result
             assert "2026-04-01" in result
 
-            from anima_server.models.task import Task
-            from sqlalchemy import select
-
-            tasks = list(db.scalars(select(Task).where(
-                Task.user_id == user.id)).all())
+            tasks = _tasks_for_user(user.id)
             assert len(tasks) == 1
             assert tasks[0].text == "Buy groceries"
             assert tasks[0].due_date == "2026-04-01"
@@ -1214,17 +1318,12 @@ def test_create_task_tool_no_due_date() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             result = create_task("Walk the dog")
             assert "Walk the dog" in result
 
-            from anima_server.models.task import Task
-            from sqlalchemy import select
-
-            tasks = list(db.scalars(select(Task).where(
-                Task.user_id == user.id)).all())
+            tasks = _tasks_for_user(user.id)
             assert len(tasks) == 1
             assert tasks[0].due_date is None
         finally:
@@ -1265,8 +1364,7 @@ def test_create_task_tool_rejects_blank_text() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             with pytest.raises(ValueError, match="Task text cannot be empty"):
                 create_task("   ")
@@ -1287,8 +1385,7 @@ def test_create_task_tool_rejects_invalid_due_date() -> None:
         )
         from anima_server.services.agent.tools import create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             with pytest.raises(ValueError, match="YYYY-MM-DD"):
                 create_task("Buy groceries", due_date="tomorrow")
@@ -1308,8 +1405,7 @@ def test_list_tasks_tool() -> None:
         )
         from anima_server.services.agent.tools import create_task, list_tasks
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Task A", priority="4")
             create_task("Task B", due_date="2026-05-01")
@@ -1335,8 +1431,7 @@ def test_list_tasks_tool_empty() -> None:
         )
         from anima_server.services.agent.tools import list_tasks
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             result = list_tasks()
             assert "No tasks" in result
@@ -1356,19 +1451,14 @@ def test_complete_task_tool() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries")
             result = complete_task("Buy groceries")
             assert "Completed" in result
             assert "Buy groceries" in result
 
-            from anima_server.models.task import Task
-            from sqlalchemy import select
-
-            task = db.scalars(select(Task).where(
-                Task.user_id == user.id)).first()
+            task = next(iter(_tasks_for_user(user.id)), None)
             assert task is not None
             assert task.done is True
             assert task.completed_at is not None
@@ -1388,8 +1478,7 @@ def test_complete_task_tool_fuzzy_match() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries from the store")
             # Fuzzy match — shares key words
@@ -1434,8 +1523,7 @@ def test_update_task_tool_updates_fields() -> None:
         )
         from anima_server.services.agent.tools import create_task, update_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries")
             result = update_task(
@@ -1446,11 +1534,7 @@ def test_update_task_tool_updates_fields() -> None:
                 done="true",
             )
 
-            from anima_server.models.task import Task
-            from sqlalchemy import select
-
-            task = db.scalars(select(Task).where(
-                Task.user_id == user.id)).first()
+            task = next(iter(_tasks_for_user(user.id)), None)
             assert task is not None
             assert task.text == "Buy groceries and fruit"
             assert task.due_date == "2026-06-01"
@@ -1497,17 +1581,12 @@ def test_delete_task_tool_removes_task() -> None:
         )
         from anima_server.services.agent.tools import create_task, delete_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Task to remove")
             result = delete_task("Task to remove")
 
-            from anima_server.models.task import Task
-            from sqlalchemy import select
-
-            tasks = list(db.scalars(select(Task).where(
-                Task.user_id == user.id)).all())
+            tasks = _tasks_for_user(user.id)
             assert tasks == []
             assert result == "Deleted task: Task to remove"
         finally:
@@ -1565,13 +1644,13 @@ def test_tasks_memory_block_shows_open_tasks() -> None:
         user, _thread = _setup(db)
         db.flush()
 
-        from anima_server.models.task import Task
         from anima_server.services.agent.memory_blocks import build_tasks_memory_block
 
-        db.add(Task(user_id=user.id, text="Buy groceries",
-               priority=3, due_date="2026-04-01"))
-        db.add(Task(user_id=user.id, text="Call dentist", priority=2))
-        db.add(Task(user_id=user.id, text="Done task", priority=1, done=True))
+        _seed_canonical_task(
+            user_id=user.id, text="Buy groceries", priority=3, due_date="2026-04-01"
+        )
+        _seed_canonical_task(user_id=user.id, text="Call dentist", priority=2)
+        _seed_canonical_task(user_id=user.id, text="Done task", priority=1, done=True)
         db.flush()
 
         block = build_tasks_memory_block(db, user_id=user.id)
@@ -1589,11 +1668,11 @@ def test_tasks_memory_block_flags_overdue() -> None:
         user, _thread = _setup(db)
         db.flush()
 
-        from anima_server.models.task import Task
         from anima_server.services.agent.memory_blocks import build_tasks_memory_block
 
-        db.add(Task(user_id=user.id, text="Overdue item",
-               priority=3, due_date="2020-01-01"))
+        _seed_canonical_task(
+            user_id=user.id, text="Overdue item", priority=3, due_date="2020-01-01"
+        )
         db.flush()
 
         block = build_tasks_memory_block(db, user_id=user.id)
@@ -1617,14 +1696,12 @@ def test_tasks_memory_block_in_runtime_blocks() -> None:
         user, thread = _setup(db)
         db.flush()
 
-        from anima_server.models.task import Task
         from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 
-        db.add(Task(user_id=user.id, text="Test task", priority=2))
+        _seed_canonical_task(user_id=user.id, text="Test task", priority=2)
         db.flush()
 
-        blocks = build_runtime_memory_blocks(
-            db, user_id=user.id, thread_id=thread.id)
+        blocks = build_runtime_memory_blocks(db, user_id=user.id, thread_id=thread.id)
         labels = [b.label for b in blocks]
         assert "user_tasks" in labels
 
@@ -1641,8 +1718,7 @@ def test_complete_task_tool_no_match() -> None:
         )
         from anima_server.services.agent.tools import complete_task, create_task
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             create_task("Buy groceries")
             result = complete_task("write a novel")
@@ -1659,11 +1735,9 @@ def test_prompt_budget_preserves_tier_0() -> None:
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="soul", value="A" * 3000,
-                    description="soul biography"),
+        MemoryBlock(label="soul", value="A" * 3000, description="soul biography"),
         MemoryBlock(label="facts", value="B" * 5000, description="facts"),
-        MemoryBlock(label="recent_episodes", value="C" *
-                    5000, description="episodes"),
+        MemoryBlock(label="recent_episodes", value="C" * 5000, description="episodes"),
     ]
     result = apply_prompt_budget(
         blocks,
@@ -1686,8 +1760,7 @@ def test_prompt_budget_truncates_oversized_block() -> None:
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="soul", value="X" * 10000,
-                    description="big soul biography"),
+        MemoryBlock(label="soul", value="X" * 10000, description="big soul biography"),
     ]
     result = apply_prompt_budget(
         blocks,
@@ -1708,14 +1781,10 @@ def test_prompt_budget_drops_lowest_tier_first() -> None:
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="soul", value="soul content",
-                    description="biography"),
-        MemoryBlock(label="self_identity",
-                    value="identity content", description=""),
-        MemoryBlock(label="relevant_memories",
-                    value="semantic hits", description=""),
-        MemoryBlock(label="recent_episodes",
-                    value="episode data", description=""),
+        MemoryBlock(label="soul", value="soul content", description="biography"),
+        MemoryBlock(label="self_identity", value="identity content", description=""),
+        MemoryBlock(label="relevant_memories", value="semantic hits", description=""),
+        MemoryBlock(label="recent_episodes", value="episode data", description=""),
     ]
     result = apply_prompt_budget(
         blocks,
@@ -1738,8 +1807,7 @@ def test_prompt_budget_prioritizes_current_focus_over_working_memory_within_tier
     from anima_server.services.agent.prompt_budget import BudgetConfig, apply_prompt_budget
 
     blocks = [
-        MemoryBlock(label="self_working_memory",
-                    value="H" * 80, description=""),
+        MemoryBlock(label="self_working_memory", value="H" * 80, description=""),
         MemoryBlock(label="current_focus", value="focus", description=""),
         MemoryBlock(label="thread_summary", value="summary", description=""),
     ]
@@ -1753,8 +1821,7 @@ def test_prompt_budget_prioritizes_current_focus_over_working_memory_within_tier
             tier_3_budget=0,
         ),
     )
-    assert [block.label for block in result] == [
-        "current_focus", "thread_summary"]
+    assert [block.label for block in result] == ["current_focus", "thread_summary"]
 
 
 # --- Invariant Tests: Provider Config ---
@@ -1794,8 +1861,7 @@ def test_identity_rewrite_blocked_when_young() -> None:
         assert block.version == 1
         assert "Who I Am" in block.content
 
-        growth = get_self_model_block(
-            db, user_id=user.id, section="growth_log")
+        growth = get_self_model_block(db, user_id=user.id, section="growth_log")
         assert growth is not None
         assert "identity update" in growth.content.lower()
 
@@ -1939,8 +2005,7 @@ def test_recall_memory_exact_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -1960,8 +2025,7 @@ def test_recall_memory_no_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -2002,8 +2066,7 @@ def test_recall_memory_category_filter() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -2036,8 +2099,7 @@ def test_recall_memory_episode_search() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -2070,8 +2132,7 @@ def test_recall_memory_word_overlap_match() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -2090,8 +2151,7 @@ def test_recall_memory_empty_query() -> None:
             set_tool_context,
         )
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=thread.id))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=thread.id))
         try:
             from anima_server.services.agent.tools import recall_memory
 
@@ -2116,7 +2176,10 @@ def test_encrypted_core_requires_passphrase() -> None:
 
         from anima_server.db.session import _make_engine
 
-        with pytest.raises(RuntimeError, match="no passphrase is configured"):
+        with (
+            patch("anima_server.db.session.get_sqlcipher_key", return_value=None),
+            pytest.raises(RuntimeError, match="Unlock"),
+        ):
             _make_engine()
 
 
@@ -2127,7 +2190,7 @@ def test_encrypted_core_requires_sqlcipher() -> None:
     with patch("anima_server.db.session.settings") as mock_settings:
         mock_settings.database_url = "sqlite://"
         mock_settings.database_echo = False
-        mock_settings.core_passphrase = "test-secret"
+        mock_settings.core_passphrase = ""
         mock_settings.core_require_encryption = True
 
         # Block sqlcipher3 import
@@ -2144,12 +2207,13 @@ def test_encrypted_core_requires_sqlcipher() -> None:
 
         with (
             patch.object(builtins, "__import__", side_effect=mock_import),
-            pytest.raises(RuntimeError, match="sqlcipher3 is not installed"),
+            patch("anima_server.db.session.get_sqlcipher_key", return_value=b"k" * 32),
+            pytest.raises(RuntimeError, match="SQLCipher is required"),
         ):
             _make_engine()
 
 
-def test_encrypted_core_fallback_without_enforcement() -> None:
+def test_authenticated_soul_never_downgrades_without_enforcement() -> None:
     """Without core_require_encryption, missing sqlcipher3 should fall back gracefully."""
     import builtins
     from unittest.mock import patch
@@ -2157,7 +2221,7 @@ def test_encrypted_core_fallback_without_enforcement() -> None:
     with patch("anima_server.db.session.settings") as mock_settings:
         mock_settings.database_url = "sqlite://"
         mock_settings.database_echo = False
-        mock_settings.core_passphrase = "test-secret"
+        mock_settings.core_passphrase = ""
         mock_settings.core_require_encryption = False
 
         real_import = builtins.__import__
@@ -2169,6 +2233,9 @@ def test_encrypted_core_fallback_without_enforcement() -> None:
 
         from anima_server.db.session import _make_engine
 
-        with patch.object(builtins, "__import__", side_effect=mock_import):
-            eng = _make_engine()
-            assert eng is not None
+        with (
+            patch.object(builtins, "__import__", side_effect=mock_import),
+            patch("anima_server.db.session.get_sqlcipher_key", return_value=b"k" * 32),
+            pytest.raises(RuntimeError, match="SQLCipher is required"),
+        ):
+            _make_engine()

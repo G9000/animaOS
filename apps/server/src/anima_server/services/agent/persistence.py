@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, desc, func, or_, select
@@ -40,13 +40,101 @@ logger = logging.getLogger(__name__)
 TERMINAL_RUN_STATUSES = ("cancelled", "failed")
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalRuntimeMessageProjection:
+    """Authenticated visible content projected without changing Runtime storage."""
+
+    _row: RuntimeMessage = field(repr=False)
+    content_text: str
+    content_json: dict[str, object] | None
+    source: str | None
+    created_at: datetime
+
+    def __getattr__(self, name: str):
+        return getattr(self._row, name)
+
+
+def _hydrate_current_message_references(rows):
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        list_canonical_threads,
+    )
+
+    hydrated = []
+    messages_by_owner = {}
+    for row in rows:
+        if not row.corefs_message_id:
+            if row.role == "summary":
+                from sqlalchemy.orm import object_session
+
+                from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+                db = object_session(row)
+                payload = (
+                    load_runtime_record(
+                        db,
+                        row_type="runtime_message",
+                        row_id=row.id,
+                        owner_id=row.user_id,
+                    )
+                    if db is not None
+                    else None
+                )
+                if payload is not None:
+                    hydrated.append(
+                        CanonicalRuntimeMessageProjection(
+                            row,
+                            str(payload.get("content_text") or ""),
+                            payload.get("content_json"),
+                            row.source,
+                            row.created_at,
+                        )
+                    )
+                    continue
+            hydrated.append(row)
+            continue
+        owner = int(row.user_id)
+        if owner not in messages_by_owner:
+            session = active_conversation_authority_session(owner)
+            if session is None or session.user_id != owner:
+                messages_by_owner[owner] = {}
+            else:
+                mapping = {}
+                for view in list_canonical_threads(session=session):
+                    for message in view.messages:
+                        key = (view.document.legacy_thread_id, message.message_id)
+                        if key in mapping:
+                            raise ValueError("Canonical message reference identity is ambiguous")
+                        mapping[key] = message
+                messages_by_owner[owner] = mapping
+        message = messages_by_owner[owner].get((row.thread_id, row.corefs_message_id))
+        if message is None or message.role != row.role:
+            continue
+        metadata = dict(message.display_metadata or {})
+        if message.attachment_uris:
+            metadata["attachments"] = [{"corefsUri": uri} for uri in message.attachment_uris]
+        hydrated.append(
+            CanonicalRuntimeMessageProjection(
+                _row=row,
+                content_text=message.content,
+                content_json=metadata or None,
+                source=metadata.get("source"),
+                created_at=datetime.fromisoformat(message.created_at.replace("Z", "+00:00")),
+            )
+        )
+    return hydrated
+
+
 def _reject_legacy_conversation_mutation(user_id: int) -> None:
     from anima_server.services.corefs.content_authority import core_content_authority_active
     from anima_server.services.corefs.conversation_authority import (
         active_conversation_authority_session,
     )
 
-    if active_conversation_authority_session(user_id) is not None or core_content_authority_active():
+    if (
+        active_conversation_authority_session(user_id) is not None
+        or core_content_authority_active()
+    ):
         raise RuntimeError("Legacy conversation mutation is disabled after CoreFS cutover.")
 
 
@@ -86,7 +174,7 @@ def get_or_create_thread(
 
 
 def load_thread_history(
-    db: Session, thread_id: int, *, user_id: int | None = None
+    db: Session, thread_id: int, *, user_id: int | None = None, exclude_run_id: int | None = None
 ) -> list[StoredMessage]:
     if user_id is not None:
         from anima_server.services.corefs.conversation_authority import (
@@ -99,10 +187,53 @@ def load_thread_history(
             view = get_canonical_thread(session=session, thread_id=thread_id)
             if view is None:
                 return []
-            return [
-                StoredMessage(role=message.role, content=message.content)
-                for message in view.messages
-            ]
+            from anima_server.services.agent.attachments import resolve_corefs_chat_attachment
+
+            rows = list(
+                db.scalars(
+                    select(RuntimeMessage)
+                    .where(
+                        RuntimeMessage.user_id == user_id,
+                        RuntimeMessage.thread_id == thread_id,
+                    )
+                    .order_by(RuntimeMessage.sequence_id)
+                ).all()
+            )
+            native = {message.message_id: message for message in view.messages}
+            window = {
+                row.corefs_message_id: row
+                for row in rows
+                if row.corefs_message_id in native
+                and row.role == native[row.corefs_message_id].role
+            }
+            summaries = [row for row in rows if row.role == "summary" and row.is_in_context]
+            history = []
+            if summaries and window:
+                summary = _hydrate_current_message_references([summaries[-1]])[0]
+                if summary.content_text:
+                    history.append(StoredMessage(role="assistant", content=summary.content_text))
+            for message in view.messages:
+                reference = window.get(message.message_id)
+                if (
+                    reference is not None
+                    and exclude_run_id is not None
+                    and reference.run_id == exclude_run_id
+                ):
+                    continue
+                if reference is not None and not reference.is_in_context:
+                    continue
+                history.append(
+                    StoredMessage(
+                        role=message.role,
+                        content=message.content,
+                        attachments=tuple(
+                            resolve_corefs_chat_attachment(session=session, object_uri=uri)
+                            for uri in message.attachment_uris
+                        ),
+                    )
+                )
+            return history
+        return []
     rows = db.scalars(
         select(RuntimeMessage)
         .where(
@@ -152,13 +283,12 @@ def list_transcript_messages(
         )
         return [
             row
-            for row in rows
+            for row in _hydrate_current_message_references(rows)
             if row.is_in_context or row.content_text not in (None, "")
         ]
 
     if user_id is None or limit is None:
-        raise TypeError(
-            "list_transcript_messages requires thread_id or user_id with limit")
+        raise TypeError("list_transcript_messages requires thread_id or user_id with limit")
 
     thread = db.scalar(
         select(RuntimeThread).where(
@@ -175,13 +305,12 @@ def list_transcript_messages(
         .where(
             RuntimeMessage.thread_id == thread.id,
             RuntimeMessage.role.in_(("user", "assistant", "system", "tool")),
-            or_(RuntimeMessage.run_id.is_(None),
-                RuntimeRun.status.notin_(("failed", "cancelled"))),
+            or_(RuntimeMessage.run_id.is_(None), RuntimeRun.status.notin_(("failed", "cancelled"))),
         )
         .order_by(desc(RuntimeMessage.sequence_id))
     )
     visible: list[RuntimeMessage] = []
-    for row in rows:
+    for row in _hydrate_current_message_references(rows):
         if row.content_text in (None, "") or row.is_internal:
             continue
         visible.append(row)
@@ -317,6 +446,47 @@ def append_corefs_message_reference(
     return reference
 
 
+def rebuild_current_thread_message_references(db: Session, *, thread: RuntimeThread) -> None:
+    """Rebuild disposable bindings from authenticated authored messages only."""
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        get_canonical_thread,
+    )
+
+    session = active_conversation_authority_session(int(thread.user_id))
+    if session is None or session.user_id != thread.user_id:
+        raise PermissionError("Current conversation authority is unavailable")
+    view = get_canonical_thread(session=session, thread_id=thread.id)
+    if view is None or view.document.legacy_thread_id != thread.id:
+        raise PermissionError("Current conversation thread does not match its Runtime binding")
+    rows = list(
+        db.scalars(
+            select(RuntimeMessage).where(
+                RuntimeMessage.thread_id == thread.id,
+                RuntimeMessage.user_id == thread.user_id,
+                RuntimeMessage.corefs_message_id.is_not(None),
+            )
+        )
+    )
+    existing = {}
+    for row in rows:
+        if row.corefs_message_id in existing:
+            raise ValueError("Current conversation reference identity is ambiguous")
+        existing[row.corefs_message_id] = row
+    for message in view.messages:
+        reference = existing.get(message.message_id)
+        if reference is None:
+            append_corefs_message_reference(db, thread=thread, message=message, run_id=None)
+        elif reference.role != message.role:
+            raise ValueError("Current conversation reference role changed")
+        elif reference.corefs_sequence_id != message.sequence:
+            # Sequence is disposable indexing state; restore its authenticated
+            # value so partial Runtime loss cannot reorder compaction input.
+            reference.corefs_sequence_id = message.sequence
+            db.add(reference)
+    db.flush()
+
+
 def link_message_image_assets(
     db: Session,
     *,
@@ -380,8 +550,7 @@ def persist_agent_result(
 
         if trace.assistant_text or trace.tool_calls:
             if sequence_id is None:
-                raise RuntimeError(
-                    "Missing reserved message sequence for assistant output.")
+                raise RuntimeError("Missing reserved message sequence for assistant output.")
             # Use extracted inner thinking as content (thinking kwarg
             # value stored as assistant message content), but only when
             # the step contains exclusively non-terminal tool calls.
@@ -440,8 +609,7 @@ def persist_agent_result(
 
         for tool_result in trace.tool_results:
             if sequence_id is None:
-                raise RuntimeError(
-                    "Missing reserved message sequence for tool output.")
+                raise RuntimeError("Missing reserved message sequence for tool output.")
             tool_content_json = (
                 attach_serialized_retrieval(
                     content_json=None,
@@ -559,8 +727,7 @@ def save_approval_checkpoint(
         ),
         tool_name=tool_call.name,
         tool_call_id=tool_call.id,
-        tool_args_json=tool_call.arguments if isinstance(
-            tool_call.arguments, dict) else {},
+        tool_args_json=tool_call.arguments if isinstance(tool_call.arguments, dict) else {},
     )
 
     run.status = "awaiting_approval"
@@ -585,8 +752,25 @@ def load_approval_checkpoint(
     if run.pending_approval_message_id is None:
         return None
     approval_msg = db.get(RuntimeMessage, run.pending_approval_message_id)
-    if approval_msg is None:
+    if (
+        approval_msg is None
+        or approval_msg.role != "approval"
+        or approval_msg.user_id != run.user_id
+        or approval_msg.thread_id != run.thread_id
+        or approval_msg.run_id != run.id
+    ):
         return None
+    from anima_server.services.corefs.sealed_runtime import load_runtime_record
+
+    payload = load_runtime_record(
+        db, row_type="runtime_message", row_id=approval_msg.id, owner_id=run.user_id
+    )
+    if payload is None:
+        if runtime_index_for_sensitive_write(db, user_id=run.user_id) is not None:
+            return None
+    else:
+        for field in ("content_text", "content_json", "tool_args_json"):
+            set_committed_value(approval_msg, field, payload.get(field))
     return run, approval_msg
 
 
@@ -604,8 +788,7 @@ def clear_approval_checkpoint(
 
 
 def reset_thread(db: Session, user_id: int) -> None:
-    thread = db.scalar(select(RuntimeThread).where(
-        RuntimeThread.user_id == user_id))
+    thread = db.scalar(select(RuntimeThread).where(RuntimeThread.user_id == user_id))
     if thread is None:
         return
 
@@ -663,6 +846,32 @@ def append_message(
         source=source,
         is_in_context=is_in_context,
         is_archived_history=is_archived_history,
+    )
+
+
+def append_runtime_summary(
+    db: Session,
+    *,
+    thread: RuntimeThread,
+    run_id: int | None,
+    sequence_id: int,
+    content_text: str,
+    content_json: dict[str, object] | None = None,
+) -> RuntimeMessage:
+    """Persist a sealed disposable context summary, never visible content."""
+    if run_id is not None:
+        run = db.get(RuntimeRun, run_id)
+        if run is None or run.user_id != thread.user_id or run.thread_id != thread.id:
+            raise PermissionError("Context summary run belongs to another owner or thread")
+    return _append_runtime_message(
+        db,
+        thread=thread,
+        run_id=run_id,
+        step_id=None,
+        sequence_id=sequence_id,
+        role="summary",
+        content_text=content_text,
+        content_json=content_json,
     )
 
 
@@ -758,9 +967,7 @@ def create_step(
     trace: StepTrace,
     prompt_budget: object | None = None,
 ) -> RuntimeStep:
-    user_id = db.scalar(
-        select(RuntimeThread.user_id).where(RuntimeThread.id == thread_id)
-    )
+    user_id = db.scalar(select(RuntimeThread.user_id).where(RuntimeThread.id == thread_id))
     if user_id is None:
         raise ValueError("Runtime step thread is missing")
     runtime_index = runtime_index_for_sensitive_write(
@@ -768,9 +975,7 @@ def create_step(
         user_id=int(user_id),
     )
     request_json: dict[str, object] = {
-        "messages": [
-            _slim_message_snapshot(message) for message in trace.request_messages
-        ],
+        "messages": [_slim_message_snapshot(message) for message in trace.request_messages],
         "allowed_tools": list(trace.allowed_tools),
         "force_tool_call": trace.force_tool_call,
     }

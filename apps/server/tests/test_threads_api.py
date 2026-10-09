@@ -30,6 +30,41 @@ def _register_user(client: TestClient) -> dict[str, object]:
     return response.json()
 
 
+def test_visible_message_metadata_survives_runtime_loss_and_edit() -> None:
+    with managed_test_client("canonical-message-metadata-") as client:
+        registered = _register_user(client)
+        headers = {"x-anima-unlock": str(registered["unlockToken"])}
+        session = unlock_session_store.resolve(str(registered["unlockToken"]))
+        created = client.post("/api/threads", headers=headers)
+        assert created.status_code == 201, created.text
+        thread_id = created.json()["threadId"]
+        pills = [{"kind": "brief", "label": "DAILY BRIEF", "ref": None}]
+        message = append_canonical_message(
+            session=session,
+            thread_id=thread_id,
+            role="assistant",
+            content="A durable greeting",
+            display_metadata={"source": "home_greeting", "pills": pills},
+        )
+        edit_canonical_message(
+            session=session,
+            thread_id=thread_id,
+            message_id=message.message_id,
+            content="Edited greeting",
+            expected_event_id=message.current_event_id,
+            expected_version=message.version,
+        )
+        with get_runtime_session_factory()() as runtime:
+            runtime.query(RuntimeMessage).delete()
+            runtime.query(RuntimeThread).delete()
+            runtime.commit()
+        displayed = client.get(f"/api/threads/{thread_id}/messages", headers=headers)
+        assert displayed.status_code == 200, displayed.text
+        assert displayed.json()["messages"][0]["content"] == "Edited greeting"
+        assert displayed.json()["messages"][0]["pills"] == pills
+        assert displayed.json()["messages"][0]["source"] == "home_greeting"
+
+
 def test_greenfield_thread_lifecycle_is_corefs_authoritative() -> None:
     with managed_test_client("anima-threads-greenfield-") as client:
         registered = _register_user(client)

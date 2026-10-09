@@ -20,50 +20,23 @@ from fastapi import (
 )
 from fastapi.responses import Response
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.config import settings
 from anima_server.db import get_runtime_db
-from anima_server.models.runtime import (
-    RuntimeKnowledgeBundleRun,
-    RuntimeKnowledgeConcept,
-    RuntimeKnowledgeConceptSource,
-    RuntimeKnowledgeLink,
-    RuntimeSource,
-    RuntimeSourceArtifact,
-    RuntimeSourceSpan,
-)
-from anima_server.services.agent.embeddings import generate_embedding
-from anima_server.services.corefs.asset_authority import asset_corefs_authority_active
 from anima_server.services.corefs.asset_mutations import AssetMutationError
-from anima_server.services.corefs.diary_migration import migration_opaque_id
+from anima_server.services.corefs.catalog_reader import stable_opaque_id
 from anima_server.services.corefs.knowledge_authority import (
     CanonicalKnowledgeDocument,
     canonical_knowledge_document,
     canonical_knowledge_view,
     publish_canonical_knowledge_source,
 )
-from anima_server.services.ingestion.adapters.text import (
-    ingest_markdown_content,
-    ingest_text_content,
-)
-from anima_server.services.ingestion.adapters.web import (
-    ingest_html_content,
-    ingest_web_capture,
-    reextract_source_html,
-)
-from anima_server.services.ingestion.document_compiler import (
-    compile_source_knowledge_auto,
-)
 from anima_server.services.ingestion.html_extract import extract_html_article
-from anima_server.services.ingestion.lint import lint_knowledge_bundle
 from anima_server.services.ingestion.okf import (
     PortableOKFConcept,
-    export_okf_bundle,
     export_portable_okf_bundle,
-    import_okf_bundle,
     read_portable_okf_bundle,
 )
 from anima_server.services.ingestion.structured import parse_markdown_structure
@@ -105,13 +78,9 @@ class WebCaptureRequest(BaseModel):
 
     @model_validator(mode="after")
     def require_exactly_one_input(self) -> WebCaptureRequest:
-        provided = sum(
-            (self.readableText is not None, self.html is not None, self.fetch)
-        )
+        provided = sum((self.readableText is not None, self.html is not None, self.fetch))
         if provided != 1:
-            raise ValueError(
-                "provide exactly one of readableText, html, or fetch=true"
-            )
+            raise ValueError("provide exactly one of readableText, html, or fetch=true")
         for value in (self.readableText, self.html):
             if value is not None and not value.strip():
                 raise ValueError("content must not be empty")
@@ -134,25 +103,15 @@ async def list_sources(
     await require_unlocked_user_async(request, userId)
     safe_limit = min(max(limit, 1), 200)
     corefs_index = _active_knowledge_index(userId)
-    if corefs_index is not None:
-        by_source: dict[int, Any] = {}
-        for projection in corefs_index.knowledge_source_projections():
-            by_source.setdefault(projection.source_id, projection)
-        return {
-            "sources": [
-                _corefs_source_summary(projection)
-                for _, projection in sorted(by_source.items(), reverse=True)[:safe_limit]
-            ]
-        }
-    sources = list(
-        runtime_db.scalars(
-            select(RuntimeSource)
-            .where(RuntimeSource.user_id == userId)
-            .order_by(RuntimeSource.created_at.desc(), RuntimeSource.id.desc())
-            .limit(safe_limit)
-        ).all()
-    )
-    return {"sources": [_source_summary(source) for source in sources]}
+    by_source: dict[int, Any] = {}
+    for projection in corefs_index.knowledge_source_projections():
+        by_source.setdefault(projection.source_id, projection)
+    return {
+        "sources": [
+            _corefs_source_summary(projection)
+            for _, projection in sorted(by_source.items(), reverse=True)[:safe_limit]
+        ]
+    }
 
 
 @router.post("/sources/text", status_code=status.HTTP_201_CREATED)
@@ -167,35 +126,14 @@ async def ingest_text_source(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Text source is too large.",
         )
-    if asset_corefs_authority_active(session):
-        projection = publish_canonical_knowledge_source(
-            session=session,
-            document=_canonical_text_document(payload, kind="text"),
-        )
-        return _canonical_source_write_response(
-            projection,
-            compile_requested=payload.compile,
-        )
-    _require_legacy_knowledge_mutation_allowed(payload.userId)
-    try:
-        source, artifacts, spans = ingest_text_content(
-            runtime_db,
-            user_id=payload.userId,
-            content=payload.content,
-            filename=payload.filename,
-            title=payload.title,
-            embedding_fn=generate_embedding,
-            compile_knowledge=False,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = (
-        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
-        if payload.compile
-        else None
+    projection = publish_canonical_knowledge_source(
+        session=session,
+        document=_canonical_text_document(payload, kind="text"),
     )
-    runtime_db.commit()
-    return _source_response(source, artifacts, spans, compile_run=compile_run)
+    return _canonical_source_write_response(
+        projection,
+        compile_requested=payload.compile,
+    )
 
 
 @router.post("/sources/markdown", status_code=status.HTTP_201_CREATED)
@@ -210,35 +148,14 @@ async def ingest_markdown_source(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail="Markdown source is too large.",
         )
-    if asset_corefs_authority_active(session):
-        projection = publish_canonical_knowledge_source(
-            session=session,
-            document=_canonical_text_document(payload, kind="markdown"),
-        )
-        return _canonical_source_write_response(
-            projection,
-            compile_requested=payload.compile,
-        )
-    _require_legacy_knowledge_mutation_allowed(payload.userId)
-    try:
-        source, artifacts, spans = ingest_markdown_content(
-            runtime_db,
-            user_id=payload.userId,
-            content=payload.content,
-            filename=payload.filename,
-            title=payload.title,
-            embedding_fn=generate_embedding,
-            compile_knowledge=False,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = (
-        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
-        if payload.compile
-        else None
+    projection = publish_canonical_knowledge_source(
+        session=session,
+        document=_canonical_text_document(payload, kind="markdown"),
     )
-    runtime_db.commit()
-    return _source_response(source, artifacts, spans, compile_run=compile_run)
+    return _canonical_source_write_response(
+        projection,
+        compile_requested=payload.compile,
+    )
 
 
 @router.post("/sources/web-capture", status_code=status.HTTP_201_CREATED)
@@ -254,9 +171,7 @@ async def ingest_web_capture_source(
         try:
             url, html = fetch_capture_html(payload.url)
         except WebFetchDisabledError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)
-            ) from exc
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
         except (UnsafeFetchUrlError, WebFetchError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -280,43 +195,20 @@ async def ingest_web_capture_source(
                 f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
             ),
         )
-    if asset_corefs_authority_active(session):
-        document = _canonical_web_document(
-            url=url,
-            readable_text=payload.readableText,
-            html=html,
-            title=payload.title,
-        )
-        projection = publish_canonical_knowledge_source(
-            session=session,
-            document=document,
-        )
-        return _canonical_source_write_response(
-            projection,
-            compile_requested=payload.compile,
-        )
-    _require_legacy_knowledge_mutation_allowed(payload.userId)
-    try:
-        source, artifacts, spans = ingest_web_capture(
-            runtime_db,
-            user_id=payload.userId,
-            url=url,
-            readable_text=payload.readableText,
-            html=html,
-            title=payload.title,
-            canonical_url=payload.canonicalUrl,
-            embedding_fn=generate_embedding,
-            compile_knowledge=False,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = (
-        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
-        if payload.compile
-        else None
+    document = _canonical_web_document(
+        url=url,
+        readable_text=payload.readableText,
+        html=html,
+        title=payload.title,
     )
-    runtime_db.commit()
-    return _source_response(source, artifacts, spans, compile_run=compile_run)
+    projection = publish_canonical_knowledge_source(
+        session=session,
+        document=document,
+    )
+    return _canonical_source_write_response(
+        projection,
+        compile_requested=payload.compile,
+    )
 
 
 _HTML_UPLOAD_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
@@ -359,47 +251,25 @@ async def ingest_html_source(
             ),
         )
 
-    if asset_corefs_authority_active(session):
-        try:
-            html = data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="HTML upload must be valid UTF-8.",
-            ) from exc
-        projection = publish_canonical_knowledge_source(
-            session=session,
-            document=_canonical_html_document(
-                html=html,
-                filename=filename,
-                title=title,
-            ),
-        )
-        return _canonical_source_write_response(
-            projection,
-            compile_requested=compileKnowledge,
-        )
-    _require_legacy_knowledge_mutation_allowed(userId)
-
     try:
-        source, artifacts, spans = ingest_html_content(
-            runtime_db,
-            user_id=userId,
-            html=data.decode("utf-8", errors="replace"),
+        html = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="HTML upload must be valid UTF-8.",
+        ) from exc
+    projection = publish_canonical_knowledge_source(
+        session=session,
+        document=_canonical_html_document(
+            html=html,
             filename=filename,
             title=title,
-            embedding_fn=generate_embedding,
-            compile_knowledge=False,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = (
-        await _existing_or_new_compile_run(runtime_db, source=source, spans=spans)
-        if compileKnowledge
-        else None
+        ),
     )
-    runtime_db.commit()
-    return _source_response(source, artifacts, spans, compile_run=compile_run)
+    return _canonical_source_write_response(
+        projection,
+        compile_requested=compileKnowledge,
+    )
 
 
 @router.post("/sources/{source_id}/reextract")
@@ -410,104 +280,48 @@ async def reextract_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, userId)
-    if asset_corefs_authority_active(session):
-        selected = canonical_knowledge_document(
-            session=session,
-            source_id=source_id,
-        )
-        if selected is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Source not found.",
-            )
-        stable_id, document = selected
-        if document.source_media_type != "text/html":
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Only captured HTML sources can be re-extracted.",
-            )
-        extraction_url = (
-            document.source_uri
-            if document.source_uri.startswith(("http://", "https://"))
-            else None
-        )
-        extraction = extract_html_article(
-            document.original_content,
-            url=extraction_url,
-        )
-        refreshed = CanonicalKnowledgeDocument(
-            source_kind=document.source_kind,
-            source_uri=document.source_uri,
-            source_title=document.source_title or extraction.title,
-            source_media_type=document.source_media_type,
-            filename=document.filename,
-            artifact_kind="structured_markdown",
-            content=parse_markdown_structure(extraction.markdown).to_markdown(),
-            original_content=document.original_content,
-        )
-        projection = publish_canonical_knowledge_source(
-            session=session,
-            document=refreshed,
-            stable_id=stable_id,
-            replace_existing=True,
-        )
-        return _canonical_source_write_response(
-            projection,
-            compile_requested=True,
-        )
-    _require_legacy_knowledge_mutation_allowed(userId)
-    # Checked before re-extraction: replacing spans cascades citation rows,
-    # so an already-compiled source must be recompiled afterwards or its
-    # concepts would go stale/orphaned until a manual compile.
-    had_compiled_concepts = (
-        runtime_db.scalar(
-            select(RuntimeKnowledgeConceptSource.id)
-            .where(
-                RuntimeKnowledgeConceptSource.user_id == userId,
-                RuntimeKnowledgeConceptSource.source_id == source_id,
-            )
-            .limit(1)
-        )
-        is not None
+    selected = canonical_knowledge_document(
+        session=session,
+        source_id=source_id,
     )
-    try:
-        source, artifacts, spans = reextract_source_html(
-            runtime_db,
-            user_id=userId,
-            source_id=source_id,
-            embedding_fn=generate_embedding,
-        )
-    except LookupError as exc:
+    if selected is None:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
-    compile_run = None
-    if had_compiled_concepts:
-        result = await compile_source_knowledge_auto(
-            runtime_db,
-            source=source,
-            spans=spans,
-            embedding_fn=generate_embedding,
-            mode="refresh",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found.",
         )
-        if result.status != "completed":
-            # Replacing spans cascaded the old citations; committing now
-            # would leave active concepts with no citations. Keep the
-            # previous span/citation state instead.
-            runtime_db.rollback()
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=(
-                    "Re-extraction was rolled back: the refresh compile "
-                    "failed, so the previous spans and citations were kept. "
-                    "Retry when the compiler model is available."
-                ),
-            )
-        compile_run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
-    runtime_db.commit()
-    return _source_response(source, artifacts, spans, compile_run=compile_run)
+    stable_id, document = selected
+    if document.source_media_type != "text/html":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Only captured HTML sources can be re-extracted.",
+        )
+    extraction_url = (
+        document.source_uri if document.source_uri.startswith(("http://", "https://")) else None
+    )
+    extraction = extract_html_article(
+        document.original_content,
+        url=extraction_url,
+    )
+    refreshed = CanonicalKnowledgeDocument(
+        source_kind=document.source_kind,
+        source_uri=document.source_uri,
+        source_title=document.source_title or extraction.title,
+        source_media_type=document.source_media_type,
+        filename=document.filename,
+        artifact_kind="structured_markdown",
+        content=parse_markdown_structure(extraction.markdown).to_markdown(),
+        original_content=document.original_content,
+    )
+    projection = publish_canonical_knowledge_source(
+        session=session,
+        document=refreshed,
+        stable_id=stable_id,
+        replace_existing=True,
+    )
+    return _canonical_source_write_response(
+        projection,
+        compile_requested=True,
+    )
 
 
 @router.get("/sources/{source_id}")
@@ -519,24 +333,15 @@ async def get_source(
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
     corefs_index = _active_knowledge_index(userId)
-    if corefs_index is not None:
-        projections = tuple(
-            item
-            for item in corefs_index.knowledge_source_projections()
-            if item.source_id == source_id
-        )
-        if not projections:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Source not found.",
-            )
-        return _corefs_source_response(projections)
-    source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
-    return _source_response(
-        source,
-        _source_artifacts(runtime_db, source_id=source.id),
-        _source_spans(runtime_db, source_id=source.id),
+    projections = tuple(
+        item for item in corefs_index.knowledge_source_projections() if item.source_id == source_id
     )
+    if not projections:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found.",
+        )
+    return _corefs_source_response(projections)
 
 
 @router.get("/concepts")
@@ -549,30 +354,13 @@ async def list_concepts(
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
     corefs_index = _active_knowledge_index(userId)
-    if corefs_index is not None:
-        safe_limit = min(max(limit, 1), 200)
-        return {
-            "concepts": [
-                _corefs_concept_summary(concept)
-                for concept in corefs_index.knowledge_concept_projections()[:safe_limit]
-            ]
-        }
     safe_limit = min(max(limit, 1), 200)
-    stmt = select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.user_id == userId)
-    if not includeRetired:
-        # A refresh compile retires superseded pages as "inactive". Retrieval
-        # and lint scope to "active"; the library listing must match, or the
-        # wiki keeps showing pages its sources no longer support.
-        stmt = stmt.where(RuntimeKnowledgeConcept.status == "active")
-    concepts = list(
-        runtime_db.scalars(
-            stmt.order_by(
-                RuntimeKnowledgeConcept.updated_at.desc(),
-                RuntimeKnowledgeConcept.id.desc(),
-            ).limit(safe_limit)
-        ).all()
-    )
-    return {"concepts": [_concept_summary(concept) for concept in concepts]}
+    return {
+        "concepts": [
+            _corefs_concept_summary(concept)
+            for concept in corefs_index.knowledge_concept_projections()[:safe_limit]
+        ]
+    }
 
 
 @router.get("/concepts/{concept_id}")
@@ -584,39 +372,13 @@ async def get_concept(
 ) -> dict[str, Any]:
     await require_unlocked_user_async(request, userId)
     corefs_index = _active_knowledge_index(userId)
-    if corefs_index is not None:
-        concept = corefs_index.knowledge_concept_projection(concept_id)
-        if concept is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Concept not found.",
-            )
-        return _corefs_concept_response(concept)
-    concept = runtime_db.scalar(
-        select(RuntimeKnowledgeConcept).where(
-            RuntimeKnowledgeConcept.id == concept_id,
-            RuntimeKnowledgeConcept.user_id == userId,
-        )
-    )
+    concept = corefs_index.knowledge_concept_projection(concept_id)
     if concept is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Concept not found.")
-    return {
-        "id": concept.id,
-        "slug": concept.slug,
-        "title": concept.title,
-        "description": concept.description,
-        "conceptType": concept.concept_type,
-        "bodyMarkdown": concept.body_markdown,
-        "frontmatter": concept.frontmatter_json,
-        "metadata": concept.metadata_json,
-        "status": concept.status,
-        "citations": _concept_citations(
-            runtime_db,
-            user_id=userId,
-            concept_id=concept.id,
-        ),
-        "links": _concept_links(runtime_db, user_id=userId, concept_id=concept.id),
-    }
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Concept not found.",
+        )
+    return _corefs_concept_response(concept)
 
 
 @router.post("/sources/{source_id}/compile", status_code=status.HTTP_202_ACCEPTED)
@@ -627,32 +389,20 @@ async def compile_source(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, userId)
-    if asset_corefs_authority_active(session):
-        projection = next(
-            (
-                item
-                for item in canonical_knowledge_view(
-                    session=session
-                ).knowledge_source_projections()
-                if item.source_id == source_id
-            ),
-            None,
-        )
-        if projection is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Source not found.",
-            )
-        return {"compileRun": _canonical_compile_run(projection)}
-    _require_legacy_knowledge_mutation_allowed(userId)
-    source = _owned_source(runtime_db, user_id=userId, source_id=source_id)
-    run = await _compile_source_now(
-        runtime_db,
-        source=source,
-        spans=_source_spans(runtime_db, source_id=source.id),
+    projection = next(
+        (
+            item
+            for item in canonical_knowledge_view(session=session).knowledge_source_projections()
+            if item.source_id == source_id
+        ),
+        None,
     )
-    runtime_db.commit()
-    return {"compileRun": _run_response(run)}
+    if projection is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Source not found.",
+        )
+    return {"compileRun": _canonical_compile_run(projection)}
 
 
 @router.get("/search")
@@ -672,74 +422,21 @@ async def search_knowledge(
         )
     safe_limit = min(max(limit, 1), 50)
     corefs_index = _active_knowledge_index(userId)
-    if corefs_index is not None:
-        projections = corefs_index.search_knowledge_source_projections(
-            query,
-            limit=safe_limit,
-        )
-        return {
-            "query": query,
-            "concepts": [
-                _corefs_concept_summary(concept)
-                for concept in corefs_index.search_knowledge_concept_projections(
-                    query,
-                    limit=safe_limit,
-                )
-            ],
-            "evidenceSpans": [
-                _corefs_evidence_response(projection)
-                for projection in projections
-            ],
-        }
-    lowered = query.lower()
-    concepts = [
-        _concept_summary(concept)
-        for concept in runtime_db.scalars(
-            select(RuntimeKnowledgeConcept)
-            .where(
-                RuntimeKnowledgeConcept.user_id == userId,
-                # Retired pages are excluded from every retrieval path; search
-                # must match or a refresh compile's superseded pages keep
-                # surfacing as live results.
-                RuntimeKnowledgeConcept.status == "active",
+    projections = corefs_index.search_knowledge_source_projections(
+        query,
+        limit=safe_limit,
+    )
+    return {
+        "query": query,
+        "concepts": [
+            _corefs_concept_summary(concept)
+            for concept in corefs_index.search_knowledge_concept_projections(
+                query,
+                limit=safe_limit,
             )
-            .order_by(
-                RuntimeKnowledgeConcept.updated_at.desc(),
-                RuntimeKnowledgeConcept.id.desc(),
-            )
-        ).all()
-        if _contains_text(
-            lowered,
-            concept.title,
-            concept.description,
-            concept.body_markdown,
-            concept.slug,
-            concept.concept_type,
-        )
-    ][:safe_limit]
-    spans = [
-        _span_search_response(span, source)
-        for span, source in runtime_db.execute(
-            select(RuntimeSourceSpan, RuntimeSource)
-            .join(RuntimeSource, RuntimeSourceSpan.source_id == RuntimeSource.id)
-            .where(
-                RuntimeSourceSpan.user_id == userId,
-                RuntimeSource.user_id == userId,
-                # Section spans are parent read units, not evidence — the
-                # retrieval paths exclude them and search must match.
-                RuntimeSourceSpan.span_kind != "section",
-            )
-            .order_by(RuntimeSourceSpan.created_at.desc(), RuntimeSourceSpan.id.desc())
-        ).all()
-        if _contains_text(
-            lowered,
-            span.content_text,
-            span.span_kind,
-            source.title,
-            source.source_uri,
-        )
-    ][:safe_limit]
-    return {"query": query, "concepts": concepts, "evidenceSpans": spans}
+        ],
+        "evidenceSpans": [_corefs_evidence_response(projection) for projection in projections],
+    }
 
 
 @router.get("/export")
@@ -751,33 +448,28 @@ async def export_knowledge(
     session = await require_unlocked_user_async(request, userId)
     with tempfile.TemporaryDirectory(prefix="anima-okf-export-") as temp_dir:
         bundle_dir = Path(temp_dir) / "bundle"
-        if asset_corefs_authority_active(session):
-            concepts = canonical_knowledge_view(
-                session=session
-            ).knowledge_concept_projections()
-            export_portable_okf_bundle(
-                concepts=tuple(
-                    PortableOKFConcept(
-                        slug=concept.slug,
-                        concept_type=concept.concept_type,
-                        title=concept.title,
-                        description=concept.description,
-                        body_markdown=concept.body_markdown,
-                        frontmatter_json={
-                            "anima": {
-                                "source_id": concept.source_id,
-                                "derived": True,
-                            }
-                        },
-                        original_markdown="",
-                        linked_slugs=(),
-                    )
-                    for concept in concepts
-                ),
-                bundle_dir=bundle_dir,
-            )
-        else:
-            export_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+        concepts = canonical_knowledge_view(session=session).knowledge_concept_projections()
+        export_portable_okf_bundle(
+            concepts=tuple(
+                PortableOKFConcept(
+                    slug=concept.slug,
+                    concept_type=concept.concept_type,
+                    title=concept.title,
+                    description=concept.description,
+                    body_markdown=concept.body_markdown,
+                    frontmatter_json={
+                        "anima": {
+                            "source_id": concept.source_id,
+                            "derived": True,
+                        }
+                    },
+                    original_markdown="",
+                    linked_slugs=(),
+                )
+                for concept in concepts
+            ),
+            bundle_dir=bundle_dir,
+        )
         archive_path = Path(temp_dir) / "knowledge-bundle.zip"
         with zipfile.ZipFile(
             archive_path,
@@ -823,56 +515,45 @@ async def import_knowledge(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle zip.",
             ) from exc
-        if asset_corefs_authority_active(session):
-            try:
-                concepts = read_portable_okf_bundle(bundle_dir=bundle_dir)
-                for concept in concepts:
-                    publish_canonical_knowledge_source(
-                        session=session,
-                        stable_id=migration_opaque_id(
-                            "knowledge-okf-source",
-                            concept.slug,
-                        ),
-                        replace_existing=True,
-                        document=CanonicalKnowledgeDocument(
-                            source_kind="okf",
-                            source_uri=f"okf://{concept.slug}.md",
-                            source_title=concept.title,
-                            source_media_type="text/markdown",
-                            filename=f"{concept.slug}.md",
-                            artifact_kind="structured_markdown",
-                            content=concept.body_markdown,
-                            original_content=concept.original_markdown,
-                        ),
-                    )
-            except (ValueError, yaml.YAMLError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Invalid OKF bundle contents.",
-                ) from exc
-            except AssetMutationError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Canonical OKF import failed.",
-                ) from exc
-            imported_slugs = {concept.slug for concept in concepts}
-            link_count = sum(
-                1
-                for concept in concepts
-                for linked_slug in set(concept.linked_slugs)
-                if linked_slug in imported_slugs and linked_slug != concept.slug
-            )
-            return {"conceptCount": len(concepts), "linkCount": link_count}
-        _require_legacy_knowledge_mutation_allowed(userId)
         try:
-            result = import_okf_bundle(runtime_db, user_id=userId, bundle_dir=bundle_dir)
+            concepts = read_portable_okf_bundle(bundle_dir=bundle_dir)
+            for concept in concepts:
+                publish_canonical_knowledge_source(
+                    session=session,
+                    stable_id=stable_opaque_id(
+                        "knowledge-okf-source",
+                        concept.slug,
+                    ),
+                    replace_existing=True,
+                    document=CanonicalKnowledgeDocument(
+                        source_kind="okf",
+                        source_uri=f"okf://{concept.slug}.md",
+                        source_title=concept.title,
+                        source_media_type="text/markdown",
+                        filename=f"{concept.slug}.md",
+                        artifact_kind="structured_markdown",
+                        content=concept.body_markdown,
+                        original_content=concept.original_markdown,
+                    ),
+                )
         except (ValueError, yaml.YAMLError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Invalid OKF bundle contents.",
             ) from exc
-        runtime_db.commit()
-    return {"conceptCount": result.concept_count, "linkCount": result.link_count}
+        except AssetMutationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Canonical OKF import failed.",
+            ) from exc
+        imported_slugs = {concept.slug for concept in concepts}
+        link_count = sum(
+            1
+            for concept in concepts
+            for linked_slug in set(concept.linked_slugs)
+            if linked_slug in imported_slugs and linked_slug != concept.slug
+        )
+        return {"conceptCount": len(concepts), "linkCount": link_count}
 
 
 @router.post("/lint")
@@ -882,168 +563,22 @@ async def lint_knowledge(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, payload.userId)
-    if asset_corefs_authority_active(session):
-        return {
-            "findings": _canonical_lint_findings(
-                session=session,
-                source_id=payload.sourceId,
-                concept_id=payload.conceptId,
-            )
-        }
-    findings = lint_knowledge_bundle(
-        runtime_db,
-        user_id=payload.userId,
-        source_id=payload.sourceId,
-        concept_id=payload.conceptId,
-    )
     return {
-        "findings": [
-            {
-                "code": finding.code,
-                "severity": finding.severity,
-                "message": finding.message,
-                "conceptId": finding.concept_id,
-                "sourceId": finding.source_id,
-                "linkId": finding.link_id,
-            }
-            for finding in findings
-        ]
-    }
-
-
-async def _compile_source_now(
-    runtime_db: Session,
-    *,
-    source: RuntimeSource,
-    spans: list[RuntimeSourceSpan],
-) -> RuntimeKnowledgeBundleRun:
-    result = await compile_source_knowledge_auto(
-        runtime_db,
-        source=source,
-        spans=spans,
-        embedding_fn=generate_embedding,
-    )
-    run = runtime_db.get(RuntimeKnowledgeBundleRun, result.run_id)
-    if run is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Compile run was not persisted.",
-    )
-    return run
-
-
-async def _existing_or_new_compile_run(
-    runtime_db: Session,
-    *,
-    source: RuntimeSource,
-    spans: list[RuntimeSourceSpan],
-) -> RuntimeKnowledgeBundleRun:
-    existing = _latest_source_compile_run(runtime_db, source=source)
-    if existing is not None:
-        return existing
-    return await _compile_source_now(
-        runtime_db,
-        source=source,
-        spans=spans,
-    )
-
-
-def _latest_source_compile_run(
-    runtime_db: Session,
-    *,
-    source: RuntimeSource,
-) -> RuntimeKnowledgeBundleRun | None:
-    # Only successful or in-flight runs short-circuit a compile request;
-    # a failed run must not make transient compiler failures sticky when
-    # the user explicitly re-ingests with compile=true.
-    return runtime_db.scalar(
-        select(RuntimeKnowledgeBundleRun)
-        .where(
-            RuntimeKnowledgeBundleRun.user_id == source.user_id,
-            RuntimeKnowledgeBundleRun.source_id == source.id,
-            RuntimeKnowledgeBundleRun.run_type.like("compile:%"),
-            RuntimeKnowledgeBundleRun.status.in_(("pending", "running", "completed")),
+        "findings": _canonical_lint_findings(
+            session=session,
+            source_id=payload.sourceId,
+            concept_id=payload.conceptId,
         )
-        .order_by(RuntimeKnowledgeBundleRun.id.desc())
-    )
-
-
-def _owned_source(runtime_db: Session, *, user_id: int, source_id: int) -> RuntimeSource:
-    source = runtime_db.scalar(
-        select(RuntimeSource).where(
-            RuntimeSource.id == source_id,
-            RuntimeSource.user_id == user_id,
-        )
-    )
-    if source is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source not found.")
-    return source
-
-
-def _source_response(
-    source: RuntimeSource,
-    artifacts: list[RuntimeSourceArtifact],
-    spans: list[RuntimeSourceSpan],
-    *,
-    compile_run: RuntimeKnowledgeBundleRun | None = None,
-) -> dict[str, Any]:
-    response: dict[str, Any] = {
-        "source": {
-            "id": source.id,
-            "kind": source.kind,
-            "sourceUri": source.source_uri,
-            "contentHash": source.content_hash,
-            "title": source.title,
-            "mediaType": source.media_type,
-            "status": source.status,
-            "metadata": source.metadata_json,
-        },
-        "artifacts": [
-            {
-                "id": artifact.id,
-                "artifactKind": artifact.artifact_kind,
-                "contentHash": artifact.content_hash,
-                "metadata": artifact.metadata_json,
-            }
-            for artifact in artifacts
-        ],
-        "spans": [
-            {
-                "id": span.id,
-                "spanKind": span.span_kind,
-                "locator": span.locator_json,
-                "contentText": span.content_text,
-                "contentHash": span.content_hash,
-                "metadata": span.metadata_json,
-            }
-            for span in spans
-        ],
-    }
-    if compile_run is not None:
-        response["compileRun"] = _run_response(compile_run)
-    return response
-
-
-def _source_summary(source: RuntimeSource) -> dict[str, Any]:
-    return {
-        "id": source.id,
-        "kind": source.kind,
-        "sourceUri": source.source_uri,
-        "contentHash": source.content_hash,
-        "title": source.title,
-        "mediaType": source.media_type,
-        "status": source.status,
-        "metadata": source.metadata_json,
     }
 
 
-def _active_knowledge_index(user_id: int) -> Any | None:
+def _active_knowledge_index(user_id: int) -> Any:
     from anima_server.services.corefs.asset_authority import (
-        canonical_asset_session_or_legacy,
+        require_canonical_asset_session,
     )
 
-    session = canonical_asset_session_or_legacy(user_id)
-    return canonical_knowledge_view(session=session) if session is not None else None
+    session = require_canonical_asset_session(user_id)
+    return canonical_knowledge_view(session=session)
 
 
 def _canonical_text_document(
@@ -1054,11 +589,7 @@ def _canonical_text_document(
     content = payload.content.strip()
     default_name = "knowledge.md" if kind == "markdown" else "knowledge.txt"
     filename = _canonical_source_filename(payload.filename, default=default_name)
-    normalized = (
-        parse_markdown_structure(content).to_markdown()
-        if kind == "markdown"
-        else content
-    )
+    normalized = parse_markdown_structure(content).to_markdown() if kind == "markdown" else content
     return CanonicalKnowledgeDocument(
         source_kind=kind,
         source_uri=f"{kind}://{filename}",
@@ -1137,8 +668,10 @@ def _canonical_source_filename(value: str | None, *, default: str) -> str:
 def _canonical_http_url(value: str) -> str:
     normalized = value.strip()
     parsed = urlparse(normalized)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc or any(
-        character.isspace() for character in normalized
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or any(character.isspace() for character in normalized)
     ):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -1195,14 +728,6 @@ def _canonical_lint_findings(
         for concept in concepts
         if title_counts[concept.title] > 1
     ]
-
-
-def _require_legacy_knowledge_mutation_allowed(user_id: int) -> None:
-    from anima_server.services.corefs.asset_authority import (
-        require_legacy_asset_mutation_allowed,
-    )
-
-    require_legacy_asset_mutation_allowed(user_id)
 
 
 def _corefs_source_summary(projection: Any) -> dict[str, Any]:
@@ -1291,136 +816,6 @@ def _corefs_concept_response(concept: Any) -> dict[str, Any]:
         ],
         "links": [],
     }
-
-
-def _concept_summary(concept: RuntimeKnowledgeConcept) -> dict[str, Any]:
-    return {
-        "id": concept.id,
-        "slug": concept.slug,
-        "title": concept.title,
-        "description": concept.description,
-        "conceptType": concept.concept_type,
-        "status": concept.status,
-        "metadata": concept.metadata_json,
-    }
-
-
-def _concept_citations(
-    runtime_db: Session,
-    *,
-    user_id: int,
-    concept_id: int,
-) -> list[dict[str, Any]]:
-    rows = runtime_db.execute(
-        select(RuntimeKnowledgeConceptSource, RuntimeSourceSpan, RuntimeSource)
-        .join(
-            RuntimeSourceSpan,
-            RuntimeKnowledgeConceptSource.span_id == RuntimeSourceSpan.id,
-        )
-        .join(RuntimeSource, RuntimeKnowledgeConceptSource.source_id == RuntimeSource.id)
-        .where(
-            RuntimeKnowledgeConceptSource.user_id == user_id,
-            RuntimeKnowledgeConceptSource.concept_id == concept_id,
-            RuntimeSourceSpan.user_id == user_id,
-            RuntimeSource.user_id == user_id,
-        )
-        .order_by(
-            RuntimeKnowledgeConceptSource.created_at,
-            RuntimeKnowledgeConceptSource.id,
-        )
-    ).all()
-    return [
-        {
-            "id": link.id,
-            "sourceId": source.id,
-            "spanId": span.id,
-            "citationLabel": link.citation_label,
-            "quoteText": link.quote_text,
-            "sourceTitle": source.title,
-            "sourceUri": source.source_uri,
-            "spanKind": span.span_kind,
-            "locator": span.locator_json,
-            "contentText": span.content_text,
-            "metadata": link.metadata_json,
-        }
-        for link, span, source in rows
-    ]
-
-
-def _concept_links(
-    runtime_db: Session,
-    *,
-    user_id: int,
-    concept_id: int,
-) -> list[dict[str, Any]]:
-    links = runtime_db.scalars(
-        select(RuntimeKnowledgeLink)
-        .where(
-            RuntimeKnowledgeLink.user_id == user_id,
-            RuntimeKnowledgeLink.source_concept_id == concept_id,
-        )
-        .order_by(RuntimeKnowledgeLink.created_at, RuntimeKnowledgeLink.id)
-    ).all()
-    return [
-        {
-            "id": link.id,
-            "sourceConceptId": link.source_concept_id,
-            "targetConceptId": link.target_concept_id,
-            "linkType": link.link_type,
-            "confidence": link.confidence,
-            "metadata": link.metadata_json,
-        }
-        for link in links
-    ]
-
-
-def _span_search_response(
-    span: RuntimeSourceSpan,
-    source: RuntimeSource,
-) -> dict[str, Any]:
-    return {
-        "id": span.id,
-        "sourceId": source.id,
-        "sourceTitle": source.title,
-        "sourceUri": source.source_uri,
-        "spanKind": span.span_kind,
-        "locator": span.locator_json,
-        "contentText": span.content_text,
-        "metadata": span.metadata_json,
-    }
-
-
-def _run_response(run: RuntimeKnowledgeBundleRun) -> dict[str, Any]:
-    return {
-        "id": run.id,
-        "status": run.status,
-        "runType": run.run_type,
-        "sourceId": run.source_id,
-    }
-
-
-def _source_artifacts(runtime_db: Session, *, source_id: int) -> list[RuntimeSourceArtifact]:
-    return list(
-        runtime_db.scalars(
-            select(RuntimeSourceArtifact)
-            .where(RuntimeSourceArtifact.source_id == source_id)
-            .order_by(RuntimeSourceArtifact.id)
-        ).all()
-    )
-
-
-def _source_spans(runtime_db: Session, *, source_id: int) -> list[RuntimeSourceSpan]:
-    return list(
-        runtime_db.scalars(
-            select(RuntimeSourceSpan)
-            .where(RuntimeSourceSpan.source_id == source_id)
-            .order_by(RuntimeSourceSpan.id)
-        ).all()
-    )
-
-
-def _contains_text(needle: str, *values: str | None) -> bool:
-    return any(needle in value.lower() for value in values if value)
 
 
 def _extract_zip_safely(archive: zipfile.ZipFile, target_dir: Path) -> None:

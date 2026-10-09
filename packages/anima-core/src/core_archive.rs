@@ -1507,6 +1507,7 @@ fn validate_record_location(
             record_path == "fs/HEAD"
                 || record_path == "fs/CUTOVER_RECEIPT"
                 || record_path == "fs/CUTOVER_COMPLETE"
+                || record_path == "fs/VALIDATION_HEAD"
                 || record_path.starts_with("fs/catalogs/") && record_path.ends_with(".acore")
         }
         RecordType::Object => {

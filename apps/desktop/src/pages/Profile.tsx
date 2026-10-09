@@ -15,6 +15,17 @@ export default function Profile() {
   const [saving, setSaving] = useState(false);
 
   if (!user) return null;
+  if (user.profileAvailable === false) {
+    return (
+      <div className="h-full overflow-y-auto pt-hud">
+        <div className="max-w-[520px] mx-auto px-8 py-8 space-y-4">
+          <h1 className="text-lg text-foreground">Core owner</h1>
+          <p className="text-sm text-muted-foreground">Your Soul is unlocked. Account details are unavailable because this Core has no filesystem compartment.</p>
+          <button type="button" onClick={() => navigate("/settings/core-transfer")} className="border border-hairline px-4 py-2 text-sm">Open Core recovery settings</button>
+        </div>
+      </div>
+    );
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();

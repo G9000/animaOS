@@ -7,11 +7,12 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryEpisode, User
+from anima_server.models import MemoryEpisode, SoulOwner
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.batch_segmenter import (
     BATCH_THRESHOLD,
@@ -170,11 +171,9 @@ async def test_segment_messages_batch_invalid_indices_fallback() -> None:
 async def test_call_llm_for_segmentation_prefers_extraction_model_and_caps_request() -> None:
     from anima_server.services.agent.batch_segmenter import _call_llm_for_segmentation
 
-    messages = [("User message 1", "Response 1"),
-                ("User message 2", "Response 2")]
+    messages = [("User message 1", "Response 1"), ("User message 2", "Response 2")]
     mock_client = AsyncMock()
-    mock_client.ainvoke = AsyncMock(
-        return_value=SimpleNamespace(content="[[1], [2]]"))
+    mock_client.ainvoke = AsyncMock(return_value=SimpleNamespace(content="[[1], [2]]"))
     mock_client.aclose = AsyncMock()
     prompt_loader = MagicMock()
     prompt_loader.batch_segmentation.return_value = "prompt"
@@ -222,8 +221,7 @@ async def test_call_llm_for_segmentation_falls_back_to_primary_model_after_empty
     extraction_client.aclose = AsyncMock()
 
     primary_client = AsyncMock()
-    primary_client.ainvoke = AsyncMock(
-        return_value=SimpleNamespace(content="[[1]]"))
+    primary_client.ainvoke = AsyncMock(return_value=SimpleNamespace(content="[[1]]"))
     primary_client.aclose = AsyncMock()
 
     prompt_loader = MagicMock()
@@ -296,8 +294,7 @@ async def test_call_llm_for_segmentation_falls_back_after_permanent_provider_err
 
     assert groups == [[1]]
     assert [
-        (call.kwargs["provider"], call.kwargs["model"])
-        for call in mock_client_cls.call_args_list
+        (call.kwargs["provider"], call.kwargs["model"]) for call in mock_client_cls.call_args_list
     ] == [
         ("ollama", "all-minilm:latest"),
         ("openai", "gpt-5-mini"),
@@ -487,11 +484,7 @@ async def test_generate_episodes_from_segments() -> None:
     )
 
     with _db_session() as db:
-        user = User(
-            username="batch-seg-test",
-            password_hash="not-used",
-            display_name="Batch Test",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.commit()
 
@@ -538,11 +531,7 @@ async def test_maybe_generate_episode_batch_path() -> None:
     from anima_server.services.agent.episodes import maybe_generate_episode
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="batch-episode-test",
-            password_hash="not-used",
-            display_name="Batch Episode",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -580,8 +569,7 @@ async def test_maybe_generate_episode_batch_path() -> None:
 
         # Check that episodes were created in DB (may be merged if topics overlap)
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) >= 1
             assert all(e.segmentation_method == "batch_llm" for e in episodes)
             total_turns = sum(e.turn_count for e in episodes)
@@ -594,11 +582,7 @@ async def test_maybe_generate_episode_sequential_under_threshold() -> None:
     from anima_server.services.agent.episodes import maybe_generate_episode
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="seq-episode-test",
-            password_hash="not-used",
-            display_name="Seq Episode",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -627,8 +611,7 @@ async def test_maybe_generate_episode_sequential_under_threshold() -> None:
         assert result.message_indices_json is None
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
 
 
@@ -638,11 +621,7 @@ async def test_maybe_generate_episode_batch_fallback_on_error() -> None:
     from anima_server.services.agent.episodes import maybe_generate_episode
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="batch-fallback-test",
-            password_hash="not-used",
-            display_name="Fallback Test",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -678,8 +657,7 @@ async def test_maybe_generate_episode_batch_fallback_on_error() -> None:
         assert result.segmentation_method == "sequential"
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
             # Sequential takes up to 6 pairs
             assert episodes[0].turn_count <= 6
@@ -691,11 +669,7 @@ async def test_maybe_generate_episode_batch_empty_groups_falls_back_to_sequentia
     from anima_server.services.agent.episodes import maybe_generate_episode
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="batch-empty-fallback-test",
-            password_hash="not-used",
-            display_name="Empty Fallback Test",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -729,8 +703,7 @@ async def test_maybe_generate_episode_batch_empty_groups_falls_back_to_sequentia
         assert result.segmentation_method == "sequential"
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
             assert episodes[0].turn_count <= 6
 
@@ -742,11 +715,7 @@ async def test_log_pointer_advances_correctly_after_batch() -> None:
     from anima_server.services.agent.episodes import maybe_generate_episode
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="pointer-test",
-            password_hash="not-used",
-            display_name="Pointer Test",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -788,8 +757,7 @@ async def test_log_pointer_advances_correctly_after_batch() -> None:
         assert second is None
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) >= 1  # may be merged if topics overlap
             total = sum(e.turn_count for e in episodes)
             assert total == 10

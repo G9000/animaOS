@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.memory_store import (
     _retrieval_score,
@@ -42,8 +42,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="scorer", display_name="Scorer", password_hash="x")
+def _make_user(db: Session) -> SoulOwner:
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     db.add(user)
     db.flush()
     return user

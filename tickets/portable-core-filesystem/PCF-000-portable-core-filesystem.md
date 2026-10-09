@@ -1,6 +1,6 @@
 # PCF-000 - Portable Core Filesystem
 
-- Status: in_progress
+- Status: done
 - Priority: P0
 - Scope: `apps/server`, `apps/desktop`, `apps/animus`, `apps/local-runtime-daemon`, `apps/anima-mod`, `packages/anima-file-tools`, `packages/anima-corefs`, `packages/anima-core`, `packages/api-client`, migrations, architecture docs
 - Parent: none
@@ -11,9 +11,9 @@
 - PCF-002 lease plan: `docs/superpowers/plans/2026-07-23-corefs-object-validation-lease.md`
 - PCF-004 preparation plan: `docs/superpowers/plans/2026-08-02-corefs-resumable-preparation.md`
 - Created: 2026-07-12 06:07 MYT
-- Updated: 2026-08-23 07:45 MYT
+- Updated: 2026-10-09 12:04 MYT
 - Started: 2026-07-13 21:27 MYT
-- Completed:
+- Completed: 2026-10-09 12:04 MYT
 
 ## Goal
 
@@ -31,8 +31,8 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
 | PCF-006 | Gallery, attachments, documents, and knowledge sources | done | PCF-003, PCF-005 |
 | PCF-007 | Account profile, tasks, preferences, and credentials | done | PCF-004, PCF-006 |
 | PCF-008 | Cutover, transfer, and first-release validation | done | PCF-001 through PCF-007 |
-| PCF-009 | Later-release Soul cleanup and legacy retirement | backlog | PCF-008 plus observation/approval gate |
-| PCF-010 | Retained-catalog GC and key retirement | backlog | PCF-008 plus retention/backup approval gate |
+| PCF-009 | Soul cleanup and legacy retirement | done | PCF-008; approved greenfield amendment and explicit retirement approval |
+| PCF-010 | Retained-catalog GC and key retirement | done | PCF-008; 30-day retention; runtime backup/confirmation gates |
 | PCF-011 | Windows lease-diagnostic CI flake (resource-budget invariant) | done | none |
 
 ## Deliverables
@@ -91,7 +91,29 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   #142-#147 merged 2026-08-22; Step 11 full validation and closeout completed
   2026-08-23 07:45 MYT).
 
+- PCF-010 - Retained-catalog garbage collection and key retirement (completed locally 2026-10-09 05:13 MYT).
+
+- PCF-009 - Soul cleanup and legacy retirement (completed locally 2026-10-09 12:04 MYT).
+
 ## Activity Log
+
+- 2026-10-09 12:04 MYT - Completed the explicitly approved final legacy crypto cleanup: removed unused numeric-owner wrappers, old SQLCipher HKDF/Vault parameters, and discarded registration wrapping; retained current native UUID/domain AAD, password/recovery publication, and encryption primitives. Fresh complete backend verification passed 3529 cases across 224 modules (shards [1097, 828, 758, 845]; one Windows POSIX-permissions skip and 11 configured exclusions), active-app build, source/test Ruff, and organization check pass. Independent exact-delta review found no actionable defect. All changes are integrated with hash guards, unrelated edits and real Core data preserved; no external publication. PCF-009 and the initiative are complete locally. The long retirement fixture hit a legitimate idle-thread closure after five minutes; controlled native sweep proved HEAD/catalog/object changes and the correct pre-retirement409 refusal. Closing the fixture thread before capturing its baseline makes maintenance quiescent; the corrected real encrypted single case passes without changing or weakening production checks. The 3529 total combines3528 full-run passes and that corrected single case.
+
+- 2026-10-09 11:12 MYT - The user explicitly instructed 'finish it' in direct response to the exact remaining crypto-helper removal and its approval blocker. Recorded clearance for that proposal and resumed PCF-009 and the parent without changing ownership or Started. Scope is the reviewed three-file removal of obsolete numeric-owner wrapping/SQLCipher derivation helpers and the discarded wrapping step, retaining current native AAD-bound authentication/keyslots. No external publication or actual Core maintenance authorized.
+
+- 2026-10-09 05:13 MYT - Final local integration verified: active-app build, required source/test Ruff, repository organization, 402 desktop/client tests, 3527 distinct configured backend cases, 293 CoreFS tests (one existing helper ignored), and 295 anima-core/PyO3 tests serially pass. The integrated final memory domain passes 190; the extended real encrypted rotation/prune/Runtime-rebuild/key-retirement sequence passes in 258.41 seconds. Independently reviewed final fixes and backed-up hash-guarded integration preserve unrelated edits and actual user data. PCF-010 is complete locally; PCF-009 is blocked only on the specific unapplied obsolete key-wrapping proposal rejected by automatic approval review, requiring explicit user approval. No publication or real-Core maintenance performed.
+
+- 2026-10-09 03:52 MYT - Refreshed child validation with encrypted/current-runtime/schema/agent/native/desktop evidence. Broader backend sweeps continue through current document, memory, and health fixtures; supported archive checkpoint fix and real old-FRK retirement remain under final verification. Unapplied crypto-helper proposal awaits explicit approval; no completed state or real-data maintenance claimed.
+
+- 2026-10-09 03:36 MYT - Native CoreFS 293 and PyO3 lifecycle 2 pass with purge cold-start pointer recovery; v3 binding isolated. Desktop/client 380, active desktop build, required source/test Ruff, maintenance policy/API 26, current schema inventory 7, and focused transfer/activation/migration checks pass. Supported encrypted Full/Soul cleanup and VACUUM interruption/retry preserve independently verified originals; current Runtime privacy 39 passes. Broader backend and agent review regressions continue. Real key-retirement sequence exposed missing checkpoint-catalog inventory references and remains fail-closed under diagnosis. Narrow crypto-helper removal remains unapplied after automatic approval-review rejection, awaiting explicit user approval. Original work is backed up for conflict-free three-way integration; no real Core maintenance or publication performed.
+
+- 2026-10-09 02:16 MYT - Current-only audit retired physical asset/transcript readers and Runtime content routes. Active-app build and Animus check pass; native event/thread tests (13) verify visible metadata through Runtime loss; owner maintenance/thread checks (28), typed desktop confirmation tests (3), and additional source/index fixtures (39) pass. Independent review found and is addressing full Soul credential reopen, current account birthday/discovery, concurrent registration admission, and SQLCipher transactional/vacuum safeguards. Full backend regression and final native bindings/integration remain underway. No real Core changed.
+
+- 2026-10-09 00:58 MYT - Recorded material PCF-009/010 progress: opaque owner/current keyslot auth and native-only bootstrap pass fresh password/recovery checks, legacy fallback/model/cache removal and test adaptation continue; maintenance native unit suite passes 286, Python maintenance safety/API tests 25, desktop review tests 2, API-client tests 30, and desktop build. Both children remain in progress pending integrated backup/schema/transfer/reopen checks, independent code review, and required broader validation. Original desktop work and actual user Core remain preserved.
+
+- 2026-10-09 00:20 MYT - Claimed PCF-010 in the same isolated worktree after reviewed continuation plan matched the approved current-format design. PCF-009 handles Python legacy/schema retirement while native maintenance and new API/UI modules are developed independently. Matching child rows are in progress; parent owner unchanged. Verified backup and operation safety remain enforced before any destructive operation.
+
+- 2026-10-09 00:14 MYT - User approved all legacy support removal and continuation of remaining CoreFS tickets, selected 30 days of restore history, and Codex claimed PCF-009 in the managed `corefs-legacy-retirement` worktree from `685e5a13`. PCF-008 is done; the approved greenfield amendment supersedes pre-release migration/observation gates. PCF-010 remains unclaimed until its implementation begins. Parent owner Codex is unchanged; original desktop dirt is preserved and actual user data is untouched.
 
 - 2026-07-12 06:07 MYT - Parent tracker and child backlog created from the approved implementation plan.
 - 2026-07-12 15:45 MYT - Locked animaOS as the product and ANIMA CORE as the portable subsystem/export family, with independent Soul/CoreFS local recovery.
@@ -809,9 +831,6 @@ Define ANIMA CORE as animaOS's portable encrypted Soul-plus-CoreFS subsystem, ma
   - `.github/workflows/corefs-provenance.yml`; `packages/anima-corefs/src/{benchmark.rs,transaction.rs,transaction/}`; `packages/anima-corefs/src/bin/object_lease_diagnostic.rs`; `packages/anima-corefs/tests/catalog_benchmark.rs`; `apps/server/tests/test_corefs_catalog_benchmark.py`; root/runtime/anima-core manifests and lockfile; and `packages/anima-core/{src/,tests/memory_contract.rs}` (PCF-002 Task 11)
   - `docs/benchmarks/portable-core-filesystem/catalog-reference-v1.json`; the object-validation-lease spec and plan; PCF-002/PCF-000 tracking (PCF-002 Task 12 Windows evidence)
 - Notes:
-  - PCF-001 through PCF-007 and PCF-011 are complete. PCF-008 is active on
-    greenfield smoke/closeout; the unreleased signed-package compatibility gate
-    no longer applies. PCF-009 and PCF-010 retain their separate approval
-    gates.
+  - All PCF-001 through PCF-011 are complete locally. Final approval cleared and PCF-009/parent closed at 2026-10-09 12:04 MYT; current backup, confirmation, and key-reference gates remain enforced. No publication or real-user maintenance performed.
   - Merged-main reconciliation validation: 155 backend tests and 5 desktop Journal tests passed; all 13 scoped Markdown links/anchors and all plan action/path declarations passed. The repository-wide docs checker still reports pre-existing drift plus expected missing paths for planned PCF files; the PCF scope has no broken-link or non-planned-path finding.
   - Windows uses the accepted native lease backend. macOS and unsupported platforms retain fail-closed safe-open validation; the optional production macOS backend was not enabled.

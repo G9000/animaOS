@@ -4,6 +4,7 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
@@ -12,7 +13,7 @@ from anima_server.models import (
     MemoryItem,
     MemoryItemEvidence,
     SelfModelBlock,
-    User,
+    SoulOwner,
 )
 from anima_server.services.agent.emotional_intelligence import record_emotional_signal
 from anima_server.services.agent.evidence_retrieval import RetrievalMode, retrieve_wide_evidence
@@ -53,14 +54,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _add_user(db: Session) -> User:
-    user = User(
-        username="sum-baseline",
-        password_hash="x",
-        display_name="Leo",
-        age=31,
-        birthday="1995-04-12",
-    )
+def _add_user(db: Session) -> SoulOwner:
+    user = SoulOwner(core_owner_id=str(uuid4()))
     db.add(user)
     db.flush()
     return user
@@ -110,7 +105,11 @@ def test_baseline_probe_emotional_recall_uses_recent_signal_block() -> None:
     assert "launch review" in block.value
 
 
-def test_baseline_probe_profile_recall_combines_user_profile_and_human_block() -> None:
+def test_baseline_probe_profile_recall_combines_user_profile_and_human_block(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "anima_server.services.agent.memory_blocks.read_active_account_profile",
+        lambda owner_id: SimpleNamespace(display_name="Leo", age=31, gender=None, birthday=None),
+    )
     with _db_session() as db:
         user = _add_user(db)
         db.add(

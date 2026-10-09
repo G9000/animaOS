@@ -538,7 +538,9 @@ def test_activation_recovers_every_directory_pointer_completion_crash_seam(
     assert not registry.with_name("active-core.json.activation").exists()
 
 
-def test_activation_verification_and_symlink_fail_before_pointer_change(tmp_path: Path) -> None:
+def test_activation_verification_and_symlink_fail_before_pointer_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     core_id = str(uuid4())
     key = b"s" * 32
     cores = tmp_path / "cores"
@@ -572,7 +574,19 @@ def test_activation_verification_and_symlink_fail_before_pointer_change(tmp_path
     assert staging.is_dir()
     assert not final.exists()
 
-    (staging / "escape").symlink_to(old, target_is_directory=True)
+    alias = staging / "escape"
+    try:
+        alias.symlink_to(old, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+        # Without Windows symlink privilege, exercise the exact source-type
+        # rejection boundary; all activation and pointer checks remain real.
+        alias.mkdir()
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path, "is_symlink", lambda path: path == alias or original_is_symlink(path)
+        )
     with pytest.raises(TransferError, match="symbolic-link"):
         activate_staged_core(
             staging,

@@ -55,7 +55,7 @@ from anima_server.services.agent.inner_life.store import (
     get_affect_state,
     save_affect_state,
 )
-from anima_server.services.presence_config import get_or_create_presence_config
+from anima_server.services.presence_config import PresenceConfigValues
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -70,6 +70,53 @@ def _engine(base):
     )
     base.metadata.create_all(bind=engine)
     return engine
+
+
+_presence_values: dict[int, object] = {}
+
+
+def _presence_preferences(_db, user_id):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    return _presence_values.setdefault(
+        user_id, SimpleNamespace(**asdict(PresenceConfigValues(user_id=user_id)))
+    )
+
+
+def _update_presence_preferences(db, user_id, updates):
+    from dataclasses import asdict
+
+    from anima_server.services.presence_config import apply_presence_config_updates
+
+    current = _presence_preferences(db, user_id)
+    changed = apply_presence_config_updates(PresenceConfigValues(**vars(current)), updates)
+    current.__dict__.update(asdict(changed))
+    return changed
+
+
+@pytest.fixture(autouse=True)
+def _canonical_presence_boundary(monkeypatch):
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import preferences
+
+    _presence_values.clear()
+    real_session = preferences.active_preference_authority_session
+    real_read = preferences.read_canonical_presence_values
+
+    def session(user_id):
+        return real_session(user_id) or SimpleNamespace(user_id=user_id, fixture_presence=True)
+
+    def read(*, session):
+        if getattr(session, "fixture_presence", False):
+            return PresenceConfigValues(**vars(_presence_preferences(None, session.user_id)))
+        return real_read(session=session)
+
+    monkeypatch.setattr(preferences, "active_preference_authority_session", session)
+    monkeypatch.setattr(preferences, "read_canonical_presence_values", read)
+    yield
+    _presence_values.clear()
 
 
 @pytest.fixture()
@@ -127,9 +174,7 @@ def test_inner_life_week_lifecycle(soul_factory, rt_factory) -> None:
     assert s1.valence > s0.valence
 
     relaxed = relax(
-        AffectState(
-            valence=s1.valence, arousal=s1.arousal, energy=s1.energy, updated_at=DAY0
-        ),
+        AffectState(valence=s1.valence, arousal=s1.arousal, energy=s1.energy, updated_at=DAY0),
         DAY0 + timedelta(hours=48),
         cfg,
     )
@@ -144,9 +189,7 @@ def test_inner_life_week_lifecycle(soul_factory, rt_factory) -> None:
     results = apply_offline_catchup(rt_factory, now=gap_end)
     assert [r.user_id for r in results] == [USER_ID]
     with rt_factory() as db:
-        marker = db.scalar(
-            select(PresenceCatchup).where(PresenceCatchup.user_id == USER_ID)
-        )
+        marker = db.scalar(select(PresenceCatchup).where(PresenceCatchup.user_id == USER_ID))
     assert marker is not None
     assert marker.gap_seconds == pytest.approx(3 * 86400, rel=1e-6)
     assert marker.dream_deferred is True
@@ -156,7 +199,7 @@ def test_inner_life_week_lifecycle(soul_factory, rt_factory) -> None:
     # An open foresight thread builds unresolved_thread pressure; with the
     # explicit opt-in on, the initiative fires once with full provenance.
     with soul_factory() as db:
-        pc = get_or_create_presence_config(db, USER_ID)
+        pc = _presence_preferences(db, USER_ID)
         pc.initiative_enabled = True  # explicit opt-in (off by default)
         db.add(
             ForesightSignal(
@@ -259,8 +302,7 @@ def test_inner_life_week_lifecycle(soul_factory, rt_factory) -> None:
         assert len(db.scalars(select(DreamJournal)).all()) == 1
     with rt_factory() as db:
         assert (
-            db.scalar(select(AffectStateRow).where(AffectStateRow.user_id == USER_ID))
-            is not None
+            db.scalar(select(AffectStateRow).where(AffectStateRow.user_id == USER_ID)) is not None
         )  # the dream's bounded affect nudge persisted state
 
     # ----------------------- IL-003 x IL-007: dream_residue -> initiative
@@ -276,9 +318,7 @@ def test_inner_life_week_lifecycle(soul_factory, rt_factory) -> None:
         db.commit()
 
     later = night + timedelta(days=3, hours=10)
-    initiative.tick_initiative_for_user(
-        soul_factory, rt_factory, user_id=USER_ID, local_now=later
-    )
+    initiative.tick_initiative_for_user(soul_factory, rt_factory, user_id=USER_ID, local_now=later)
     with soul_factory() as db:
         logs = db.scalars(select(InitiativeLog).order_by(InitiativeLog.id)).all()
         dream = db.scalars(select(DreamJournal)).one()

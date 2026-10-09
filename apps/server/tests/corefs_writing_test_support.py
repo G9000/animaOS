@@ -4,7 +4,7 @@ import json
 from types import SimpleNamespace
 from typing import Any
 
-from anima_server.services.corefs.diary_migration import (
+from corefs_catalog_test_support import (
     InactiveWritingCatalog,
     migration_opaque_id,
     read_prepared_writing_snapshot,

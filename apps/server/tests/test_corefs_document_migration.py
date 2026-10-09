@@ -14,11 +14,11 @@ from anima_server.services.corefs.asset_authority import (
     CoreFsSourceError,
     open_corefs_byte_source,
 )
-from anima_server.services.corefs.asset_migration import (
+from corefs_asset_test_support import (
     PortableBinaryAssetSource,
     build_portable_asset_shadow,
 )
-from anima_server.services.corefs.diary_migration import migration_opaque_id
+from corefs_catalog_test_support import migration_opaque_id
 
 
 def _logical_wire(result: dict[str, object], *, generation: int = 4) -> bytes:

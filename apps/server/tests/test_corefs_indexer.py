@@ -471,7 +471,7 @@ def test_unlock_store_returns_every_live_runtime_index_for_a_user() -> None:
         store.clear_sqlcipher_key()
 
 
-def test_unlock_store_serializes_legacy_conversion_across_logins(monkeypatch) -> None:
+def test_unlock_store_serializes_current_cache_validation_across_logins(monkeypatch) -> None:
     store = UnlockSessionStore(runtime_index_factory=lambda _keys, _key: None)
     first_entered = Event()
     second_entered = Event()
@@ -482,15 +482,13 @@ def test_unlock_store_serializes_legacy_conversion_across_logins(monkeypatch) ->
     maximum_active = 0
     calls = 0
 
-    def convert_runtime_index_rows(
+    def validate_runtime_index_rows(
         _runtime_index,
         *,
         user_id: int,
-        memory_dek: bytes | None,
     ) -> bool:
         nonlocal active, maximum_active, calls
         assert user_id == 9
-        assert memory_dek == b"m" * 32
         with counter_lock:
             calls += 1
             call_number = calls
@@ -507,7 +505,7 @@ def test_unlock_store_serializes_legacy_conversion_across_logins(monkeypatch) ->
             with counter_lock:
                 active -= 1
 
-    monkeypatch.setattr(store, "_convert_runtime_index_rows", convert_runtime_index_rows)
+    monkeypatch.setattr(store, "_validate_runtime_index_rows", validate_runtime_index_rows)
 
     def create_second() -> str:
         second_started.set()

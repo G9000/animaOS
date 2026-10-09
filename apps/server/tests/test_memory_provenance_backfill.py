@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, MemoryItemEvidence, User
+from anima_server.models import MemoryItem, MemoryItemEvidence, SoulOwner
 from anima_server.services.data_crypto import df
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -42,7 +42,7 @@ def test_backfill_memory_item_evidence_creates_legacy_and_eval_rows() -> None:
 
     created_at = datetime(2023, 5, 1, 12, 0, tzinfo=UTC)
     with _db_session() as db:
-        user = User(username="backfill", password_hash="x", display_name="Backfill")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
         legacy_item = MemoryItem(
@@ -55,8 +55,7 @@ def test_backfill_memory_item_evidence_creates_legacy_and_eval_rows() -> None:
         eval_item = MemoryItem(
             user_id=user.id,
             content=(
-                "Session date: 2023/05/29 (Mon) 20:29\n"
-                "User: I got a 1/72 scale B-29 bomber kit."
+                "Session date: 2023/05/29 (Mon) 20:29\nUser: I got a 1/72 scale B-29 bomber kit."
             ),
             category="fact",
             source="eval_import_raw",
@@ -128,7 +127,7 @@ def test_backfill_memory_item_evidence_progresses_past_existing_rows_with_limit(
 
     created_at = datetime(2023, 5, 1, 12, 0, tzinfo=UTC)
     with _db_session() as db:
-        user = User(username="backfill-limit", password_hash="x", display_name="Backfill")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
         covered_one = MemoryItem(
@@ -194,7 +193,7 @@ def test_backfill_memory_item_evidence_prioritizes_active_missing_rows() -> None
 
     created_at = datetime(2023, 5, 1, 12, 0, tzinfo=UTC)
     with _db_session() as db:
-        user = User(username="backfill-active-first", password_hash="x", display_name="Backfill")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
         superseded_one = MemoryItem(
@@ -239,7 +238,7 @@ def test_audit_memory_item_evidence_reports_active_coverage_only() -> None:
 
     created_at = datetime(2023, 5, 1, 12, 0, tzinfo=UTC)
     with _db_session() as db:
-        user = User(username="audit-coverage", password_hash="x", display_name="Audit")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
         covered = MemoryItem(

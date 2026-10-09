@@ -1214,167 +1214,34 @@ git -c commit.gpgsign=false commit -m "corefs: establish greenfield authority"
 
 ## Task 9: Later-release Soul cleanup and legacy retirement
 
-**Ticket:** `PCF-009`  
-**Depends on:** `PCF-008`, one accepted stable-release observation window, explicit cleanup approval
+**Ticket:** `PCF-009`
+**Depends on:** `PCF-008`, approved greenfield-release amendment, explicit legacy-retirement authority, and verified recovery originals for supported encrypted schema evolution.
 
-**Files:**
-- Create: `apps/server/alembic_core/versions/20260712_0002_retire_app_tables_from_soul.py`
-- Create: `apps/server/src/anima_server/models/soul_owner.py`
-- Modify: `apps/server/src/anima_server/db/session.py`
-- Modify: `apps/server/src/anima_server/models/__init__.py`
-- Delete: `apps/server/src/anima_server/models/user.py`
-- Delete: `apps/server/src/anima_server/models/user_key.py`
-- Modify: `apps/server/src/anima_server/models/agent_runtime.py`
-- Modify: `apps/server/src/anima_server/models/consciousness.py`
-- Modify: `apps/server/src/anima_server/models/soul_consciousness.py`
-- Modify: `apps/server/src/anima_server/services/core.py`
-- Modify: `apps/server/src/anima_server/services/auth.py`
-- Modify: `apps/server/src/anima_server/services/recovery.py`
-- Modify: `apps/server/src/anima_server/services/vault.py`
-- Modify: `apps/server/src/anima_server/db/user_store.py`
-- Modify: `apps/server/src/anima_server/services/agent/biography_preview.py`
-- Modify: `apps/server/src/anima_server/services/agent/episodes.py`
-- Modify: `apps/server/src/anima_server/services/agent/memory_blocks.py`
-- Modify: `apps/server/src/anima_server/services/agent/embedding_contract.py`
-- Modify: `apps/server/src/anima_server/services/agent/embeddings.py`
-- Modify: `apps/server/src/anima_server/services/agent/agent_experience.py`
-- Modify: `apps/server/src/anima_server/services/agent/knowledge_graph.py`
-- Modify: `apps/server/src/anima_server/services/health/checks.py`
-- Modify: `apps/server/src/anima_server/api/routes/eval.py`
-- Modify: `apps/server/src/anima_server/api/routes/auth.py`
-- Modify: `apps/server/src/anima_server/api/routes/users.py`
-- Modify: `apps/server/src/anima_server/api/routes/db.py`
-- Modify: `apps/server/src/anima_server/api/routes/ws.py`
-- Modify: `apps/server/src/anima_server/api/routes/vault.py`
-- Modify: `apps/server/src/anima_server/api/routes/telegram.py`
-- Delete: `apps/server/src/anima_server/models/task.py`
-- Delete: `apps/server/src/anima_server/models/presence.py`
-- Delete: `apps/server/src/anima_server/models/links.py`
-- Modify: `apps/server/src/anima_server/services/corefs/migration.py`
-- Modify: architecture/schema/migration documentation
-- Test: `apps/server/tests/test_corefs_soul_purity.py`
-- Test: `apps/server/tests/test_corefs_legacy_retirement.py`
-- Test: `apps/server/tests/test_embedding_contract.py`
-- Test: `apps/server/tests/test_agent_experience.py`
-- Test: `apps/server/tests/test_knowledge_graph.py`
+The approved 2026-08-16 greenfield amendment supersedes the original pre-release observation, legacy conversion, and recovery-bundle deletion sequence. The authoritative current execution is [Task 1 of the 2026-10-09 continuation plan](2026-10-09-corefs-retirement-maintenance.md#task-1-retire-legacy-account-credentials-and-soul-schema-pcf-009); its complete changed-path manifest and the child ticket record current files, validation, and blockers.
 
-- [ ] **Step 1: Enforce the later-release cleanup gate**
+- [x] Replace obsolete app/account mappings with `SoulOwner` and current native authentication/keyslots; preserve retained Soul ownership/FK chains and authenticated durable Core-URI provenance.
+- [x] Apply forward revision `20261009_0001` only through supported encrypted schema evolution, with independently reopened encrypted recovery originals, deterministic retained-table counts/hashes, foreign-key checks, transactional retirement, and crash-safe VACUUM retry. Derived embeddings and centroids rebuild in unlock-scoped process memory.
+- [x] Retire pre-release shared-database discovery, vault/capsule import/export, transcript/file fallbacks, app ORM models, and unsupported Runtime conversion. Historical source IDs remain metadata and never authorize current content access or forgetting.
+- [x] Complete final backend/integration verification and independent review.
+- [x] Complete the specifically approval-gated unused numeric-owner key-wrapping helper removal. The user explicitly approved finishing the identified proposal on 2026-10-09; current native authentication/keyslots remain intact. PCF-009 and the parent completed locally 2026-10-09 12:04 MYT after fresh final verification and independent review.
 
-This is the **pre-apply authorization gate**. Require authenticated forward-only marker, completed encrypted legacy-runtime recovery bundle, successful Task 8 release observation, verified current backup, and explicit cleanup approval. Preflight exactly one legacy numeric owner row, one matching opaque Core owner UUID, complete account-profile migration, complete thread/message ID map, complete Soul row inventory, a deterministic provenance transformation plan, and zero unresolved migration conflicts. An unmarked, multi/ambiguous-owner, FK-inconsistent, or still rollback-capable Core must never reach the cleanup revision. Do not require post-cleanup checks before applying the cleanup.
-
-- [ ] **Step 2: Write failing physical Soul-purity tests**
-
-Inspect SQLCipher schema/model allowlists and prove diary, tasks, messages, app account/profile/auth, presence, and integration link data are absent after cleanup while every Soul memory/identity table remains. Capture pre-cleanup row counts/hashes for every retained table. Untouched retained tables require identical row counts and hashes. Intentionally transformed owner/provenance tables require unchanged row counts plus deterministic expected-transformation hashes computed from the preflight owner/thread/message/run mapping. All paths require `PRAGMA foreign_key_check` with zero rows.
-
-- [ ] **Step 3: Add the gated cleanup Alembic target**
-
-Modify `ensure_user_database()` to upgrade only through the compatibility revision unless the cleanup gate passes. Fresh CoreFS-format Cores use the clean head. Never run `20260712_0002` on an unmarked legacy Core.
-
-- [ ] **Step 4: Replace the application User row with an internal Soul owner anchor**
-
-Create `soul_owners(id INTEGER PRIMARY KEY, core_owner_id TEXT UNIQUE NOT NULL, created_at, updated_at)`. Preserve the legacy numeric `users.id` as `soul_owners.id` in V1 so every retained Soul row and service keeps its compatibility integer; store the manifest's opaque owner UUID in `core_owner_id`. Remove username/password/display/demographic fields now stored in the encrypted account-profile object. Runtime uses the same numeric compatibility ID plus Core UUID without a Soul FK.
-
-Use SQLite/Alembic `batch_alter_table` rebuilds to retarget `user_id` FKs from `users.id` to `soul_owners.id` for these retained tables: `identity_blocks`, `growth_log`, `core_emotional_patterns`, `self_model_blocks`, `agent_profile`, `emotional_signals`, `memory_items`, `memory_episodes`, `foresight_signals`, `agent_experiences`, `agent_skills`, `memory_item_tags`, `memory_item_evidence`, `memory_claims`, `memory_claim_evidence`, `user_profile_fields`, `user_profile_field_evidence`, `forget_audit_log`, `kg_entities`, and `kg_relations`. For tables without a direct `user_id` FK, verify their parent FK chain instead of inventing a column.
-
-- [ ] **Step 5: Remove converted app tables and dormant models**
-
-Before dropping `agent_threads`, convert every retained provenance field that points at legacy thread/message/run IDs. At minimum migrate `memory_episodes.thread_id`/`transcript_ref`, `emotional_signals.thread_id`, `foresight_signals.source_thread_id`/`source_message_ids_json`, and `agent_experiences.source_thread_id`/`source_run_id` to verified Core thread/message URIs or explicitly nullable audited provenance. Require mapped counts/hashes and no orphan reference before the source FK/table disappears.
-
-Then drop diary/folder/attachment, task, legacy thread/message/run/step, presence/config/link, app account/auth (`users`, `user_keys`), `memory_vectors`, `experience_cluster_state` (its centroid vectors are a rebuildable index), legacy Soul `background_task_runs`, and other obsolete/derived tables identified by the checked inventory. Rebuild retained tables to remove every derived vector/cache column: `memory_items.embedding_json`/`embedding_checksum`, `agent_experiences.embedding_json`, `agent_skills.embedding_json`, and `kg_entities.embedding_json`/`embedding_checksum`. Also remove mixed-semantics operational/app fields already migrated in Task 7: `agent_profile.setup_complete`, `self_model_blocks.needs_regeneration`, and `memory_episodes.needs_regeneration`; onboarding comes from the portable account/preferences object and regeneration work comes from Runtime. Update embedding, experience-clustering, graph, health, eval, and vault code so vectors are generated into unlock-scoped process memory only and are rebuilt from retained Soul text/state after restart or Runtime deletion. Delete obsolete ORM exports rather than leaving classes or fields mapped to missing schema. Retain the meaningful memories, claims/evidence, episodes, procedural experiences and distilled skills, self-model, emotional/growth state, learned user/relationship model, enduring intentions, consolidated graph, `soul_owners`, and `soul_keyslots`.
-
-Before deleting `models/user.py` and `models/user_key.py`, migrate every remaining consumer. `services/agent/biography_preview.py`, `episodes.py`, and `memory_blocks.py` read private profile fields from the Core account-profile service; `api/routes/db.py` and `ws.py` validate `SoulOwner`; `api/routes/vault.py` and `services/vault.py` export/import the account-profile object and manifest/Soul keyslots; `services/auth.py`, `recovery.py`, `db/user_store.py`, `api/routes/auth.py`, `users.py`, and `telegram.py` use the new unlock/account/integration boundaries. A repository `rg` for `User`, `UserKey`, `models.user`, `users.username`, and `user_keys` must have no active-code hits except migration fixtures/docs before table drop.
-
-- [ ] **Step 6: Vacuum while retaining recovery artifacts**
-
-Run SQLCipher `VACUUM` after verified drops, but retain the verified encrypted legacy PostgreSQL bundle and pre-cleanup backup until post-apply validation passes.
-
-- [ ] **Step 7: Run cleanup-focused and full validation**
-
-```powershell
-$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_soul_purity.py apps/server/tests/test_corefs_legacy_retirement.py apps/server/tests/test_corefs_transfer.py apps/server/tests/test_recovery.py apps/server/tests/test_embedding_contract.py apps/server/tests/test_agent_experience.py apps/server/tests/test_knowledge_graph.py -q
-$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; bun run test
-bun run test:desktop
-bun run lint
-bun run build
-bun run db:server:current
-```
-
-This is the **post-apply release gate**. After commands pass, close/reopen with both passphrase and recovery phrase, run `PRAGMA foreign_key_check`, compare untouched-table hashes and transformed-table expected hashes, verify schema/model allowlists, delete/rebuild Runtime, and transfer/unlock the cleaned Core in a fresh environment. Failure restores the verified pre-cleanup backup; it does not authorize deleting recovery artifacts.
-
-- [ ] **Step 8: Finalize irreversible legacy retirement**
-
-Only after Step 7 passes, record `soul_cleanup_complete` with verification hashes in the manifest/health state. Delete the encrypted legacy PostgreSQL recovery bundle and converted source backups according to the approved retention policy.
-
-- [ ] **Step 9: Commit the later-release cleanup separately**
-
-```powershell
-git add apps/server/alembic_core/versions/20260712_0002_retire_app_tables_from_soul.py apps/server/src/anima_server/db/session.py apps/server/src/anima_server/models apps/server/src/anima_server/services/core.py apps/server/src/anima_server/services/auth.py apps/server/src/anima_server/services/recovery.py apps/server/src/anima_server/services/vault.py apps/server/src/anima_server/db/user_store.py apps/server/src/anima_server/services/agent/biography_preview.py apps/server/src/anima_server/services/agent/episodes.py apps/server/src/anima_server/services/agent/memory_blocks.py apps/server/src/anima_server/services/agent/embedding_contract.py apps/server/src/anima_server/services/agent/embeddings.py apps/server/src/anima_server/services/agent/agent_experience.py apps/server/src/anima_server/services/agent/knowledge_graph.py apps/server/src/anima_server/services/health/checks.py apps/server/src/anima_server/api/routes/eval.py apps/server/src/anima_server/api/routes/auth.py apps/server/src/anima_server/api/routes/users.py apps/server/src/anima_server/api/routes/db.py apps/server/src/anima_server/api/routes/ws.py apps/server/src/anima_server/api/routes/vault.py apps/server/src/anima_server/api/routes/telegram.py apps/server/src/anima_server/services/corefs/migration.py apps/server/tests/test_corefs_soul_purity.py apps/server/tests/test_corefs_legacy_retirement.py apps/server/tests/test_embedding_contract.py apps/server/tests/test_agent_experience.py apps/server/tests/test_knowledge_graph.py docs
-git -c commit.gpgsign=false commit -m "core: retire legacy app data from the Soul"
-```
+Supported retained identity, memory, claims/evidence, procedural/graph, emotional, latent/tendency, initiative, reconsolidation, and dream state remains authoritative in SQLCipher. Validate password/recovery reopen, clean schema/FKs, lossless retained-state checks, current transfer, and Runtime rebuild. No maintenance of the actual user's Core or deletion of recovery originals is authorized by implementation alone.
 
 ## Task 10: Retained-catalog garbage collection and cryptographic key retirement
 
-**Ticket:** `PCF-010`  
-**Depends on:** `PCF-008`, an accepted retention policy, verified current backup, and no active transfer/rotation/migration
+**Ticket:** `PCF-010`
+**Depends on:** `PCF-008`, user-selected 30-day retention, verified current full backup, and no active transfer/rotation/migration.
 
-**Files:**
-- Create: `packages/anima-corefs/src/gc.rs`
-- Modify: `packages/anima-corefs/src/catalog/`
-- Modify: `packages/anima-corefs/src/trash.rs`
-- Modify: `packages/anima-core/src/ffi.rs`
-- Create: `apps/server/src/anima_server/services/corefs/gc.py`
-- Create: `apps/server/src/anima_server/schemas/corefs_maintenance.py`
-- Create: `apps/server/src/anima_server/api/routes/corefs_maintenance.py`
-- Modify: `apps/server/src/anima_server/services/corefs/keyslots.py`
-- Modify: `apps/server/src/anima_server/services/corefs/migration.py`
-- Modify: `apps/server/src/anima_server/services/vault.py`
-- Modify: `apps/server/src/anima_server/main.py`
-- Modify: `packages/api-client/src/client.ts`
-- Modify: `packages/api-client/src/types.ts`
-- Modify: `apps/desktop/src/pages/settings/SecuritySettings.tsx`
-- Test: `apps/server/tests/test_corefs_gc.py`
-- Test: `apps/server/tests/test_corefs_key_retirement.py`
-- Test: `apps/desktop/tests/corefs-maintenance.test.ts`
+The authoritative current execution is [Task 2 of the 2026-10-09 continuation plan](2026-10-09-corefs-retirement-maintenance.md#task-2-authenticated-retention-and-garbage-collection-pcf-010). Native maintenance lives in `packages/anima-corefs/src/transaction/maintenance.rs` and its archive module, with PyO3 bindings in `packages/anima-core/src/ffi.rs`; owner-only orchestration lives in `apps/server/src/anima_server/services/corefs/gc.py`. Current regressions include `test_corefs_gc.py`, `test_corefs_gc_current_core.py`, and `test_corefs_maintenance_api.py` under `apps/server/tests/`.
 
-- [ ] **Step 1: Define and expose the retention policy**
+- [x] Protect HEAD, its known-good predecessor, 30 days of authenticated history, current trash, unknown age, and authenticated operation/backup/key references. Locked callers cannot obtain fresh reachability authority.
+- [x] Provide bounded authenticated inventory, Core-wide OS exclusion, crash-safe quarantine/sweep, signed native continuation, current-generation revalidation, and fail-closed corruption/unsafe-path/concurrency handling.
+- [x] Enforce user-only permanent purge with current credential reauthentication, exact trash/revision/recursive inventory, one-use confirmation and explicit history waiver. Prove zero retained wrapped Object-DEK references; never remove a shared FRK to purge one object.
+- [x] Retire decrypt-only FRKs only after zero retained references/pins, independently restored active-generation full backup, complete Soul plus password/recovery reopen before and after manifest removal, and rollback on post-check failure.
+- [x] Expose maintenance review/progress/resume/cancel/backup blockers in Security settings and accurately explain SSD/exported-backup erasure limits.
+- [x] Record complete backend/build/lint and independent review evidence, including Runtime projection loss/rebuild from the same pruned current Core, then synchronize child completion and parent history. PCF-010 completed locally 2026-10-09 05:13 MYT.
 
-Keep `fs/HEAD`, every catalog/object generation inside the configured restore window, any generation pinned by an in-progress transfer/rotation/migration, and at least one last-known-good predecessor. The default restore window is 30 days; changing it or requesting cryptographic deletion requires explicit authenticated confirmation. An authoritative dry-run requires an unlocked Core so it can authenticate retained catalogs; it lists reachable catalogs/objects, prunable orphan/revision bytes, required FRK/Object-DEK versions, backup blockers, and capacity impact without returning private logical names. While locked, expose only cached non-private last-run status or `unlock_required`, never a fresh reachability claim.
-
-- [ ] **Step 2: Write failing mark/sweep and failure-recovery tests**
-
-Cover reachability across retained catalogs, tombstones, interrupted object publication, concurrent writer exclusion, corrupt catalogs, symlink/junction/path attacks, crash after mark/before sweep, crash mid-sweep, idempotent resume, transfer/rotation pins, backup pins, and proof that the only copy of a reachable object/catalog/key is never removed. Add `purge` authorization tests for live-object rejection, trash/revision/inventory preconditions, recent user reauthentication, one-use bound confirmation, ANIMA/client rejection even with `manage`, stale/replayed confirmation, recursive folder contents, known-backup warnings, and zero local wrapped-DEK references before retirement.
-
-- [ ] **Step 3: Implement authenticated prune/doctor**
-
-Acquire the same OS-backed Core-wide maintenance lock used by catalog commits. Authenticate every retained catalog before computing the union of reachable physical object revisions and required key versions. Persist only a safe resumable prune journal outside the Core, rename candidates into an internal quarantine generation before final deletion, fsync each phase, and re-read `fs/HEAD` before every destructive batch. A changed `fs/HEAD` aborts and recomputes; corruption blocks deletion rather than guessing reachability.
-
-- [ ] **Step 4: Implement the explicit user-only purge and cryptographic deletion semantics**
-
-Implement `purge(trash_id, expected_trash_revision, confirmation)` only in the authenticated maintenance service. Require a fresh passphrase/recovery reauthentication and a one-use challenge bound to Core/trash/revision/recursive inventory/restore-window waiver/known-backup warnings. Reject live targets, stale trash, ANIMA/client callers, active operation pins, and confirmation replay. Prune all explicitly waived local catalogs/revisions wrapping each target Object DEK, prove zero local wrapped references, then retire that object key; remove no shared FRK merely to delete one object. Explain that local purge cannot erase SSD wear-leveling, exported archives, or old backups and report every known copy that may still contain it.
-
-- [ ] **Step 5: Retire superseded Object DEKs and decrypt-only FRKs**
-
-An Object DEK has no password/recovery keyslot: it retires only when authenticated pruning removes every retained catalog/revision containing its wrapped copy and reachability proves zero remaining references. For a decrypt-only FRK, additionally require no retained local catalog/object wrapper needs that FRK version, no active operation pins it, passphrase and recovery reopen under the active generation pass, and at least one verified backup uses the active generation. Only then atomically remove that FRK version's matching password/recovery manifest keyslots, reopen/verify again, and retain the pre-retirement backup until post-check completion. Never silently retire either kind of key because a time threshold elapsed.
-
-- [ ] **Step 6: Add maintenance API/UI**
-
-Expose authenticated dry-run, prune, resume, cancel-before-sweep, user-only trash purge, and key-retirement operations with phase/progress/blockers. Security settings shows restore-window consequences, bound recursive inventory, backup warnings, active/decrypt-only key versions, reclaimable bytes, and an explicit irreversible confirmation after reauthentication. Do not expose raw object filenames or keys.
-
-- [ ] **Step 7: Validate and commit separately**
-
-```powershell
-$env:ANIMA_CORE_REQUIRE_ENCRYPTION='false'; uv run pytest apps/server/tests/test_corefs_gc.py apps/server/tests/test_corefs_key_retirement.py apps/server/tests/test_corefs_rotation.py apps/server/tests/test_corefs_transfer.py -q
-cargo test -p anima-corefs -p anima-core
-bun test apps/desktop/tests/corefs-maintenance.test.ts
-bun run --cwd apps/desktop build
-```
-
-Then run the full suite, prepare a transfer, prune an orphan/revision fixture, reopen through both passphrase and recovery paths, restore the verified active-generation backup, and confirm a deleted Runtime still rebuilds from the pruned Core.
-
-```powershell
-git add packages/anima-corefs/src/gc.rs packages/anima-corefs/src/catalog packages/anima-corefs/src/trash.rs packages/anima-core/src/ffi.rs apps/server/src/anima_server/services/corefs/gc.py apps/server/src/anima_server/services/corefs/keyslots.py apps/server/src/anima_server/services/corefs/migration.py apps/server/src/anima_server/services/vault.py apps/server/src/anima_server/schemas/corefs_maintenance.py apps/server/src/anima_server/api/routes/corefs_maintenance.py apps/server/src/anima_server/main.py packages/api-client/src/client.ts packages/api-client/src/types.ts apps/desktop/src/pages/settings/SecuritySettings.tsx apps/server/tests/test_corefs_gc.py apps/server/tests/test_corefs_key_retirement.py apps/desktop/tests/corefs-maintenance.test.ts
-git -c commit.gpgsign=false commit -m "core: prune retained revisions and retire old keys"
-```
+Validation uses the actual encrypted native binding and current backup/transfer fixtures; do not disable encryption globally. The complete continuation manifest records exact paths. Local execution does not authorize push, PR, deployment, merge, or real-user data maintenance.
 
 ## Dependency Graph
 

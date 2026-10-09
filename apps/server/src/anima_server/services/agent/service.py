@@ -6,7 +6,6 @@ import logging
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
 from threading import Lock
 from typing import Any
 
@@ -34,9 +33,7 @@ from anima_server.schemas.chat import (
     TodayContext,
 )
 from anima_server.services.agent.attachments import (
-    prepare_chat_attachments,
     prepare_corefs_chat_attachments,
-    resolve_corefs_chat_attachment,
     validate_chat_attachment_inputs,
 )
 from anima_server.services.agent.client_actions import build_client_action_runtime
@@ -66,21 +63,18 @@ from anima_server.services.agent.memory_blocks import (
 from anima_server.services.agent.model_capabilities import supports_image_input
 from anima_server.services.agent.persistence import (
     append_corefs_message_reference,
-    append_message,
-    append_user_message,
     cancel_run,
     clear_approval_checkpoint,
-    close_thread,
     count_messages_by_role,
     create_run,
     create_step,
     ensure_runtime_thread_reference,
     finalize_run,
-    get_or_create_thread,
     list_transcript_messages,
     load_approval_checkpoint,
+    load_thread_history,
     mark_run_failed,
-    persist_agent_result,
+    rebuild_current_thread_message_references,
     save_approval_checkpoint,
 )
 from anima_server.services.agent.prompt_budget import (
@@ -98,7 +92,6 @@ from anima_server.services.agent.runtime_types import (
     ToolCall,
 )
 from anima_server.services.agent.sequencing import (
-    count_persisted_result_messages,
     reserve_message_sequences,
 )
 from anima_server.services.agent.state import (
@@ -112,7 +105,6 @@ from anima_server.services.agent.state import (
     StoredMessage,
     attach_serialized_pills,
     deserialize_agent_retrieval,
-    deserialize_stored_attachments,
     extract_stored_pills,
     extract_stored_retrieval,
     serialize_agent_retrieval,
@@ -148,7 +140,6 @@ from anima_server.services.documents.rag import DocumentRagResult, search_docume
 from anima_server.services.documents.store import get_document_for_user, list_document_chunks
 from anima_server.services.health.event_logger import emit as health_emit
 from anima_server.services.ingestion.retrieval import KnowledgeConceptHit
-from anima_server.services.sessions import get_active_dek_async
 
 logger = logging.getLogger(__name__)
 
@@ -233,27 +224,6 @@ def ensure_image_attachments_supported(
         "The selected model cannot process image attachments. "
         "Choose a vision-capable model or remove the image."
     )
-
-
-def _prepare_image_attachments(
-    *,
-    user_id: int,
-    attachments: Sequence[ChatRequestAttachment],
-    runtime_db: Session | None = None,
-) -> tuple[StoredAttachment, ...]:
-    return prepare_chat_attachments(
-        user_id=user_id,
-        attachments=attachments,
-        runtime_db=runtime_db,
-    )
-
-
-def _delete_prepared_attachments(attachments: Sequence[StoredAttachment]) -> None:
-    for attachment in attachments:
-        if not attachment.delete_on_error:
-            continue
-        with contextlib.suppress(OSError):
-            Path(attachment.path).unlink(missing_ok=True)
 
 
 def _validate_image_attachment_inputs(
@@ -431,14 +401,22 @@ async def _approve_or_deny_turn_locked(
     if run.user_id != user_id:
         raise PermissionError("Not authorized for this run")
 
-    # Reconstruct the ToolCall from the persisted approval message.
-    tool_call = ToolCall(
-        id=approval_msg.tool_call_id or "tool-call-0",
-        name=approval_msg.tool_name or "",
-        arguments=approval_msg.tool_args_json
-        if isinstance(approval_msg.tool_args_json, dict)
-        else {},
-    )
+    # The sealed checkpoint carries the complete call; plaintext operational
+    # name/ID columns cannot change the operation the human approved.
+    calls = (approval_msg.content_json or {}).get("tool_calls")
+    if (
+        not isinstance(calls, list)
+        or len(calls) != 1
+        or not isinstance(calls[0], dict)
+        or not isinstance(calls[0].get("id"), str)
+        or not calls[0]["id"]
+        or not isinstance(calls[0].get("name"), str)
+        or not calls[0]["name"]
+        or not isinstance(calls[0].get("arguments"), dict)
+        or set(calls[0]) - {"id", "name", "arguments", "parse_error", "raw_arguments"}
+    ):
+        raise ValueError("Authenticated approval checkpoint has no valid pending tool call")
+    tool_call = ToolCall(**calls[0])
 
     # Resolve the checkpoint now — the re-entry takes over.
     clear_approval_checkpoint(runtime_db, run, approval_msg)
@@ -451,6 +429,9 @@ async def _approve_or_deny_turn_locked(
     companion.thread_id = thread.id
 
     history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
+    # Canonical history contains visible authored conversation. The transient
+    # protocol pair comes from the sealed checkpoint, never a visible message.
+    history = [*history, StoredMessage(role="assistant", content="", tool_calls=(tool_call,))]
     memory_blocks = companion.ensure_memory_loaded(db, runtime_db=runtime_db)
     conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
 
@@ -507,47 +488,15 @@ async def _approve_or_deny_turn_locked(
     )
 
     authority_session = active_conversation_authority_session(user_id)
-    if authority_session is not None:
-        await _persist_corefs_turn_result(
-            runtime_db,
-            authority_session=authority_session,
-            thread=thread,
-            run=run,
-            result=result,
-        )
-    else:
-        result_message_count = count_persisted_result_messages(result)
-        persist_agent_result(
-            runtime_db,
-            thread=thread,
-            run=run,
-            result=result,
-            initial_sequence_id=(
-                reserve_message_sequences(
-                    runtime_db,
-                    thread_id=thread.id,
-                    count=result_message_count,
-                )
-                if result_message_count > 0
-                else None
-            ),
-            record_feedback=False,
-        )
-        compact_thread_context(
-            runtime_db,
-            thread=thread,
-            run_id=run.id,
-            trigger_token_limit=max(
-                1,
-                int(resolve_context_budget_tokens() * settings.agent_compaction_trigger_ratio),
-            ),
-            keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
-            reserved_prompt_tokens=(
-                result.prompt_budget.system_prompt_token_estimate
-                if result.prompt_budget is not None
-                else 0
-            ),
-        )
+    if authority_session is None:
+        raise PermissionError("Current CoreFS conversation authority is unavailable.")
+    await _persist_corefs_turn_result(
+        runtime_db,
+        authority_session=authority_session,
+        thread=thread,
+        run=run,
+        result=result,
+    )
     runtime_db.commit()
     _index_run_user_image_attachments_inline(runtime_db, user_id=user_id, run=run)
     runtime_db.commit()
@@ -780,8 +729,7 @@ def _resolve_thread_id(user_id: int, runtime_db: Session) -> int:
         )
         runtime_db.commit()
         return thread_id
-    thread = get_or_create_thread(runtime_db, user_id)
-    return thread.id
+    raise PermissionError("Current CoreFS conversation authority is unavailable.")
 
 
 async def _execute_agent_turn_locked(
@@ -1013,45 +961,6 @@ class _TurnContext:
     recalled_image_source_pills: tuple[dict[str, object], ...] = ()
 
 
-async def _consolidate_displaced_threads(
-    thread_ids: Sequence[int],
-    *,
-    user_id: int,
-    db: Session,
-    runtime_db: Session,
-) -> None:
-    """Fire consolidation for threads closed to keep a single active thread.
-
-    Mirrors ``reset_agent_thread``: commit the close first so the consolidation
-    worker's own session sees it, then run it (awaited on sqlite, scheduled
-    otherwise).
-    """
-    if not thread_ids:
-        return
-
-    from anima_server.services.agent.eager_consolidation import on_thread_close
-
-    runtime_db.commit()
-    soul_db_factory = _build_db_factory(db)
-    for old_id in thread_ids:
-        close_task = on_thread_close(
-            thread_id=old_id,
-            user_id=user_id,
-            runtime_db_factory=_build_runtime_db_factory(),
-            soul_db_factory=soul_db_factory,
-        )
-        if _runtime_db_is_sqlite(runtime_db):
-            await close_task
-        else:
-            try:
-                # Strong-ref via the tracked set: the loop keeps only weak
-                # task references, so a bare create_task can be GC'd
-                # mid-flight and silently never consolidate.
-                _track_background_task(close_task)
-            except RuntimeError:
-                await close_task
-
-
 async def _prepare_turn_context(
     user_message: str,
     user_id: int,
@@ -1071,177 +980,27 @@ async def _prepare_turn_context(
     Uses the AnimaCompanion cache for static memory blocks and conversation
     history.  Only semantic retrieval (query-dependent) is executed per-turn.
     """
-    from anima_server.services.agent.thread_manager import (
-        maybe_set_thread_title,
-        reactivate_thread_if_needed,
-    )
     from anima_server.services.corefs.conversation_authority import (
         active_conversation_authority_session,
     )
 
     authority_session = active_conversation_authority_session(user_id)
-    if authority_session is not None:
-        return await _prepare_corefs_turn_context(
-            user_message,
-            user_id,
-            db,
-            runtime_db,
-            authority_session=authority_session,
-            thread_id=thread_id,
-            event_callback=event_callback,
-            source=source,
-            attachments=attachments,
-            document_ids=document_ids,
-            context_messages=context_messages,
-            today_context=today_context,
-        )
-
-    _validate_image_attachment_inputs(attachments)
-    companion = _get_companion(user_id)
-
-    if thread_id is not None:
-        thread = runtime_db.get(RuntimeThread, thread_id)
-        if thread is None or thread.user_id != user_id:
-            raise ValueError(f"Thread {thread_id} not found for user {user_id}")
-        if thread.status != "active":
-            dek = await get_active_dek_async(user_id, "conversations")
-            displaced_thread_ids = reactivate_thread_if_needed(
-                runtime_db,
-                thread=thread,
-                user_id=user_id,
-                transcripts_dir=settings.data_dir / "transcripts",
-                dek=dek,
-            )
-            runtime_db.flush()
-            await _consolidate_displaced_threads(
-                displaced_thread_ids,
-                user_id=user_id,
-                db=db,
-                runtime_db=runtime_db,
-            )
-    else:
-        thread = get_or_create_thread(runtime_db, user_id)
-
-    maybe_set_thread_title(runtime_db, thread, user_message)
-    prev_thread_id = companion.thread_id
-    companion.thread_id = thread.id
-    if prev_thread_id != thread.id:
-        companion.invalidate_history(thread_id=thread.id)
-
-    # Use cached conversation history when available, otherwise load from DB.
-    history = list(companion.ensure_history_loaded(runtime_db, thread_id=thread.id))
-
-    prepared_attachments = _prepare_image_attachments(
-        user_id=user_id,
+    if authority_session is None:
+        raise PermissionError("Current CoreFS conversation authority is unavailable.")
+    return await _prepare_corefs_turn_context(
+        user_message,
+        user_id,
+        db,
+        runtime_db,
+        authority_session=authority_session,
+        thread_id=thread_id,
+        event_callback=event_callback,
+        source=source,
         attachments=attachments,
-        runtime_db=runtime_db,
+        document_ids=document_ids,
+        context_messages=context_messages,
+        today_context=today_context,
     )
-    cleaned_context_messages = [
-        (message, message.content.strip())
-        for message in context_messages
-        if message.content.strip()
-    ]
-    try:
-        run = create_run(
-            runtime_db,
-            thread_id=thread.id,
-            user_id=user_id,
-            provider=settings.agent_provider,
-            model=settings.agent_model,
-            mode="streaming" if event_callback is not None else "blocking",
-        )
-        context_sequence_count = len(cleaned_context_messages)
-        initial_sequence_id = reserve_message_sequences(
-            runtime_db,
-            thread_id=thread.id,
-            count=context_sequence_count + 1,
-        )
-        persisted_context_messages: list[RuntimeMessage] = []
-        for offset, (context_message, cleaned_content) in enumerate(cleaned_context_messages):
-            content_json = attach_serialized_pills(
-                None,
-                [_serialize_context_pill(pill) for pill in context_message.pills],
-            )
-            persisted = append_message(
-                runtime_db,
-                thread=thread,
-                run_id=None,
-                step_id=None,
-                sequence_id=initial_sequence_id + offset,
-                role=context_message.role,
-                content_text=cleaned_content,
-                content_json=content_json,
-                source=context_message.source,
-            )
-            persisted_context_messages.append(persisted)
-            history.append(
-                StoredMessage(
-                    role=context_message.role,
-                    content=cleaned_content,
-                )
-            )
-        user_msg = append_user_message(
-            runtime_db,
-            thread=thread,
-            run_id=run.id,
-            content=user_message,
-            sequence_id=initial_sequence_id + context_sequence_count,
-            source=source,
-            attachments=prepared_attachments,
-            pills=_build_user_message_document_pills(
-                runtime_db,
-                user_id=user_id,
-                document_ids=document_ids,
-            ),
-        )
-        conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
-    except Exception:
-        _delete_prepared_attachments(prepared_attachments)
-        raise
-
-    # Commit the run and user message now: this makes the run visible to
-    # the cancel endpoint while the turn is in flight, and releases the
-    # thread-row lock taken by reserve_message_sequences (otherwise held
-    # across the LLM call, blocking /chat/reset and background writers).
-    runtime_db.commit()
-
-    try:
-        turn_ctx = await _assemble_turn_context(
-            user_message=user_message,
-            user_id=user_id,
-            db=db,
-            runtime_db=runtime_db,
-            thread=thread,
-            companion=companion,
-            history=history,
-            conversation_turn_count=conversation_turn_count,
-            prepared_attachments=prepared_attachments,
-            document_ids=document_ids,
-            persisted_context_messages=persisted_context_messages,
-            today_context=today_context,
-        )
-    except asyncio.CancelledError as exc:
-        # Client disconnects cancel the request task; CancelledError is a
-        # BaseException, so the Exception handler below never sees it.
-        _fail_turn_setup(
-            runtime_db,
-            run=run,
-            user_msg=user_msg,
-            context_messages=persisted_context_messages,
-            exc=exc,
-            cancelled=True,
-        )
-        raise
-    except Exception as exc:
-        _fail_turn_setup(
-            runtime_db,
-            run=run,
-            user_msg=user_msg,
-            context_messages=persisted_context_messages,
-            exc=exc,
-        )
-        raise
-    return thread, run, user_msg, turn_ctx
 
 
 async def _prepare_corefs_turn_context(
@@ -1299,20 +1058,8 @@ async def _prepare_corefs_turn_context(
     companion.thread_id = thread.id
     if previous_thread_id != thread.id:
         companion.invalidate_history(thread_id=thread.id)
-    history = [
-        StoredMessage(
-            role=message.role,
-            content=message.content,
-            attachments=tuple(
-                resolve_corefs_chat_attachment(
-                    session=authority_session,
-                    object_uri=uri,
-                )
-                for uri in message.attachment_uris
-            ),
-        )
-        for message in view.messages
-    ]
+    rebuild_current_thread_message_references(runtime_db, thread=thread)
+    history = load_thread_history(runtime_db, thread.id, user_id=user_id)
     cleaned_context_messages = [
         (message, message.content.strip())
         for message in context_messages
@@ -1333,6 +1080,10 @@ async def _prepare_corefs_turn_context(
             thread_id=thread.id,
             role=context_message.role,
             content=cleaned_content,
+            display_metadata={
+                "source": context_message.source,
+                "pills": [_serialize_context_pill(pill) for pill in context_message.pills],
+            },
         )
         reference = append_corefs_message_reference(
             runtime_db,
@@ -1349,10 +1100,12 @@ async def _prepare_corefs_turn_context(
         history.append(StoredMessage(role=canonical.role, content=canonical.content))
     user_content_json = attach_serialized_pills(
         None,
-        _build_user_message_document_pills(
-            runtime_db,
-            user_id=user_id,
-            document_ids=document_ids,
+        list(
+            _build_user_message_document_pills(
+                runtime_db,
+                user_id=user_id,
+                document_ids=document_ids,
+            )
         ),
     )
     prepared_attachments = prepare_corefs_chat_attachments(
@@ -1365,6 +1118,7 @@ async def _prepare_corefs_turn_context(
             thread_id=thread.id,
             role="user",
             content=user_message,
+            display_metadata={"source": source, "pills": extract_stored_pills(user_content_json)},
             attachment_uris=tuple(
                 attachment.storage_path
                 for attachment in prepared_attachments
@@ -1393,24 +1147,46 @@ async def _prepare_corefs_turn_context(
         source=source,
         transient_content_json=user_content_json,
     )
-    conversation_turn_count = sum(message.role == "user" for message in view.messages) + sum(
-        message.role == "user" for message, _content in cleaned_context_messages
-    ) + 1
-    runtime_db.commit()
-    turn_ctx = await _assemble_turn_context(
-        user_message=user_message,
-        user_id=user_id,
-        db=db,
-        runtime_db=runtime_db,
-        thread=thread,
-        companion=companion,
-        history=history,
-        conversation_turn_count=conversation_turn_count,
-        prepared_attachments=prepared_attachments,
-        document_ids=document_ids,
-        persisted_context_messages=persisted_context_messages,
-        today_context=today_context,
+    conversation_turn_count = (
+        sum(message.role == "user" for message in view.messages)
+        + sum(message.role == "user" for message, _content in cleaned_context_messages)
+        + 1
     )
+    runtime_db.commit()
+    try:
+        turn_ctx = await _assemble_turn_context(
+            user_message=user_message,
+            user_id=user_id,
+            db=db,
+            runtime_db=runtime_db,
+            thread=thread,
+            companion=companion,
+            history=history,
+            conversation_turn_count=conversation_turn_count,
+            prepared_attachments=prepared_attachments,
+            document_ids=document_ids,
+            persisted_context_messages=persisted_context_messages,
+            today_context=today_context,
+        )
+    except asyncio.CancelledError as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=persisted_context_messages,
+            exc=exc,
+            cancelled=True,
+        )
+        raise
+    except Exception as exc:
+        _fail_turn_setup(
+            runtime_db,
+            run=run,
+            user_msg=user_msg,
+            context_messages=persisted_context_messages,
+            exc=exc,
+        )
+        raise
     return thread, run, user_msg, turn_ctx
 
 
@@ -1807,20 +1583,23 @@ def _recent_thread_document_ids(
     user_id: int,
     limit: int = 12,
 ) -> list[int]:
-    messages = runtime_db.execute(
-        select(RuntimeMessage)
-        .where(RuntimeMessage.thread_id == thread_id)
-        .where(RuntimeMessage.user_id == user_id)
-        .order_by(RuntimeMessage.sequence_id.desc(), RuntimeMessage.id.desc())
-        .limit(limit)
-    ).scalars()
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        get_canonical_thread,
+    )
+
+    session = active_conversation_authority_session(user_id)
+    if session is None:
+        return []
+    view = get_canonical_thread(session=session, thread_id=thread_id)
+    if view is None:
+        return []
+    messages = reversed(view.messages[-limit:])
     document_ids: list[int] = []
     seen: set[int] = set()
     for message in messages:
-        if message.is_internal:
-            continue
         message_document_ids: list[int] = []
-        for pill in extract_stored_pills(message.content_json):
+        for pill in extract_stored_pills(message.display_metadata):
             if pill.get("kind") not in _DOCUMENT_PILL_KINDS:
                 continue
             try:
@@ -2487,7 +2266,12 @@ def _document_source_ids(
     user_id: int,
     document_ids: Sequence[int],
 ) -> list[int]:
-    source_uris = [f"runtime-document://{document_id}" for document_id in document_ids]
+    source_uris = [
+        document.storage_path
+        for document_id in document_ids
+        if (document := get_document_for_user(runtime_db, user_id=user_id, document_id=document_id))
+        is not None
+    ]
     if not source_uris:
         return []
     source_uris = [
@@ -2775,6 +2559,7 @@ async def _invoke_turn_runtime(
                 user_id=user_id,
                 thread=thread,
                 user_message=user_message,
+                current_run_id=run.id,
                 turn_ctx=turn_ctx,
             )
             return await runner.invoke(
@@ -2846,61 +2631,8 @@ async def _proactive_compact_if_needed(
     turn_ctx: _TurnContext,
     user_id: int,
 ) -> _TurnContext:
-    """Compact oversized legacy Runtime history before the first LLM call."""
-    from anima_server.services.corefs.conversation_authority import (
-        active_conversation_authority_session,
-    )
-
-    if active_conversation_authority_session(user_id) is not None:
-        return turn_ctx
-    block_chars = sum(len(b.value) for b in turn_ctx.memory_blocks)
-    history_chars = sum(len(m.content or "") for m in turn_ctx.history)
-    estimated_tokens = estimate_char_tokens(block_chars + history_chars)
-
-    threshold = int(resolve_context_budget_tokens() * settings.agent_compaction_trigger_ratio)
-    if estimated_tokens <= threshold:
-        return turn_ctx
-
-    logger.info(
-        "Proactive compaction: estimated %d tokens > threshold %d",
-        estimated_tokens,
-        threshold,
-    )
-    result = compact_thread_context(
-        runtime_db,
-        thread=thread,
-        run_id=run.id,
-        trigger_token_limit=threshold,
-        keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
-        reserved_prompt_tokens=estimate_char_tokens(block_chars),
-    )
-    if result is None:
-        return turn_ctx
-
-    runtime_db.flush()
-    logger.info(
-        "Proactive compaction: %d messages compacted (%d -> %d estimated tokens)",
-        result.compacted_message_count,
-        result.estimated_tokens_before,
-        result.estimated_tokens_after,
-    )
-
-    # Post-compaction: promote pending candidates so the rebuilt context
-    # reflects the latest soul state.
-    try:
-        from anima_server.services.agent.soul_writer import run_soul_writer
-
-        await run_soul_writer(user_id)
-    except Exception:
-        logger.debug("Post-compaction Soul Writer failed", exc_info=True)
-
-    return _rebuild_turn_context_after_compaction(
-        runtime_db,
-        user_id=user_id,
-        thread=thread,
-        user_message="",
-        turn_ctx=turn_ctx,
-    )
+    """Canonical conversation context is assembled by the CoreFS turn path."""
+    return turn_ctx
 
 
 def _should_retry_after_compaction(exc: StepFailedError) -> bool:
@@ -2931,6 +2663,7 @@ def _emergency_compact(
     Uses aggressive settings: keep fewer messages and reserve no prompt
     tokens (since the overflow already happened).
     """
+    rebuild_current_thread_message_references(runtime_db, thread=thread)
     keep_last = max(1, settings.agent_compaction_keep_last_messages // 2)
     result = compact_thread_context(
         runtime_db,
@@ -2951,12 +2684,15 @@ def _rebuild_turn_context_after_compaction(
     user_id: int,
     thread: RuntimeThread,
     user_message: str,
+    current_run_id: int,
     turn_ctx: _TurnContext,
 ) -> _TurnContext:
     """Reload history and memory after emergency compaction."""
     companion = _get_companion(user_id)
     companion.invalidate_history(thread_id=thread.id)
-    history = companion.ensure_history_loaded(runtime_db, thread_id=thread.id)
+    history = load_thread_history(
+        runtime_db, thread.id, user_id=user_id, exclude_run_id=current_run_id
+    )
     conversation_turn_count = count_messages_by_role(runtime_db, thread.id, "user")
     return _TurnContext(
         history=history,
@@ -3019,11 +2755,28 @@ def _index_run_user_image_attachments_inline(
     if user_message is None:
         return
 
+    from anima_server.services.agent.attachments import resolve_corefs_chat_attachment
+    from anima_server.services.agent.persistence import _hydrate_current_message_references
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    hydrated = _hydrate_current_message_references([user_message])
+    session = active_conversation_authority_session(user_id)
+    if not hydrated or session is None:
+        return
+    original = hydrated[0]
+    attachments = tuple(
+        resolve_corefs_chat_attachment(session=session, object_uri=item["corefsUri"])
+        for item in (original.content_json or {}).get("attachments", [])
+        if isinstance(item, dict) and isinstance(item.get("corefsUri"), str)
+    )
+
     _index_image_attachments_inline(
         runtime_db,
         user_id=user_id,
-        user_message=user_message.content_text or "",
-        attachments=deserialize_stored_attachments(user_message.content_json),
+        user_message=original.content_text,
+        attachments=attachments,
     )
 
 
@@ -3120,14 +2873,8 @@ def _remove_failed_turn_image_links(
     )
     runtime_db.flush()
 
-    from anima_server.services.images.deletion import _delete_orphaned_transient_asset
-
-    for image_asset_id in image_asset_ids:
-        _delete_orphaned_transient_asset(
-            runtime_db,
-            user_id=user_msg.user_id,
-            image_asset_id=image_asset_id,
-        )
+    # This clears failed operational references only. Canonical image bytes
+    # remain in CoreFS until an owner-authorized trash/maintenance mutation.
 
 
 def _remove_failed_turn_attachment_metadata(
@@ -3205,27 +2952,9 @@ def _persist_approval_checkpoint(
         active_conversation_authority_session,
     )
 
-    if active_conversation_authority_session(int(thread.user_id)) is not None:
-        _persist_corefs_step_traces(runtime_db, thread=thread, run=run, result=result)
-    else:
-        result_message_count = count_persisted_result_messages(result)
-        persist_agent_result(
-            runtime_db,
-            thread=thread,
-            run=run,
-            result=result,
-            initial_sequence_id=(
-                reserve_message_sequences(
-                    runtime_db,
-                    thread_id=thread.id,
-                    count=result_message_count,
-                )
-                if result_message_count > 0
-                else None
-            ),
-            record_feedback=False,
-            assistant_pills=assistant_pills,
-        )
+    if active_conversation_authority_session(int(thread.user_id)) is None:
+        raise PermissionError("Current CoreFS conversation authority is unavailable.")
+    _persist_corefs_step_traces(runtime_db, thread=thread, run=run, result=result)
 
     # Find the pending tool call from the last step trace.
     pending_tool_call = None
@@ -3287,47 +3016,17 @@ async def _persist_turn_result(
     )
 
     authority_session = active_conversation_authority_session(int(run.user_id))
-    if authority_session is not None:
-        await _persist_corefs_turn_result(
-            runtime_db,
-            authority_session=authority_session,
-            thread=thread,
-            run=run,
-            result=result,
-        )
-        return
-
-    result_message_count = count_persisted_result_messages(result)
-    persist_agent_result(
+    if authority_session is None:
+        raise PermissionError("Current CoreFS conversation authority is unavailable.")
+    await _persist_corefs_turn_result(
         runtime_db,
+        authority_session=authority_session,
         thread=thread,
         run=run,
         result=result,
-        initial_sequence_id=(
-            reserve_message_sequences(
-                runtime_db,
-                thread_id=thread.id,
-                count=result_message_count,
-            )
-            if result_message_count > 0
-            else None
-        ),
         assistant_pills=assistant_pills,
     )
-    runtime_db.commit()
-
-    _track_background_task(
-        _compact_thread_in_background(
-            user_id=run.user_id,
-            thread_id=thread.id,
-            run_id=run.id,
-            reserved_prompt_tokens=(
-                result.prompt_budget.system_prompt_token_estimate
-                if result.prompt_budget is not None
-                else 0
-            ),
-        )
-    )
+    return
 
 
 async def _persist_corefs_turn_result(
@@ -3337,6 +3036,7 @@ async def _persist_corefs_turn_result(
     thread: RuntimeThread,
     run: RuntimeRun,
     result: AgentResult,
+    assistant_pills: tuple[dict[str, object], ...] = (),
 ) -> None:
     from anima_server.services.corefs.conversation_mutations import append_canonical_message
 
@@ -3352,6 +3052,7 @@ async def _persist_corefs_turn_result(
             thread_id=thread.id,
             role="assistant",
             content=result.response,
+            display_metadata={"pills": list(assistant_pills)},
         )
         append_corefs_message_reference(
             runtime_db,
@@ -3386,72 +3087,6 @@ def _persist_corefs_step_traces(
         )
         last_step_id = int(step.id)
     return last_step_id
-
-
-async def _compact_thread_in_background(
-    *,
-    user_id: int,
-    thread_id: int,
-    run_id: int,
-    reserved_prompt_tokens: int,
-) -> None:
-    """Post-turn compaction off the turn's critical path.
-
-    Waits on the thread lock so it never races a subsequent turn (it is
-    scheduled while the current turn still holds the lock, so it runs
-    right after the turn completes), then opens a fresh session and
-    refreshes the companion history cache if anything was compacted.
-    """
-    from anima_server.services.agent.compaction import compact_thread_context_with_llm
-
-    try:
-        async with get_thread_lock(thread_id):
-            factory = _build_runtime_db_factory()
-            with factory() as runtime_db:
-                thread = runtime_db.get(RuntimeThread, thread_id)
-                if thread is None:
-                    return
-                compaction_kwargs = dict(
-                    thread=thread,
-                    run_id=run_id,
-                    trigger_token_limit=max(
-                        1,
-                        int(
-                            resolve_context_budget_tokens()
-                            * settings.agent_compaction_trigger_ratio
-                        ),
-                    ),
-                    keep_last_messages=max(1, settings.agent_compaction_keep_last_messages),
-                    reserved_prompt_tokens=reserved_prompt_tokens,
-                )
-
-                # Try LLM-powered compaction first (best-effort)
-                compaction_result = None
-                try:
-                    compaction_result = await compact_thread_context_with_llm(
-                        runtime_db, **compaction_kwargs
-                    )
-                except Exception:
-                    logger.warning(
-                        "LLM compaction failed for thread %s; falling back "
-                        "to text-based compaction",
-                        thread_id,
-                        exc_info=True,
-                    )
-
-                # Fall back to fast text-based compaction if LLM didn't trigger
-                if compaction_result is None:
-                    compaction_result = compact_thread_context(runtime_db, **compaction_kwargs)
-
-                runtime_db.commit()
-                if compaction_result is not None:
-                    _refresh_companion_history(
-                        user_id=user_id,
-                        runtime_db=runtime_db,
-                        thread_id=thread_id,
-                    )
-    except Exception:
-        logger.exception("Post-turn compaction failed for thread %s", thread_id)
 
 
 def _extract_inner_thoughts(result: AgentResult) -> str:
@@ -3775,19 +3410,26 @@ async def reset_agent_thread(
     db: Session | None = None,
 ) -> None:
     """Rotate to a fresh active thread while preserving the closed thread for archival."""
-    thread = runtime_db.scalar(
-        select(RuntimeThread).where(
-            RuntimeThread.user_id == user_id,
-            RuntimeThread.status == "active",
-        )
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        get_active_canonical_thread,
     )
+    from anima_server.services.corefs.conversation_mutations import create_canonical_thread
 
-    thread_id: int | None = None
-    if thread is not None:
-        thread_id = thread.id
-        close_thread(runtime_db, thread_id=thread_id)
-
-    get_or_create_thread(runtime_db, user_id)
+    session = active_conversation_authority_session(user_id)
+    if session is None:
+        raise PermissionError("Current CoreFS conversation authority is unavailable.")
+    previous = get_active_canonical_thread(session=session)
+    thread_id = previous.document.legacy_thread_id if previous is not None else None
+    created = create_canonical_thread(session=session)
+    created_id = created.document.legacy_thread_id
+    if not isinstance(created_id, int) or isinstance(created_id, bool):
+        raise RuntimeError("Canonical thread reference identity is unavailable.")
+    ensure_runtime_thread_reference(runtime_db, user_id=user_id, thread_id=created_id)
+    if isinstance(thread_id, int) and (thread := runtime_db.get(RuntimeThread, thread_id)):
+        if thread.user_id != user_id:
+            raise PermissionError("Runtime reference belongs to another owner.")
+        thread.status = "closed"
     runtime_db.commit()
 
     try:

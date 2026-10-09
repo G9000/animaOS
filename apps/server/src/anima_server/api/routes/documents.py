@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-import secrets
 from string import hexdigits
 from typing import Any
 
@@ -23,18 +22,13 @@ from anima_server.models.runtime import (
 )
 from anima_server.services.corefs.asset_authority import (
     CoreFsSourceError,
-    asset_corefs_authority_active,
     open_corefs_byte_source,
 )
 from anima_server.services.corefs.asset_mutations import (
     AssetMutationError,
     upsert_canonical_binary_asset,
 )
-from anima_server.services.corefs.diary_migration import migration_opaque_id
-from anima_server.services.documents import (
-    DocumentStoragePathError,
-    resolve_document_storage_path,
-)
+from anima_server.services.corefs.catalog_reader import stable_opaque_id
 from anima_server.services.documents.parsing_pack import ensure_parsing_pack, pack_status
 from anima_server.services.documents.pdf_workflow import (
     PDFIngestionDependencies,
@@ -51,7 +45,6 @@ from anima_server.services.documents.store import resolve_document_byte_source
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 _PDF_WORKFLOW_TYPE = "pdf_ingestion"
-_PDF_STORAGE_PREFIX = ".anima/documents"
 
 
 class StartPDFWorkflowRequest(BaseModel):
@@ -103,7 +96,9 @@ class SearchDocumentsRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_document_ids(self) -> SearchDocumentsRequest:
-        if self.documentIds is not None and any(document_id <= 0 for document_id in self.documentIds):
+        if self.documentIds is not None and any(
+            document_id <= 0 for document_id in self.documentIds
+        ):
             raise ValueError("documentIds must contain positive ids.")
         return self
 
@@ -151,8 +146,7 @@ async def upload_pdf_document(
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=(
-                "PDF is too large. "
-                f"Limit is {settings.diary_attachment_max_size_bytes} bytes."
+                f"PDF is too large. Limit is {settings.diary_attachment_max_size_bytes} bytes."
             ),
         )
     if not data.lstrip().startswith(b"%PDF-"):
@@ -162,52 +156,38 @@ async def upload_pdf_document(
         )
 
     sha256 = hashlib.sha256(data).hexdigest()
-    if asset_corefs_authority_active(session):
-        existing = runtime_db.scalar(
-            select(RuntimeDocument).where(
-                RuntimeDocument.user_id == userId,
-                RuntimeDocument.sha256 == sha256,
-            )
+    existing = runtime_db.scalar(
+        select(RuntimeDocument).where(
+            RuntimeDocument.user_id == userId,
+            RuntimeDocument.sha256 == sha256,
         )
-        try:
-            if existing is not None:
-                source = resolve_document_byte_source(existing, user_id=userId)
-                if isinstance(source, str):
-                    raise CoreFsSourceError("Canonical document source is unavailable.")
-                if (
-                    source.content_sha256 != sha256
-                    or source.size != len(data)
-                    or source.content_type != "application/pdf"
-                ):
-                    raise CoreFsSourceError("Canonical document source changed identity.")
-                storage_path = f"corefs://object/{source.stable_id}"
-            else:
-                stable_id = migration_opaque_id("document-upload", sha256)
-                upsert_canonical_binary_asset(
-                    session=session,
-                    stable_id=stable_id,
-                    name=filename,
-                    object_kind="attachment",
-                    content_type="application/pdf",
-                    data=data,
-                )
-                storage_path = f"corefs://object/{stable_id}"
-        except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-    else:
-        storage_path = _document_storage_path(userId, filename)
-        try:
-            resolved_path = resolve_document_storage_path(storage_path, user_id=userId)
-        except DocumentStoragePathError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            ) from exc
-        resolved_path.parent.mkdir(parents=True, exist_ok=True)
-        resolved_path.write_bytes(data)
+    )
+    try:
+        if existing is not None:
+            source = resolve_document_byte_source(existing, user_id=userId)
+            if (
+                source.content_sha256 != sha256
+                or source.size != len(data)
+                or source.content_type != "application/pdf"
+            ):
+                raise CoreFsSourceError("Canonical document source changed identity.")
+            storage_path = f"corefs://object/{source.stable_id}"
+        else:
+            stable_id = stable_opaque_id("document-upload", sha256)
+            upsert_canonical_binary_asset(
+                session=session,
+                stable_id=stable_id,
+                name=filename,
+                object_kind="attachment",
+                content_type="application/pdf",
+                data=data,
+            )
+            storage_path = f"corefs://object/{stable_id}"
+    except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
     run = start_pdf_ingestion_workflow(
         runtime_db,
@@ -244,35 +224,26 @@ async def start_pdf_workflow(
     runtime_db: Session = Depends(get_runtime_db),
 ) -> dict[str, Any]:
     session = await require_unlocked_user_async(request, payload.userId)
-    if asset_corefs_authority_active(session):
-        try:
-            source = open_corefs_byte_source(
-                session=session,
-                object_uri=payload.storagePath,
-                expected_kinds=frozenset({"attachment"}),
-            )
-        except CoreFsSourceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Canonical document source is unavailable.",
-            ) from exc
-        if (
-            source.content_type != payload.mimeType
-            or source.content_sha256 != payload.sha256
-            or source.size != payload.sizeBytes
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Canonical document source changed identity.",
-            )
-    else:
-        try:
-            resolve_document_storage_path(payload.storagePath, user_id=payload.userId)
-        except DocumentStoragePathError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(exc),
-            ) from exc
+    try:
+        source = open_corefs_byte_source(
+            session=session,
+            object_uri=payload.storagePath,
+            expected_kinds=frozenset({"attachment"}),
+        )
+    except CoreFsSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Canonical document source is unavailable.",
+        ) from exc
+    if (
+        source.content_type != payload.mimeType
+        or source.content_sha256 != payload.sha256
+        or source.size != payload.sizeBytes
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Canonical document source changed identity.",
+        )
     if payload.threadId is not None:
         _load_owned_thread(runtime_db, payload.threadId, user_id=payload.userId)
 
@@ -412,7 +383,7 @@ async def reparse_document_route(
             user_id=session.user_id,
             document_id=document_id,
         )
-    except DocumentStoragePathError as exc:
+    except CoreFsSourceError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
@@ -543,10 +514,6 @@ def _sanitize_pdf_filename(filename: str) -> str:
         stem = name[:-4].rstrip(" .")[:236]
         name = f"{stem}.pdf"
     return name
-
-
-def _document_storage_path(user_id: int, filename: str) -> str:
-    return f"{_PDF_STORAGE_PREFIX}/{user_id}/{secrets.token_hex(8)}_{filename}"
 
 
 def _default_pdf_dependencies() -> PDFIngestionDependencies:

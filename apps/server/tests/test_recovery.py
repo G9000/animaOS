@@ -9,7 +9,7 @@ import anima_core
 import pytest
 from anima_server.api.routes import auth as auth_routes
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import SoulKeyslot, User
+from anima_server.models import SoulKeyslot, SoulOwner
 from anima_server.services.core import get_manifest_path, update_core_manifest
 from anima_server.services.corefs import credentials as credential_service
 from anima_server.services.corefs.credentials import (
@@ -21,7 +21,6 @@ from anima_server.services.corefs.credentials import (
 )
 from anima_server.services.corefs.keyslots import (
     _manifest_slot,
-    manifest_has_versioned_key_hierarchy,
     unlock_key_hierarchy,
     unlock_manifest_key_hierarchy,
 )
@@ -475,7 +474,7 @@ def test_recovery_confirmation_is_retryable_after_manifest_activation_crash(monk
     with managed_test_client("anima-recovery-confirm-retry-") as client:
         registered = _register_user(client, password="password-123")
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             prepared = prepare_recovery_credential(
                 db,
@@ -518,7 +517,7 @@ def test_full_recovery_prepare_preserves_live_pending_phrase() -> None:
     with managed_test_client("anima-recovery-live-pending-") as client:
         registered = _register_user(client, password="password-123")
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             first = prepare_recovery_credential(
                 db,
@@ -665,7 +664,7 @@ def test_full_recovery_ready_marker_survives_coordinator_restart(monkeypatch) ->
     with managed_test_client("anima-recovery-ready-restart-") as client:
         registered = _register_user(client, password="password-123")
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             first = prepare_recovery_credential(
                 db,
@@ -782,7 +781,7 @@ def test_recovery_confirmation_rejects_missing_retained_frk_before_activation() 
         )
 
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             prepared = prepare_recovery_credential(
                 db,
@@ -891,203 +890,6 @@ def test_filesystem_recovery_confirmation_rejects_missing_retained_frk_before_ac
         assert set(old_roots.frks) == {1, 2}
 
 
-def test_recovery_prepare_explicitly_upgrades_complete_legacy_account() -> None:
-    with managed_test_client("anima-recovery-legacy-upgrade-") as client:
-        registered = _register_user(client, password="password-123")
-        old_phrase = str(registered["recoveryPhrase"])
-
-        with get_user_session_factory(0)() as db:
-            db.query(SoulKeyslot).delete()
-            db.commit()
-
-        def make_legacy(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = []
-            manifest.pop("active_password_credential_generation", None)
-            manifest.pop("active_recovery_credential_generation", None)
-            manifest.pop("frk_rotation", None)
-
-        update_core_manifest(make_legacy)
-        prepared_response = client.post(
-            "/api/auth/recovery-credential/prepare",
-            headers={"x-anima-unlock": str(registered["unlockToken"])},
-            json={
-                "currentRecoveryPhrase": old_phrase,
-                "currentPassword": "password-123",
-                "scope": "full",
-            },
-        )
-        assert prepared_response.status_code == 200
-        prepared = prepared_response.json()
-        assert prepared["pendingGeneration"] == 1
-        pending_manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-        assert {slot["status"] for slot in pending_manifest["keyslots"]} == {
-            KeyslotStatus.PENDING.value
-        }
-        assert not manifest_has_versioned_key_hierarchy(pending_manifest)
-
-        before_confirm_login = client.post(
-            "/api/auth/login",
-            json={"username": "alice", "password": "password-123"},
-        )
-        assert before_confirm_login.status_code == 200
-
-        confirmed = client.post(
-            "/api/auth/recovery-credential/confirm",
-            headers={"x-anima-unlock": str(registered["unlockToken"])},
-            json={
-                "recoveryPhrase": prepared["recoveryPhrase"],
-                "pendingGeneration": 1,
-                "scope": "full",
-                "currentPassword": "password-123",
-            },
-        )
-        assert confirmed.status_code == 200
-
-        with get_user_session_factory(0)() as db:
-            recovered = unlock_key_hierarchy(
-                db,
-                credential=prepared["recoveryPhrase"],
-                wrapping_path=WrappingPath.RECOVERY,
-                scope=PayloadScope.FULL,
-            )
-            password = unlock_key_hierarchy(
-                db,
-                credential="password-123",
-                wrapping_path=WrappingPath.PASSWORD,
-                scope=PayloadScope.FULL,
-            )
-            assert recovered.frks
-            assert password.frks == recovered.frks
-            assert password.soul_domains == recovered.soul_domains
-
-
-def test_legacy_confirm_rejects_missing_pending_password_root_before_activation() -> None:
-    with managed_test_client("anima-recovery-legacy-password-tamper-") as client:
-        registered = _register_user(client, password="password-123")
-        old_phrase = str(registered["recoveryPhrase"])
-        with get_user_session_factory(0)() as db:
-            db.query(SoulKeyslot).delete()
-            db.commit()
-
-        def make_legacy(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = []
-            manifest.pop("active_password_credential_generation", None)
-            manifest.pop("active_recovery_credential_generation", None)
-            manifest.pop("frk_rotation", None)
-
-        update_core_manifest(make_legacy)
-        prepared = client.post(
-            "/api/auth/recovery-credential/prepare",
-            headers={"x-anima-unlock": str(registered["unlockToken"])},
-            json={
-                "currentRecoveryPhrase": old_phrase,
-                "currentPassword": "password-123",
-                "scope": "full",
-            },
-        ).json()
-
-        def remove_pending_password_root(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = [
-                slot
-                for slot in manifest["keyslots"]
-                if not (
-                    slot["wrapping_path"] == WrappingPath.PASSWORD.value
-                    and slot["purpose"] == KeyPurpose.FILESYSTEM_ROOT.value
-                    and slot["status"] == KeyslotStatus.PENDING.value
-                )
-            ]
-
-        update_core_manifest(remove_pending_password_root)
-        confirmation = client.post(
-            "/api/auth/recovery-credential/confirm",
-            headers={"x-anima-unlock": str(registered["unlockToken"])},
-            json={
-                "recoveryPhrase": prepared["recoveryPhrase"],
-                "pendingGeneration": prepared["pendingGeneration"],
-                "scope": prepared["scope"],
-                "currentPassword": "password-123",
-            },
-        )
-        assert confirmation.status_code == 401
-
-        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-        assert "active_password_credential_generation" not in manifest
-        assert "active_recovery_credential_generation" not in manifest
-        assert "frk_rotation" not in manifest
-        assert {slot["status"] for slot in manifest["keyslots"]} == {KeyslotStatus.PENDING.value}
-        old_login = client.post(
-            "/api/auth/login",
-            json={"username": "alice", "password": "password-123"},
-        )
-        assert old_login.status_code == 200
-        old_recovery = client.post(
-            "/api/auth/recover",
-            json={
-                "recoveryPhrase": old_phrase,
-                "newPassword": "recovered-password-123",
-                "scope": "full",
-            },
-        )
-        assert old_recovery.status_code == 200
-
-
-def test_legacy_confirm_reopens_password_after_activation() -> None:
-    with managed_test_client("anima-recovery-legacy-password-final-reopen-") as client:
-        registered = _register_user(client, password="password-123")
-        old_phrase = str(registered["recoveryPhrase"])
-        with get_user_session_factory(0)() as db:
-            db.query(SoulKeyslot).delete()
-            db.commit()
-
-        def make_legacy(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = []
-            manifest.pop("active_password_credential_generation", None)
-            manifest.pop("active_recovery_credential_generation", None)
-            manifest.pop("frk_rotation", None)
-
-        update_core_manifest(make_legacy)
-        with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
-            assert user is not None
-            prepared = prepare_recovery_credential(
-                db,
-                user,
-                current_recovery_phrase=old_phrase,
-                current_password="password-123",
-            )
-
-            def remove_password_root_after_promotion(boundary: CredentialBoundary) -> None:
-                if boundary is not CredentialBoundary.SOUL_PROMOTED:
-                    return
-
-                def remove_root(manifest: dict[str, object]) -> None:
-                    manifest["keyslots"] = [
-                        slot
-                        for slot in manifest["keyslots"]
-                        if not (
-                            slot["wrapping_path"] == WrappingPath.PASSWORD.value
-                            and slot["purpose"] == KeyPurpose.FILESYSTEM_ROOT.value
-                            and slot["status"] == KeyslotStatus.ACTIVE.value
-                        )
-                    ]
-
-                update_core_manifest(remove_root)
-
-            with pytest.raises(
-                ValueError,
-                match="full scope requires both Soul and Filesystem Root keys",
-            ):
-                confirm_recovery_credential(
-                    db,
-                    user,
-                    recovery_phrase=prepared.recovery_phrase,
-                    pending_generation=prepared.pending_generation,
-                    scope=prepared.scope,
-                    current_password="password-123",
-                    failure_injector=remove_password_root_after_promotion,
-                )
-
-
 @pytest.mark.parametrize("boundary", list(CredentialBoundary))
 def test_recovery_replacement_recovers_at_every_durable_boundary(
     boundary,
@@ -1107,7 +909,7 @@ def test_recovery_replacement_recovers_at_every_durable_boundary(
                 raise RuntimeError(f"injected crash after {current_boundary.value}")
 
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             prepare_boundaries = {
                 CredentialBoundary.SOUL_PENDING_DURABLE,
@@ -1181,7 +983,7 @@ def test_scoped_recovery_replacement_preserves_degraded_compartment(
         make_scoped = _make_soul_only if scope is PayloadScope.SOUL else _make_filesystem_only
         make_scoped(password="password-123", recovery_phrase=current)
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             before_soul_rows = db.query(SoulKeyslot).count()
             prepared = prepare_recovery_credential(
@@ -1237,7 +1039,7 @@ def test_recovery_preparing_marker_is_retryable_after_coordinator_restart(monkey
         registered = _register_user(client, password="password-123")
         current = str(registered["recoveryPhrase"])
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             with pytest.raises(RuntimeError):
                 prepare_recovery_credential(

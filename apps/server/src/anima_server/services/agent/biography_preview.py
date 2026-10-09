@@ -9,9 +9,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import AgentProfile, User
+from anima_server.models import AgentProfile
 from anima_server.services.agent.memory_blocks import MemoryBlock, build_runtime_memory_blocks
 from anima_server.services.agent.self_model import ensure_self_model_exists
+from anima_server.services.corefs.account_profile import read_active_account_profile
 
 _MAX_SECTION_CHARS = 900
 _MAX_BIOGRAPHY_CHARS = 1400
@@ -54,10 +55,8 @@ def build_agent_biography_preview(
     """Return a deterministic preview of the context that shapes the agent."""
     ensure_self_model_exists(db, user_id=user_id)
 
-    profile = db.scalar(
-        select(AgentProfile).where(AgentProfile.user_id == user_id)
-    )
-    user = db.get(User, user_id)
+    profile = db.scalar(select(AgentProfile).where(AgentProfile.user_id == user_id))
+    user = read_active_account_profile(user_id)
     agent_type = profile.agent_type if profile is not None else "companion"
 
     blocks = list(

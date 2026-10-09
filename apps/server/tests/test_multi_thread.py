@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeImageMessageLink,
     RuntimeMessage,
@@ -182,91 +181,63 @@ def test_create_thread_returns_active_thread() -> None:
         assert thread.status == "active"
 
 
-def test_reactivate_thread_with_pg_messages(db: Session) -> None:
-    """If PG messages still exist (within TTL), reactivation sets status=active only."""
-    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
-    from sqlalchemy import select
+def test_reactivate_thread_with_current_native_messages(current_conversation):
+    from anima_server.services.corefs.conversation_authority import get_canonical_thread
 
-    uid = _uid()
-    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
-    db.add(thread)
-    db.flush()
-
-    # Message still in PG (within TTL window)
-    msg = RuntimeMessage(
-        thread_id=thread.id,
-        user_id=uid,
-        sequence_id=1,
-        role="user",
-        content_text="old message still in PG",
-        is_in_context=True,
-        is_archived_history=False,
+    current = current_conversation
+    thread = _native_thread(current)
+    _native_message(current, thread, "authored native message")
+    _native_thread(current)  # closes the target in canonical storage
+    before = current.db.query(RuntimeMessage).filter_by(thread_id=thread.id).count()
+    _reactivate(current, thread)
+    assert thread.status == "active" and thread.is_archived is False
+    assert (
+        get_canonical_thread(session=current.session, thread_id=thread.id).document.status
+        == "active"
     )
-    db.add(msg)
-    db.flush()
-
-    reactivate_thread_if_needed(db, thread=thread, user_id=uid, transcripts_dir=None, dek=None)
-
-    assert thread.status == "active"
-    assert thread.is_archived is False
-    # No extra messages were inserted (PG messages suffice)
-    msgs = db.scalars(
-        select(RuntimeMessage).where(RuntimeMessage.thread_id == thread.id)
-    ).all()
-    assert len(msgs) == 1
+    assert current.db.query(RuntimeMessage).filter_by(thread_id=thread.id).count() == before
+    assert [m["content"] for m in _display(current, thread)] == ["authored native message"]
 
 
-def test_reactivate_closes_other_active_thread(db: Session) -> None:
-    """Resuming a thread closes any other active thread (single-active invariant)."""
-    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+def test_reactivate_closes_other_owned_active_thread(current_conversation):
+    from anima_server.services.corefs.conversation_authority import get_canonical_thread
 
-    uid = _uid()
-    # The conversation currently in progress.
-    active = RuntimeThread(user_id=uid, status="active")
-    # An older thread the user is about to resume.
-    resumed = RuntimeThread(user_id=uid, status="closed", is_archived=True)
-    db.add_all([active, resumed])
-    db.flush()
-    db.add(
-        RuntimeMessage(
-            thread_id=resumed.id,
-            user_id=uid,
-            sequence_id=1,
-            role="user",
-            content_text="old message still in PG",
-            is_in_context=True,
-            is_archived_history=False,
-        )
-    )
-    db.flush()
-
-    displaced = reactivate_thread_if_needed(
-        db, thread=resumed, user_id=uid, transcripts_dir=None, dek=None
-    )
-
-    assert resumed.status == "active"
-    assert active.status == "closed"
+    current = current_conversation
+    resumed = _native_thread(current)
+    _native_message(current, resumed, "older authored content")
+    active = _native_thread(current)
+    displaced = _reactivate(current, resumed)
     assert displaced == [active.id]
-
-
-def test_reactivate_leaves_other_users_threads_untouched(db: Session) -> None:
-    """Closing siblings is scoped to the resuming user."""
-    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
-
-    uid = _uid()
-    other_uid = _uid()
-    other_active = RuntimeThread(user_id=other_uid, status="active")
-    resumed = RuntimeThread(user_id=uid, status="closed")
-    db.add_all([other_active, resumed])
-    db.flush()
-
-    displaced = reactivate_thread_if_needed(
-        db, thread=resumed, user_id=uid, transcripts_dir=None, dek=None
+    assert resumed.status == "active" and active.status == "closed"
+    assert (
+        get_canonical_thread(session=current.session, thread_id=resumed.id).document.status
+        == "active"
+    )
+    assert (
+        get_canonical_thread(session=current.session, thread_id=active.id).document.status
+        == "closed"
     )
 
-    assert resumed.status == "active"
-    assert other_active.status == "active"
-    assert displaced == []
+
+def test_reactivate_leaves_foreign_owner_reference_untouched(current_conversation):
+    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
+
+    current = current_conversation
+    resumed = _native_thread(current)
+    _native_message(current, resumed, "owned original")
+    active = _native_thread(current)
+    foreign = RuntimeThread(user_id=current.user_id + 1, status="active")
+    current.db.add(foreign)
+    current.db.flush()
+    authored = _segments(current, resumed)
+    assert _reactivate(current, resumed) == [active.id]
+    assert foreign.status == "active" and foreign.closed_at is None
+    with pytest.raises(RuntimeError, match="authenticated Core"):
+        reactivate_thread_if_needed(
+            current.db, thread=foreign, user_id=current.user_id, transcripts_dir=None, dek=None
+        )
+    assert foreign.status == "active"
+    assert _segments(current, resumed) == authored
 
 
 def test_maybe_set_thread_title(db: Session) -> None:
@@ -298,408 +269,353 @@ def test_maybe_set_thread_title(db: Session) -> None:
     assert thread3.title.endswith("...")
 
 
-def test_display_messages_deduplicates_send_message(db: Session) -> None:
-    """Assistant tool-call wrapper + send_message tool row should produce one message, not two."""
-    from anima_server.services.agent.thread_manager import get_thread_messages_for_display
-
-    uid = _uid()
-    thread = RuntimeThread(user_id=uid, status="active")
-    db.add(thread)
-    db.flush()
-
-    # User message
-    db.add(RuntimeMessage(
-        thread_id=thread.id, user_id=uid, sequence_id=1,
-        role="user", content_text="hello",
-    ))
-    # Assistant tool-call wrapper (should be filtered out)
-    db.add(RuntimeMessage(
-        thread_id=thread.id, user_id=uid, sequence_id=2,
-        role="assistant", content_text="Hi there!",
-        content_json={"tool_calls": [{"id": "synthetic-send_message-0-0", "name": "send_message", "arguments": {"message": "Hi there!"}}]},
-    ))
-    # send_message tool result (should be kept, displayed as "assistant")
-    db.add(RuntimeMessage(
-        thread_id=thread.id, user_id=uid, sequence_id=3,
-        role="tool", content_text="Hi there!",
-        content_json={"retrieval": {"retriever": "hybrid", "citations": [], "contextFragments": [], "stats": None}},
-        tool_name="send_message", tool_call_id="synthetic-send_message-0-0",
-    ))
-    # Internal tool result (should be filtered out)
-    db.add(RuntimeMessage(
-        thread_id=thread.id, user_id=uid, sequence_id=4,
-        role="tool", content_text="memory saved",
-        tool_name="save_to_memory", tool_call_id="call_123",
-    ))
-    db.flush()
-
-    messages = get_thread_messages_for_display(
-        db, thread=thread, user_id=uid, transcripts_dir=None, dek=None,
-    )
-
-    assert len(messages) == 2  # user + one assistant, not three
-    assert messages[0]["role"] == "user"
-    assert messages[0]["content"] == "hello"
-    assert messages[1]["role"] == "assistant"
-    assert messages[1]["content"] == "Hi there!"
-    assert messages[1]["retrieval"] == {
-        "retriever": "hybrid",
-        "citations": [],
-        "contextFragments": [],
-        "stats": None,
-    }
-
-
-def test_reactivate_thread_from_jsonl(db: Session, tmp_path) -> None:
-    """If PG messages are gone, rehydrate from JSONL and insert summary."""
-    import json
-
-    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
-    from sqlalchemy import select
-
-    uid = _uid()
-    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
-    db.add(thread)
-    db.flush()
-
-    # Write JSONL and meta sidecar
-    transcripts_dir = tmp_path / "transcripts"
-    transcripts_dir.mkdir()
-    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
-    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
-
-    messages = [
-        {"role": "user", "content": "old user message", "ts": "2026-01-01T00:00:00Z", "seq": 1},
+def test_display_ignores_runtime_tool_duplicates_of_native_reply(current_conversation):
+    current = current_conversation
+    thread = _native_thread(current)
+    _native_message(current, thread, "hello")
+    pills = [
         {
-            "role": "user",
-            "content": "",
-            "ts": "2026-01-01T00:00:30Z",
-            "seq": 2,
-            "attachments": [
-                {
-                    "id": "img_archive",
-                    "kind": "image",
-                    "mimeType": "image/png",
-                    "filename": "archive.png",
-                    "sizeBytes": 68,
-                    "sha256": "abc123",
-                    "storagePath": "users/1/attachments/chat/img_archive.png",
-                }
-            ],
-        },
-        {
-            "role": "assistant",
-            "content": "old reply",
-            "ts": "2026-01-01T00:01:00Z",
-            "seq": 3,
-            "retrieval": {
-                "retriever": "hybrid",
-                "citations": [],
-                "contextFragments": [
-                    {
-                        "rank": 1,
-                        "memoryItemId": 7,
-                        "uri": "memory://items/7",
-                        "text": "old detail",
-                    }
-                ],
-                "stats": None,
-            },
-        },
-    ]
-    jsonl_path.write_text(
-        "\n".join(json.dumps(m) for m in messages), encoding="utf-8"
-    )
-    meta_path.write_text(
-        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Talked about old stuff"}),
-        encoding="utf-8",
-    )
-
-    reactivate_thread_if_needed(
-        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None
-    )
-
-    assert thread.status == "active"
-    assert thread.is_archived is False
-
-    all_msgs = db.scalars(
-        select(RuntimeMessage)
-        .where(RuntimeMessage.thread_id == thread.id)
-        .order_by(RuntimeMessage.sequence_id)
-    ).all()
-
-    # 3 archived history rows (including image-only user row) + 1 summary system message
-    assert len(all_msgs) == 4
-    archived = [m for m in all_msgs if m.is_archived_history]
-    summary_msg = [m for m in all_msgs if not m.is_archived_history]
-    assert len(archived) == 3
-    assert len(summary_msg) == 1
-    assert summary_msg[0].role == "system"
-    assert "Talked about old stuff" in (summary_msg[0].content_text or "")
-    archived_image_user = next(
-        message
-        for message in archived
-        if message.role == "user" and not message.content_text
-    )
-    assert archived_image_user.content_json == {
-        "attachments": [
-            {
-                "id": "img_archive",
-                "kind": "image",
-                "mimeType": "image/png",
-                "filename": "archive.png",
-                "sizeBytes": 68,
-                "sha256": "abc123",
-                "storagePath": "users/1/attachments/chat/img_archive.png",
-            }
-        ]
-    }
-    archived_assistant = next(message for message in archived if message.role == "assistant")
-    assert archived_assistant.content_json == {
-        "retrieval": {
-            "retriever": "hybrid",
-            "citations": [],
-            "contextFragments": [
-                {
-                    "rank": 1,
-                    "memoryItemId": 7,
-                    "uri": "memory://items/7",
-                    "text": "old detail",
-                }
-            ],
-            "stats": None,
+            "kind": "document_source",
+            "label": "CITED DOCS",
+            "ref": "corefs://object/01J00000000000000000000006",
         }
-    }
+    ]
+    _native_message(
+        current,
+        thread,
+        "Hi there!",
+        role="assistant",
+        metadata={"pills": pills, "source": "native-reply"},
+    )
+    current.db.add_all(
+        [
+            RuntimeMessage(
+                thread_id=thread.id,
+                user_id=current.user_id,
+                sequence_id=3,
+                role="assistant",
+                content_text="forged Runtime wrapper",
+                content_json={"tool_calls": [{"id": "synthetic-send", "name": "send_message"}]},
+            ),
+            RuntimeMessage(
+                thread_id=thread.id,
+                user_id=current.user_id,
+                sequence_id=4,
+                role="tool",
+                content_text="Hi there!",
+                tool_name="send_message",
+                tool_call_id="synthetic-send",
+            ),
+        ]
+    )
+    current.db.flush()
+    messages = _display(current, thread)
+    assert [(m["role"], m["content"]) for m in messages] == [
+        ("user", "hello"),
+        ("assistant", "Hi there!"),
+    ]
+    assert messages[1]["pills"] == pills and messages[1]["source"] == "native-reply"
+    assert messages[1]["retrieval"] is None
 
 
-def test_reactivate_thread_from_jsonl_recreates_image_links(
-    db: Session,
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import json
+def test_native_reactivation_ignores_unsupported_jsonl_sidecar(current_conversation, tmp_path):
+    current = current_conversation
+    thread = _native_thread(current)
+    _native_message(current, thread, "native authored message")
+    _native_message(current, thread, "native authored reply", role="assistant")
+    authored = _segments(current, thread)
+    _native_thread(current)
+    sidecars = _unsupported_sidecar(tmp_path, thread, current.user_id, "forged JSONL replacement")
+    _reactivate(current, thread, transcripts=sidecars)
+    assert [m["content"] for m in _display(current, thread, transcripts=sidecars)] == [
+        "native authored message",
+        "native authored reply",
+    ]
+    assert _segments(current, thread) == authored
+    assert current.db.query(RuntimeMessage).filter_by(is_archived_history=True).count() == 0
 
-    from anima_server.services.agent.attachments import resolve_message_attachment
-    from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
-    from anima_server.services.images.store import register_image_asset
-    from sqlalchemy import select
 
-    uid = _uid()
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    stored = register_image_asset(
-        db,
-        user_id=uid,
+def test_native_image_and_source_links_survive_runtime_loss(current_conversation):
+    import hashlib
+
+    from anima_server.models.runtime import RuntimeImageAsset
+    from anima_server.services.agent.attachments import (
+        read_attachment_bytes,
+        resolve_corefs_chat_attachment,
+    )
+    from anima_server.services.corefs.asset_authority import open_corefs_byte_source
+    from anima_server.services.corefs.asset_mutations import upsert_canonical_binary_asset
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
+
+    current = current_conversation
+    image_id = stable_opaque_id("native-thread-image", "original")
+    document_id = stable_opaque_id("native-thread-source", "original")
+    image_uri = f"corefs://object/{image_id}"
+    document_uri = f"corefs://object/{document_id}"
+    upsert_canonical_binary_asset(
+        session=current.session,
+        stable_id=image_id,
+        name="original.png",
+        object_kind="gallery-asset",
+        content_type="image/png",
         data=PNG_BYTES,
-        mime_type="image/png",
-        filename="archive.png",
     )
-    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
-    db.add(thread)
-    db.flush()
-
-    transcripts_dir = tmp_path / "transcripts"
-    transcripts_dir.mkdir()
-    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
-    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
-    jsonl_path.write_text(
-        json.dumps(
-            {
-                "role": "user",
-                "content": "",
-                "ts": "2026-01-01T00:00:30Z",
-                "seq": 1,
-                "attachments": [
-                    {
-                        "id": "img_archive",
-                        "kind": "image",
-                        "mimeType": "image/png",
-                        "filename": "archive.png",
-                        "assetId": stored.asset.id,
-                        "storagePath": stored.asset.storage_path,
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
+    upsert_canonical_binary_asset(
+        session=current.session,
+        stable_id=document_id,
+        name="source.pdf",
+        object_kind="attachment",
+        content_type="application/pdf",
+        data=b"authored cited source",
     )
-    meta_path.write_text(
-        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Old image"}),
-        encoding="utf-8",
+    thread = _native_thread(current)
+    reference = _native_message(current, thread, "see original", attachments=(image_uri,))
+    pills = [{"kind": "document_source", "label": "CITED DOCS", "ref": document_uri}]
+    _native_message(
+        current,
+        thread,
+        "answer from source",
+        role="assistant",
+        metadata={"pills": pills, "source": "cited-native-source"},
     )
-
-    reactivate_thread_if_needed(
-        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None
+    asset = RuntimeImageAsset(
+        user_id=current.user_id,
+        filename="",
+        mime_type="",
+        storage_path="",
+        sha256=hashlib.sha256(PNG_BYTES).hexdigest(),
+        size_bytes=len(PNG_BYTES),
+        width=1,
+        height=1,
+        retention_state="active",
     )
-
-    archived_image_user = db.scalar(
-        select(RuntimeMessage).where(
-            RuntimeMessage.thread_id == thread.id,
-            RuntimeMessage.role == "user",
-            RuntimeMessage.is_archived_history.is_(True),
+    current.db.add(asset)
+    current.db.flush()
+    current.db.add(
+        RuntimeImageMessageLink(
+            user_id=current.user_id,
+            message_id=reference.id,
+            image_asset_id=asset.id,
+            attachment_id=image_id,
         )
     )
-    assert archived_image_user is not None
-    link = db.scalar(
-        select(RuntimeImageMessageLink).where(
-            RuntimeImageMessageLink.message_id == archived_image_user.id,
-            RuntimeImageMessageLink.attachment_id == "img_archive",
+    current.db.commit()
+    assert current.db.query(RuntimeImageMessageLink).count() == 1
+    authored = _segments(current, thread)
+    _lose_runtime_conversations(current)
+    messages = _display(current, thread)
+    assert messages[0]["attachments"] == [{"corefsUri": image_uri}]
+    assert messages[1]["pills"] == pills and messages[1]["source"] == "cited-native-source"
+    attachment = resolve_corefs_chat_attachment(session=current.session, object_uri=image_uri)
+    assert read_attachment_bytes(attachment.path) == PNG_BYTES
+    assert (
+        open_corefs_byte_source(
+            session=current.session,
+            object_uri=document_uri,
+            expected_kinds=frozenset({"attachment"}),
+        ).read_all(max_bytes=1024)
+        == b"authored cited source"
+    )
+    assert _segments(current, thread) == authored
+    assert current.db.query(RuntimeImageMessageLink).count() == 0
+
+
+def test_trashed_native_image_cannot_fall_back_to_jsonl_attachment(current_conversation, tmp_path):
+    from anima_server.services.agent.attachments import resolve_corefs_chat_attachment
+    from anima_server.services.corefs.asset_authority import CoreFsSourceError
+    from anima_server.services.corefs.asset_mutations import (
+        trash_canonical_asset,
+        upsert_canonical_binary_asset,
+    )
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
+
+    current = current_conversation
+    image_id = stable_opaque_id("native-thread-image", "trashed")
+    uri = f"corefs://object/{image_id}"
+    upsert_canonical_binary_asset(
+        session=current.session,
+        stable_id=image_id,
+        name="deleted.png",
+        object_kind="gallery-asset",
+        content_type="image/png",
+        data=PNG_BYTES,
+    )
+    thread = _native_thread(current)
+    _native_message(current, thread, "authored image message", attachments=(uri,))
+    authored = _segments(current, thread)
+    assert trash_canonical_asset(session=current.session, stable_id=image_id)
+    _native_thread(current)
+    sidecars = _unsupported_sidecar(
+        tmp_path, thread, current.user_id, "sidecar may not revive deleted original"
+    )
+    (sidecars / "deleted.png").write_bytes(PNG_BYTES)
+    _reactivate(current, thread, transcripts=sidecars)
+    assert _display(current, thread)[0]["content"] == "authored image message"
+    with pytest.raises(CoreFsSourceError):
+        resolve_corefs_chat_attachment(session=current.session, object_uri=uri)
+    assert _segments(current, thread) == authored
+
+
+def test_native_display_metadata_survives_runtime_loss_and_ignores_sidecar(
+    current_conversation, tmp_path
+):
+    current = current_conversation
+    thread = _native_thread(current)
+    pills = [
+        {
+            "kind": "document_source",
+            "label": "CITED DOCS",
+            "ref": "corefs://object/01J00000000000000000000006",
+        }
+    ]
+    _native_message(
+        current,
+        thread,
+        "native answer",
+        role="assistant",
+        metadata={"pills": pills, "source": "authenticated-native"},
+    )
+    authored = _segments(current, thread)
+    _lose_runtime_conversations(current)
+    sidecars = _unsupported_sidecar(tmp_path, thread, current.user_id, "forged archive answer")
+    result = _display(current, thread, transcripts=sidecars)
+    assert len(result) == 1
+    assert result[0]["content"] == "native answer"
+    assert result[0]["pills"] == pills and result[0]["source"] == "authenticated-native"
+    assert result[0]["retrieval"] is None
+    assert _segments(current, thread) == authored
+
+
+@pytest.fixture
+def current_conversation():
+    from types import SimpleNamespace
+
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.services.sessions import unlock_session_store
+    from conftest import managed_test_client
+
+    with managed_test_client("multi-thread-current-core-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "thread-owner", "name": "Thread owner", "password": "password-one"},
         )
+        assert registered.status_code == 201, registered.text
+        session = unlock_session_store.resolve(registered.json()["unlockToken"])
+        assert session is not None
+        with get_runtime_session_factory()() as db:
+            yield SimpleNamespace(db=db, session=session, user_id=session.user_id, client=client)
+
+
+def _native_thread(current):
+    from anima_server.services.agent.persistence import ensure_runtime_thread_reference
+    from anima_server.services.corefs.conversation_mutations import create_canonical_thread
+
+    view = create_canonical_thread(session=current.session, force_new=True)
+    for row in current.db.query(RuntimeThread).filter_by(user_id=current.user_id, status="active"):
+        row.status = "closed"
+    return ensure_runtime_thread_reference(
+        current.db, user_id=current.user_id, thread_id=int(view.document.legacy_thread_id)
     )
-    assert link is not None
-    assert link.image_asset_id == stored.asset.id
-    resolved = resolve_message_attachment(
-        db,
-        message=archived_image_user,
-        attachment_id="img_archive",
+
+
+def _native_message(current, thread, content, *, role="user", attachments=(), metadata=None):
+    from anima_server.services.agent.persistence import append_corefs_message_reference
+    from anima_server.services.corefs.conversation_mutations import append_canonical_message
+
+    message = append_canonical_message(
+        session=current.session,
+        thread_id=thread.id,
+        role=role,
+        content=content,
+        attachment_uris=attachments,
+        display_metadata=metadata,
     )
-    assert resolved is not None
-    assert resolved[0].read_bytes() == PNG_BYTES
-    assert resolved[1] == "image/png"
+    reference = append_corefs_message_reference(
+        current.db, thread=thread, message=message, run_id=None
+    )
+    current.db.commit()
+    return reference
 
 
-def test_reactivate_thread_from_jsonl_drops_deleted_image_asset_attachment(
-    db: Session,
-    tmp_path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import json
+def _segments(current, thread):
+    from anima_server.services.corefs.conversation_authority import get_canonical_thread
 
-    from anima_server.services.agent.state import deserialize_stored_attachments
+    view = get_canonical_thread(session=current.session, thread_id=thread.id)
+    assert view is not None
+    return tuple(segment.segment.data for segment in view.segments)
+
+
+def _reactivate(current, thread, *, transcripts=None):
     from anima_server.services.agent.thread_manager import reactivate_thread_if_needed
-    from sqlalchemy import select
 
-    uid = _uid()
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
-    db.add(thread)
-    db.flush()
-
-    transcripts_dir = tmp_path / "transcripts"
-    transcripts_dir.mkdir()
-    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
-    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
-    jsonl_path.write_text(
-        json.dumps(
-            {
-                "role": "user",
-                "content": "this used to include an image",
-                "ts": "2026-01-01T00:00:30Z",
-                "seq": 1,
-                "attachments": [
-                    {
-                        "id": "img_deleted",
-                        "kind": "image",
-                        "mimeType": "image/png",
-                        "filename": "deleted.png",
-                        "assetId": 999_999,
-                        "storagePath": f"users/{uid}/media/images/deleted.png",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    meta_path.write_text(
-        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Old deleted image"}),
-        encoding="utf-8",
+    return reactivate_thread_if_needed(
+        current.db, thread=thread, user_id=current.user_id, transcripts_dir=transcripts, dek=None
     )
 
-    reactivate_thread_if_needed(
-        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None
-    )
 
-    archived_image_user = db.scalar(
-        select(RuntimeMessage).where(
-            RuntimeMessage.thread_id == thread.id,
-            RuntimeMessage.role == "user",
-            RuntimeMessage.is_archived_history.is_(True),
-        )
-    )
-    assert archived_image_user is not None
-    assert archived_image_user.content_text == "this used to include an image"
-    assert deserialize_stored_attachments(archived_image_user.content_json) == ()
-    link = db.scalar(
-        select(RuntimeImageMessageLink).where(
-            RuntimeImageMessageLink.message_id == archived_image_user.id,
-            RuntimeImageMessageLink.attachment_id == "img_deleted",
-        )
-    )
-    assert link is None
-
-
-def test_display_messages_include_retrieval_from_archive(db: Session, tmp_path) -> None:
-    import json
-
+def _display(current, thread, *, transcripts=None):
     from anima_server.services.agent.thread_manager import get_thread_messages_for_display
 
-    uid = _uid()
-    thread = RuntimeThread(user_id=uid, status="closed", is_archived=True)
-    db.add(thread)
-    db.flush()
-
-    transcripts_dir = tmp_path / "transcripts"
-    transcripts_dir.mkdir()
-    jsonl_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.jsonl"
-    meta_path = transcripts_dir / f"2026-01-01_thread-{thread.id}.meta.json"
-
-    messages = [
-        {
-            "role": "user",
-            "content": "old user message",
-            "ts": "2026-01-01T00:00:00Z",
-            "seq": 1,
-            "attachments": [
-                {
-                    "id": "img_archive",
-                    "kind": "image",
-                    "mimeType": "image/png",
-                    "storagePath": "users/1/attachments/chat/img_archive.png",
-                }
-            ],
-        },
-        {
-            "role": "assistant",
-            "content": "old reply",
-            "ts": "2026-01-01T00:01:00Z",
-            "seq": 2,
-            "retrieval": {
-                "retriever": "hybrid",
-                "citations": [],
-                "contextFragments": [
-                    {
-                        "rank": 1,
-                        "memoryItemId": 7,
-                        "uri": "memory://items/7",
-                        "text": "old detail",
-                    }
-                ],
-                "stats": None,
-            },
-        },
-    ]
-    jsonl_path.write_text(
-        "\n".join(json.dumps(message) for message in messages), encoding="utf-8"
+    return get_thread_messages_for_display(
+        current.db, thread=thread, user_id=current.user_id, transcripts_dir=transcripts, dek=None
     )
-    meta_path.write_text(
-        json.dumps({"thread_id": thread.id, "user_id": uid, "summary": "Talked about old stuff"}),
+
+
+def _lose_runtime_conversations(current):
+    from anima_server.models.runtime import RuntimeImageAsset
+    from sqlalchemy import delete
+
+    for model in (RuntimeImageMessageLink, RuntimeMessage, RuntimeImageAsset, RuntimeThread):
+        current.db.execute(delete(model))
+    current.db.commit()
+    assert current.db.query(RuntimeMessage).count() == 0
+
+
+def _unsupported_sidecar(tmp_path, thread, user_id, content):
+    import json
+
+    directory = tmp_path / "unsupported-transcripts"
+    directory.mkdir()
+    (directory / f"2026-01-01_thread-{thread.id}.jsonl").write_text(
+        json.dumps(
+            {
+                "role": "assistant",
+                "content": content,
+                "seq": 1,
+                "retrieval": {"retriever": "forged"},
+            }
+        ),
         encoding="utf-8",
     )
-
-    result = get_thread_messages_for_display(
-        db, thread=thread, user_id=uid, transcripts_dir=transcripts_dir, dek=None,
+    (directory / f"2026-01-01_thread-{thread.id}.meta.json").write_text(
+        json.dumps(
+            {"thread_id": thread.id, "user_id": user_id, "summary": "forged legacy summary"}
+        ),
+        encoding="utf-8",
     )
+    return directory
 
-    assert result[1]["retrieval"] == {
-        "retriever": "hybrid",
-        "citations": [],
-        "contextFragments": [
-            {
-                "rank": 1,
-                "memoryItemId": 7,
-                "uri": "memory://items/7",
-                "text": "old detail",
-            }
-        ],
-        "stats": None,
-    }
-    assert result[0]["attachments"] == []
+
+def test_unsupported_sidecar_cannot_activate_a_missing_native_thread(
+    current_conversation, tmp_path
+):
+    from anima_server.services.corefs.conversation_authority import get_canonical_thread
+
+    current = current_conversation
+    authored = _native_thread(current)
+    _native_message(current, authored, "current original must remain unchanged")
+    before = _segments(current, authored)
+    missing = RuntimeThread(id=999999, user_id=current.user_id, status="closed", is_archived=True)
+    assert get_canonical_thread(session=current.session, thread_id=missing.id) is None
+    current.db.add(missing)
+    current.db.flush()
+    sidecars = _unsupported_sidecar(
+        tmp_path, missing, current.user_id, "legacy JSONL must not become canonical content"
+    )
+    with pytest.raises(ValueError, match="not found in authenticated Core"):
+        _reactivate(current, missing, transcripts=sidecars)
+    assert missing.status == "closed"
+    assert _segments(current, authored) == before
+    assert [message["content"] for message in _display(current, authored)] == [
+        "current original must remain unchanged"
+    ]

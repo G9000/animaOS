@@ -8,11 +8,7 @@ import tempfile
 from pathlib import Path
 from threading import RLock
 
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
-
 from anima_server.config import settings
-from anima_server.models import MemoryEpisode, SelfModelBlock
 
 _VERSION = 1
 _KINDS = frozenset({"memory_episode", "self_model_block"})
@@ -82,15 +78,22 @@ def _write(path: Path, items: set[tuple[int, str, int]]) -> None:
         prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
     )
     temporary = Path(temporary_name)
+    handle = None
     try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(descriptor, "w", encoding="utf-8")
+        with handle:
+            if hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), 0o600)
+            else:
+                os.chmod(temporary, 0o600)
             json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
     except BaseException:
+        if handle is None:
+            os.close(descriptor)
         temporary.unlink(missing_ok=True)
         raise
     if _load(path) != items:
@@ -99,8 +102,7 @@ def _write(path: Path, items: set[tuple[int, str, int]]) -> None:
 
 def mark_regeneration_work(items: set[tuple[int, str, int]]) -> None:
     if any(
-        user_id < 0 or kind not in _KINDS or record_id < 1
-        for user_id, kind, record_id in items
+        user_id < 0 or kind not in _KINDS or record_id < 1 for user_id, kind, record_id in items
     ):
         raise RegenerationWorkError("Regeneration work entry is invalid.")
     if not items:
@@ -122,46 +124,3 @@ def regeneration_work_ids(*, user_id: int, kind: str) -> frozenset[int]:
             for item_user_id, item_kind, record_id in _load(path)
             if item_user_id == user_id and item_kind == kind
         )
-
-
-def migrate_legacy_regeneration_flags(db: Session, *, user_id: int) -> int:
-    episode_ids = set(
-        db.scalars(
-            select(MemoryEpisode.id).where(
-                MemoryEpisode.user_id == user_id,
-                MemoryEpisode.needs_regeneration.is_(True),
-            )
-        ).all()
-    )
-    block_ids = set(
-        db.scalars(
-            select(SelfModelBlock.id).where(
-                SelfModelBlock.user_id == user_id,
-                SelfModelBlock.needs_regeneration.is_(True),
-            )
-        ).all()
-    )
-    items = {
-        *((user_id, "memory_episode", int(record_id)) for record_id in episode_ids),
-        *((user_id, "self_model_block", int(record_id)) for record_id in block_ids),
-    }
-    if not items:
-        return 0
-    mark_regeneration_work(items)
-    if any(
-        record_id not in regeneration_work_ids(user_id=user_id, kind=kind)
-        for _, kind, record_id in items
-    ):
-        raise RegenerationWorkError("Legacy regeneration work verification failed.")
-    db.execute(
-        update(MemoryEpisode)
-        .where(MemoryEpisode.user_id == user_id, MemoryEpisode.needs_regeneration.is_(True))
-        .values(needs_regeneration=False)
-    )
-    db.execute(
-        update(SelfModelBlock)
-        .where(SelfModelBlock.user_id == user_id, SelfModelBlock.needs_regeneration.is_(True))
-        .values(needs_regeneration=False)
-    )
-    db.commit()
-    return len(items)

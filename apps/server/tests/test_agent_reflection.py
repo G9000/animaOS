@@ -4,10 +4,11 @@ import asyncio
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryEpisode, User
+from anima_server.models import MemoryEpisode, SoulOwner
 from anima_server.services.agent import reflection as reflection_service
 from anima_server.services.agent.reflection import run_reflection
 from conftest_runtime import runtime_db_session
@@ -47,11 +48,7 @@ async def test_run_reflection_generates_episode_when_turns_available() -> None:
     from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 
     with _db_session() as session, runtime_db_session() as runtime_session:
-        user = User(
-            username="reflection-test",
-            password_hash="not-used",
-            display_name="Reflection Test",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
         session.commit()
 
@@ -109,8 +106,7 @@ async def test_run_reflection_generates_episode_when_turns_available() -> None:
         )
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
             assert episodes[0].turn_count == 3
 
@@ -118,11 +114,7 @@ async def test_run_reflection_generates_episode_when_turns_available() -> None:
 @pytest.mark.asyncio
 async def test_run_reflection_does_not_fail_with_no_turns() -> None:
     with _db_session() as session:
-        user = User(
-            username="reflection-empty",
-            password_hash="not-used",
-            display_name="Reflection Empty",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
         session.commit()
 
@@ -141,8 +133,7 @@ async def test_run_reflection_does_not_fail_with_no_turns() -> None:
         )
 
         with test_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 0
 
 

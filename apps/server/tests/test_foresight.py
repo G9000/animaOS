@@ -3,9 +3,10 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
+from uuid import uuid4
 
 from anima_server.db.base import Base
-from anima_server.models import ForesightSignal, SelfModelBlock, User
+from anima_server.models import ForesightSignal, SelfModelBlock, SoulOwner
 from anima_server.services.data_crypto import df
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -37,8 +38,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="foresight-user", display_name="Foresight User", password_hash="x")
+def _make_user(db: Session) -> SoulOwner:
+    user = SoulOwner(core_owner_id=str(uuid4()))
     db.add(user)
     db.flush()
     return user

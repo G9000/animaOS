@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Callable
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.engine import Connection
 
@@ -27,6 +30,128 @@ class SoulDatabaseInventory:
     table_names: tuple[str, ...]
     table_hashes: tuple[tuple[str, str], ...]
     combined_hash: str
+    table_counts: tuple[tuple[str, int], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class SupportedSoulRecoveryCopy:
+    archive_id: str
+    source_path: Path
+    snapshot_path: Path
+    inventory: SoulDatabaseInventory
+
+
+_recovery_copy: ContextVar[SupportedSoulRecoveryCopy | None] = ContextVar(
+    "supported_soul_recovery_copy", default=None
+)
+SUPPORTED_SOUL_SOURCE_REVISION = "20260812_0001"
+
+
+def current_supported_recovery_copy() -> SupportedSoulRecoveryCopy | None:
+    return _recovery_copy.get()
+
+
+def _vacuum_database(connection: Connection) -> None:
+    connection.exec_driver_sql("VACUUM")
+    connection.commit()
+
+
+def finish_supported_schema_vacuum(engine) -> None:
+    """Vacuum retired pages only after verified preservation; retry on reopen."""
+    with engine.connect() as connection:
+        if "soul_schema_archives" not in connection.dialect.get_table_names(connection):
+            return
+        pending = (
+            connection.exec_driver_sql(
+                "SELECT id,source_revision,source_inventory FROM soul_schema_archives WHERE vacuum_completed = 0"
+            )
+            .mappings()
+            .all()
+        )
+        if not pending:
+            return
+        import json
+
+        source_path = Path(engine.url.database).resolve()
+        if source_path != canonical_soul_database_path():
+            raise SoulSnapshotError("Retirement vacuum requires the authenticated canonical Soul")
+        directory = source_path.parent.parent.with_name(
+            f"{source_path.parent.parent.name}.schema-recovery"
+        )
+        for record in pending:
+            original = directory / f"{record['id']}.db"
+            if original.is_symlink() or not original.is_file():
+                raise SoulSnapshotError("Retirement vacuum recovery original is unavailable")
+            with original.open("rb") as original_file:
+                if original_file.read(16) == b"SQLite format 3\x00":
+                    raise SoulSnapshotError("Retirement vacuum recovery original is not encrypted")
+            inventory = _checkpoint_and_inventory(
+                _database_url(original), supported_source_revision=str(record["source_revision"])
+            )
+            expected = json.loads(record["source_inventory"])
+            if (
+                inventory.combined_hash != expected["combinedHash"]
+                or dict(inventory.table_hashes) != expected["tableHashes"]
+                or dict(inventory.table_counts) != expected["tableCounts"]
+            ):
+                raise SoulSnapshotError(
+                    "Retirement vacuum recovery original failed independent verification"
+                )
+        before = _database_inventory(connection)
+        connection.commit()
+        try:
+            _vacuum_database(connection)
+        except Exception as exc:
+            raise SoulSnapshotError(
+                "Supported Soul retirement vacuum is incomplete; verified original preserved"
+            ) from exc
+        if _database_inventory(connection) != before:
+            raise SoulSnapshotError("Retirement vacuum changed retained table counts or hashes")
+        connection.exec_driver_sql(
+            "UPDATE soul_schema_archives SET vacuum_completed = 1 WHERE vacuum_completed = 0"
+        )
+        connection.commit()
+
+
+@contextmanager
+def verified_supported_schema_recovery_copy(*, user_id: int):
+    """Pin a verified encrypted original before retiring a supported old head."""
+    source = canonical_soul_database_path()
+    engine = db_session.get_engine(_database_url(source))
+    with engine.connect() as connection:
+        names = set(connection.dialect.get_table_names(connection))
+        if "alembic_version" not in names:
+            raise SoulSnapshotError("Unsupported untracked Soul schema")
+        revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one()
+        if revision != SUPPORTED_SOUL_SOURCE_REVISION:
+            yield None
+            return
+        owners = connection.exec_driver_sql("SELECT id FROM users").fetchall()
+        if owners != [(user_id,)]:
+            raise SoulSnapshotError("Supported Soul owner is ambiguous")
+    from anima_server.services.sessions import get_sqlcipher_key
+
+    with source.open("rb") as source_file:
+        plaintext_header = source_file.read(16) == b"SQLite format 3\x00"
+    if get_sqlcipher_key() is None or plaintext_header:
+        raise SoulSnapshotError("Supported Soul retirement requires an encrypted recovery copy")
+    directory = source.parent.parent.with_name(f"{source.parent.parent.name}.schema-recovery")
+    directory.mkdir(parents=True, exist_ok=True)
+    archive_id = uuid4().hex
+    target = directory / f"{archive_id}.db"
+    inventory = create_verified_soul_snapshot(
+        source,
+        target,
+        supported_source_revision=SUPPORTED_SOUL_SOURCE_REVISION,
+    )
+    receipt = SupportedSoulRecoveryCopy(archive_id, source, target, inventory)
+    token = _recovery_copy.set(receipt)
+    try:
+        yield receipt
+    finally:
+        _recovery_copy.reset(token)
 
 
 BoundaryHook = Callable[[str], None]
@@ -41,6 +166,7 @@ def create_verified_soul_snapshot(
     snapshot_path: Path,
     *,
     boundary_hook: BoundaryHook | None = None,
+    supported_source_revision: str | None = None,
 ) -> SoulDatabaseInventory:
     """Create and independently verify one encrypted point-in-time Soul snapshot."""
     source_candidate = source_path.expanduser()
@@ -82,6 +208,10 @@ def create_verified_soul_snapshot(
             source_driver.execute("BEGIN")
             try:
                 source_driver.execute("SELECT count(*) FROM sqlite_schema").fetchone()
+                source_inventory = _database_inventory(
+                    source_connection,
+                    supported_source_revision=supported_source_revision,
+                )
                 _boundary(boundary_hook, "soul_snapshot:after_read_pin")
                 with target_engine.connect() as target_connection:
                     target_driver = _driver_connection(target_connection)
@@ -107,7 +237,12 @@ def create_verified_soul_snapshot(
         db_session.dispose_database(target_url)
 
     try:
-        inventory = _checkpoint_and_inventory(target_url)
+        inventory = _checkpoint_and_inventory(
+            target_url,
+            supported_source_revision=supported_source_revision,
+        )
+        if inventory != source_inventory:
+            raise SoulSnapshotError("Soul snapshot changed pinned source counts or hashes")
         if not target.is_file() or target.is_symlink():
             raise SoulSnapshotError("Soul database snapshot was not published")
         if os.name != "nt":
@@ -122,14 +257,18 @@ def create_verified_soul_snapshot(
         raise
 
 
-def _checkpoint_and_inventory(database_url: str) -> SoulDatabaseInventory:
+def _checkpoint_and_inventory(
+    database_url: str, *, supported_source_revision: str | None = None
+) -> SoulDatabaseInventory:
     engine = db_session.get_engine(database_url)
     try:
         with engine.connect() as connection:
             checkpoint = connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             if checkpoint is None or int(checkpoint[0]) != 0:
                 raise SoulSnapshotError("Soul WAL checkpoint is busy or incomplete")
-            return _database_inventory(connection)
+            return _database_inventory(
+                connection, supported_source_revision=supported_source_revision
+            )
     finally:
         db_session.dispose_database(database_url)
 
@@ -148,7 +287,9 @@ def _remove_sqlite_snapshot(path: Path) -> None:
         candidate.unlink(missing_ok=True)
 
 
-def _database_inventory(connection: Connection) -> SoulDatabaseInventory:
+def _database_inventory(
+    connection: Connection, *, supported_source_revision: str | None = None
+) -> SoulDatabaseInventory:
     integrity = connection.exec_driver_sql("PRAGMA integrity_check").fetchall()
     if integrity != [("ok",)]:
         raise SoulSnapshotError("Soul database page integrity failed")
@@ -166,7 +307,19 @@ def _database_inventory(connection: Connection) -> SoulDatabaseInventory:
             "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
         )
     )
-    if not names or "alembic_version" not in names or "users" not in names:
+    if not names or "alembic_version" not in names:
+        raise SoulSnapshotError("Soul database schema is incomplete")
+    if supported_source_revision is not None:
+        revision = connection.exec_driver_sql(
+            "SELECT version_num FROM alembic_version"
+        ).scalar_one()
+        if (
+            supported_source_revision != SUPPORTED_SOUL_SOURCE_REVISION
+            or revision != supported_source_revision
+            or "users" not in names
+        ):
+            raise SoulSnapshotError("Unsupported Soul snapshot source revision")
+    elif "soul_owners" not in names:
         raise SoulSnapshotError("Soul database schema is incomplete")
     table_hashes = tuple((name, _hash_table(connection, name)) for name in names)
     combined = hashlib.sha256()
@@ -177,6 +330,17 @@ def _database_inventory(connection: Connection) -> SoulDatabaseInventory:
         table_names=names,
         table_hashes=table_hashes,
         combined_hash=combined.hexdigest(),
+        table_counts=tuple(
+            (
+                name,
+                int(
+                    connection.exec_driver_sql(
+                        f"SELECT count(*) FROM {_quote_identifier(name)}"
+                    ).scalar_one()
+                ),
+            )
+            for name in names
+        ),
     )
 
 

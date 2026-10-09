@@ -4,133 +4,14 @@ import hashlib
 import re
 from pathlib import Path
 
-from sqlalchemy.orm import Session
-
-from anima_server.models.runtime import RuntimeSource, RuntimeSourceArtifact, RuntimeSourceSpan
-from anima_server.services.ingestion.artifacts import replace_source_artifacts_and_spans
 from anima_server.services.ingestion.models import (
-    SourceArtifactInput,
-    SourceIdentity,
     SourceSpanInput,
 )
-from anima_server.services.ingestion.retrieval import EmbeddingFn
-from anima_server.services.ingestion.sources import register_source
 from anima_server.services.ingestion.structured import (
     StructuredDocument,
-    parse_markdown_structure,
 )
 
 STRUCTURED_MARKDOWN_ARTIFACT_KIND = "structured_markdown"
-
-
-def ingest_text_content(
-    db: Session,
-    *,
-    user_id: int,
-    content: str,
-    filename: str | None = None,
-    title: str | None = None,
-    embedding_fn: EmbeddingFn | None = None,
-    compile_knowledge: bool = True,
-) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
-    return _ingest_content(
-        db,
-        user_id=user_id,
-        kind="text",
-        artifact_kind="plain_text",
-        content=content,
-        filename=filename,
-        title=title,
-        embedding_fn=embedding_fn,
-        compile_knowledge=compile_knowledge,
-    )
-
-
-def ingest_markdown_content(
-    db: Session,
-    *,
-    user_id: int,
-    content: str,
-    filename: str | None = None,
-    title: str | None = None,
-    embedding_fn: EmbeddingFn | None = None,
-    compile_knowledge: bool = True,
-) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
-    return _ingest_content(
-        db,
-        user_id=user_id,
-        kind="markdown",
-        artifact_kind="markdown",
-        content=content,
-        filename=filename,
-        title=title,
-        embedding_fn=embedding_fn,
-        compile_knowledge=compile_knowledge,
-    )
-
-
-def _ingest_content(
-    db: Session,
-    *,
-    user_id: int,
-    kind: str,
-    artifact_kind: str,
-    content: str,
-    filename: str | None,
-    title: str | None,
-    embedding_fn: EmbeddingFn | None,
-    compile_knowledge: bool,
-) -> tuple[RuntimeSource, list[RuntimeSourceArtifact], list[RuntimeSourceSpan]]:
-    normalized = content.strip()
-    if not normalized:
-        raise ValueError("content must not be empty")
-
-    safe_name = _sanitize_filename(filename, default=f"{kind}.txt")
-    source = register_source(
-        db,
-        SourceIdentity(
-            user_id=user_id,
-            kind=kind,
-            source_uri=f"{kind}://{safe_name}",
-            content_hash=_content_hash(normalized),
-            title=title or safe_name,
-            media_type="text/markdown" if kind == "markdown" else "text/plain",
-            metadata_json={"filename": safe_name},
-        ),
-    )
-    artifacts = [
-        SourceArtifactInput(
-            artifact_kind=artifact_kind,
-            content_text=normalized,
-            content_hash=_content_hash(normalized),
-            metadata_json={"filename": safe_name},
-        )
-    ]
-    if kind == "markdown":
-        document = parse_markdown_structure(normalized)
-        canonical = document.to_markdown()
-        artifacts.append(
-            SourceArtifactInput(
-                artifact_kind=STRUCTURED_MARKDOWN_ARTIFACT_KIND,
-                content_text=canonical,
-                content_hash=_content_hash(canonical),
-                metadata_json={"filename": safe_name, "outline": document.outline()},
-            )
-        )
-        spans = _structured_markdown_spans(artifact_kind, document)
-    else:
-        spans = _paragraph_spans(artifact_kind, normalized)
-    return (
-        source,
-        *replace_source_artifacts_and_spans(
-            db,
-            source=source,
-            artifacts=artifacts,
-            spans=spans,
-            embedding_fn=embedding_fn,
-            compile_knowledge=compile_knowledge,
-        ),
-    )
 
 
 def _structured_markdown_spans(

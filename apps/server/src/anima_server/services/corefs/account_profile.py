@@ -12,17 +12,17 @@ import anima_core
 from anima_server.config import settings
 from anima_server.services.core import get_core_id, get_owner_id
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.catalog_reader import (
+    CatalogReadError,
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+    stable_opaque_id,
+)
 from anima_server.services.corefs.content_authority import (
     CoreFsAuthorityUnavailable,
     authenticated_content_authority,
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
-)
-from anima_server.services.corefs.diary_migration import (
-    DiaryMigrationError,
-    migration_opaque_id,
-    read_prepared_writing_body,
-    read_prepared_writing_snapshot,
 )
 from anima_server.services.corefs.formats import (
     ACCOUNT_PROFILE_CONTENT_TYPE,
@@ -67,11 +67,11 @@ def account_profile_corefs_authority_active(session: object) -> bool:
     return _account_marker_active(session) or core_content_authority_active()
 
 
-def authoritative_setup_complete(*, session: Any, legacy_value: bool) -> bool:
-    # Reads a boolean hint only: an FS-locked session keeps the legacy value
-    # rather than failing authentication flows closed.
-    if not _account_marker_active(session):
-        return legacy_value
+def authoritative_setup_complete(*, session: Any, soul_value: bool) -> bool:
+    # Agent setup is retained cognition. A valid Soul-only unlock can report
+    # this flag while private account profile fields remain unavailable.
+    if session.corefs_keys is None:
+        return soul_value
     profile = read_account_profile_for_session(session)
     if profile is None:
         raise AccountProfileAuthorityError("Canonical account profile is unavailable.")
@@ -79,39 +79,20 @@ def authoritative_setup_complete(*, session: Any, legacy_value: bool) -> bool:
 
 
 def read_account_profile_for_session(session: Any) -> AccountProfileDocument | None:
-    """Read the single authenticated account profile after CoreFS unlock.
-
-    A missing validation head/profile is allowed only during the pre-PCF-008
-    legacy-authoritative upgrade window. Any present conflicting profile fails
-    closed instead of falling back to a plaintext locator.
-    """
+    """Read private account fields exclusively from authenticated native authority."""
     if session.corefs_session is None or session.corefs_keys is None:
         return None
-    require_canonical = account_profile_corefs_authority_active(session)
-    if require_canonical:
-        try:
-            marker = authenticated_content_authority(session, family="account")
-        except RuntimeError as exc:
-            raise AccountProfileAuthorityError(
-                "CoreFS account authority could not be refreshed."
-            ) from exc
+    try:
+        marker = authenticated_content_authority(session, family="account")
         if marker is None:
             raise AccountProfileAuthorityError("CoreFS account authority is not active.")
-    if not require_canonical and not (settings.data_dir / "fs" / "VALIDATION_HEAD").is_file():
-        return None
-
-    try:
         record = _read_account_profile_record(session=session)
-    except (DiaryMigrationError, ValueError) as exc:
-        if require_canonical:
-            raise AccountProfileAuthorityError(
-                "Canonical account profile failed authentication."
-            ) from exc
-        raise
+    except (CatalogReadError, ValueError, RuntimeError) as exc:
+        raise AccountProfileAuthorityError(
+            "Canonical account profile failed authentication."
+        ) from exc
     if record is None:
-        if require_canonical:
-            raise AccountProfileAuthorityError("Canonical account profile is unavailable.")
-        return None
+        raise AccountProfileAuthorityError("Canonical account profile is unavailable.")
     return record.document
 
 
@@ -121,7 +102,7 @@ def _read_account_profile_record(*, session: Any) -> CanonicalAccountProfileReco
     if not profiles:
         return None
     if len(profiles) != 1:
-        raise DiaryMigrationError("Core contains multiple account-profile objects.")
+        raise CatalogReadError("Core contains multiple account-profile objects.")
 
     item = profiles[0]
     profile = decode_account_profile_document(
@@ -129,12 +110,12 @@ def _read_account_profile_record(*, session: Any) -> CanonicalAccountProfileReco
     )
     owner_id = get_owner_id()
     if not owner_id:
-        raise DiaryMigrationError("Core account profile has no opaque owner binding.")
-    expected_id = migration_opaque_id("account-profile", owner_id)
+        raise CatalogReadError("Core account profile has no opaque owner binding.")
+    expected_id = stable_opaque_id("account-profile", owner_id)
     if profile.owner_id != owner_id or profile.stable_id != expected_id:
-        raise DiaryMigrationError("Core account profile owner binding is invalid.")
+        raise CatalogReadError("Core account profile owner binding is invalid.")
     if profile.legacy_user_id != int(session.user_id):
-        raise DiaryMigrationError("Core account profile local owner binding is invalid.")
+        raise CatalogReadError("Core account profile local owner binding is invalid.")
     return CanonicalAccountProfileRecord(document=profile, revision=item.revision)
 
 
@@ -158,7 +139,7 @@ def update_canonical_account_profile(
             raise AccountProfileAuthorityError("CoreFS account authority is not active.")
         try:
             record = _read_account_profile_record(session=session)
-        except (DiaryMigrationError, ValueError) as exc:
+        except (CatalogReadError, ValueError) as exc:
             raise AccountProfileAuthorityError(
                 "Canonical account profile failed authentication."
             ) from exc
@@ -260,9 +241,22 @@ def serialize_account_profile(profile: AccountProfileDocument) -> dict[str, obje
         "gender": profile.gender,
         "age": profile.age,
         "birthday": profile.birthday,
+        "ownerId": profile.owner_id,
+        "profileAvailable": True,
+        "filesystemAvailable": True,
     }
     if profile.created_at is not None:
         payload["createdAt"] = profile.created_at
     if profile.updated_at is not None:
         payload["updatedAt"] = profile.updated_at
     return payload
+
+
+def read_active_account_profile(user_id: int) -> AccountProfileDocument | None:
+    """Hydrate private profile fields only from an authenticated active Core."""
+    from anima_server.services.sessions import unlock_session_store
+
+    for session in reversed(unlock_session_store.get_active_sessions(user_id)):
+        if session.corefs_keys is not None:
+            return read_account_profile_for_session(session)
+    return None

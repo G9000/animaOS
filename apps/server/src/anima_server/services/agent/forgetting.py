@@ -81,10 +81,10 @@ class ForgetResult:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeProfileForgetContext:
-    """Runtime-message fallback context for profile cleanup."""
+class SourceProfileForgetContext:
+    """Durable canonical-message identity for derived profile cleanup."""
 
-    message_ids: tuple[int, ...]
+    message_uris: tuple[str, ...]
     memory_category: str
     content_text: str
 
@@ -280,9 +280,7 @@ def redact_derived_references(
         if episode is None:
             continue
         if strategy == "flag_for_regeneration":
-            regeneration_items.add(
-                (int(episode.user_id), "memory_episode", int(episode.id))
-            )
+            regeneration_items.add((int(episode.user_id), "memory_episode", int(episode.id)))
         # immediate_redact not needed for episodes (flag is sufficient)
         count += 1
 
@@ -291,9 +289,7 @@ def redact_derived_references(
         if block is None:
             continue
         if strategy == "flag_for_regeneration":
-            regeneration_items.add(
-                (int(block.user_id), "self_model_block", int(block.id))
-            )
+            regeneration_items.add((int(block.user_id), "self_model_block", int(block.id)))
         elif strategy == "immediate_redact":
             from anima_server.services.agent.soul_blocks import full_replace_soul_block
 
@@ -399,7 +395,7 @@ def _scrub_latent_traces_for_forget(
     db: Session,
     *,
     user_id: int,
-    source_message_ids: Iterable[int],
+    source_message_uris: Iterable[str],
 ) -> set[str]:
     """Scrub latent-trace evidence_refs pointing at a forgotten memory's
     sources (PRD IL4 "right-to-forget integration" — binding, P1 review
@@ -414,7 +410,7 @@ def _scrub_latent_traces_for_forget(
     return scrub_latent_traces_for_forgotten_sources(
         db,
         user_id=user_id,
-        source_message_ids=source_message_ids,
+        source_message_uris=source_message_uris,
     )
 
 
@@ -440,9 +436,7 @@ def _scrub_dream_journal_for_forget(
     if not forgotten_memory_item_ids and not forgotten_topic_keys:
         return 0
     deleted = 0
-    for row in db.scalars(
-        select(DreamJournal).where(DreamJournal.user_id == user_id)
-    ).all():
+    for row in db.scalars(select(DreamJournal).where(DreamJournal.user_id == user_id)).all():
         refs = row.source_refs if isinstance(row.source_refs, dict) else {}
         ids = refs.get("memory_item_ids")
         keys = refs.get("latent_topic_keys")
@@ -475,9 +469,7 @@ def _scrub_dreams_matching_topic_tokens(
     if not topic_tokens:
         return 0
     deleted = 0
-    for row in db.scalars(
-        select(DreamJournal).where(DreamJournal.user_id == user_id)
-    ).all():
+    for row in db.scalars(select(DreamJournal).where(DreamJournal.user_id == user_id)).all():
         refs = row.source_refs if isinstance(row.source_refs, dict) else {}
         keys = refs.get("latent_topic_keys")
         # Keys are field-encrypted (content-bearing slugs) — decrypt before
@@ -590,13 +582,9 @@ def purge_latent_traces_matching_topic(
         return 0
     # Bounded by the per-user trace cap, so Python-side token filtering is
     # cheap and portable across dialects.
-    all_traces = db.scalars(
-        select(LatentTrace).where(LatentTrace.user_id == user_id)
-    ).all()
+    all_traces = db.scalars(select(LatentTrace).where(LatentTrace.user_id == user_id)).all()
     traces = [
-        trace
-        for trace in all_traces
-        if topic_tokens <= _topic_key_content_tokens(trace.topic_key)
+        trace for trace in all_traces if topic_tokens <= _topic_key_content_tokens(trace.topic_key)
     ]
     # IL7: dreams built on any purged topic hold its key + derived prose in
     # durable, vault-exported state — scrub them by the SAME topic-token
@@ -659,9 +647,7 @@ def purge_tendency_claims_matching_topic(
         ).all()
     )
     matched = [
-        claim
-        for claim in claims
-        if topic_tokens <= _topic_key_content_tokens(claim.slot or "")
+        claim for claim in claims if topic_tokens <= _topic_key_content_tokens(claim.slot or "")
     ]
     if not matched:
         return 0
@@ -857,14 +843,12 @@ def forget_memory(
     evidence_by_item_id: dict[int, list[MemoryItemEvidence]] = {}
     for evidence in memory_evidence:
         evidence_by_item_id.setdefault(evidence.memory_item_id, []).append(evidence)
-    source_message_ids = sorted(
-        {
-            message_id
-            for evidence in memory_evidence
-            for message_id in _runtime_message_ids_for_memory_evidence(evidence)
-        }
+    source_message_uris = _canonical_message_uris(
+        uri
+        for evidence in memory_evidence
+        for uri in (evidence.source_message_uri, *(evidence.source_message_uris or []))
     )
-    runtime_contexts = _runtime_profile_forget_contexts(
+    source_contexts = _source_profile_forget_contexts(
         user_id=user_id,
         chain_items=chain_items,
         evidence_by_item_id=evidence_by_item_id,
@@ -872,10 +856,9 @@ def forget_memory(
     _delete_foresight_signals_for_forget(
         db,
         user_id=user_id,
-        source_message_ids=source_message_ids,
+        source_message_uris=source_message_uris,
         forgotten_texts=(
-            df(user_id, item.content, table="memory_items", field="content")
-            for item in chain_items
+            df(user_id, item.content, table="memory_items", field="content") for item in chain_items
         ),
     )
     # Capture the topic_keys of traces scrubbed via source-message overlap —
@@ -884,7 +867,7 @@ def forget_memory(
     forgotten_topic_keys: set[str] = _scrub_latent_traces_for_forget(
         db,
         user_id=user_id,
-        source_message_ids=source_message_ids,
+        source_message_uris=source_message_uris,
     )
     result.latent_traces_scrubbed = len(forgotten_topic_keys)
     # Also delete traces for the forgotten items' own topics: forgetting a
@@ -918,12 +901,12 @@ def forget_memory(
         source_memory_ids=chain_ids,
         source_evidence_ids=memory_evidence_ids,
         source_claim_evidence_ids=claim_evidence_ids,
-        runtime_contexts=runtime_contexts,
+        source_contexts=source_contexts,
     )
     _schedule_profile_candidate_rejection_after_commit(
         db,
         user_id=user_id,
-        runtime_contexts=runtime_contexts,
+        source_contexts=source_contexts,
         runtime_db_factory=runtime_db_factory,
     )
     for claim in all_claims:
@@ -995,11 +978,11 @@ def _delete_foresight_signals_for_forget(
     db: Session,
     *,
     user_id: int,
-    source_message_ids: Iterable[int],
+    source_message_uris: Iterable[str],
     forgotten_texts: Iterable[str],
 ) -> int:
-    forgotten_source_ids = _coerce_message_id_set(source_message_ids)
-    if not forgotten_source_ids:
+    forgotten_sources = set(_canonical_message_uris(source_message_uris))
+    if not forgotten_sources:
         return 0
     forgotten_tokens = _combined_meaningful_tokens(forgotten_texts)
     if not forgotten_tokens:
@@ -1007,13 +990,11 @@ def _delete_foresight_signals_for_forget(
 
     deleted = 0
     signals = list(
-        db.scalars(
-            select(ForesightSignal).where(ForesightSignal.user_id == user_id)
-        ).all()
+        db.scalars(select(ForesightSignal).where(ForesightSignal.user_id == user_id)).all()
     )
     for signal in signals:
-        signal_source_ids = _coerce_message_id_set(signal.source_message_ids_json)
-        if not signal_source_ids.intersection(forgotten_source_ids):
+        signal_sources = set(_canonical_message_uris(signal.source_message_uris or []))
+        if not signal_sources.intersection(forgotten_sources):
             continue
         if not _foresight_signal_matches_forgotten_text(
             user_id=user_id,
@@ -1024,16 +1005,6 @@ def _delete_foresight_signals_for_forget(
         db.delete(signal)
         deleted += 1
     return deleted
-
-
-def _coerce_message_id_set(raw_ids: Iterable[object] | None) -> set[int]:
-    ids: set[int] = set()
-    for raw_id in raw_ids or []:
-        if raw_id is None:
-            continue
-        with suppress(TypeError, ValueError):
-            ids.add(int(raw_id))
-    return ids
 
 
 def _foresight_signal_matches_forgotten_text(
@@ -1081,7 +1052,7 @@ def _delete_profile_fields_for_forget(
     source_memory_ids: list[int],
     source_evidence_ids: list[int],
     source_claim_evidence_ids: list[int],
-    runtime_contexts: list[RuntimeProfileForgetContext],
+    source_contexts: list[SourceProfileForgetContext],
 ) -> int:
     field_criteria = [
         UserProfileField.source_memory_id.in_(source_memory_ids),
@@ -1090,9 +1061,7 @@ def _delete_profile_fields_for_forget(
         UserProfileFieldEvidence.source_memory_id.in_(source_memory_ids),
     ]
     if source_evidence_ids:
-        field_criteria.append(
-            UserProfileField.source_evidence_id.in_(source_evidence_ids)
-        )
+        field_criteria.append(UserProfileField.source_evidence_id.in_(source_evidence_ids))
         evidence_criteria.append(
             UserProfileFieldEvidence.source_evidence_id.in_(source_evidence_ids)
         )
@@ -1114,10 +1083,10 @@ def _delete_profile_fields_for_forget(
         ).all()
     )
     seen_evidence_ids = {evidence.id for evidence in matching_evidence}
-    for evidence in _matching_runtime_profile_evidence(
+    for evidence in _matching_source_profile_evidence(
         db,
         user_id=user_id,
-        runtime_contexts=runtime_contexts,
+        source_contexts=source_contexts,
     ):
         if evidence.id in seen_evidence_ids:
             continue
@@ -1125,9 +1094,7 @@ def _delete_profile_fields_for_forget(
         seen_evidence_ids.add(evidence.id)
     matching_evidence_by_field: dict[int, list[UserProfileFieldEvidence]] = {}
     for evidence in matching_evidence:
-        matching_evidence_by_field.setdefault(evidence.profile_field_id, []).append(
-            evidence
-        )
+        matching_evidence_by_field.setdefault(evidence.profile_field_id, []).append(evidence)
     field_ids = set(matching_evidence_by_field)
     field_ids.update(
         db.scalars(
@@ -1146,24 +1113,19 @@ def _delete_profile_fields_for_forget(
         field = db.get(UserProfileField, field_id)
         if field is None or field.user_id != user_id:
             continue
-        matching_ids = [
-            evidence.id for evidence in matching_evidence_by_field.get(field_id, [])
-        ]
+        matching_ids = [evidence.id for evidence in matching_evidence_by_field.get(field_id, [])]
         surviving_query = select(UserProfileFieldEvidence).where(
             UserProfileFieldEvidence.user_id == user_id,
             UserProfileFieldEvidence.profile_field_id == field.id,
         )
         if matching_ids:
-            surviving_query = surviving_query.where(
-                ~UserProfileFieldEvidence.id.in_(matching_ids)
-            )
+            surviving_query = surviving_query.where(~UserProfileFieldEvidence.id.in_(matching_ids))
         surviving_evidence_rows = list(
             db.scalars(surviving_query.order_by(UserProfileFieldEvidence.id.desc())).all()
         )
         if not surviving_evidence_rows:
             evidence_to_delete = {
-                evidence.id: evidence
-                for evidence in matching_evidence_by_field.get(field_id, [])
+                evidence.id: evidence for evidence in matching_evidence_by_field.get(field_id, [])
             }
             for evidence in db.scalars(
                 select(UserProfileFieldEvidence).where(
@@ -1242,87 +1204,91 @@ def _restore_previous_profile_field_before_delete(
         restored = True
 
 
-def _runtime_profile_forget_contexts(
+def _canonical_message_uris(values: Iterable[object]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                uri
+                for uri in values
+                if isinstance(uri, str)
+                and uri.startswith("corefs://object/")
+                and "#message=" in uri
+                and uri.partition("#message=")[2]
+            }
+        )
+    )
+
+
+def _source_profile_forget_contexts(
     *,
     user_id: int,
     chain_items: list[MemoryItem],
     evidence_by_item_id: dict[int, list[MemoryItemEvidence]],
-) -> list[RuntimeProfileForgetContext]:
-    contexts: list[RuntimeProfileForgetContext] = []
+) -> list[SourceProfileForgetContext]:
+    contexts = []
     for item in chain_items:
-        message_ids = sorted(
-            {
-                message_id
-                for evidence in evidence_by_item_id.get(item.id, [])
-                for message_id in _runtime_message_ids_for_memory_evidence(evidence)
-            }
+        message_uris = _canonical_message_uris(
+            uri
+            for evidence in evidence_by_item_id.get(item.id, [])
+            for uri in (evidence.source_message_uri, *(evidence.source_message_uris or []))
         )
-        if not message_ids:
+        if not message_uris:
+            # Unavailable historical IDs remain evidence, but cannot authorize
+            # a join to a reusable Runtime primary key or another native source.
             continue
-        content_text = df(
-            user_id,
-            item.content,
-            table="memory_items",
-            field="content",
-        ).strip()
-        if not content_text:
-            continue
-        contexts.append(
-            RuntimeProfileForgetContext(
-                message_ids=tuple(message_ids),
-                memory_category=item.category,
-                content_text=content_text,
+        content_text = df(user_id, item.content, table="memory_items", field="content").strip()
+        if content_text:
+            contexts.append(
+                SourceProfileForgetContext(
+                    message_uris=message_uris,
+                    memory_category=item.category,
+                    content_text=content_text,
+                )
             )
-        )
     return contexts
 
 
-def _matching_runtime_profile_evidence(
+def _matching_source_profile_evidence(
     db: Session,
     *,
     user_id: int,
-    runtime_contexts: list[RuntimeProfileForgetContext],
+    source_contexts: list[SourceProfileForgetContext],
 ) -> list[UserProfileFieldEvidence]:
-    contexts_by_message_id: dict[int, list[RuntimeProfileForgetContext]] = {}
-    for context in runtime_contexts:
-        for message_id in context.message_ids:
-            contexts_by_message_id.setdefault(message_id, []).append(context)
-    if not contexts_by_message_id:
+    contexts_by_uri: dict[str, list[SourceProfileForgetContext]] = {}
+    for context in source_contexts:
+        for uri in context.message_uris:
+            contexts_by_uri.setdefault(uri, []).append(context)
+    if not contexts_by_uri:
         return []
-
     candidates = list(
         db.scalars(
             select(UserProfileFieldEvidence).where(
                 UserProfileFieldEvidence.user_id == user_id,
-                UserProfileFieldEvidence.runtime_message_id.in_(
-                    sorted(contexts_by_message_id)
-                ),
+                UserProfileFieldEvidence.source_message_uri.in_(sorted(contexts_by_uri)),
             )
-        ).all()
+        )
     )
-    matched: list[UserProfileFieldEvidence] = []
+    matched = []
     for evidence in candidates:
-        if evidence.runtime_message_id is None:
-            continue
         field = db.get(UserProfileField, evidence.profile_field_id)
         if field is None or field.user_id != user_id:
             continue
-        if _runtime_profile_evidence_matches_context(
+        if _source_profile_evidence_matches_context(
             user_id=user_id,
             field=field,
             evidence=evidence,
-            contexts=contexts_by_message_id.get(evidence.runtime_message_id, []),
+            contexts=contexts_by_uri.get(evidence.source_message_uri, []),
         ):
             matched.append(evidence)
     return matched
 
 
-def _runtime_profile_evidence_matches_context(
+def _source_profile_evidence_matches_context(
     *,
     user_id: int,
     field: UserProfileField,
     evidence: UserProfileFieldEvidence,
-    contexts: list[RuntimeProfileForgetContext],
+    contexts: list[SourceProfileForgetContext],
 ) -> bool:
     profile_texts = [
         df(
@@ -1473,113 +1439,105 @@ def _meaningful_relation_tokens(text: str) -> set[str]:
     return tokens
 
 
-def _runtime_message_ids_for_memory_evidence(evidence: MemoryItemEvidence) -> list[int]:
-    ids: list[int] = []
-    if evidence.runtime_message_id is not None:
-        ids.append(int(evidence.runtime_message_id))
-    for raw_id in evidence.runtime_message_ids_json or []:
-        if raw_id is None:
-            continue
-        ids.append(int(raw_id))
-    return ids
-
-
 def _schedule_profile_candidate_rejection_after_commit(
     db: Session,
     *,
     user_id: int,
-    runtime_contexts: list[RuntimeProfileForgetContext],
+    source_contexts: list[SourceProfileForgetContext],
     runtime_db_factory: Callable[[], Session] | None,
 ) -> None:
     if runtime_db_factory is None:
         return
-    message_ids = tuple(
-        sorted(
-            {
-                message_id
-                for context in runtime_contexts
-                for message_id in context.message_ids
-            }
-        )
+    message_uris = tuple(
+        sorted({uri for context in source_contexts for uri in context.message_uris})
     )
-    if not message_ids:
+    if not message_uris:
         return
 
-    contexts = tuple(runtime_contexts)
+    contexts = tuple(source_contexts)
 
-    def _cleanup(_session: Session) -> None:
-        with suppress(Exception):
-            event.remove(db, "after_rollback", _discard)
-
+    def _cleanup() -> None:
         try:
             with runtime_db_factory() as runtime_db:
                 _reject_profile_candidates_for_forget_contexts(
                     runtime_db,
                     user_id=user_id,
-                    runtime_contexts=list(contexts),
+                    source_contexts=list(contexts),
                 )
                 runtime_db.commit()
         except Exception:
             logger.debug(
-                "Profile candidate rejection failed for messages %s",
-                message_ids,
+                "Profile candidate rejection failed for canonical messages %s",
+                message_uris,
                 exc_info=True,
             )
 
-    def _discard(_session: Session) -> None:
-        with suppress(Exception):
-            event.remove(db, "after_commit", _cleanup)
+    from anima_server.services.corefs.sealed_runtime import (
+        _defer_runtime_index_write_until_root_commit,
+    )
 
-    event.listen(db, "after_commit", _cleanup, once=True)
-    event.listen(db, "after_rollback", _discard, once=True)
+    # A SAVEPOINT commit promotes the callback to its parent; only the Soul
+    # root commit can authorize Runtime mutation. Any rollback discards it.
+    _defer_runtime_index_write_until_root_commit(db, _cleanup)
 
 
 def _reject_profile_candidates_for_forget_contexts(
     runtime_db: Session,
     *,
     user_id: int,
-    runtime_contexts: list[RuntimeProfileForgetContext],
+    source_contexts: list[SourceProfileForgetContext],
 ) -> int:
     from anima_server.models.runtime_memory import ProfileUpdateCandidate
-    from anima_server.services.corefs.sealed_runtime import (
-        reseal_profile_update_candidate_error,
+    from anima_server.services.corefs.sealed_runtime import reseal_profile_update_candidate_error
+    from anima_server.services.corefs.soul_provenance import (
+        current_source_proof,
+        preserve_live_source_reference,
+        runtime_source_transaction,
     )
 
-    contexts_by_message_id: dict[int, list[RuntimeProfileForgetContext]] = {}
-    for context in runtime_contexts:
-        for message_id in context.message_ids:
-            contexts_by_message_id.setdefault(message_id, []).append(context)
-    if not contexts_by_message_id:
+    contexts_by_uri: dict[str, list[SourceProfileForgetContext]] = {}
+    for context in source_contexts:
+        for uri in context.message_uris:
+            contexts_by_uri.setdefault(uri, []).append(context)
+    if not contexts_by_uri:
         return 0
-
     candidates = list(
         runtime_db.scalars(
             select(ProfileUpdateCandidate).where(
                 ProfileUpdateCandidate.user_id == user_id,
                 ProfileUpdateCandidate.status.in_(["extracted", "queued", "failed"]),
             )
-        ).all()
+        )
     )
+    proof = current_source_proof(user_id)
     now = datetime.now(UTC)
     rejected = 0
     for candidate in candidates:
+        # Candidates are disposable Runtime state. Resolve their current owned
+        # bindings against authenticated native messages instead of matching
+        # historical IDs, which may refer to another source after rebuild.
+        with runtime_source_transaction(runtime_db):
+            candidate_uris, _ = preserve_live_source_reference(
+                proof=proof,
+                user_id=user_id,
+                field="source_message_ids",
+                family="message",
+                value=_source_message_ids_for_profile_candidate(candidate),
+                many=True,
+            )
         matched_contexts = [
             context
-            for message_id in _source_message_ids_for_profile_candidate(candidate)
-            for context in contexts_by_message_id.get(message_id, [])
+            for uri in _canonical_message_uris(candidate_uris)
+            for context in contexts_by_uri.get(uri, [])
         ]
-        if not matched_contexts:
-            continue
-        if not _runtime_profile_candidate_matches_context(
+        if not matched_contexts or not _source_profile_candidate_matches_context(
             candidate=candidate,
             contexts=matched_contexts,
         ):
             continue
         candidate.status = "rejected"
         reseal_profile_update_candidate_error(
-            runtime_db,
-            candidate,
-            last_error="Source memory forgotten before profile promotion",
+            runtime_db, candidate, last_error="Source memory forgotten before profile promotion"
         )
         candidate.processed_at = now
         rejected += 1
@@ -1597,10 +1555,10 @@ def _source_message_ids_for_profile_candidate(candidate: object) -> list[int]:
     return ids
 
 
-def _runtime_profile_candidate_matches_context(
+def _source_profile_candidate_matches_context(
     *,
     candidate: object,
-    contexts: list[RuntimeProfileForgetContext],
+    contexts: list[SourceProfileForgetContext],
 ) -> bool:
     profile_category = str(getattr(candidate, "category", "") or "")
     profile_texts = [

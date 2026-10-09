@@ -4,6 +4,8 @@ from collections.abc import Callable
 from functools import wraps
 from threading import RLock
 
+from anima_server.services.corefs.maintenance_coordination import CORE_MAINTENANCE_ADMISSION
+
 # A server process owns one embedded Core. This process-wide lock is acquired
 # outside the manifest's publication lock and serializes each credential
 # coordinator from source authentication through active-generation verification.
@@ -15,7 +17,7 @@ def serialized_credential_transaction[**P, R](
 ) -> Callable[P, R]:
     @wraps(function)
     def wrapped(*args: P.args, **kwargs: P.kwargs) -> R:
-        with _CREDENTIAL_TRANSACTION_LOCK:
+        with CORE_MAINTENANCE_ADMISSION, _CREDENTIAL_TRANSACTION_LOCK:
             return function(*args, **kwargs)
 
     return wrapped

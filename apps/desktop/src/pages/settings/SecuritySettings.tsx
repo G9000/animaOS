@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api, setUnlockToken } from "../../lib/api";
 import { useCoreFSReadiness } from "../../context/CoreFSReadinessContext";
 import { glass } from "@anima/standard-templates";
+import CoreMaintenancePanel from "./CoreMaintenancePanel";
 import {
   beginRecoveryPhraseReview,
   completeRecoveryPhraseReview,
@@ -433,6 +434,7 @@ export default function SecuritySettings() {
           </span>
         )}
       </section>
+      <CoreMaintenancePanel onChanged={refreshCoreFS} />
     </div>
   );
 }

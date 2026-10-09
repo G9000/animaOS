@@ -21,18 +21,14 @@ from anima_server.services.agent.inner_life.delivery import (
 from anima_server.services.corefs.logical import CoreFsMutationUnavailable
 from anima_server.services.corefs.preferences import (
     PortablePreferenceError,
-    portable_preference_corefs_authority_active,
     portable_preference_lock,
     read_canonical_presence_values,
     update_canonical_presence_preferences,
 )
-from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 from anima_server.services.presence_config import (
     PresenceConfigValues,
     apply_presence_config_updates,
-    get_presence_config_values,
     presence_consent_lock,
-    update_presence_config,
 )
 
 router = APIRouter(prefix="/api/presence", tags=["presence"])
@@ -43,15 +39,10 @@ logger = logging.getLogger(__name__)
 def get_config(
     user_id: int,
     request: Request,
-    db: Session = Depends(get_db),
 ) -> PresenceConfigResponse:
     session = require_unlocked_user(request, user_id)
     try:
-        values = (
-            read_canonical_presence_values(session=session)
-            if portable_preference_corefs_authority_active(session)
-            else get_presence_config_values(db, user_id)
-        )
+        values = read_canonical_presence_values(session=session)
     except PortablePreferenceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return _serialize(values)
@@ -62,7 +53,6 @@ def put_config(
     user_id: int,
     payload: PresenceConfigUpdateRequest,
     request: Request,
-    db: Session = Depends(get_db),
 ) -> PresenceConfigResponse:
     session = require_unlocked_user(request, user_id)
     # Hold the per-user consent lock through the COMMIT: initiative delivery
@@ -70,40 +60,21 @@ def put_config(
     # effect, so an opt-out can never commit inside a poll's decision window
     # (PR #123 review, P1 — see presence_consent_lock).
     with portable_preference_lock(user_id), presence_consent_lock(user_id):
-        if portable_preference_corefs_authority_active(session):
-            try:
-                current = read_canonical_presence_values(session=session)
-                values = update_canonical_presence_preferences(
-                    session=session,
-                    values=apply_presence_config_updates(
-                        current,
-                        payload.model_dump(exclude_unset=True),
-                    ),
-                )
-            except (CoreFsMutationUnavailable, PortablePreferenceError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail={"code": str(exc)},
-                ) from exc
-            return _serialize(values)
-        values = update_presence_config(
-            db,
-            user_id,
-            payload.model_dump(exclude_unset=True),
-        )
-        db.commit()
         try:
-            prepare_writing_source_catalog(session=session, db=db)
-        except Exception as exc:
-            logger.exception("Encrypted presence preference shadow validation failed")
+            current = read_canonical_presence_values(session=session)
+            values = update_canonical_presence_preferences(
+                session=session,
+                values=apply_presence_config_updates(
+                    current,
+                    payload.model_dump(exclude_unset=True),
+                ),
+            )
+        except (CoreFsMutationUnavailable, PortablePreferenceError, ValueError) as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "corefs_preference_shadow_validation_failed",
-                    "message": "Presence was saved, but its encrypted preference shadow needs retry.",
-                },
+                detail={"code": str(exc)},
             ) from exc
-    return _serialize(values)
+        return _serialize(values)
 
 
 def _serialize(values: PresenceConfigValues) -> PresenceConfigResponse:

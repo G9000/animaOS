@@ -5,11 +5,12 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from anima_server.config import settings
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.models.runtime import RuntimeImageMessageLink, RuntimeMessage, RuntimeThread
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.agent.tool_context import (
@@ -19,14 +20,31 @@ from anima_server.services.agent.tool_context import (
 )
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.indexing import index_image_asset
-from anima_server.services.images.store import register_image_asset
 from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+from test_image_indexing import _mock_authoritative_projections, _runtime_image_projection
 
 pytest_plugins = ("conftest_runtime",)
+
+
+@pytest.fixture(autouse=True)
+def _authoritative_byte_source_boundary(monkeypatch, request):
+    if request.node.name == "test_native_adapters_register_authenticated_original_uris":
+        yield
+        return
+    cleanup = _mock_authoritative_projections(monkeypatch)
+    from anima_server.services.agent import memory_blocks
+
+    monkeypatch.setattr(
+        memory_blocks, "require_active_task_authority_session", lambda user_id: object()
+    )
+    monkeypatch.setattr(memory_blocks, "list_canonical_tasks", lambda *, session: [])
+    yield
+    cleanup()
+
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n"
@@ -89,12 +107,8 @@ def _text_embedding(text: str) -> list[float]:
     return _embedding(0.0, 1.0)
 
 
-def _create_user(db: Session, *, username: str = "image-retrieval") -> User:
-    user = User(
-        username=username,
-        password_hash="not-used",
-        display_name="Image Retrieval",
-    )
+def _create_user(db: Session, *, username: str = "image-retrieval") -> SoulOwner:
+    user = SoulOwner(core_owner_id=str(uuid4()))
     db.add(user)
     db.flush()
     return user
@@ -116,7 +130,7 @@ def _create_indexed_image(
     runtime_db.flush()
 
     data = PNG_BYTES + byte_suffix
-    stored = register_image_asset(
+    stored = _runtime_image_projection(
         runtime_db,
         user_id=user_id,
         data=data,
@@ -188,9 +202,7 @@ def _link_image_to_new_message(
         )
 
     max_sequence_id = runtime_db.scalar(
-        select(func.max(RuntimeMessage.sequence_id)).where(
-            RuntimeMessage.thread_id == thread_id
-        )
+        select(func.max(RuntimeMessage.sequence_id)).where(RuntimeMessage.thread_id == thread_id)
     )
     sequence_id = int(max_sequence_id or 0) + 1
 

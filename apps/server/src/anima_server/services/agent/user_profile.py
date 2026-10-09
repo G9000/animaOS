@@ -395,9 +395,7 @@ def reconcile_profile_from_claims(
             source_claim_evidence_id=source_claim_evidence_id,
             source_memory_id=claim.memory_item_id,
             claim_observed_at=(
-                claim_evidence.created_at
-                if claim_evidence is not None
-                else claim.updated_at
+                claim_evidence.created_at if claim_evidence is not None else claim.updated_at
             ),
         ):
             continue
@@ -536,11 +534,7 @@ def create_profile_update_candidates_from_payload(
         category = update.get("category")
         key = update.get("key")
         value = update.get("value")
-        if not (
-            isinstance(category, str)
-            and isinstance(key, str)
-            and isinstance(value, str)
-        ):
+        if not (isinstance(category, str) and isinstance(key, str) and isinstance(value, str)):
             continue
 
         raw_confidence = update.get("confidence", 0.8)
@@ -550,9 +544,7 @@ def create_profile_update_candidates_from_payload(
             confidence = 0.8
 
         evidence = (
-            update.get("evidence_quote")
-            or update.get("evidence_text")
-            or update.get("evidence")
+            update.get("evidence_quote") or update.get("evidence_text") or update.get("evidence")
         )
         try:
             candidate = create_profile_update_candidate(
@@ -588,18 +580,21 @@ def count_eligible_profile_update_candidates(
     user_id: int,
     max_retry: int = 3,
 ) -> int:
-    return runtime_db.scalar(
-        select(func.count(ProfileUpdateCandidate.id)).where(
-            ProfileUpdateCandidate.user_id == user_id,
-            or_(
-                ProfileUpdateCandidate.status.in_(["extracted", "queued"]),
-                and_(
-                    ProfileUpdateCandidate.status == "failed",
-                    ProfileUpdateCandidate.retry_count < max_retry,
+    return (
+        runtime_db.scalar(
+            select(func.count(ProfileUpdateCandidate.id)).where(
+                ProfileUpdateCandidate.user_id == user_id,
+                or_(
+                    ProfileUpdateCandidate.status.in_(["extracted", "queued"]),
+                    and_(
+                        ProfileUpdateCandidate.status == "failed",
+                        ProfileUpdateCandidate.retry_count < max_retry,
+                    ),
                 ),
-            ),
+            )
         )
-    ) or 0
+        or 0
+    )
 
 
 def get_profile_update_candidates_for_promotion(
@@ -632,20 +627,24 @@ def promote_profile_update_candidate(
     soul_db: Session,
     *,
     candidate: ProfileUpdateCandidate,
+    runtime_db: Session | None = None,
 ) -> UserProfileField:
     source_message_ids = [int(message_id) for message_id in candidate.source_message_ids or []]
-    return upsert_profile_field(
-        soul_db,
-        user_id=candidate.user_id,
-        category=candidate.category,
-        key=candidate.key,
-        value=candidate.value,
-        confidence=candidate.confidence,
-        evidence_text=candidate.evidence_text or candidate.value,
-        source_kind=f"profile_{candidate.source}",
-        runtime_message_id=source_message_ids[-1] if source_message_ids else None,
-        observed_at=candidate.created_at,
-    )
+    from anima_server.services.corefs.soul_provenance import runtime_source_transaction
+
+    with runtime_source_transaction(runtime_db):
+        return upsert_profile_field(
+            soul_db,
+            user_id=candidate.user_id,
+            category=candidate.category,
+            key=candidate.key,
+            value=candidate.value,
+            confidence=candidate.confidence,
+            evidence_text=candidate.evidence_text or candidate.value,
+            source_kind=f"profile_{candidate.source}",
+            runtime_message_id=source_message_ids[-1] if source_message_ids else None,
+            observed_at=candidate.created_at,
+        )
 
 
 def _get_active_profile_field(
@@ -715,8 +714,7 @@ def _add_profile_evidence(
             select(UserProfileFieldEvidence).where(
                 UserProfileFieldEvidence.profile_field_id == field.id,
                 UserProfileFieldEvidence.user_id == user_id,
-                UserProfileFieldEvidence.source_claim_evidence_id
-                == source_claim_evidence_id,
+                UserProfileFieldEvidence.source_claim_evidence_id == source_claim_evidence_id,
             )
         )
         if existing is not None:
@@ -808,8 +806,7 @@ def _profile_claim_already_reconciled(
         existing = db.scalar(
             select(UserProfileFieldEvidence.id).where(
                 UserProfileFieldEvidence.user_id == user_id,
-                UserProfileFieldEvidence.source_claim_evidence_id
-                == source_claim_evidence_id,
+                UserProfileFieldEvidence.source_claim_evidence_id == source_claim_evidence_id,
             )
         )
         return existing is not None

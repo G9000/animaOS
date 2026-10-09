@@ -3,6 +3,7 @@
 #[cfg_attr(not(test), allow(dead_code))]
 mod cache;
 mod converter;
+pub mod maintenance;
 #[allow(dead_code)]
 pub(crate) mod preparation;
 // The lease contract is integrated incrementally by the following implementation tasks.
@@ -3487,6 +3488,10 @@ impl CoreCommitCoordinator {
     {
         deferred_teardown.retain_current_cache_lease_owner(&self.cache);
         self.validate_pinned_layout()?;
+        if self.recover_reanchor_pointer_lineage_locked(keyring)? {
+            self.cache
+                .clear_deferred(deferred_teardown.cache_snapshots());
+        }
         let pointers = self.load_pointer_set(
             #[cfg(test)]
             probe.as_deref_mut(),
@@ -4013,6 +4018,7 @@ impl CoreCommitCoordinator {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
+            self.ensure_maintenance_write_allowed_locked()?;
             self.ensure_preparation_rotation_allowed_locked(keyring)?;
             #[cfg(test)]
             let committed = {
@@ -4437,6 +4443,7 @@ impl CoreCommitCoordinator {
         let mut deferred_teardown = DeferredLeaseTeardown::default();
         let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
         self.validate_pinned_layout()?;
+        self.ensure_maintenance_write_allowed_locked()?;
         if self
             .load_committed_recovering(&commit_lock, keys, &mut deferred_teardown)?
             .is_some()
@@ -4800,6 +4807,7 @@ impl CoreCommitCoordinator {
             let commit_lock = CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
             let lock_started = commit_lock.acquired_at();
             self.validate_pinned_layout()?;
+            self.ensure_maintenance_write_allowed_locked()?;
             #[cfg(test)]
             let authoritative = {
                 let (result, counts) = {
@@ -6431,6 +6439,8 @@ pub enum CommitConflict {
 
 #[derive(Debug, thiserror::Error)]
 pub enum CommitError {
+    #[error("an authenticated CoreFS maintenance operation blocks writes")]
+    MaintenanceActive,
     #[error("CoreFS commit lock is already held")]
     LockBusy,
     #[error("CoreFS object-lease release is in progress")]

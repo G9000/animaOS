@@ -44,7 +44,7 @@ def test_list_tables() -> None:
 
         # Each entry has name and rowCount
         table_names = [t["name"] for t in data]
-        assert "users" in table_names
+        assert "soul_owners" in table_names
         for table in data:
             assert "name" in table
             assert "rowCount" in table
@@ -62,10 +62,10 @@ def test_get_table_rows() -> None:
         headers = {"x-anima-unlock": reg["unlockToken"]}
         _verify_password(client, headers)
 
-        resp = client.get("/api/db/tables/users", headers=headers)
+        resp = client.get("/api/db/tables/soul_owners", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert data["table"] == "users"
+        assert data["table"] == "soul_owners"
         assert "columns" in data
         assert "rows" in data
         assert "total" in data
@@ -89,7 +89,7 @@ def test_get_table_rows_pagination() -> None:
         headers = {"x-anima-unlock": reg["unlockToken"]}
         _verify_password(client, headers)
 
-        resp = client.get("/api/db/tables/users?limit=1&offset=0", headers=headers)
+        resp = client.get("/api/db/tables/soul_owners?limit=1&offset=0", headers=headers)
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["rows"]) <= 1
@@ -109,7 +109,7 @@ def test_run_select_query() -> None:
         resp = client.post(
             "/api/db/query",
             headers=headers,
-            json={"sql": "SELECT COUNT(*) as cnt FROM tasks"},
+            json={"sql": "SELECT COUNT(*) as cnt FROM memory_items"},
         )
         assert resp.status_code == 200
         data = resp.json()
@@ -127,7 +127,7 @@ def test_run_query_rejects_non_select() -> None:
         resp = client.post(
             "/api/db/query",
             headers=headers,
-            json={"sql": "DROP TABLE users"},
+            json={"sql": "DROP TABLE soul_owners"},
         )
         assert resp.status_code == 400
 
@@ -155,7 +155,7 @@ def test_run_query_rejects_semicolons() -> None:
         resp = client.post(
             "/api/db/query",
             headers=headers,
-            json={"sql": "SELECT COUNT(*) as cnt FROM tasks;   \n"},
+            json={"sql": "SELECT COUNT(*) as cnt FROM memory_items;   \n"},
         )
         assert resp.status_code == 400
 
@@ -183,7 +183,7 @@ def test_run_query_rejects_protected_tables() -> None:
         resp = client.post(
             "/api/db/query",
             headers=headers,
-            json={"sql": "SELECT COUNT(*) as cnt FROM users"},
+            json={"sql": "SELECT COUNT(*) as cnt FROM soul_owners"},
         )
         assert resp.status_code == 403
 
@@ -201,7 +201,7 @@ def test_delete_row_requires_conditions() -> None:
 
         resp = client.request(
             "DELETE",
-            "/api/db/tables/tasks/rows",
+            "/api/db/tables/memory_items/rows",
             headers=headers,
             json={"conditions": {}},
         )
@@ -231,7 +231,7 @@ def test_delete_row_rejects_protected_table() -> None:
 
         resp = client.request(
             "DELETE",
-            "/api/db/tables/users/rows",
+            "/api/db/tables/soul_owners/rows",
             headers=headers,
             json={"conditions": {"id": 1}},
         )
@@ -250,7 +250,7 @@ def test_update_row_requires_conditions() -> None:
         _verify_password(client, headers)
 
         resp = client.put(
-            "/api/db/tables/tasks/rows",
+            "/api/db/tables/memory_items/rows",
             headers=headers,
             json={"conditions": {}, "updates": {"name": "New"}},
         )
@@ -264,7 +264,7 @@ def test_update_row_requires_updates() -> None:
         _verify_password(client, headers)
 
         resp = client.put(
-            "/api/db/tables/tasks/rows",
+            "/api/db/tables/memory_items/rows",
             headers=headers,
             json={"conditions": {"id": 1}, "updates": {}},
         )
@@ -292,7 +292,7 @@ def test_update_row_rejects_protected_table() -> None:
         _verify_password(client, headers)
 
         resp = client.put(
-            "/api/db/tables/users/rows",
+            "/api/db/tables/soul_owners/rows",
             headers=headers,
             json={"conditions": {"id": 1}, "updates": {"name": "New"}},
         )
@@ -304,26 +304,26 @@ def test_db_viewer_requires_recent_password_verification() -> None:
         reg = _register_user(client)
         headers = {"x-anima-unlock": reg["unlockToken"]}
 
-        read_response = client.get("/api/db/tables/users", headers=headers)
+        read_response = client.get("/api/db/tables/soul_owners", headers=headers)
         assert read_response.status_code == 403
 
         query_response = client.post(
             "/api/db/query",
             headers=headers,
-            json={"sql": "SELECT COUNT(*) as cnt FROM tasks"},
+            json={"sql": "SELECT COUNT(*) as cnt FROM memory_items"},
         )
         assert query_response.status_code == 403
 
         delete_response = client.request(
             "DELETE",
-            "/api/db/tables/tasks/rows",
+            "/api/db/tables/memory_items/rows",
             headers=headers,
             json={"conditions": {"id": 1}},
         )
         assert delete_response.status_code == 403
 
         update_response = client.put(
-            "/api/db/tables/tasks/rows",
+            "/api/db/tables/memory_items/rows",
             headers=headers,
             json={"conditions": {"id": 1}, "updates": {"title": "Updated"}},
         )
@@ -341,11 +341,11 @@ def test_db_viewer_password_verification_expires_after_five_minutes() -> None:
 
             _verify_password(client, headers)
 
-            allowed_response = client.get("/api/db/tables/users", headers=headers)
+            allowed_response = client.get("/api/db/tables/soul_owners", headers=headers)
             assert allowed_response.status_code == 200
 
             now += 301.0
-            expired_response = client.get("/api/db/tables/users", headers=headers)
+            expired_response = client.get("/api/db/tables/soul_owners", headers=headers)
             assert expired_response.status_code == 403
     finally:
         db_routes.time.time = original_time

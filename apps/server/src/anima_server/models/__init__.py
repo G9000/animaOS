@@ -3,18 +3,8 @@
 from anima_server.db.base import Base
 from anima_server.models.agent_runtime import (
     AgentExperience,
-    AgentMessage,
-    AgentRun,
     AgentSkill,
-    AgentStep,
-    AgentThread,
-    BackgroundTaskRun,
-    CoreFSWritingSourceState,
-    DiaryAttachment,
-    DiaryEntry,
-    DiaryFolder,
     DreamJournal,
-    ExperienceClusterState,
     ForesightSignal,
     ForgetAuditLog,
     InitiativeLog,
@@ -27,7 +17,6 @@ from anima_server.models.agent_runtime import (
     MemoryItem,
     MemoryItemEvidence,
     MemoryItemTag,
-    MemoryVector,
     ReconsolidationLog,
     TendencyContribution,
     UserProfileField,
@@ -38,9 +27,7 @@ from anima_server.models.consciousness import (
     EmotionalSignal,
     SelfModelBlock,
 )
-from anima_server.models.links import DiscordLink, TelegramLink
 from anima_server.models.pending_memory_op import PendingMemoryOp
-from anima_server.models.presence import PresenceConfig
 from anima_server.models.runtime import (
     RuntimeBackgroundTaskRun,
     RuntimeDocument,
@@ -78,33 +65,20 @@ from anima_server.models.soul_consciousness import (
     IdentityBlock,
 )
 from anima_server.models.soul_keyslot import SoulKeyslot
-from anima_server.models.task import Task
-from anima_server.models.user import User
-from anima_server.models.user_key import UserKey
+from anima_server.models.soul_owner import SoulOwner, SoulSchemaArchive
 
 __all__ = [
     "ActiveIntention",
     "AffectStateRow",
     "AgentExperience",
-    "AgentMessage",
     "AgentProfile",
-    "AgentRun",
     "AgentSkill",
-    "AgentStep",
-    "AgentThread",
-    "BackgroundTaskRun",
     "Base",
     "CoreEmotionalPattern",
-    "CoreFSWritingSourceState",
     "CurrentEmotion",
-    "DiaryAttachment",
-    "DiaryEntry",
-    "DiaryFolder",
-    "DiscordLink",
     "DreamJournal",
     "DriveStateRow",
     "EmotionalSignal",
-    "ExperienceClusterState",
     "ForesightSignal",
     "ForgetAuditLog",
     "GrowthLogEntry",
@@ -119,11 +93,9 @@ __all__ = [
     "MemoryItem",
     "MemoryItemEvidence",
     "MemoryItemTag",
-    "MemoryVector",
     "PendingInitiative",
     "PendingMemoryOp",
     "PresenceCatchup",
-    "PresenceConfig",
     "ReconsolidationLog",
     "RuntimeBackgroundTaskRun",
     "RuntimeDocument",
@@ -147,11 +119,9 @@ __all__ = [
     "RuntimeWorkflowRun",
     "SelfModelBlock",
     "SoulKeyslot",
-    "Task",
-    "TelegramLink",
+    "SoulOwner",
+    "SoulSchemaArchive",
     "TendencyContribution",
-    "User",
-    "UserKey",
     "UserProfileField",
     "UserProfileFieldEvidence",
     "WorkingContext",

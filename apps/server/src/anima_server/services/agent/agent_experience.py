@@ -9,9 +9,9 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
 
-from anima_server.models import AgentExperience, AgentSkill, ExperienceClusterState
+from anima_server.models import AgentExperience, AgentSkill
+from anima_server.services.agent.derived_soul_state import get_cluster_state
 from anima_server.services.agent.embeddings import cosine_similarity
 from anima_server.services.data_crypto import df, ef
 
@@ -94,7 +94,9 @@ def store_agent_experience(
     db.add(row)
     db.flush()
     _supersede_lower_quality_duplicate(db, user_id=user_id, experience=row)
-    _append_experience_growth_log(db, user_id=user_id, task_intent=task_intent, quality=row.quality_score)
+    _append_experience_growth_log(
+        db, user_id=user_id, task_intent=task_intent, quality=row.quality_score
+    )
     return row
 
 
@@ -111,15 +113,18 @@ def assign_experience_to_cluster(
         db.flush()
         return None
 
+    if experience.cluster_id is not None:
+        return experience.cluster_id
+
     embedding = _valid_embedding(experience.embedding_json)
     if embedding is None:
-        experience.cluster_id = None
-        db.flush()
         return None
 
-    state_row = _get_or_create_cluster_state(db, user_id=user_id)
-    state = _normalize_state(state_row.state_json)
+    # Rebuild from retained memberships: a process restart cannot lose clusters.
+    state = get_cluster_state(db, user_id=user_id, exclude_id=experience.id)
     timestamp = experience.created_at or datetime.now(UTC)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
     cutoff = timestamp - timedelta(days=max_time_gap_days)
 
     best_id: str | None = None
@@ -158,9 +163,6 @@ def assign_experience_to_cluster(
     if experience.id not in experience_ids:
         experience_ids.append(int(experience.id))
     cluster["experience_ids"] = experience_ids
-    state_row.state_json = state
-    flag_modified(state_row, "state_json")
-    state_row.updated_at = datetime.now(UTC)
     experience.cluster_id = best_id
     db.flush()
     return best_id
@@ -181,7 +183,9 @@ def maybe_distill_skill_for_cluster(
     candidate = (
         distiller(experiences)
         if distiller is not None
-        else _default_skill_candidate(user_id=user_id, cluster_id=cluster_id, experiences=experiences)
+        else _default_skill_candidate(
+            user_id=user_id, cluster_id=cluster_id, experiences=experiences
+        )
     )
     return upsert_agent_skill(db, user_id=user_id, skill=candidate)
 
@@ -332,35 +336,6 @@ def _cluster_experiences(
     )
 
 
-def _get_or_create_cluster_state(
-    db: Session,
-    *,
-    user_id: int,
-) -> ExperienceClusterState:
-    row = db.scalar(
-        select(ExperienceClusterState).where(ExperienceClusterState.user_id == user_id)
-    )
-    if row is not None:
-        return row
-    row = ExperienceClusterState(
-        user_id=user_id,
-        state_json={"next_index": 0, "clusters": {}},
-    )
-    db.add(row)
-    db.flush()
-    return row
-
-
-def _normalize_state(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        return {"next_index": 0, "clusters": {}}
-    clusters = value.get("clusters")
-    if not isinstance(clusters, dict):
-        clusters = {}
-    next_index = int(value.get("next_index", len(clusters)))
-    return {"next_index": next_index, "clusters": clusters}
-
-
 def _new_cluster_id(user_id: int, index: int) -> str:
     return f"cluster_{user_id}_{index:03d}"
 
@@ -373,8 +348,7 @@ def _running_centroid(
     if count <= 0 or len(centroid) != len(embedding):
         return list(embedding)
     return [
-        ((centroid[idx] * count) + embedding[idx]) / (count + 1)
-        for idx in range(len(embedding))
+        ((centroid[idx] * count) + embedding[idx]) / (count + 1) for idx in range(len(embedding))
     ]
 
 
@@ -456,7 +430,9 @@ def _distill_pitfalls(
             if "over-budget" in cleaned or "over budget" in cleaned:
                 pitfalls.append("Avoid over-budget suggestions when the user has named a budget.")
             elif "timeout" in cleaned:
-                pitfalls.append("Narrow or simplify tool calls after a timeout instead of retrying unchanged.")
+                pitfalls.append(
+                    "Narrow or simplify tool calls after a timeout instead of retrying unchanged."
+                )
             elif "failed" in cleaned or "error" in cleaned:
                 pitfalls.append("Record the failure mode and recover with a narrower next step.")
             elif "avoid" in cleaned:

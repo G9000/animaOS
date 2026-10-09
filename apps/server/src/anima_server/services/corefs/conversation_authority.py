@@ -132,10 +132,13 @@ def any_conversation_corefs_authority_active() -> bool:
     # Cheap in-memory scan first; only fall through to the manifest read when
     # no live session already proves canonical authority (matches the sibling
     # predicates and keeps this off the disk on a recurring background tick).
-    return any(
-        conversation_authority_selection(session) is not None
-        for session in all_active_unlock_sessions()
-    ) or core_content_authority_active()
+    return (
+        any(
+            conversation_authority_selection(session) is not None
+            for session in all_active_unlock_sessions()
+        )
+        or core_content_authority_active()
+    )
 
 
 def list_canonical_threads(*, session: Any) -> tuple[CanonicalThreadView, ...]:
@@ -242,7 +245,8 @@ def canonical_messages_for_display(view: CanonicalThreadView) -> list[dict[str, 
             "isArchivedHistory": view.document.status != "active",
             "retrieval": None,
             "attachments": [{"corefsUri": uri} for uri in message.attachment_uris],
-            "pills": [],
+            "pills": (message.display_metadata or {}).get("pills", []),
+            "source": (message.display_metadata or {}).get("source"),
         }
         for message in view.messages
     ]
@@ -470,7 +474,9 @@ def _require_selection(session: object) -> ConversationAuthoritySelection:
     try:
         marker = authenticated_content_authority(session, family="conversations")
     except RuntimeError as exc:
-        raise ConversationAuthorityError("CoreFS conversation authority could not be refreshed") from exc
+        raise ConversationAuthorityError(
+            "CoreFS conversation authority could not be refreshed"
+        ) from exc
     if marker is None:
         raise ConversationAuthorityError("CoreFS conversation authority is not active")
     selection = conversation_authority_selection(session)

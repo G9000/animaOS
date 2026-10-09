@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import LatentTrace, MemoryItem, MemoryItemEvidence, User
+from anima_server.models import LatentTrace, MemoryItem, MemoryItemEvidence, SoulOwner
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.models.runtime_memory import MemoryCandidate
 from anima_server.services.agent import latent_traces
@@ -51,11 +51,24 @@ from anima_server.services.agent.soul_writer import (
     plan_candidate_promotion,
     run_soul_writer,
 )
-from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+# Trusted persisted-Soul provenance fixtures for deterministic cleanup tests.
+# These do not claim a live cryptographic capture; the writer boundary has
+# separate real current-Core coverage.
+_SOURCE_A_URI = (
+    "corefs://object/00000000000000000000000001#message=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)
+_SOURCE_B_URI = (
+    "corefs://object/00000000000000000000000001#message=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+_SOURCE_C_URI = (
+    "corefs://object/00000000000000000000000001#message=cccccccccccccccccccccccccccccccc"
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers (mirrors tests/test_soul_writer.py conventions)
@@ -128,8 +141,8 @@ class FakeCandidate:
         self.salience_json = salience_json
 
 
-def _make_user(db: Session, username: str = "latent-user") -> User:
-    user = User(username=username, password_hash="x", display_name="Latent User")
+def _make_user(db: Session, username: str = "latent-user") -> SoulOwner:
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     db.add(user)
     db.flush()
     return user
@@ -340,8 +353,7 @@ def test_minor_observation_repeat_of_existing_memory_reinforces_not_folds():
         )
         decision = plan_candidate_promotion(soul_db, candidate, user.id)
         assert decision.action == "reinforce", (
-            f"expected dedup to win over folding, got {decision.action} "
-            f"({decision.reason})"
+            f"expected dedup to win over folding, got {decision.action} ({decision.reason})"
         )
 
 
@@ -370,9 +382,7 @@ def test_purge_topic_tokens_do_not_match_substrings():
 
         purged = purge_latent_traces_matching_topic(soul_db, user_id=user.id, topic="art")
         assert purged == 1
-        remaining = soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user.id)
-        ).all()
+        remaining = soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user.id)).all()
         assert [t.topic_key for t in remaining] == ["user:minor_observation:cart_repair"]
 
 
@@ -403,7 +413,7 @@ def test_importance_1_strong_emotional_salience_still_promotes():
 
 
 def test_score_below_floor_is_rejected():
-    """"below-floor drops": no real MemoryCandidate can score below the
+    """ "below-floor drops": no real MemoryCandidate can score below the
     floor (importance is clamped to >= 1, which alone scores 0.12 > the
     default floor of 0.075), so this is exercised at the classifier level
     directly — the contract the promotion gate relies on."""
@@ -619,9 +629,7 @@ def test_decay_and_cap_enforces_per_user_cap():
             soul_db, user_id=user.id, config=LatentConfig(max_traces_per_user=3)
         )
         assert stats["capped"] == 2
-        remaining = soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user.id)
-        ).all()
+        remaining = soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user.id)).all()
         assert len(remaining) == 3
         # The lowest-weight traces (topic0, topic1) were dropped.
         kept_keys = {t.topic_key for t in remaining}
@@ -695,9 +703,7 @@ async def test_crystallize_due_trace_creates_one_memory_with_provenance(monkeypa
             ).all()
             assert traces == []  # topic cleared
 
-            items = soul_db.scalars(
-                select(MemoryItem).where(MemoryItem.user_id == user_id)
-            ).all()
+            items = soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all()
             assert len(items) == 1
             item = items[0]
             assert item.source == "latent_crystallization"
@@ -713,9 +719,7 @@ async def test_crystallize_due_trace_creates_one_memory_with_provenance(monkeypa
             # lineage — profile reconciliation reads only MemoryClaim rows.
             from anima_server.models import MemoryClaim
 
-            claim = soul_db.scalar(
-                select(MemoryClaim).where(MemoryClaim.user_id == user_id)
-            )
+            claim = soul_db.scalar(select(MemoryClaim).where(MemoryClaim.user_id == user_id))
             assert claim is not None
             assert claim.memory_item_id == item.id
     finally:
@@ -748,7 +752,9 @@ async def test_crystallize_respects_per_run_cap(monkeypatch):
                         user_id=user_id,
                         topic_key=f"user:minor_observation:cap_topic{i}",
                         weight=0.7,
-                        evidence_refs=[{"candidate_id": candidate_ids[i], "source_message_ids": []}],
+                        evidence_refs=[
+                            {"candidate_id": candidate_ids[i], "source_message_ids": []}
+                        ],
                         first_seen=datetime.now(UTC),
                         last_seen=datetime.now(UTC),
                     )
@@ -830,10 +836,13 @@ async def test_crystallize_drops_stale_refs_and_skips_synthesis_when_none_surviv
         assert calls == 0
 
         with soul_factory() as soul_db:
-            assert soul_db.scalars(
-                select(LatentTrace).where(LatentTrace.user_id == user_id)
-            ).all() == []
-            assert soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all() == []
+            assert (
+                soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user_id)).all()
+                == []
+            )
+            assert (
+                soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all() == []
+            )
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()
@@ -888,7 +897,8 @@ def test_forget_then_sleep_scrubs_refs_and_deletes_emptied_trace():
                 user_id=user_id,
                 memory_item_id=memory.id,
                 source_kind="llm_extraction",
-                runtime_message_id=message_id,
+                source_message_uri=_SOURCE_A_URI,
+                provenance_metadata={"historicalSourceIds": {"runtime_message_id": message_id}},
                 evidence_text="I've been so stressed about the commute lately.",
             )
             soul_db.add(evidence)
@@ -905,7 +915,11 @@ def test_forget_then_sleep_scrubs_refs_and_deletes_emptied_trace():
                     topic_key="user:minor_observation:commute_stress",
                     weight=0.3,
                     evidence_refs=[
-                        {"candidate_id": None, "source_message_ids": [message_id]}
+                        {
+                            "candidate_id": None,
+                            "source_message_ids": [message_id],
+                            "source_message_uris": [_SOURCE_A_URI],
+                        }
                     ],
                     first_seen=datetime.now(UTC),
                     last_seen=datetime.now(UTC),
@@ -940,8 +954,16 @@ def test_forget_scrubs_ref_but_keeps_trace_when_other_evidence_survives():
                 topic_key="user:minor_observation:mixed_evidence",
                 weight=0.4,
                 evidence_refs=[
-                    {"candidate_id": None, "source_message_ids": [101]},
-                    {"candidate_id": None, "source_message_ids": [202]},
+                    {
+                        "candidate_id": None,
+                        "source_message_ids": [101],
+                        "source_message_uris": [_SOURCE_A_URI],
+                    },
+                    {
+                        "candidate_id": None,
+                        "source_message_ids": [202],
+                        "source_message_uris": [_SOURCE_B_URI],
+                    },
                 ],
                 first_seen=datetime.now(UTC),
                 last_seen=datetime.now(UTC),
@@ -950,7 +972,7 @@ def test_forget_scrubs_ref_but_keeps_trace_when_other_evidence_survives():
         soul_db.commit()
 
         scrubbed = scrub_latent_traces_for_forgotten_sources(
-            soul_db, user_id=user.id, source_message_ids=[101]
+            soul_db, user_id=user.id, source_message_uris=[_SOURCE_A_URI]
         )
         assert len(scrubbed) == 1
 
@@ -996,9 +1018,7 @@ def test_topic_scoped_forget_deletes_matching_trace():
         )
         assert count == 1
 
-        remaining = soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user.id)
-        ).all()
+        remaining = soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user.id)).all()
         assert len(remaining) == 1
         assert remaining[0].topic_key == "user:minor_observation:other_topic"
 
@@ -1069,9 +1089,7 @@ async def test_crystallize_synthesis_exception_keeps_trace(monkeypatch):
             trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id))
             assert trace is not None
             assert trace.weight == pytest.approx(0.71)
-            assert (
-                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
-            )
+            assert soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()
@@ -1119,12 +1137,8 @@ async def test_crystallize_explicit_null_clears_trace_without_memory(monkeypatch
         assert stats["too_thin"] == 1
 
         with soul_factory() as soul_db:
-            assert (
-                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
-            )
-            assert (
-                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
-            )
+            assert soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            assert soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()
@@ -1181,9 +1195,7 @@ async def test_crystallize_evidence_write_failure_rolls_back_orphan_item(monkeyp
 
         with soul_factory() as soul_db:
             # The half-written MemoryItem must NOT have been committed.
-            assert (
-                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
-            )
+            assert soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
             trace = soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id))
             assert trace is not None
             assert trace.weight == pytest.approx(0.8)
@@ -1222,9 +1234,21 @@ async def test_partial_scrub_then_crystallize_uses_only_surviving_refs(monkeypat
                     kind="observation",
                     weight=0.95,
                     evidence_refs=[
-                        {"candidate_id": keep_id, "source_message_ids": [11]},
-                        {"candidate_id": keep2_id, "source_message_ids": [12]},
-                        {"candidate_id": gone_id, "source_message_ids": [99]},
+                        {
+                            "candidate_id": keep_id,
+                            "source_message_ids": [11],
+                            "source_message_uris": [_SOURCE_A_URI],
+                        },
+                        {
+                            "candidate_id": keep2_id,
+                            "source_message_ids": [12],
+                            "source_message_uris": [_SOURCE_B_URI],
+                        },
+                        {
+                            "candidate_id": gone_id,
+                            "source_message_ids": [99],
+                            "source_message_uris": [_SOURCE_C_URI],
+                        },
                     ],
                     first_seen=datetime.now(UTC),
                     last_seen=datetime.now(UTC),
@@ -1233,7 +1257,7 @@ async def test_partial_scrub_then_crystallize_uses_only_surviving_refs(monkeypat
             soul_db.commit()
 
             scrubbed = scrub_latent_traces_for_forgotten_sources(
-                soul_db, user_id=user_id, source_message_ids=[99]
+                soul_db, user_id=user_id, source_message_uris=[_SOURCE_C_URI]
             )
             assert len(scrubbed) == 1
             soul_db.commit()
@@ -1375,9 +1399,7 @@ async def test_crystallize_deletes_all_contentless_trace_via_stale_path(monkeypa
         assert stats["dropped_stale"] == 1
 
         with soul_factory() as soul_db:
-            assert (
-                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
-            )
+            assert soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()
@@ -1414,9 +1436,7 @@ def test_forget_memory_deletes_same_topic_trace():
 
         result = forget_memory(soul_db, memory_id=item.id, user_id=user.id)
         assert result.latent_traces_scrubbed >= 1
-        assert (
-            soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id)) is None
-        )
+        assert soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user.id)) is None
 
 
 def test_repeated_identical_weak_signal_after_folded_creates_new_candidate():
@@ -1520,12 +1540,8 @@ async def test_crystallize_treats_hash_mismatched_ref_as_stale(monkeypatch):
         assert stats["dropped_stale"] == 1
 
         with soul_factory() as soul_db:
-            assert (
-                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
-            )
-            assert (
-                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
-            )
+            assert soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
+            assert soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()
@@ -1584,19 +1600,13 @@ async def test_crystallize_conflicting_synthesis_never_grafts_onto_old_memory(mo
         assert stats["conflicted"] == 1
 
         with soul_factory() as soul_db:
-            items = soul_db.scalars(
-                select(MemoryItem).where(MemoryItem.user_id == user_id)
-            ).all()
+            items = soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all()
             assert [i.id for i in items] == [existing_id]  # no new memory
             evidence = soul_db.scalars(
-                select(MemoryItemEvidence).where(
-                    MemoryItemEvidence.memory_item_id == existing_id
-                )
+                select(MemoryItemEvidence).where(MemoryItemEvidence.memory_item_id == existing_id)
             ).all()
             assert evidence == []  # nothing grafted onto the old memory
-            assert (
-                soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
-            )
+            assert soul_db.scalar(select(LatentTrace).where(LatentTrace.user_id == user_id)) is None
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()
@@ -1724,9 +1734,7 @@ async def test_crystallize_requalifies_when_stale_refs_carried_the_weight(monkey
             assert trace is not None
             assert trace.weight == pytest.approx(0.9 * (1 / 3))
             assert len(trace.evidence_refs) == 1
-            assert (
-                soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
-            )
+            assert soul_db.scalar(select(MemoryItem).where(MemoryItem.user_id == user_id)) is None
     finally:
         soul_engine.dispose()
         runtime_engine.dispose()
@@ -1739,9 +1747,7 @@ def test_fold_replay_of_same_candidate_is_idempotent():
     no-op — keyed on the candidate id already present in the refs."""
     with _soul_db_session() as soul_db:
         user = _make_user(soul_db)
-        candidate = FakeCandidate(
-            content="Weak signal", category="minor_observation", importance=1
-        )
+        candidate = FakeCandidate(content="Weak signal", category="minor_observation", importance=1)
         candidate.id = 4242
         trace = fold_candidate_into_trace(
             soul_db,
@@ -1853,9 +1859,7 @@ def test_purge_latent_traces_matching_topic_removes_fold_only_topics():
             soul_db, user_id=user.id, topic="commute stress"
         )
         assert purged == 1
-        remaining = soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user.id)
-        ).all()
+        remaining = soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user.id)).all()
         assert [t.topic_key for t in remaining] == ["user:minor_observation:garden_hobby"]
 
 
@@ -1965,72 +1969,6 @@ async def test_repeated_folded_candidates_accumulate_to_crystallization_threshol
 # ---------------------------------------------------------------------------
 # 9. Vault export/import round-trip
 # ---------------------------------------------------------------------------
-
-
-def test_vault_round_trip_preserves_latent_traces():
-    with _soul_db_session() as soul_db:
-        user = _make_user(soul_db)
-        soul_db.add(
-            LatentTrace(
-                user_id=user.id,
-                topic_key="user:minor_observation:vault_topic",
-                kind="observation",
-                weight=0.42,
-                evidence_refs=[{"candidate_id": 7, "source_message_ids": [1, 2]}],
-                first_seen=datetime.now(UTC),
-                last_seen=datetime.now(UTC),
-            )
-        )
-        soul_db.commit()
-        user_id = user.id
-
-        snapshot = export_database_snapshot(soul_db, user_id=user_id)
-        assert len(snapshot["latentTraces"]) == 1
-        assert snapshot["latentTraces"][0]["topic_key"] == "user:minor_observation:vault_topic"
-
-        restore_database_snapshot(soul_db, snapshot, scope="full")
-        soul_db.commit()
-
-        traces = soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user_id)
-        ).all()
-        assert len(traces) == 1
-        assert traces[0].topic_key == "user:minor_observation:vault_topic"
-        assert traces[0].weight == pytest.approx(0.42)
-        assert traces[0].evidence_refs == [{"candidate_id": 7, "source_message_ids": [1, 2]}]
-
-
-def test_vault_memories_scope_restores_latent_traces():
-    """scope="memories" restore must cover latentTraces like its sibling
-    memory tables, not just scope="full"."""
-    with _soul_db_session() as soul_db:
-        user = _make_user(soul_db)
-        soul_db.add(
-            LatentTrace(
-                user_id=user.id,
-                topic_key="user:minor_observation:memories_scope",
-                kind="observation",
-                weight=0.33,
-                evidence_refs=[],
-                first_seen=datetime.now(UTC),
-                last_seen=datetime.now(UTC),
-            )
-        )
-        soul_db.commit()
-        user_id = user.id
-
-        snapshot = export_database_snapshot(soul_db, user_id=user_id)
-        soul_db.execute(delete(LatentTrace).where(LatentTrace.user_id == user_id))
-        soul_db.commit()
-
-        restore_database_snapshot(soul_db, snapshot, scope="memories")
-        soul_db.commit()
-
-        traces = soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user_id)
-        ).all()
-        assert len(traces) == 1
-        assert traces[0].topic_key == "user:minor_observation:memories_scope"
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 """Soul-tier consciousness models stored in the encrypted core database."""
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -16,7 +17,7 @@ class IdentityBlock(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
         unique=True,
     )
@@ -44,7 +45,7 @@ class GrowthLogEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     entry: Mapped[str] = mapped_column(Text, nullable=False)
@@ -63,7 +64,7 @@ class CoreEmotionalPattern(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     pattern: Mapped[str] = mapped_column(Text, nullable=False)

@@ -28,10 +28,11 @@ from sqlalchemy import create_engine, inspect, text
 from starlette.requests import Request
 
 HAS_PGSERVER = importlib.util.find_spec("pgserver") is not None
-HAS_PSYCOPG = importlib.util.find_spec(
-    "psycopg") is not None or importlib.util.find_spec("psycopg2") is not None
-EXPLICIT_RUNTIME_DATABASE_URL = os.getenv(
-    "ANIMA_RUNTIME_DATABASE_URL", "").strip()
+HAS_PSYCOPG = (
+    importlib.util.find_spec("psycopg") is not None
+    or importlib.util.find_spec("psycopg2") is not None
+)
+EXPLICIT_RUNTIME_DATABASE_URL = os.getenv("ANIMA_RUNTIME_DATABASE_URL", "").strip()
 
 requires_embedded_pg = pytest.mark.skipif(
     bool(EXPLICIT_RUNTIME_DATABASE_URL) or not HAS_PGSERVER,
@@ -41,8 +42,7 @@ requires_embedded_pg = pytest.mark.skipif(
     ),
 )
 requires_runtime_backend = pytest.mark.skipif(
-    not HAS_PSYCOPG or (
-        not EXPLICIT_RUNTIME_DATABASE_URL and not HAS_PGSERVER),
+    not HAS_PSYCOPG or (not EXPLICIT_RUNTIME_DATABASE_URL and not HAS_PGSERVER),
     reason=(
         "Runtime PostgreSQL integration tests require psycopg plus either "
         "pgserver or ANIMA_RUNTIME_DATABASE_URL."
@@ -67,8 +67,7 @@ def runtime_database_url(managed_tmp_path: Path) -> str:
         return
 
     if not HAS_PGSERVER:
-        pytest.skip(
-            "pgserver is not installed and no external runtime database URL is configured.")
+        pytest.skip("pgserver is not installed and no external runtime database URL is configured.")
 
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
     _start_embedded_pg_or_skip(pg)
@@ -243,15 +242,18 @@ def test_fresh_embedded_runtime_and_instance_roots_contain_no_seeded_plaintext(
         )
         (index / "opaque.bin").write_bytes(hashlib.sha256(b"index").digest())
 
-        assert scan_private_markers(
-            roots={
-                "runtime": pg.data_dir,
-                "cache": cache,
-                "logs": logs,
-                "index": index,
-            },
-            markers=markers,
-        ) == ()
+        assert (
+            scan_private_markers(
+                roots={
+                    "runtime": pg.data_dir,
+                    "cache": cache,
+                    "logs": logs,
+                    "index": index,
+                },
+                markers=markers,
+            )
+            == ()
+        )
     finally:
         if engine is not None:
             engine.dispose()
@@ -263,111 +265,6 @@ def test_embedded_pg_database_url_raises_when_not_running(managed_tmp_path: Path
 
     with pytest.raises(RuntimeError, match="Embedded PG is not running"):
         _ = pg.database_url
-
-
-def test_legacy_soul_database_migration_creates_missing_new_tables(
-    managed_tmp_path: Path,
-) -> None:
-    from anima_server.db.session import _run_alembic_upgrade
-
-    legacy_db = managed_tmp_path / "legacy-soul.db"
-    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY,
-                    username VARCHAR NOT NULL
-                )
-                """
-            )
-        )
-
-    _run_alembic_upgrade(engine)
-
-    inspector = inspect(engine)
-    assert inspector.has_table("alembic_version")
-    assert inspector.has_table("presence_configs")
-
-
-def test_legacy_soul_database_migration_repairs_diary_entry_columns(
-    managed_tmp_path: Path,
-) -> None:
-    from anima_server.db.session import _run_alembic_upgrade
-
-    legacy_db = managed_tmp_path / "legacy-diary.db"
-    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY,
-                    username VARCHAR NOT NULL
-                )
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE diary_entries (
-                    id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    entry_date VARCHAR(10) NOT NULL,
-                    title TEXT,
-                    body TEXT NOT NULL,
-                    mood TEXT,
-                    source VARCHAR(24) NOT NULL DEFAULT 'user',
-                    created_at DATETIME,
-                    updated_at DATETIME
-                )
-                """
-            )
-        )
-
-    _run_alembic_upgrade(engine)
-
-    diary_columns = {column["name"] for column in inspect(engine).get_columns("diary_entries")}
-    assert {"cover_attachment_id", "folder_id"}.issubset(diary_columns)
-
-
-def test_stamped_soul_database_migration_repairs_missing_new_tables(
-    managed_tmp_path: Path,
-) -> None:
-    from anima_server.db.session import _run_alembic_upgrade
-
-    legacy_db = managed_tmp_path / "stamped-soul.db"
-    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY,
-                    username VARCHAR NOT NULL
-                )
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE alembic_version (
-                    version_num VARCHAR(32) NOT NULL,
-                    CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
-                )
-                """
-            )
-        )
-        connection.execute(
-            text("INSERT INTO alembic_version (version_num) VALUES ('20260522_0001')")
-        )
-
-    _run_alembic_upgrade(engine)
-
-    assert inspect(engine).has_table("presence_configs")
 
 
 def test_runtime_alembic_has_single_head() -> None:
@@ -454,177 +351,6 @@ def test_user_profile_migration_sets_source_fks_null_on_delete(
     assert ondelete_for(evidence_fks, constrained_column="source_evidence_id") == "SET NULL"
     assert ondelete_for(evidence_fks, constrained_column="source_claim_evidence_id") == "SET NULL"
     assert ondelete_for(evidence_fks, constrained_column="user_id") == "CASCADE"
-
-
-def test_legacy_soul_database_migration_repairs_existing_kg_columns(
-    managed_tmp_path: Path,
-) -> None:
-    from anima_server.db.session import _run_alembic_upgrade
-    from anima_server.models import KGEntity, KGRelation
-    from sqlalchemy.orm import Session
-
-    legacy_db = managed_tmp_path / "legacy-kg-soul.db"
-    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY,
-                    username VARCHAR NOT NULL
-                )
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE kg_entities (
-                    id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    name VARCHAR(200) NOT NULL,
-                    name_normalized VARCHAR(200) NOT NULL,
-                    entity_type VARCHAR(50) NOT NULL DEFAULT 'unknown',
-                    description TEXT NOT NULL DEFAULT '',
-                    mentions INTEGER NOT NULL DEFAULT 1,
-                    embedding_json JSON,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT uq_kg_entities_user_name UNIQUE (user_id, name_normalized)
-                )
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE kg_relations (
-                    id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    source_id INTEGER NOT NULL,
-                    destination_id INTEGER NOT NULL,
-                    relation_type VARCHAR(100) NOT NULL,
-                    mentions INTEGER NOT NULL DEFAULT 1,
-                    source_memory_id INTEGER,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-        )
-
-    _run_alembic_upgrade(engine)
-
-    inspector = inspect(engine)
-    entity_columns = {column["name"] for column in inspector.get_columns("kg_entities")}
-    relation_columns = {column["name"] for column in inspector.get_columns("kg_relations")}
-    assert {"aliases_json", "embedding_checksum"}.issubset(entity_columns)
-    assert {
-        "evidence_id",
-        "observed_at",
-        "valid_from",
-        "valid_to",
-        "confidence",
-        "status",
-        "supersedes_relation_id",
-        "evolves_from_relation_id",
-    }.issubset(relation_columns)
-
-    with Session(engine) as db:
-        source = KGEntity(user_id=1, name="User", name_normalized="user", entity_type="person")
-        destination = KGEntity(
-            user_id=1,
-            name="Acme",
-            name_normalized="acme",
-            entity_type="organization",
-            aliases_json=["Acme Inc"],
-        )
-        db.add_all([source, destination])
-        db.flush()
-        relation = KGRelation(
-            user_id=1,
-            source_id=source.id,
-            destination_id=destination.id,
-            relation_type="works_at",
-            status="active",
-        )
-        db.add(relation)
-        db.flush()
-
-        assert db.get(KGEntity, source.id).aliases_json is None
-        assert db.get(KGRelation, relation.id).status == "active"
-
-
-def test_legacy_kg_migration_downgrade_tolerates_missing_constraints(
-    managed_tmp_path: Path,
-) -> None:
-    from alembic import command
-    from alembic.config import Config
-    from anima_server.db import session as session_module
-    from anima_server.db.session import _run_alembic_upgrade
-
-    legacy_db = managed_tmp_path / "legacy-kg-downgrade-soul.db"
-    engine = create_engine(f"sqlite:///{legacy_db.as_posix()}", future=True)
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                """
-                CREATE TABLE users (
-                    id INTEGER PRIMARY KEY,
-                    username VARCHAR NOT NULL
-                )
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE kg_entities (
-                    id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    name VARCHAR(200) NOT NULL,
-                    name_normalized VARCHAR(200) NOT NULL,
-                    entity_type VARCHAR(50) NOT NULL DEFAULT 'unknown',
-                    description TEXT NOT NULL DEFAULT '',
-                    mentions INTEGER NOT NULL DEFAULT 1,
-                    embedding_json JSON,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT uq_kg_entities_user_name UNIQUE (user_id, name_normalized)
-                )
-                """
-            )
-        )
-        connection.execute(
-            text(
-                """
-                CREATE TABLE kg_relations (
-                    id INTEGER PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    source_id INTEGER NOT NULL,
-                    destination_id INTEGER NOT NULL,
-                    relation_type VARCHAR(100) NOT NULL,
-                    mentions INTEGER NOT NULL DEFAULT 1,
-                    source_memory_id INTEGER,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                )
-                """
-            )
-        )
-
-    _run_alembic_upgrade(engine)
-
-    cfg = Config(str(session_module._ALEMBIC_INI))
-    with engine.begin() as connection:
-        cfg.attributes["connection"] = connection
-        command.downgrade(cfg, "20260626_0002")
-
-    inspector = inspect(engine)
-    entity_columns = {column["name"] for column in inspector.get_columns("kg_entities")}
-    relation_columns = {column["name"] for column in inspector.get_columns("kg_relations")}
-    assert "aliases_json" not in entity_columns
-    assert "status" not in relation_columns
 
 
 def test_embedded_pg_recovers_stale_lockfile(managed_tmp_path: Path) -> None:
@@ -732,8 +458,9 @@ def test_embedded_pg_keeps_lockfile_on_permission_error(
 def test_embedded_pg_bootstrap_log_is_outside_pgdata(managed_tmp_path: Path) -> None:
     pg = EmbeddedPG(managed_tmp_path / "runtime" / "pg_data")
 
-    assert pg._bootstrap_log_path() == managed_tmp_path / "runtime" / \
-        f"pg_bootstrap_{os.getpid()}.log"
+    assert (
+        pg._bootstrap_log_path() == managed_tmp_path / "runtime" / f"pg_bootstrap_{os.getpid()}.log"
+    )
 
 
 def test_embedded_pg_patches_pgserver_windows_startup(
@@ -777,8 +504,7 @@ def test_embedded_pg_patches_pgserver_windows_startup(
 
     fake_pgserver = SimpleNamespace(PostgresServer=FakePostgresServer)
     monkeypatch.setattr(pg_lifecycle_module.os, "name", "nt", raising=False)
-    monkeypatch.setitem(
-        sys.modules, "pgserver.postgres_server", postgres_server_module)
+    monkeypatch.setitem(sys.modules, "pgserver.postgres_server", postgres_server_module)
 
     pg._patch_pgserver_windows_startup(fake_pgserver)
 
@@ -789,8 +515,7 @@ def test_embedded_pg_patches_pgserver_windows_startup(
     assert len(calls) == 1
     assert calls[0][1] == pg.data_dir
     assert calls[0][2]["timeout"] == 60.0
-    assert calls[0][0][calls[0][0].index(
-        "-l") + 1] == str(pg._bootstrap_log_path())
+    assert calls[0][0][calls[0][0].index("-l") + 1] == str(pg._bootstrap_log_path())
 
 
 def test_embedded_pg_terminates_postgres_processes_for_data_dir(
@@ -806,7 +531,9 @@ def test_embedded_pg_terminates_postgres_processes_for_data_dir(
         pass
 
     class FakeProcess:
-        def __init__(self, pid: int, name: str, cmdline: list[str], *, times_out: bool = False) -> None:
+        def __init__(
+            self, pid: int, name: str, cmdline: list[str], *, times_out: bool = False
+        ) -> None:
             self.info = {"pid": pid, "name": name, "cmdline": cmdline}
             self._times_out = times_out
 
@@ -825,8 +552,7 @@ def test_embedded_pg_terminates_postgres_processes_for_data_dir(
         Error=RuntimeError,
         process_iter=lambda attrs=None: [
             FakeProcess(1, "postgres", ["postgres", "-D", target]),
-            FakeProcess(2, "postgres", ["postgres",
-                        "-D", target], times_out=True),
+            FakeProcess(2, "postgres", ["postgres", "-D", target], times_out=True),
             FakeProcess(3, "postgres", ["postgres", "-D", "C:/other/pg_data"]),
             FakeProcess(4, "python", ["python", "app.py"]),
         ],
@@ -918,15 +644,11 @@ def test_get_runtime_session_commits(runtime_database_url: str) -> None:
 
         factory = get_runtime_session_factory()
         with factory() as session:
-            session.execute(
-                text(
-                    f"INSERT INTO {table_name} (id, value) VALUES (1, 'committed')")
-            )
+            session.execute(text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'committed')"))
             session.commit()
 
         with factory() as session:
-            result = session.execute(
-                text(f"SELECT value FROM {table_name} WHERE id = 1"))
+            result = session.execute(text(f"SELECT value FROM {table_name} WHERE id = 1"))
 
         assert result.scalar_one() == "committed"
     finally:
@@ -946,15 +668,11 @@ def test_get_runtime_session_rolls_back_on_exception(runtime_database_url: str) 
         factory = get_runtime_session_factory()
 
         with pytest.raises(RuntimeError, match="force rollback"), factory() as session:
-            session.execute(
-                text(
-                    f"INSERT INTO {table_name} (id, value) VALUES (1, 'rolled-back')")
-            )
+            session.execute(text(f"INSERT INTO {table_name} (id, value) VALUES (1, 'rolled-back')"))
             raise RuntimeError("force rollback")
 
         with factory() as session:
-            result = session.execute(
-                text(f"SELECT COUNT(*) FROM {table_name}"))
+            result = session.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
 
         assert result.scalar_one() == 0
     finally:
@@ -998,23 +716,16 @@ def test_embedding_dimension_reconciliation_preserves_runtime_inventory(
 
     try:
         runtime_module._reconcile_embedding_dimension(engine)
-        executed = [
-            str(call.args[0])
-            for call in write_connection.execute.call_args_list
-        ]
+        executed = [str(call.args[0]) for call in write_connection.execute.call_args_list]
     finally:
         RuntimeEmbedding.__table__.c.embedding.type = original_type
 
     assert all("DROP TABLE" not in statement for statement in executed)
     assert any(
-        "ALTER COLUMN embedding TYPE vector(384) USING NULL::vector(384)"
-        in statement
+        "ALTER COLUMN embedding TYPE vector(384) USING NULL::vector(384)" in statement
         for statement in executed
     )
-    assert any(
-        "SET embedding_checksum = NULL" in statement
-        for statement in executed
-    )
+    assert any("SET embedding_checksum = NULL" in statement for statement in executed)
 
 
 @requires_runtime_backend
@@ -1152,8 +863,7 @@ def test_dual_engine_coexistence(
             db_dependency = get_db(request)
             soul_session = next(db_dependency)
             try:
-                soul_result = soul_session.execute(
-                    text("SELECT 1")).scalar_one()
+                soul_result = soul_session.execute(text("SELECT 1")).scalar_one()
             finally:
                 db_dependency.close()
 
@@ -1210,13 +920,11 @@ def test_config_auto_derives_url_from_embedded_pg(
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False, **kw: init_calls.append(
-                (database_url, echo)),
+            lambda database_url, *, echo=False, **kw: init_calls.append((database_url, echo)),
         )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
-        monkeypatch.setattr(
-            main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
+        monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
             cancel_pending_reflection,
@@ -1230,8 +938,7 @@ def test_config_auto_derives_url_from_embedded_pg(
         app = main_module.create_app()
 
         _run_app_lifespan(app)
-        assert init_calls == [
-            (fake_pg.database_url, settings.database_echo)]
+        assert init_calls == [(fake_pg.database_url, settings.database_echo)]
         assert len(binding_calls) == 1
 
         cancel_pending_reflection.assert_awaited_once_with()
@@ -1313,17 +1020,13 @@ def test_embedded_runtime_claim_is_resolved_before_postgres_starts(
             Path(settings.runtime_instance_data_dir) / "health-logs"
         )
         assert get_runtime_settings_path() == (
-            Path(settings.runtime_instance_data_dir)
-            / "config"
-            / "runtime-config.json"
+            Path(settings.runtime_instance_data_dir) / "config" / "runtime-config.json"
         )
         assert not get_runtime_settings_path().is_relative_to(settings.data_dir)
         assert retrieval_module.get_retrieval_root() == (
             Path(settings.runtime_instance_data_dir) / "cache" / "indices"
         )
-        assert not retrieval_module.get_retrieval_root().is_relative_to(
-            settings.data_dir
-        )
+        assert not retrieval_module.get_retrieval_root().is_relative_to(settings.data_dir)
         main_module._release_runtime_instance_claim()
     finally:
         settings.data_dir = original_data_dir
@@ -1418,9 +1121,7 @@ def test_retrieval_root_uses_unbound_machine_data_before_instance_claim(
         assert retrieval_module.get_retrieval_root() == (
             app_data_root / "unbound" / "cache" / "indices"
         )
-        assert not retrieval_module.get_retrieval_root().is_relative_to(
-            settings.data_dir
-        )
+        assert not retrieval_module.get_retrieval_root().is_relative_to(settings.data_dir)
     finally:
         settings.data_dir = original_data_dir
         settings.runtime_app_data_dir = original_runtime_app_data_dir
@@ -1578,8 +1279,7 @@ def test_explicit_runtime_url_skips_embedded_pg(
         )
         monkeypatch.setattr(main_module, "ensure_pgvector", lambda: None)
         monkeypatch.setattr(main_module, "ensure_runtime_tables", lambda: None)
-        monkeypatch.setattr(
-            main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
+        monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
             cancel_pending_reflection,
@@ -1654,9 +1354,7 @@ def test_embedded_runtime_database_is_bound_before_other_database_work(
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, **_kwargs: startup_calls.append(
-                f"init:{database_url}"
-            ),
+            lambda database_url, **_kwargs: startup_calls.append(f"init:{database_url}"),
         )
         monkeypatch.setattr(
             main_module,
@@ -1861,9 +1559,7 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
         monkeypatch.setattr(
             main_module,
             "init_runtime_engine",
-            lambda database_url, *, echo=False, **kw: startup_calls.append(
-                f"init:{database_url}"
-            ),
+            lambda database_url, *, echo=False, **kw: startup_calls.append(f"init:{database_url}"),
         )
         monkeypatch.setattr(
             main_module,
@@ -1884,8 +1580,7 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
             "ensure_runtime_tables",
             lambda: startup_calls.append("migrate"),
         )
-        monkeypatch.setattr(
-            main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
+        monkeypatch.setattr(main_module, "dispose_runtime_engine", dispose_runtime_engine_mock)
         monkeypatch.setattr(
             "anima_server.services.agent.reflection.cancel_pending_reflection",
             cancel_pending_reflection,
@@ -1900,18 +1595,14 @@ def test_runtime_startup_enables_pgvector_before_runtime_migrations(
 
         _run_app_lifespan(app)
         registry = json.loads(
-            (
-                Path(settings.runtime_app_data_dir)
-                / "core-instance-registry.json"
-            ).read_text(encoding="utf-8")
+            (Path(settings.runtime_app_data_dir) / "core-instance-registry.json").read_text(
+                encoding="utf-8"
+            )
         )
         binding_record = registry["instances"][0]
         assert startup_calls == [
             f"init:{explicit_url}",
-            (
-                f"bind:{binding_record['core_id']}:"
-                f"{binding_record['local_instance_id']}"
-            ),
+            (f"bind:{binding_record['core_id']}:{binding_record['local_instance_id']}"),
             "pgvector",
             "migrate",
         ]
@@ -1966,3 +1657,86 @@ def test_init_runtime_engine_raises_on_invalid_url() -> None:
     factory = get_runtime_session_factory()
     with pytest.raises((OSError, Exception)), factory() as session:
         session.execute(text("SELECT 1"))
+
+
+def _schema_and_records(engine):
+    with engine.connect() as connection:
+        schema = tuple(
+            connection.exec_driver_sql(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY name"
+            ).all()
+        )
+        records = {
+            table: tuple(connection.exec_driver_sql(f'SELECT * FROM "{table}" ORDER BY 1').all())
+            for table in inspect(connection).get_table_names()
+        }
+        return schema, records
+
+
+@pytest.mark.parametrize(
+    "source_kind", ["unstamped_identity", "unstamped_diary", "unstamped_graph", "false_stamp"]
+)
+def test_unsupported_soul_source_rejects_without_schema_repair_or_record_changes(
+    managed_tmp_path, source_kind
+):
+    from anima_server.db.session import _run_alembic_upgrade
+    from sqlalchemy.exc import OperationalError
+
+    engine = create_engine(f"sqlite:///{(managed_tmp_path / 'unsupported-soul.db').as_posix()}")
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY,username TEXT NOT NULL)"
+            )
+            connection.exec_driver_sql("INSERT INTO users VALUES (7, 'Private unsupported owner')")
+            if source_kind == "unstamped_diary":
+                connection.exec_driver_sql(
+                    "CREATE TABLE diary_entries (id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,body TEXT NOT NULL)"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO diary_entries VALUES (3,7,'Preserve original private writing')"
+                )
+            if source_kind == "unstamped_graph":
+                connection.exec_driver_sql(
+                    "CREATE TABLE kg_entities (id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,name TEXT NOT NULL)"
+                )
+                connection.exec_driver_sql(
+                    "INSERT INTO kg_entities VALUES (4,7,'Preserve original graph fact')"
+                )
+            if source_kind == "false_stamp":
+                connection.exec_driver_sql(
+                    "CREATE TABLE alembic_version (version_num TEXT PRIMARY KEY)"
+                )
+                connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('20260522_0001')")
+        before = _schema_and_records(engine)
+        with pytest.raises((ValueError, OperationalError)):
+            _run_alembic_upgrade(engine)
+        assert _schema_and_records(engine) == before
+    finally:
+        engine.dispose()
+
+
+def test_current_soul_downgrade_rejects_without_mutating_retained_memory(managed_tmp_path):
+    from alembic import command
+    from alembic.config import Config
+    from anima_server.db.session import _ALEMBIC_INI, _run_alembic_upgrade
+
+    engine = create_engine(f"sqlite:///{(managed_tmp_path / 'forward-only-soul.db').as_posix()}")
+    try:
+        _run_alembic_upgrade(engine)
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO soul_owners (id,core_owner_id) VALUES (?,?)", (7, str(uuid4()))
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO memory_items (id,user_id,content,category,importance,source) VALUES (11,7,'Retained current memory','fact',4,'test')"
+            )
+        before = _schema_and_records(engine)
+        config = Config(str(_ALEMBIC_INI))
+        with pytest.raises(ValueError, match="forward-only"), engine.begin() as connection:
+            connection.connection.driver_connection.execute("BEGIN IMMEDIATE")
+            config.attributes["connection"] = connection
+            command.downgrade(config, "20260812_0001")
+        assert _schema_and_records(engine) == before
+    finally:
+        engine.dispose()

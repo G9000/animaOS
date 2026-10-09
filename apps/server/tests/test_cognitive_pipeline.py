@@ -7,11 +7,12 @@ import json
 from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import PendingMemoryOp, SelfModelBlock, User
+from anima_server.models import PendingMemoryOp, SelfModelBlock, SoulOwner
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.executor import ToolExecutor
 from anima_server.services.agent.memory_blocks import MemoryBlock, build_merged_block_content
@@ -96,8 +97,7 @@ async def test_append_memory_respond_pipeline() -> None:
     Verifies memory is actually written to DB and visible in the next step."""
 
     with _db_session() as db:
-        user = User(username="pipeline",
-                    password_hash="x", display_name="Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
 
@@ -113,8 +113,7 @@ async def test_append_memory_respond_pipeline() -> None:
         )
         db.commit()
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=1))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=1))
         try:
             # Step 1: core_memory_append (with thinking)
             # Step 2: send_message (with thinking)
@@ -207,8 +206,7 @@ async def test_append_memory_respond_pipeline() -> None:
                 )
             )
             pending = db.scalar(select(PendingMemoryOp))
-            merged = build_merged_block_content(
-                db, db, user_id=user.id, section="human")
+            merged = build_merged_block_content(db, db, user_id=user.id, section="human")
 
             assert soul_block is not None
             assert soul_block.content == "Name: Alice"
@@ -227,7 +225,7 @@ async def test_core_memory_replace_pipeline() -> None:
     """Pipeline: core_memory_replace (with thinking) → send_message."""
 
     with _db_session() as db:
-        user = User(username="replace", password_hash="x", display_name="Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
 
@@ -242,8 +240,7 @@ async def test_core_memory_replace_pipeline() -> None:
         )
         db.commit()
 
-        set_tool_context(ToolContext(db=db, runtime_db=db,
-                         user_id=user.id, thread_id=1))
+        set_tool_context(ToolContext(db=db, runtime_db=db, user_id=user.id, thread_id=1))
         try:
             adapter = QueueAdapter(
                 [
@@ -300,8 +297,7 @@ async def test_core_memory_replace_pipeline() -> None:
                 )
             )
             pending = db.scalar(select(PendingMemoryOp))
-            merged = build_merged_block_content(
-                db, db, user_id=user.id, section="human")
+            merged = build_merged_block_content(db, db, user_id=user.id, section="human")
 
             assert block is not None
             assert block.content == "Works at Google"
@@ -451,16 +447,9 @@ def test_quick_reflection_prompt_includes_self_feelings() -> None:
 def test_reflection_system_prompts_are_operational_not_philosophical() -> None:
     from pathlib import Path
 
-    prompts_dir = (
-        Path(__file__).parent.parent
-        / "src/anima_server/services/agent/templates/prompts"
-    )
-    deep_system = (prompts_dir / "deep_monologue_system.md.j2").read_text(
-        encoding="utf-8"
-    )
-    quick_system = (prompts_dir / "quick_reflection_system.md.j2").read_text(
-        encoding="utf-8"
-    )
+    prompts_dir = Path(__file__).parent.parent / "src/anima_server/services/agent/templates/prompts"
+    deep_system = (prompts_dir / "deep_monologue_system.md.j2").read_text(encoding="utf-8")
+    quick_system = (prompts_dir / "quick_reflection_system.md.j2").read_text(encoding="utf-8")
     combined = f"{deep_system}\n{quick_system}"
     lowered = combined.lower()
 
@@ -526,7 +515,7 @@ async def test_quick_reflection_updates_emotional_synthesis(
     monkeypatch.setattr(inner_monologue_mod, "_call_llm", fake_call_llm)
 
     with factory() as db:
-        user = User(username="reflection", password_hash="x", display_name="Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.commit()
         user_id = user.id

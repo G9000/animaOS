@@ -3,13 +3,11 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from anima_server.config import settings
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.services.corefs.sealed_runtime import (
     delete_runtime_embedding_records,
@@ -25,58 +23,24 @@ if TYPE_CHECKING:
     from anima_server.services.corefs.asset_authority import CoreFsByteSource
 
 
-class DocumentStoragePathError(ValueError):
-    pass
-
-
-def resolve_document_storage_path(storage_path: str, *, user_id: int) -> Path:
-    stripped = storage_path.strip()
-    windows_path = PureWindowsPath(stripped)
-    path = Path(stripped)
-    if (
-        not stripped
-        or path.is_absolute()
-        or windows_path.is_absolute()
-        or windows_path.drive
-        or windows_path.root
-    ):
-        raise DocumentStoragePathError("Invalid document storage path.")
-
-    try:
-        data_root = settings.data_dir.resolve()
-        resolved_path = (data_root / path).resolve()
-        resolved_path.relative_to(data_root)
-        _require_user_document_path(resolved_path, data_root=data_root, user_id=user_id)
-    except (OSError, ValueError) as exc:
-        raise DocumentStoragePathError("Invalid document storage path.") from exc
-
-    return resolved_path
-
-
 def resolve_document_byte_source(
     document: RuntimeDocument,
     *,
     user_id: int,
-) -> str | CoreFsByteSource:
-    """Select canonical bytes after cutover; otherwise retain legacy authority."""
+) -> CoreFsByteSource:
+    """Read original bytes through the authenticated canonical catalog."""
     from anima_server.services.corefs.asset_authority import (
-        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
+        require_canonical_asset_session,
     )
-    from anima_server.services.corefs.diary_migration import migration_opaque_id
 
-    session = canonical_asset_session_or_legacy(user_id)
-    if session is not None:
-        object_uri = document.storage_path
-        if not object_uri.startswith("corefs://object/"):
-            stable_id = migration_opaque_id("document", str(document.id))
-            object_uri = f"corefs://object/{stable_id}"
-        return open_corefs_byte_source(
-            session=session,
-            object_uri=object_uri,
-            expected_kinds=frozenset({"attachment"}),
-        )
-    return str(resolve_document_storage_path(document.storage_path, user_id=user_id))
+    session = require_canonical_asset_session(user_id)
+    object_uri = document.storage_path
+    return open_corefs_byte_source(
+        session=session,
+        object_uri=object_uri,
+        expected_kinds=frozenset({"attachment"}),
+    )
 
 
 def register_document(
@@ -85,26 +49,22 @@ def register_document(
 ) -> RuntimeDocument:
     from anima_server.services.corefs.asset_authority import (
         CoreFsSourceError,
-        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
-        require_legacy_asset_mutation_allowed,
+        require_canonical_asset_session,
     )
 
-    session = canonical_asset_session_or_legacy(registration.user_id)
-    if session is not None:
-        source = open_corefs_byte_source(
-            session=session,
-            object_uri=registration.storage_path,
-            expected_kinds=frozenset({"attachment"}),
-        )
-        if (
-            source.content_type != registration.mime_type
-            or source.content_sha256 != registration.sha256
-            or source.size != registration.size_bytes
-        ):
-            raise CoreFsSourceError("Canonical document registration changed identity.")
-    else:
-        require_legacy_asset_mutation_allowed(registration.user_id)
+    session = require_canonical_asset_session(registration.user_id)
+    source = open_corefs_byte_source(
+        session=session,
+        object_uri=registration.storage_path,
+        expected_kinds=frozenset({"attachment"}),
+    )
+    if (
+        source.content_type != registration.mime_type
+        or source.content_sha256 != registration.sha256
+        or source.size != registration.size_bytes
+    ):
+        raise CoreFsSourceError("Canonical document registration changed identity.")
     existing = db.scalar(
         select(RuntimeDocument).where(
             RuntimeDocument.user_id == registration.user_id,
@@ -145,25 +105,6 @@ def register_document(
         },
     )
     return document
-
-
-def _require_user_document_path(
-    resolved_path: Path,
-    *,
-    data_root: Path,
-    user_id: int,
-) -> None:
-    user_roots = (
-        data_root / ".anima" / "documents" / str(user_id),
-        data_root / "users" / str(user_id) / "attachments",
-    )
-    for root in user_roots:
-        try:
-            resolved_path.relative_to(root)
-        except ValueError:
-            continue
-        return
-    raise ValueError
 
 
 def set_document_status(

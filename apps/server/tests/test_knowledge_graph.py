@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import KGEntity, KGRelation, MemoryItem, MemoryItemEvidence, User
+from anima_server.models import KGEntity, KGRelation, MemoryItem, MemoryItemEvidence, SoulOwner
 from anima_server.services.agent import knowledge_graph as knowledge_graph_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.knowledge_graph import (
@@ -56,12 +56,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _create_user(session: Session, username: str = "kg-test") -> User:
-    user = User(
-        username=username,
-        password_hash="not-used",
-        display_name="KG Test User",
-    )
+def _create_user(session: Session, username: str = "kg-test") -> SoulOwner:
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     session.add(user)
     session.commit()
     return user
@@ -543,7 +539,6 @@ class TestUpsertRelation:
             )
             assert latest is not None
             assert latest["relation_id"] == replacement.id
-
 
     # Additional relation lifecycle coverage.
     def test_readding_superseded_relation_creates_new_interval(self):
@@ -1384,9 +1379,7 @@ class TestIngestConversationGraphRules:
 
             stored_entities = {
                 entity.name: entity.entity_type
-                for entity in db.scalars(
-                    select(KGEntity).where(KGEntity.user_id == user.id)
-                ).all()
+                for entity in db.scalars(select(KGEntity).where(KGEntity.user_id == user.id)).all()
             }
             stored_relations = {
                 (

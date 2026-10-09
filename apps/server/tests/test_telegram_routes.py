@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import suppress
 from pathlib import Path
 
+import pytest
 from anima_server.config import settings
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import TelegramLink
 from conftest import managed_test_client
-from sqlalchemy import select
 
 
 def _register(client):
@@ -46,13 +46,10 @@ class TestTelegramLinkRoutes:
             data = resp.json()
             assert data["chatId"] == 99001
             assert data["userId"] == uid
-            registry_path = (
-                settings.runtime_instance_data_dir
-                and os.path.join(
-                    settings.runtime_instance_data_dir,
-                    "config",
-                    "integration-links.json",
-                )
+            registry_path = settings.runtime_instance_data_dir and os.path.join(
+                settings.runtime_instance_data_dir,
+                "config",
+                "integration-links.json",
             )
             assert registry_path
             registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
@@ -63,7 +60,10 @@ class TestTelegramLinkRoutes:
                 os.path.realpath(settings.data_dir) + os.sep
             )
             with get_user_session_factory(uid)() as db:
-                assert db.scalar(select(TelegramLink)) is None
+                assert (
+                    "telegram_links"
+                    not in __import__("sqlalchemy").inspect(db.get_bind()).get_table_names()
+                )
 
     def test_lookup_returns_linked_user(self):
         os.environ.pop("TELEGRAM_LINK_SECRET", None)
@@ -193,29 +193,6 @@ class TestTelegramLinkRoutes:
             )
             assert resp.status_code == 403
 
-    def test_me_migrates_legacy_link_copy_verify_delete(self):
-        os.environ.pop("TELEGRAM_LINK_SECRET", None)
-        with managed_test_client("tg-legacy-migrate-") as client:
-            uid, headers = _register(client)
-            with get_user_session_factory(uid)() as db:
-                db.add(TelegramLink(chat_id=99010, user_id=uid))
-                db.commit()
-
-            response = client.get("/api/auth/me", headers=headers)
-            assert response.status_code == 200, response.text
-
-            with get_user_session_factory(uid)() as db:
-                assert db.scalar(select(TelegramLink)) is None
-            registry_path = os.path.join(
-                settings.runtime_instance_data_dir,
-                "config",
-                "integration-links.json",
-            )
-            registry = json.loads(Path(registry_path).read_text(encoding="utf-8"))
-            assert registry["links"] == [
-                {"externalId": "99010", "provider": "telegram", "userId": uid}
-            ]
-
     def test_link_replaces_existing_for_same_user(self):
         os.environ.pop("TELEGRAM_LINK_SECRET", None)
         with managed_test_client("tg-replace-user-") as client:
@@ -257,3 +234,70 @@ class TestTelegramLinkRoutes:
                 },
             )
             assert resp.status_code == 401
+
+
+def test_device_link_registry_handles_windows_permission_api_and_closes_file(tmp_path, monkeypatch):
+    from anima_server.services import integration_registry as registry
+
+    opened = []
+    original = registry.tempfile.mkstemp
+
+    def tracked(*args, **kwargs):
+        descriptor, path = original(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor, path
+
+    monkeypatch.setattr(registry.tempfile, "mkstemp", tracked)
+    monkeypatch.delattr(registry.os, "fchmod", raising=False)
+    path = tmp_path / "config" / "integration-links.json"
+    links = [registry.IntegrationLink("telegram", "99001", 7)]
+    try:
+        registry._write(path, links)
+        assert registry._load(path) == links
+        assert not list(path.parent.glob("*.tmp"))
+        with pytest.raises(OSError):
+            os.fstat(opened[0])
+    finally:
+        for descriptor in opened:
+            with suppress(OSError):
+                os.close(descriptor)
+
+
+@pytest.mark.parametrize("boundary", ["fdopen", "fchmod", "chmod", "replace"])
+def test_device_link_publication_failure_closes_descriptor_and_preserves_registry(
+    tmp_path, monkeypatch, boundary
+):
+    from anima_server.services import integration_registry as registry
+
+    path = tmp_path / "integration-links.json"
+    original_payload = {
+        "version": 1,
+        "links": [{"provider": "telegram", "externalId": "99001", "userId": 7}],
+    }
+    path.write_text(json.dumps(original_payload), encoding="utf-8")
+    opened = []
+    original = registry.tempfile.mkstemp
+
+    def tracked(*args, **kwargs):
+        descriptor, path = original(*args, **kwargs)
+        opened.append(descriptor)
+        return descriptor, path
+
+    def deny(*args, **kwargs):
+        raise OSError("publication boundary denied")
+
+    monkeypatch.setattr(registry.tempfile, "mkstemp", tracked)
+    if boundary == "chmod":
+        monkeypatch.delattr(registry.os, "fchmod", raising=False)
+    monkeypatch.setattr(registry.os, boundary, deny, raising=False)
+    try:
+        with pytest.raises(OSError, match="publication boundary denied"):
+            registry._write(path, [registry.IntegrationLink("telegram", "99002", 7)])
+        assert json.loads(path.read_text()) == original_payload
+        assert not list(tmp_path.glob("*.tmp"))
+        with pytest.raises(OSError):
+            os.fstat(opened[0])
+    finally:
+        for descriptor in opened:
+            with suppress(OSError):
+                os.close(descriptor)

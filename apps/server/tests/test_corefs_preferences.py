@@ -2,12 +2,6 @@ from __future__ import annotations
 
 import pytest
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import PresenceConfig
-from anima_server.services.corefs.diary_migration import (
-    migration_opaque_id,
-    read_prepared_writing_body,
-    read_prepared_writing_snapshot,
-)
 from anima_server.services.corefs.formats import (
     CoreFormatError,
     decode_preferences_document,
@@ -16,7 +10,12 @@ from anima_server.services.corefs.formats import (
 from anima_server.services.presence_config import get_presence_config_values
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
-from sqlalchemy import select
+from corefs_catalog_test_support import (
+    migration_opaque_id,
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
+from sqlalchemy import inspect
 
 
 def test_preferences_are_canonical_json_and_round_trip_portable_values() -> None:
@@ -176,6 +175,7 @@ def test_authoritative_preference_patch_writes_only_corefs(
         monkeypatch.setattr(
             "anima_server.services.corefs.preferences.prepare_writing_source_catalog",
             reject_legacy_preparation,
+            raising=False,
         )
         updated = client.patch(
             f"/api/preferences/{user_id}",
@@ -255,10 +255,12 @@ def test_authoritative_presence_uses_only_canonical_preferences(
         monkeypatch.setattr(
             "anima_server.api.routes.presence.update_presence_config",
             reject_legacy_write,
+            raising=False,
         )
         monkeypatch.setattr(
             "anima_server.api.routes.presence.prepare_writing_source_catalog",
             reject_legacy_write,
+            raising=False,
         )
         updated = client.put(
             f"/api/presence/{user_id}",
@@ -275,8 +277,7 @@ def test_authoritative_presence_uses_only_canonical_preferences(
         assert fetched.json()["customInstruction"] == "Canonical value"
 
         with get_user_session_factory(user_id)() as db:
-            legacy = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
-            assert legacy is None
+            assert "presence_configs" not in inspect(db.get_bind()).get_table_names()
             background_values = get_presence_config_values(db, user_id)
         assert background_values.enabled is True
         assert background_values.custom_instruction == "Canonical value"
@@ -297,9 +298,7 @@ def test_presence_read_fails_closed_on_unparseable_manifest(
     monkeypatch: pytest.MonkeyPatch,
     managed_tmp_path,
 ) -> None:
-    """A damaged manifest must not let consent reads fall back to legacy
-    defaults (PR #148 review, P1); only a genuinely never-activated
-    environment may use the legacy row fallback."""
+    """Missing or damaged current authority never grants default consent."""
     from unittest.mock import MagicMock
 
     from anima_server.config import settings
@@ -309,12 +308,11 @@ def test_presence_read_fails_closed_on_unparseable_manifest(
     core.mkdir()
     monkeypatch.setattr(settings, "data_dir", core)
 
-    # Never-activated environment: no manifest file -> legacy defaults with
-    # every initiative gate off.
+    # An environment without current-format authority cannot serve consent.
     db = MagicMock()
     db.scalar.return_value = None
-    values = get_presence_config_values(db, 7)
-    assert values.initiative_enabled is False
+    with pytest.raises(RuntimeError, match="unlocked CoreFS"):
+        get_presence_config_values(db, 7)
 
     # Damaged manifest: fail closed instead of reverting consent to defaults.
     (core / "manifest.json").write_text("{ this is not json", encoding="utf-8")
@@ -324,7 +322,8 @@ def test_presence_read_fails_closed_on_unparseable_manifest(
     # A manifest this process has observed must also fail closed if it later
     # disappears; absence only means never-activated before first observation.
     (core / "manifest.json").write_text("{}", encoding="utf-8")
-    assert get_presence_config_values(db, 7).initiative_enabled is False
+    with pytest.raises(RuntimeError, match="unlocked CoreFS"):
+        get_presence_config_values(db, 7)
     (core / "manifest.json").unlink()
     with pytest.raises(AuthorityStateError):
         get_presence_config_values(db, 7)
@@ -354,6 +353,4 @@ def test_damaged_manifest_returns_conflict_not_server_error() -> None:
 
         response = client.get(f"/api/presence/{user_id}", headers=headers)
         assert response.status_code == 409, response.text
-        assert (
-            response.json()["details"]["code"] == "corefs_content_authority_unavailable"
-        )
+        assert response.json()["details"]["code"] == "corefs_content_authority_unavailable"

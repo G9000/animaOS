@@ -19,7 +19,6 @@ from anima_server.api.deps.unlock import require_unlocked_user_async
 from anima_server.db import get_db
 from anima_server.models import SelfModelBlock
 from anima_server.services.agent.soul_blocks import set_soul_block
-from anima_server.services.corefs.legacy_soul import migrate_legacy_soul_file
 from anima_server.services.data_crypto import df
 
 logger = logging.getLogger(__name__)
@@ -90,7 +89,6 @@ async def get_user_directive(
     db: Session = Depends(get_db),
 ) -> UserDirectiveResponse:
     await require_unlocked_user_async(request, user_id)
-    migrate_legacy_soul_file(db, user_id=user_id)
 
     block = _get_user_directive_block(db, user_id)
     if block is not None:

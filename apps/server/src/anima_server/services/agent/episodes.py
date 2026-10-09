@@ -10,8 +10,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings  # noqa: F401 — tests patch this attribute
-from anima_server.models import AgentProfile, MemoryEpisode, User
+from anima_server.models import AgentProfile, MemoryEpisode
 from anima_server.models.runtime import RuntimeMessage
+from anima_server.services.corefs.account_profile import read_active_account_profile
 from anima_server.services.data_crypto import df, ef
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def _clean_participant_name(value: str | None, *, fallback: str) -> str:
 
 
 def _resolve_episode_participants(db: Session, *, user_id: int) -> tuple[str, str]:
-    user = db.get(User, user_id)
+    user = read_active_account_profile(user_id)
     user_name = _clean_participant_name(
         user.display_name if user is not None else None,
         fallback="the person I'm talking with",
@@ -106,7 +107,9 @@ async def maybe_generate_episode(
     i = 0
     while i < len(messages_raw) - 1:
         if messages_raw[i].role == "user" and messages_raw[i + 1].role == "assistant":
-            pairs.append((messages_raw[i].content_text or "", messages_raw[i + 1].content_text or ""))
+            pairs.append(
+                (messages_raw[i].content_text or "", messages_raw[i + 1].content_text or "")
+            )
             pair_started_at.append(messages_raw[i].created_at)
             i += 2
         else:

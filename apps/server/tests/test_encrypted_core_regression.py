@@ -17,7 +17,6 @@ from anima_server.services.agent.vector_store import reset_vector_store
 from anima_server.services.core import ensure_core_manifest, release_core_lock
 from anima_server.services.corefs.soul_store import create_verified_soul_snapshot
 from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
-from conftest import create_managed_temp_dir
 from fastapi.testclient import TestClient
 
 SENTINEL_ROUND_TRIP = "SENTINEL_ROUND_TRIP_ALPHA_20260320"
@@ -64,6 +63,7 @@ def isolated_runtime_root(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     original_passphrase = settings.core_passphrase
     original_require_encryption = settings.core_require_encryption
     original_runtime_app_data_dir = settings.runtime_app_data_dir
+    original_runtime_instance_data_dir = settings.runtime_instance_data_dir
 
     settings.data_dir = runtime_root
     settings.runtime_app_data_dir = str(managed_tmp_path / "runtime-app-data")
@@ -81,74 +81,27 @@ def isolated_runtime_root(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatc
         settings.core_passphrase = original_passphrase
         settings.core_require_encryption = original_require_encryption
         settings.runtime_app_data_dir = original_runtime_app_data_dir
+        settings.runtime_instance_data_dir = original_runtime_instance_data_dir
 
 
 @pytest.fixture(scope="module")
 def encrypted_core_supported() -> bool:
-    temp_root = create_managed_temp_dir("anima-sqlcipher-probe-")
     try:
-        runtime_root = temp_root / "runtime"
-        runtime_root.mkdir(parents=True, exist_ok=True)
-
-        original_data_dir = settings.data_dir
-        original_database_url = settings.database_url
-        original_passphrase = settings.core_passphrase
-        original_require_encryption = settings.core_require_encryption
-
-        settings.data_dir = runtime_root
-        settings.database_url = f"sqlite:///{(runtime_root / 'anima.db').as_posix()}"
-        settings.core_passphrase = "probe-passphrase"
-        settings.core_require_encryption = True
-
-        _reset_fresh_process_state()
-        try:
-            with _test_client() as client:
-                register = client.post(
-                    "/api/auth/register",
-                    json={
-                        "username": "probe-user",
-                        "password": "probe-password",
-                        "name": "Probe",
-                    },
-                )
-                if register.status_code != 201:
-                    return False
-
-                payload = register.json()
-                user_id = int(payload["id"])
-                headers = {"x-anima-unlock": str(payload["unlockToken"])}
-                write = client.post(
-                    f"/api/memory/{user_id}/items",
-                    headers=headers,
-                    json={"content": "probe", "category": "fact"},
-                )
-                if write.status_code != 201:
-                    return False
-
-            _reset_fresh_process_state()
-
-            with _test_client() as client:
-                login = client.post(
-                    "/api/auth/login",
-                    json={"username": "probe-user", "password": "probe-password"},
-                )
-                return login.status_code == 200
-        except RuntimeError:
-            return False
-        finally:
-            _reset_fresh_process_state()
-            settings.data_dir = original_data_dir
-            settings.database_url = original_database_url
-            settings.core_passphrase = original_passphrase
-            settings.core_require_encryption = original_require_encryption
+        import sqlcipher3
+    except ImportError:
+        return False
+    connection = sqlcipher3.connect(":memory:")
+    try:
+        return bool(connection.execute("PRAGMA cipher_version").fetchone())
     finally:
-        shutil.rmtree(temp_root, ignore_errors=True)
+        connection.close()
 
 
 def _reset_fresh_process_state() -> None:
     release_core_lock()
     dispose_cached_engines()
     unlock_session_store.clear()
+    unlock_session_store.start()
     clear_sqlcipher_key()
     reset_vector_store()
     invalidate_agent_runtime_cache()
@@ -182,7 +135,7 @@ def test_encrypted_core_opens_with_correct_passphrase_and_round_trips_data(
     if not encrypted_core_supported:
         pytest.skip("SQLCipher encrypted open unsupported")
 
-    settings.core_passphrase = "core-passphrase-correct"
+    settings.core_passphrase = ""
     settings.core_require_encryption = True
 
     with _test_client() as client:
@@ -216,8 +169,13 @@ def test_verified_soul_snapshot_remains_sqlcipher_encrypted(
 ) -> None:
     pytest.importorskip("sqlcipher3")
 
-    settings.core_passphrase = "snapshot-core-passphrase"
+    settings.core_passphrase = ""
     settings.core_require_encryption = True
+    import os
+
+    from anima_server.services.sessions import set_sqlcipher_key
+
+    set_sqlcipher_key(os.urandom(32))
     ensure_core_manifest()
     source = isolated_runtime_root / "soul-source.db"
     snapshot = managed_tmp_path / "soul-snapshot.db"
@@ -230,9 +188,9 @@ def test_verified_soul_snapshot_remains_sqlcipher_encrypted(
             )
             connection.exec_driver_sql("INSERT INTO alembic_version VALUES ('202608130001')")
             connection.exec_driver_sql(
-                "CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)"
+                "CREATE TABLE soul_owners (id INTEGER PRIMARY KEY, core_owner_id TEXT NOT NULL)"
             )
-            connection.exec_driver_sql("INSERT INTO users VALUES (7, 'owner')")
+            connection.exec_driver_sql("INSERT INTO soul_owners VALUES (7, 'owner')")
             connection.exec_driver_sql(
                 "CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT NOT NULL)"
             )
@@ -299,7 +257,7 @@ def test_encrypted_core_is_portable_when_canonical_artifacts_are_copied(
     if not encrypted_core_supported:
         pytest.skip("SQLCipher encrypted open unsupported")
 
-    settings.core_passphrase = "portable-core-passphrase"
+    settings.core_passphrase = ""
     settings.core_require_encryption = True
 
     source_root = isolated_runtime_root
@@ -323,6 +281,8 @@ def test_encrypted_core_is_portable_when_canonical_artifacts_are_copied(
     source_root.rename(tombstone_root)
 
     settings.data_dir = copied_root
+    settings.runtime_app_data_dir = str(managed_tmp_path / "fresh-device-app-data")
+    settings.runtime_instance_data_dir = ""
     settings.database_url = f"sqlite:///{(copied_root / 'anima.db').as_posix()}"
     _reset_fresh_process_state()
 
@@ -334,7 +294,7 @@ def test_encrypted_core_is_portable_when_canonical_artifacts_are_copied(
         assert any(item["content"] == SENTINEL_PORTABILITY for item in items.json())
 
 
-def test_legacy_plaintext_soul_is_rewritten_on_first_read_without_data_loss(
+def test_plaintext_soul_file_is_not_an_import_source(
     isolated_runtime_root: Path,
 ) -> None:
     settings.core_passphrase = ""
@@ -364,13 +324,13 @@ def test_legacy_plaintext_soul_is_rewritten_on_first_read_without_data_loss(
 
         first_read = client.get(f"/api/soul/{user_id}", headers=headers)
         assert first_read.status_code == 200
-        assert first_read.json()["content"] == SENTINEL_SOUL_MIGRATION
+        assert first_read.json()["content"] == ""
 
-        assert not legacy_path.exists()
+        assert legacy_path.read_text(encoding="utf-8") == SENTINEL_SOUL_MIGRATION
 
         second_read = client.get(f"/api/soul/{user_id}", headers=headers)
         assert second_read.status_code == 200
-        assert second_read.json()["content"] == SENTINEL_SOUL_MIGRATION
+        assert second_read.json()["content"] == ""
 
     raw_db = (isolated_runtime_root / "soul" / "soul.db").read_bytes()
     assert SENTINEL_SOUL_MIGRATION.encode("utf-8") not in raw_db
@@ -432,15 +392,11 @@ def test_corrupt_legacy_sqlcipher_wrapper_cannot_override_versioned_login(
     with _test_client() as client:
         _register_user(client, "corrupt-wrap", "correct-password", "Corrupt Wrap")
 
-        from anima_server.services.core import (
-            get_wrapped_sqlcipher_key,
-            store_wrapped_sqlcipher_key,
-        )
+        from anima_server.services.core import update_core_manifest
 
-        wrapped = dict(get_wrapped_sqlcipher_key() or {})
-        assert wrapped
-        wrapped["kdf_salt"] = "not-base64"
-        store_wrapped_sqlcipher_key(wrapped)
+        update_core_manifest(
+            lambda manifest: manifest.update(wrapped_sqlcipher_key={"kdf_salt": "not-base64"})
+        )
 
     _reset_fresh_process_state()
 

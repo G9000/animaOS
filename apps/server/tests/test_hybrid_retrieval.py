@@ -19,7 +19,7 @@ from unittest.mock import patch
 import anima_server.services.agent.vector_store as vs
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.services.agent import adaptive_retrieval as adaptive_retrieval_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.embeddings import (
@@ -67,8 +67,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="retrieval_tester", display_name="Tester", password_hash="x")
+def _make_user(db: Session) -> SoulOwner:
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     db.add(user)
     db.flush()
     return user
@@ -644,7 +644,6 @@ class TestBatchEmbeddings:
     async def test_backfill_uses_batch(self):
         """backfill_embeddings should use batch generation instead of sequential."""
         from anima_server.services.agent.embeddings import backfill_embeddings
-        from sqlalchemy import text as sa_text
 
         with _db_session() as db:
             user = _make_user(db)
@@ -652,9 +651,10 @@ class TestBatchEmbeddings:
             _make_item(db, user.id, "item2", embedding=None)
             _make_item(db, user.id, "item3", embedding=None)
             db.commit()
-            # SQLAlchemy JSON stores Python None as JSON 'null', not SQL NULL.
-            # PostgreSQL handles this correctly; SQLite needs an explicit fix.
-            db.execute(sa_text("UPDATE memory_items SET embedding_json = NULL"))
+            # Vectors are disposable and rebuilt from these retained rows.
+            from anima_server.services.agent.derived_soul_state import clear_derived_soul_state
+
+            clear_derived_soul_state(owner_id=user.id)
             db.commit()
 
             batch_call_count = 0
@@ -1070,9 +1070,7 @@ class TestHybridSearchIntegration:
             }
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(
-        self, tmp_path: Path
-    ):
+    async def test_hybrid_search_uses_rust_memory_index_for_keyword_leg(self, tmp_path: Path):
         """The live hybrid path should use the Rust memory index when it is clean."""
         from anima_server.services import anima_core_retrieval as retrieval_module
         from anima_server.services.agent import bm25_index as bm25_module
@@ -1119,9 +1117,7 @@ class TestHybridSearchIntegration:
                 mock_search.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_semantic_search_uses_rust_memory_index_when_available(
-        self, tmp_path: Path
-    ):
+    async def test_semantic_search_uses_rust_memory_index_when_available(self, tmp_path: Path):
         """The semantic leg should prefer Rust-backed vector search when available."""
         from anima_server.services import anima_core_retrieval as retrieval_module
         from anima_server.services.agent.embeddings import semantic_search

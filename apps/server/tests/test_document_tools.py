@@ -19,16 +19,15 @@ from anima_server.services.corefs.indexer import (
     CoreFSDocumentProjection,
     CoreFSProgressiveIndex,
 )
-from anima_server.services.documents import rag as documents_rag
 from anima_server.services.documents.models import (
     DocumentRegistration,
     ExtractedDocumentChunk,
 )
-from anima_server.services.documents.rag import DocumentRagResult
 from anima_server.services.documents.store import (
     register_document,
     replace_document_chunks,
 )
+from corefs_document_test_support import CanonicalDocumentOriginals, canonical_document_uri
 
 pytest_plugins = ("conftest_runtime",)
 
@@ -36,8 +35,31 @@ USER_ID = 7
 OTHER_USER_ID = 8
 
 
+_current_originals: CanonicalDocumentOriginals | None = None
+
+
+@pytest.fixture(autouse=True)
+def canonical_original_boundary(monkeypatch):
+    originals = CanonicalDocumentOriginals()
+    originals.install(monkeypatch)
+    monkeypatch.setattr(f"{__name__}.register_document", originals.register)
+    monkeypatch.setattr(f"{__name__}._current_originals", originals)
+    return originals
+
+
+def _fixture_document_index(user_id):
+    assert _current_originals is not None
+    session = _current_originals.declare_owner(user_id)
+    if not hasattr(session, "runtime_index"):
+        index = CoreFSProgressiveIndex(f"fixture-document-owner-{user_id}")
+        index.unlock(sqlcipher_key=b"s" * 32, local_instance_id=f"instance-{user_id}")
+        session.runtime_index = index
+    return session.runtime_index
+
+
 @pytest.fixture()
-def tool_ctx(runtime_db):
+def tool_ctx(runtime_db, canonical_original_boundary):
+    _fixture_document_index(USER_ID)
     ctx = ToolContext(
         db=runtime_db,
         runtime_db=runtime_db,
@@ -63,17 +85,39 @@ def _make_document(
             user_id=user_id,
             filename=filename,
             mime_type="application/pdf",
-            storage_path=f".anima/documents/{user_id}/{filename}",
+            storage_path=canonical_document_uri(user_id, sha),
             sha256=sha,
             size_bytes=1024,
         ),
     )
     if chunks is not None:
-        replace_document_chunks(
+        rows = replace_document_chunks(
             runtime_db,
             document_id=document.id,
             chunks=chunks,
             parse_quality="docling",
+        )
+        # Explicitly model the current unlock-scoped projection boundary from
+        # this fixture's declared original and deterministic parser output.
+        _fixture_document_index(user_id).replace_document_projection(
+            CoreFSDocumentProjection(
+                document_id=document.id,
+                stable_id=document.storage_path.removeprefix("corefs://object/"),
+                filename=document.filename,
+                mime_type=document.mime_type,
+                content_sha256=document.sha256,
+                chunks=tuple(
+                    CoreFSDocumentChunkProjection(
+                        chunk_index=row.chunk_index,
+                        content_text=row.content_text,
+                        page_start=row.page_start,
+                        page_end=row.page_end,
+                        section_title=row.section_title,
+                        metadata_json=row.metadata_json,
+                    )
+                    for row in rows
+                ),
+            )
         )
     return document
 
@@ -148,10 +192,15 @@ def test_document_tools_use_unlock_scoped_corefs_projection_without_runtime_rows
             ),
         )
     )
-    session = type("Session", (), {"runtime_index": index})()
+    session = type("Session", (), {"user_id": USER_ID, "runtime_index": index})()
+
+    def require_owner(user_id):
+        assert user_id == USER_ID
+        return session
+
     monkeypatch.setattr(
-        "anima_server.services.corefs.asset_authority.active_asset_authority_session",
-        lambda _user_id: session,
+        "anima_server.services.corefs.asset_authority.require_canonical_asset_session",
+        require_owner,
     )
 
     assert "offline.pdf" in search_documents("relay", scope="all")
@@ -160,20 +209,20 @@ def test_document_tools_use_unlock_scoped_corefs_projection_without_runtime_rows
     assert tool_ctx.document_tool_citations == {91: "offline.pdf"}
 
 
-def test_get_document_outline_page_fallback_for_legacy_documents(
+def test_get_document_outline_page_fallback_for_unstructured_current_documents(
     runtime_db, tool_ctx
 ) -> None:
-    legacy_chunks = [
+    unstructured_chunks = [
         ExtractedDocumentChunk(
             chunk_index=index,
-            content_text=f"Legacy chunk {index}.",
+            content_text=f"Unstructured chunk {index}.",
             page_start=index + 1,
             page_end=index + 1,
             section_title=None,
         )
         for index in range(3)
     ]
-    document = _make_document(runtime_db, chunks=legacy_chunks)
+    document = _make_document(runtime_db, chunks=unstructured_chunks)
 
     output = get_document_outline(str(document.id))
 
@@ -203,9 +252,7 @@ def test_read_document_section_by_page_range(runtime_db, tool_ctx) -> None:
     assert "Open the relay housing" not in output
 
 
-def test_read_document_section_unknown_section_lists_known_sections(
-    runtime_db, tool_ctx
-) -> None:
+def test_read_document_section_unknown_section_lists_known_sections(runtime_db, tool_ctx) -> None:
     document = _make_document(runtime_db, chunks=_structured_chunks())
 
     output = read_document_section(str(document.id), section_path="Nope")
@@ -224,15 +271,11 @@ def test_read_document_section_truncates_and_continues(
     assert "[Truncated at 60 chars. Continue with start_chunk=" in first
 
     continuation_index = int(first.rsplit("start_chunk=", 1)[1].split(".", 1)[0])
-    second = read_document_section(
-        str(document.id), start_chunk=str(continuation_index)
-    )
+    second = read_document_section(str(document.id), start_chunk=str(continuation_index))
     assert second != first
 
 
-def test_document_tools_enforce_per_turn_budget(
-    runtime_db, tool_ctx, monkeypatch: Any
-) -> None:
+def test_document_tools_enforce_per_turn_budget(runtime_db, tool_ctx, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "document_tool_turn_char_budget", 250)
     document = _make_document(runtime_db, chunks=_structured_chunks())
 
@@ -297,50 +340,26 @@ def test_document_tools_refuse_other_users_documents(runtime_db, tool_ctx) -> No
     assert tool_ctx.document_tool_citations == {}
 
 
-def test_search_documents_uses_hybrid_search_and_cites(
+def test_search_documents_uses_current_projection_search_and_cites(
     runtime_db, tool_ctx, monkeypatch: Any
 ) -> None:
     document = _make_document(runtime_db, chunks=_structured_chunks())
-    calls: list[dict[str, object]] = []
+    index = _fixture_document_index(USER_ID)
+    projection = index.document_projection(document.id)
+    assert projection is not None
+    assert f"corefs://object/{projection.stable_id}" == document.storage_path
+    calls = []
 
-    def fake_search(
-        db: object,
-        user_id: int,
-        query: str,
-        *,
-        document_ids,
-        limit: int,
-        embedding_fn=None,
-    ) -> list[DocumentRagResult]:
-        calls.append(
-            {"user_id": user_id, "query": query, "document_ids": document_ids, "limit": limit}
-        )
-        return [
-            DocumentRagResult(
-                chunk_id=11,
-                document_id=document.id,
-                filename=document.filename,
-                content="Open the relay housing and inspect the pads.",
-                similarity=0.88,
-                page_start=2,
-                page_end=3,
-                section_title="Guide > Inspection",
-            )
-        ]
+    def fake_search(query, *, document_ids, limit):
+        calls.append({"query": query, "document_ids": document_ids, "limit": limit})
+        return [(projection, projection.chunks[1], 0.88)]
 
-    monkeypatch.setattr(documents_rag, "search_document_chunks", fake_search)
-
+    monkeypatch.setattr(index, "search_document_projections", fake_search)
     output = search_documents("relay housing", document_ids=str(document.id))
-
     assert calls == [
-        {
-            "user_id": USER_ID,
-            "query": "relay housing",
-            "document_ids": [document.id],
-            "limit": 8,
-        }
+        {"query": "relay housing", "document_ids": frozenset({document.id}), "limit": 8}
     ]
-    assert f"doc:{document.id} manual.pdf chunk:11 pages 2-3" in output
+    assert f"doc:{document.id} manual.pdf chunk:1 pages 2-3" in output
     assert 'section "Guide > Inspection"' in output
     assert tool_ctx.document_tool_citations == {document.id: "manual.pdf"}
 
@@ -348,21 +367,21 @@ def test_search_documents_uses_hybrid_search_and_cites(
 def test_search_documents_defaults_to_thread_documents(
     runtime_db, tool_ctx, monkeypatch: Any
 ) -> None:
-    seen_ids: list[object] = []
+    seen_ids = []
 
-    def fake_search(db, user_id, query, *, document_ids, limit, embedding_fn=None):
+    def fake_search(query, *, document_ids, limit):
         seen_ids.append(document_ids)
         return []
 
-    monkeypatch.setattr(documents_rag, "search_document_chunks", fake_search)
+    monkeypatch.setattr(
+        _fixture_document_index(USER_ID), "search_document_projections", fake_search
+    )
     monkeypatch.setattr(
         "anima_server.services.agent.service._recent_thread_document_ids",
         lambda db, *, thread_id, user_id: [4, 5],
     )
-
     output = search_documents("relay")
-
-    assert seen_ids == [[4, 5]]
+    assert seen_ids == [frozenset({4, 5})]
     assert "No document matches" in output
 
 
@@ -382,16 +401,16 @@ def test_search_documents_without_thread_documents_suggests_scope_all(
 def test_search_documents_scope_all_searches_whole_library(
     runtime_db, tool_ctx, monkeypatch: Any
 ) -> None:
-    seen_ids: list[object] = ["sentinel"]
+    seen_ids = ["sentinel"]
 
-    def fake_search(db, user_id, query, *, document_ids, limit, embedding_fn=None):
+    def fake_search(query, *, document_ids, limit):
         seen_ids[0] = document_ids
         return []
 
-    monkeypatch.setattr(documents_rag, "search_document_chunks", fake_search)
-
+    monkeypatch.setattr(
+        _fixture_document_index(USER_ID), "search_document_projections", fake_search
+    )
     search_documents("relay", scope="all")
-
     assert seen_ids[0] is None
 
 
@@ -401,7 +420,10 @@ def test_search_documents_refuses_unowned_ids(runtime_db, tool_ctx) -> None:
         user_id=OTHER_USER_ID,
         filename="secret.pdf",
         sha="c" * 64,
+        chunks=[ExtractedDocumentChunk(chunk_index=0, content_text="Anything confidential")],
     )
+    assert _fixture_document_index(OTHER_USER_ID).document_projection(other_document.id) is not None
+    assert _fixture_document_index(USER_ID).document_projection(other_document.id) is None
 
     output = search_documents("anything", document_ids=str(other_document.id))
 
@@ -449,9 +471,7 @@ def test_merged_section_paths_stay_addressable(runtime_db, tool_ctx) -> None:
     assert "- Guide > Alpha" in outline
     assert "- Guide > Beta" in outline
 
-    by_merged_path = read_document_section(
-        str(document.id), section_path="Guide > Beta"
-    )
+    by_merged_path = read_document_section(str(document.id), section_path="Guide > Beta")
     assert "Beta section body" in by_merged_path
 
 

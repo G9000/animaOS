@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { Button, StandardInput, glass } from "@anima/standard-templates";
 import { api, setUnlockToken } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
+import { authUserIdentity } from "../../lib/userIdentity";
 
 interface PersonaTemplate {
   id: string;
@@ -113,7 +114,7 @@ export default function Register() {
         "companion",
       );
       setUnlockToken(u.unlockToken);
-      setUser({ id: u.id, username: u.username, name: u.name });
+      setUser(authUserIdentity(u));
       navigate("/");
     } catch (e) {
       setError(e instanceof Error ? e.message : "registration failed");

@@ -14,7 +14,6 @@ from .session import (
     build_session_factory_for_db,
     dispose_all_user_engines,
     dispose_cached_engines,
-    engine,
     get_db,
 )
 
@@ -27,7 +26,6 @@ __all__ = [
     "dispose_all_user_engines",
     "dispose_cached_engines",
     "dispose_runtime_engine",
-    "engine",
     "get_db",
     "get_runtime_db",
     "get_runtime_engine",

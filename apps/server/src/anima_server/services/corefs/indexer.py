@@ -170,15 +170,12 @@ class CoreFSProgressiveIndex:
         self._local_instance_id: str | None = None
         self._catalog_generation: int | None = None
         self._families: dict[str, FamilyReadiness] = {}
+        self._runtime_cache_unavailable: tuple[str, ...] = ()
         self._documents: dict[str, tuple[str, str, str]] = {}
         self._document_projections: dict[int, CoreFSDocumentProjection] = {}
         self._image_projections: dict[int, CoreFSImageProjection] = {}
-        self._knowledge_source_projections: dict[
-            str, CoreFSKnowledgeSourceProjection
-        ] = {}
-        self._knowledge_concept_projections: dict[
-            int, CoreFSKnowledgeConceptProjection
-        ] = {}
+        self._knowledge_source_projections: dict[str, CoreFSKnowledgeSourceProjection] = {}
+        self._knowledge_concept_projections: dict[int, CoreFSKnowledgeConceptProjection] = {}
         self._vectors: dict[str, tuple[float, ...]] = {}
         self._runtime_embeddings: dict[
             tuple[str, int],
@@ -276,6 +273,25 @@ class CoreFSProgressiveIndex:
             self._last_cursor = None
             self._state = ReadinessState.CATALOG_LOADING
 
+    def set_runtime_cache_unavailable(self, row_ids: tuple[str, ...]) -> None:
+        with self._lock:
+            self._require_unlocked()
+            self._runtime_cache_unavailable = row_ids
+            if row_ids:
+                self._families["runtime_cache"] = FamilyReadiness(
+                    total=len(row_ids),
+                    processed=0,
+                    failed=len(row_ids),
+                    degraded=True,
+                    unavailable_object_ids=row_ids,
+                )
+            else:
+                self._families.pop("runtime_cache", None)
+
+    def runtime_cache_row_unavailable(self, row_id: str) -> bool:
+        with self._lock:
+            return row_id in self._runtime_cache_unavailable
+
     def publish_catalog(
         self,
         *,
@@ -285,7 +301,11 @@ class CoreFSProgressiveIndex:
     ) -> None:
         if catalog_generation < 0:
             raise ValueError("catalog generation must be non-negative")
-        degraded = degraded or {}
+        degraded = dict(degraded or {})
+        families = dict(families)
+        if self._runtime_cache_unavailable:
+            families["runtime_cache"] = len(self._runtime_cache_unavailable)
+            degraded["runtime_cache"] = self._runtime_cache_unavailable
         with self._lock:
             self._require_state(ReadinessState.CATALOG_LOADING)
             self._catalog_generation = catalog_generation
@@ -604,8 +624,7 @@ class CoreFSProgressiveIndex:
         with self._lock:
             self._require_unlocked()
             return tuple(
-                self._document_projections[key]
-                for key in sorted(self._document_projections)
+                self._document_projections[key] for key in sorted(self._document_projections)
             )
 
     def search_document_projections(
@@ -621,9 +640,7 @@ class CoreFSProgressiveIndex:
         terms = tuple(dict.fromkeys(normalized.split()))
         with self._lock:
             self._require_unlocked()
-            ranked: list[
-                tuple[float, CoreFSDocumentProjection, CoreFSDocumentChunkProjection]
-            ] = []
+            ranked: list[tuple[float, CoreFSDocumentProjection, CoreFSDocumentChunkProjection]] = []
             for projection in self._document_projections.values():
                 if document_ids is not None and projection.document_id not in document_ids:
                     continue
@@ -640,10 +657,7 @@ class CoreFSProgressiveIndex:
                     item[2].chunk_index,
                 )
             )
-            return tuple(
-                (projection, chunk, score)
-                for score, projection, chunk in ranked[:limit]
-            )
+            return tuple((projection, chunk, score) for score, projection, chunk in ranked[:limit])
 
     def replace_image_projection(self, projection: CoreFSImageProjection) -> None:
         if (
@@ -923,9 +937,7 @@ class CoreFSProgressiveIndex:
             if self._vectors:
                 expected_dimension = len(next(iter(self._vectors.values())))
                 if len(normalized) != expected_dimension:
-                    raise ValueError(
-                        "semantic vector dimension does not match index generation"
-                    )
+                    raise ValueError("semantic vector dimension does not match index generation")
             self._vectors[object_id] = normalized
 
     def finish(self) -> None:
@@ -1118,12 +1130,8 @@ class CoreFSProgressiveIndex:
                 "documents": len(self._documents),
                 "document_projections": len(self._document_projections),
                 "image_projections": len(self._image_projections),
-                "knowledge_source_projections": len(
-                    self._knowledge_source_projections
-                ),
-                "knowledge_concept_projections": len(
-                    self._knowledge_concept_projections
-                ),
+                "knowledge_source_projections": len(self._knowledge_source_projections),
+                "knowledge_concept_projections": len(self._knowledge_concept_projections),
                 "vectors": len(self._vectors) + len(self._runtime_embeddings),
                 "queries": len(self._queries),
                 "blind_tokens": sum(
@@ -1159,6 +1167,7 @@ class CoreFSProgressiveIndex:
             self._pending_blind_generation = None
             self._pending_blind_expected_count = None
             self._families.clear()
+            self._runtime_cache_unavailable = ()
             self._catalog_generation = None
             self._local_instance_id = None
             self._last_cursor = None

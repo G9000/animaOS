@@ -651,7 +651,7 @@ def _document_source_needs_embeddings(
     source_uri = runtime_private_exact_lookup_value(
         db,
         owner_id=int(document.user_id),
-        value=f"runtime-document://{document.id}",
+        value=document.storage_path,
         namespace="runtime_source.source_uri",
     )
     source = db.scalar(

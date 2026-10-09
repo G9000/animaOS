@@ -14,14 +14,14 @@ from anima_server.models.runtime import (
     RuntimeKnowledgeLink,
 )
 from anima_server.services.agent.sleep_agent import _task_knowledge_autocompile
-from anima_server.services.ingestion.adapters.text import (
-    ingest_markdown_content,
-    ingest_text_content,
-)
 from anima_server.services.ingestion.document_compiler import (
     compile_source_knowledge_auto,
     compile_source_knowledge_llm,
     find_autocompile_candidates,
+)
+from corefs_ingestion_test_support import (
+    seed_captured_markdown_projection,
+    seed_captured_text_projection,
 )
 from sqlalchemy import select
 
@@ -48,7 +48,7 @@ class _DownClient:
 
 
 def _ingest_markdown(runtime_db, content: str, *, filename: str):
-    source, _artifacts, spans = ingest_markdown_content(
+    source, _artifacts, spans = seed_captured_markdown_projection(
         runtime_db,
         user_id=USER_ID,
         content=content,
@@ -117,9 +117,7 @@ async def test_llm_compile_produces_cited_concepts(runtime_db) -> None:
     assert result.concept_count == 2
     assert result.link_count == 1
     concept = runtime_db.scalar(
-        select(RuntimeKnowledgeConcept).where(
-            RuntimeKnowledgeConcept.slug == "relay-inspection"
-        )
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "relay-inspection")
     )
     assert concept is not None
     citations = list(
@@ -249,9 +247,7 @@ async def test_llm_compile_merges_same_slug_across_sources(runtime_db) -> None:
 
 @pytest.mark.asyncio()
 async def test_llm_compile_drops_uncited_concepts(runtime_db) -> None:
-    source, spans = _ingest_markdown(
-        runtime_db, "# Facts\n\nCited fact body.", filename="facts.md"
-    )
+    source, spans = _ingest_markdown(runtime_db, "# Facts\n\nCited fact body.", filename="facts.md")
     span_ids = _evidence_ids(spans)
     client = _ScriptedClient(
         _llm_payload(
@@ -292,9 +288,7 @@ async def test_llm_compile_drops_uncited_concepts(runtime_db) -> None:
     assert result.status == "completed"
     assert result.concept_count == 1
     assert result.link_count == 0
-    slugs = set(
-        runtime_db.scalars(select(RuntimeKnowledgeConcept.slug)).all()
-    )
+    slugs = set(runtime_db.scalars(select(RuntimeKnowledgeConcept.slug)).all())
     assert "cited-topic" in slugs
     assert "uncited-topic" not in slugs
 
@@ -350,9 +344,7 @@ async def test_llm_compile_drops_malformed_optional_links(runtime_db) -> None:
 
 @pytest.mark.asyncio()
 async def test_llm_compile_fails_run_when_nothing_is_cited(runtime_db) -> None:
-    source, spans = _ingest_markdown(
-        runtime_db, "# Facts\n\nBody.", filename="allbad.md"
-    )
+    source, spans = _ingest_markdown(runtime_db, "# Facts\n\nBody.", filename="allbad.md")
     client = _ScriptedClient(
         _llm_payload(
             [
@@ -384,9 +376,7 @@ async def test_llm_compile_fails_run_when_nothing_is_cited(runtime_db) -> None:
 async def test_llm_compile_malformed_output_leaves_concepts_untouched(
     runtime_db,
 ) -> None:
-    source, spans = _ingest_markdown(
-        runtime_db, "# Facts\n\nBody.", filename="malformed.md"
-    )
+    source, spans = _ingest_markdown(runtime_db, "# Facts\n\nBody.", filename="malformed.md")
 
     result = await compile_source_knowledge_llm(
         runtime_db,
@@ -403,9 +393,7 @@ async def test_llm_compile_malformed_output_leaves_concepts_untouched(
 async def test_llm_compile_falls_back_to_deterministic_when_model_down(
     runtime_db,
 ) -> None:
-    source, spans = _ingest_markdown(
-        runtime_db, "# Facts\n\nBody.", filename="down.md"
-    )
+    source, spans = _ingest_markdown(runtime_db, "# Facts\n\nBody.", filename="down.md")
 
     result = await compile_source_knowledge_llm(
         runtime_db, source=source, spans=spans, llm_client=_DownClient()
@@ -422,12 +410,8 @@ async def test_llm_compile_falls_back_to_deterministic_when_model_down(
 
 
 @pytest.mark.asyncio()
-async def test_auto_dispatcher_honors_compiler_setting(
-    runtime_db, monkeypatch: Any
-) -> None:
-    source, spans = _ingest_markdown(
-        runtime_db, "# Facts\n\nBody.", filename="dispatch.md"
-    )
+async def test_auto_dispatcher_honors_compiler_setting(runtime_db, monkeypatch: Any) -> None:
+    source, spans = _ingest_markdown(runtime_db, "# Facts\n\nBody.", filename="dispatch.md")
 
     monkeypatch.setattr(settings, "knowledge_compiler", "deterministic")
     result = await compile_source_knowledge_auto(
@@ -466,7 +450,7 @@ def test_find_autocompile_candidates_policy_budget_and_cooldown(runtime_db) -> N
     markdown_a, _ = _ingest_markdown(runtime_db, "# A\n\nBody A.", filename="a.md")
     markdown_b, _ = _ingest_markdown(runtime_db, "# B\n\nBody B.", filename="b.md")
     markdown_c, _ = _ingest_markdown(runtime_db, "# C\n\nBody C.", filename="c.md")
-    text_source, _, _ = ingest_text_content(
+    text_source, _, _ = seed_captured_text_projection(
         runtime_db,
         user_id=USER_ID,
         content="Plain text body.",
@@ -508,38 +492,28 @@ async def test_autocompile_task_compiles_within_budget_and_cooldown(
     monkeypatch.setattr(settings, "knowledge_autocompile", "markdown_only")
     monkeypatch.setattr(settings, "knowledge_autocompile_budget_per_cycle", 2)
     for index in range(3):
-        _ingest_markdown(
-            runtime_db, f"# Doc {index}\n\nBody {index}.", filename=f"doc{index}.md"
-        )
+        _ingest_markdown(runtime_db, f"# Doc {index}\n\nBody {index}.", filename=f"doc{index}.md")
 
     @contextmanager
     def _factory():
         yield runtime_db
 
-    first = await _task_knowledge_autocompile(
-        user_id=USER_ID, runtime_db_factory=_factory
-    )
+    first = await _task_knowledge_autocompile(user_id=USER_ID, runtime_db_factory=_factory)
     assert first["policy"] == "markdown_only"
     assert len(first["compiled"]) == 2
     assert all(entry["status"] == "completed" for entry in first["compiled"])
 
-    second = await _task_knowledge_autocompile(
-        user_id=USER_ID, runtime_db_factory=_factory
-    )
+    second = await _task_knowledge_autocompile(user_id=USER_ID, runtime_db_factory=_factory)
     # The third source compiles; the first two are inside the cooldown window
     # and already have concepts.
     assert len(second["compiled"]) == 1
 
-    third = await _task_knowledge_autocompile(
-        user_id=USER_ID, runtime_db_factory=_factory
-    )
+    third = await _task_knowledge_autocompile(user_id=USER_ID, runtime_db_factory=_factory)
     assert third["compiled"] == []
 
 
 @pytest.mark.asyncio()
-async def test_autocompile_task_off_policy_is_inert(
-    runtime_db, monkeypatch: Any
-) -> None:
+async def test_autocompile_task_off_policy_is_inert(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "knowledge_autocompile", "off")
     _ingest_markdown(runtime_db, "# Doc\n\nBody.", filename="inert.md")
 
@@ -547,9 +521,7 @@ async def test_autocompile_task_off_policy_is_inert(
     def _factory():
         yield runtime_db
 
-    result = await _task_knowledge_autocompile(
-        user_id=USER_ID, runtime_db_factory=_factory
-    )
+    result = await _task_knowledge_autocompile(user_id=USER_ID, runtime_db_factory=_factory)
 
     assert result == {"policy": "off", "compiled": []}
     assert runtime_db.scalar(select(RuntimeKnowledgeConcept)) is None
@@ -657,9 +629,7 @@ async def test_llm_compile_coalesces_duplicate_slugs_across_batches(
     assert len(client.cited) == 2
     concepts = list(
         runtime_db.scalars(
-            select(RuntimeKnowledgeConcept).where(
-                RuntimeKnowledgeConcept.slug == "shared-topic"
-            )
+            select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "shared-topic")
         ).all()
     )
     assert len(concepts) == 1
@@ -733,7 +703,6 @@ async def test_compile_prompt_includes_pdf_section_titles(runtime_db) -> None:
     import hashlib
 
     from anima_server.models.runtime import (
-        RuntimeSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
     )
@@ -741,23 +710,25 @@ async def test_compile_prompt_includes_pdf_section_titles(runtime_db) -> None:
     def _sha(value: str) -> str:
         return hashlib.sha256(value.encode()).hexdigest()
 
-    source = RuntimeSource(
+    from corefs_ingestion_test_support import register_simulated_authored_source
+
+    source = register_simulated_authored_source(
+        runtime_db,
         user_id=USER_ID,
         kind="document",
-        source_uri="runtime-document://1",
-        content_hash=_sha("pdf source"),
+        origin="manual.pdf",
+        original_bytes=b"%PDF-1.4\nRelay body.\n%%EOF",
         title="manual.pdf",
         media_type="application/pdf",
-        status="indexed",
+        metadata={},
     )
-    runtime_db.add(source)
-    runtime_db.flush()
+    source.status = "indexed"
     artifact = RuntimeSourceArtifact(
         user_id=USER_ID,
         source_id=source.id,
         artifact_kind="document_text",
         content_text="Relay body.",
-        content_hash=_sha("artifact"),
+        content_hash=_sha("Relay body."),
     )
     runtime_db.add(artifact)
     runtime_db.flush()
@@ -769,12 +740,10 @@ async def test_compile_prompt_includes_pdf_section_titles(runtime_db) -> None:
         locator_json={"chunk_index": 0},
         locator_hash=RuntimeSourceSpan.compute_locator_hash({"chunk_index": 0}),
         content_text="Relay body.",
-        content_hash=_sha("span"),
+        content_hash=_sha("Relay body."),
         metadata_json={
             "section_title": "Guide (truncated)",
-            "source_metadata": {
-                "section_paths": ["Guide > Relay Installation Procedures"]
-            },
+            "source_metadata": {"section_paths": ["Guide > Relay Installation Procedures"]},
         },
     )
     runtime_db.add(span)
@@ -829,9 +798,7 @@ async def test_coalesced_batches_merge_bodies_not_only_citations(runtime_db) -> 
                             "slug": "bodies-summary",
                             "title": "Bodies",
                             "description": "s",
-                            "body_markdown": (
-                                f"# Bodies\n\nEvidence from batch {self.batch}."
-                            ),
+                            "body_markdown": (f"# Bodies\n\nEvidence from batch {self.batch}."),
                             "source_span_ids": visible[:1],
                             "tags": [],
                         }
@@ -846,9 +813,7 @@ async def test_coalesced_batches_merge_bodies_not_only_citations(runtime_db) -> 
 
     assert result.status == "completed"
     concept = runtime_db.scalar(
-        select(RuntimeKnowledgeConcept).where(
-            RuntimeKnowledgeConcept.slug == "bodies-summary"
-        )
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "bodies-summary")
     )
     assert concept is not None
     # Both batches' evidence reaches the page body; the repeated heading is

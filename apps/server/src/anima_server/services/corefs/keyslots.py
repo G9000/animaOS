@@ -3,15 +3,15 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-from collections.abc import Set
-from dataclasses import dataclass, field
+from collections.abc import Callable, Set
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import anima_core
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import SoulKeyslot, UserKey
+from anima_server.models import SoulKeyslot
 from anima_server.services.core import (
     ensure_core_manifest,
     get_manifest_path,
@@ -42,10 +42,8 @@ from anima_server.services.crypto import (
     KEY_LENGTH,
     SALT_LENGTH,
     WrappedDekRecord,
-    unwrap_dek,
 )
 from anima_server.services.data_crypto import ALL_DOMAINS
-from anima_server.services.recovery import RECOVERY_DOMAIN_PREFIX
 
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 
@@ -336,200 +334,90 @@ def _build_soul_row(
     )
 
 
-def backfill_legacy_soul_keyslots(
-    db: Session,
-    *,
-    user_id: int,
-    password: str,
-    recovery_phrase: str,
-    core_id: str,
-    owner_id: str,
-    expected_deks: dict[str, bytes] | None = None,
-) -> dict[str, bytes]:
-    deks = verify_legacy_soul_keys(
-        db,
-        user_id=user_id,
-        password=password,
-        recovery_phrase=recovery_phrase,
-        expected_deks=expected_deks,
-    )
-    existing = list(db.scalars(select(SoulKeyslot).where(SoulKeyslot.owner_id == owner_id)).all())
-    if existing:
-        expected_identities = {
-            (domain, path.value, 1, 1, KeyslotStatus.ACTIVE.value)
-            for domain in ALL_DOMAINS
-            for path in (WrappingPath.PASSWORD, WrappingPath.RECOVERY)
-        }
-        identities = {
-            (
-                row.domain,
-                row.wrapping_path,
-                row.key_version,
-                row.credential_generation,
-                row.status,
-            )
-            for row in existing
-        }
-        if identities != expected_identities or len(existing) != len(expected_identities):
-            raise ValueError("incomplete or ambiguous Soul keyslot backfill")
-        credentials = {
-            WrappingPath.PASSWORD.value: password,
-            WrappingPath.RECOVERY.value: recovery_phrase,
-        }
-        for row in existing:
-            aad = soul_keyslot_aad(
-                core_id=core_id,
-                owner_id=owner_id,
-                domain=row.domain,
-                key_version=row.key_version,
-                credential_generation=row.credential_generation,
-                wrapping_path=WrappingPath(row.wrapping_path),
-            )
-            if (
-                unwrap_keyslot_secret(credentials[row.wrapping_path], _soul_row_record(row), aad)
-                != deks[row.domain]
-            ):
-                raise ValueError(f"existing Soul keyslot mismatch for domain: {row.domain}")
-        return deks
-
-    for domain in ALL_DOMAINS:
-        password_dek = deks[domain]
-        recovery_dek = deks[domain]
-        db.add(
-            _build_soul_row(
-                password,
-                password_dek,
-                core_id=core_id,
-                owner_id=owner_id,
-                domain=domain,
-                wrapping_path=WrappingPath.PASSWORD,
-                status=KeyslotStatus.ACTIVE,
-                key_version=1,
-                credential_generation=1,
-            )
-        )
-        db.add(
-            _build_soul_row(
-                recovery_phrase,
-                recovery_dek,
-                core_id=core_id,
-                owner_id=owner_id,
-                domain=domain,
-                wrapping_path=WrappingPath.RECOVERY,
-                status=KeyslotStatus.ACTIVE,
-                key_version=1,
-                credential_generation=1,
-            )
-        )
-    db.flush()
-    return deks
-
-
-def verify_legacy_soul_keys(
-    db: Session,
-    *,
-    user_id: int,
-    password: str,
-    recovery_phrase: str,
-    expected_deks: dict[str, bytes] | None = None,
-) -> dict[str, bytes]:
-    """Reopen every legacy password/recovery domain and prove one-to-one parity."""
-    legacy = list(db.scalars(select(UserKey).where(UserKey.user_id == user_id)).all())
-    allowed = set(ALL_DOMAINS) | {f"{RECOVERY_DOMAIN_PREFIX}{domain}" for domain in ALL_DOMAINS}
-    grouped: dict[str, list[UserKey]] = {}
-    for row in legacy:
-        if row.domain not in allowed:
-            raise ValueError(f"unknown legacy Soul key domain: {row.domain}")
-        grouped.setdefault(row.domain, []).append(row)
-    missing = allowed - set(grouped)
-    duplicates = {domain for domain, rows in grouped.items() if len(rows) != 1}
-    if missing or duplicates:
-        raise ValueError("missing or duplicate legacy Soul key domains")
-
-    deks: dict[str, bytes] = {}
-    from anima_server.services.auth import to_wrapped_dek_record
-
-    for domain in ALL_DOMAINS:
-        password_row = grouped[domain][0]
-        recovery_domain = f"{RECOVERY_DOMAIN_PREFIX}{domain}"
-        recovery_row = grouped[recovery_domain][0]
-        password_dek = unwrap_dek(
-            password,
-            to_wrapped_dek_record(password_row),
-            user_id,
-            domain,
-        )
-        recovery_dek = unwrap_dek(
-            recovery_phrase,
-            to_wrapped_dek_record(recovery_row),
-            user_id,
-            recovery_domain,
-        )
-        if password_dek != recovery_dek:
-            raise ValueError(f"legacy password/recovery key mismatch for domain: {domain}")
-        if expected_deks is not None and expected_deks.get(domain) != password_dek:
-            raise ValueError(f"legacy key does not match unlocked domain: {domain}")
-        deks[domain] = password_dek
-    return deks
-
-
-def provision_initial_key_hierarchy(
-    db: Session,
+def prepare_initial_manifest_roots(
     *,
     user_id: int,
     password: str,
     recovery_phrase: str,
     sqlcipher_key: bytes,
-    deks: dict[str, bytes],
+    frk: object | None = None,
 ) -> object:
-    manifest = ensure_core_manifest()
-    core_id = str(manifest["core_id"])
-    owner_id = str(manifest["owner_id"])
-    if manifest.get("keyslots"):
-        raise ValueError("Core key hierarchy is already provisioned")
+    """Durably authenticate pending roots before the first encrypted Soul write."""
+    from datetime import UTC, datetime
 
-    backfill_legacy_soul_keyslots(
-        db,
-        user_id=user_id,
-        password=password,
-        recovery_phrase=recovery_phrase,
-        core_id=core_id,
-        owner_id=owner_id,
-        expected_deks=deks,
+    from anima_server.services.corefs.authority import PORTABLE_CORE_RELEASE
+
+    manifest = ensure_core_manifest()
+    if manifest.get("keyslots") and manifest.get("initial_registration_state") != "pending":
+        raise ValueError("Core key hierarchy is already provisioned")
+    protected_fields = (
+        "core_id",
+        "owner_id",
+        "owner_user_id",
+        "owner_binding",
+        "keyslots",
+        "initial_registration_state",
+        "initial_registration_created_at",
+        "active_password_credential_generation",
+        "active_recovery_credential_generation",
+        "frk_rotation",
     )
-    frk = anima_core.corefs_generate_root_key()
+    expected = json.dumps(
+        {field: manifest.get(field) for field in protected_fields}, sort_keys=True
+    )
+    if manifest.get("initial_registration_state") == "pending":
+        roots = unlock_manifest_key_hierarchy(
+            credential=password,
+            wrapping_path=WrappingPath.PASSWORD,
+            generation=1,
+            status=KeyslotStatus.PENDING,
+        )
+        if (
+            manifest.get("owner_user_id") != user_id
+            or roots.sqlcipher_key != sqlcipher_key
+            or frk is None
+            or set(roots.frks) != {1}
+            or not roots.frks[1].matches(frk)
+        ):
+            raise ValueError("Initial pending registration roots or owner changed")
+    frk = frk if frk is not None else anima_core.corefs_generate_root_key()
     slots = [
         _manifest_slot(
             credential,
             secret,
-            core_id=core_id,
-            owner_id=owner_id,
+            core_id=str(manifest["core_id"]),
+            owner_id=str(manifest["owner_id"]),
             purpose=purpose,
             wrapping_path=path,
-            status=KeyslotStatus.ACTIVE,
+            status=KeyslotStatus.PENDING,
             scope=PayloadScope.FULL,
-            key_version=key_version,
+            key_version=1,
             credential_generation=1,
-            frk_version=frk_version,
-            object_key_epoch=object_key_epoch,
+            frk_version=version,
+            object_key_epoch=epoch,
         )
         for credential, path in (
             (password, WrappingPath.PASSWORD),
             (recovery_phrase, WrappingPath.RECOVERY),
         )
-        for secret, purpose, key_version, frk_version, object_key_epoch in (
-            (sqlcipher_key, KeyPurpose.SOUL, 1, None, None),
-            (frk, KeyPurpose.FILESYSTEM_ROOT, 1, 1, 1),
+        for secret, purpose, version, epoch in (
+            (sqlcipher_key, KeyPurpose.SOUL, None, None),
+            (frk, KeyPurpose.FILESYSTEM_ROOT, 1, 1),
         )
     ]
-    db.commit()
 
-    def _activate(value: dict[str, object]) -> None:
-        from anima_server.services.corefs.authority import PORTABLE_CORE_RELEASE
-
+    def persist(value):
+        actual = json.dumps({field: value.get(field) for field in protected_fields}, sort_keys=True)
+        if actual != expected:
+            raise ValueError("Initial registration manifest changed before root publication")
         value["portable_core_release"] = PORTABLE_CORE_RELEASE
         value["keyslots_version"] = 1
         value["keyslots"] = [slot.to_dict() for slot in slots]
+        value["owner_user_id"] = user_id
+        value["owner_binding"] = {"legacy_user_id": user_id}
+        value["encryption_mode"] = "sqlcipher+field"
+        value["initial_registration_state"] = "pending"
+        value.setdefault("initial_registration_created_at", datetime.now(UTC).isoformat())
         value["active_password_credential_generation"] = 1
         value["active_recovery_credential_generation"] = 1
         value["frk_rotation"] = {
@@ -540,8 +428,74 @@ def provision_initial_key_hierarchy(
             "object_key_epoch": 1,
         }
 
-    update_core_manifest(_activate)
-    return anima_core.corefs_derive_subkeys(frk, 1)
+    update_core_manifest(persist)
+    return frk
+
+
+def activate_initial_manifest_roots() -> None:
+    def activate(value):
+        if value.get("initial_registration_state") != "pending":
+            return
+        slots = _manifest_slots(value)
+        if len(slots) != 4 or any(
+            slot.status is not KeyslotStatus.PENDING or slot.credential_generation != 1
+            for slot in slots
+        ):
+            raise ValueError("Initial pending root hierarchy is incomplete")
+        value["keyslots"] = [replace(slot, status=KeyslotStatus.ACTIVE).to_dict() for slot in slots]
+        value.pop("initial_registration_state", None)
+        value.pop("initial_registration_created_at", None)
+
+    update_core_manifest(activate)
+
+
+def provision_initial_key_hierarchy(
+    db: Session,
+    *,
+    user_id: int,
+    password: str,
+    recovery_phrase: str,
+    sqlcipher_key: bytes,
+    deks: dict[str, bytes],
+    prepare_content: Callable[[object], None],
+    activate_content: Callable[[object], None],
+    initial_frk: object,
+) -> object:
+    manifest = ensure_core_manifest()
+    core_id = str(manifest["core_id"])
+    owner_id = str(manifest["owner_id"])
+    if manifest.get("initial_registration_state") != "pending":
+        raise ValueError("Initial authenticated pending roots are unavailable")
+
+    if set(deks) != set(ALL_DOMAINS):
+        raise ValueError("Initial Soul domains are incomplete")
+    if db.scalar(select(SoulKeyslot.id).limit(1)) is not None:
+        raise ValueError("Initial Soul keyslots are already provisioned")
+    for domain, secret in deks.items():
+        for credential, path in (
+            (password, WrappingPath.PASSWORD),
+            (recovery_phrase, WrappingPath.RECOVERY),
+        ):
+            db.add(
+                _build_soul_row(
+                    credential,
+                    secret,
+                    core_id=core_id,
+                    owner_id=owner_id,
+                    domain=domain,
+                    wrapping_path=path,
+                    status=KeyslotStatus.ACTIVE,
+                    key_version=1,
+                    credential_generation=1,
+                )
+            )
+    db.flush()
+    subkeys = anima_core.corefs_derive_subkeys(initial_frk, 1)
+    prepare_content(subkeys)
+    db.commit()
+    activate_initial_manifest_roots()
+    activate_content(subkeys)
+    return subkeys
 
 
 def derive_active_corefs_subkeys(
@@ -634,6 +588,13 @@ def unlock_manifest_key_hierarchy(
 ) -> UnlockedManifestRoots:
     """Authenticate and open only the roots stored in the public manifest."""
     manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
+    if (
+        status is KeyslotStatus.ACTIVE
+        and generation is None
+        and manifest.get("initial_registration_state") == "pending"
+    ):
+        status = KeyslotStatus.PENDING
+        generation = 1
     return _unlock_manifest_key_hierarchy(
         manifest,
         credential=credential,

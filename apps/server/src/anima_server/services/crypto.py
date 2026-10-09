@@ -10,9 +10,7 @@ from dataclasses import dataclass
 from typing import TypeVar
 
 from argon2.low_level import Type, hash_secret_raw
-from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 _T = TypeVar("_T")
 _LARGE_STACK = 8 * 1024 * 1024  # 8 MiB
@@ -27,14 +25,6 @@ IV_LENGTH = 12
 AUTH_TAG_LENGTH = 16
 ENCRYPTED_PREFIX = "enc2"
 
-# Vault/succession use stronger parameters — these payloads may be stored
-# offline for years and deserve additional brute-force resistance.
-VAULT_ARGON2_TIME_COST = 4
-VAULT_ARGON2_MEMORY_COST_KIB = 128 * 1024
-VAULT_ARGON2_PARALLELISM = 4
-
-# Domain separator for HKDF-based SQLCipher key derivation
-SQLCIPHER_HKDF_INFO = b"anima-sqlcipher-v1"
 logger = logging.getLogger(__name__)
 
 
@@ -108,58 +98,11 @@ def derive_argon2id_key(
     return _run_with_large_stack(_derive)
 
 
-def derive_sqlcipher_key(passphrase: str, salt: bytes) -> bytes:
-    """Derive a 32-byte raw key for SQLCipher from the passphrase.
-
-    Uses Argon2id for the memory-hard derivation, then HKDF-SHA256 with a
-    domain separator to produce a key independent of the field-level KEK.
-    The returned key should be passed to SQLCipher in raw hex format via
-    ``PRAGMA key = "x'<hex>'"`` — this bypasses SQLCipher's weaker internal
-    PBKDF2, giving us full control of the KDF chain.
-    """
-    master = derive_argon2id_key(passphrase, salt)
-    return HKDF(
-        algorithm=hashes.SHA256(),
-        length=KEY_LENGTH,
-        salt=None,  # salt already consumed by Argon2id
-        info=SQLCIPHER_HKDF_INFO,
-    ).derive(master)
-
-
-def _build_dek_wrap_aad(user_id: int, domain: str) -> bytes:
-    return f"dek-wrap:user={user_id}:domain={domain}".encode()
-
-
-def create_wrapped_dek(
-    passphrase: str,
-    user_id: int,
-    domain: str,
-) -> tuple[bytes, WrappedDekRecord]:
-    dek = os.urandom(KEY_LENGTH)
-    return dek, wrap_dek(passphrase, dek, user_id, domain)
-
-
-def create_wrapped_deks_for_domains(
-    passphrase: str,
-    domains: tuple[str, ...],
-    user_id: int,
-) -> tuple[dict[str, bytes], list[tuple[str, WrappedDekRecord]]]:
-    """Generate independent DEKs for each domain.
-
-    Returns (deks_dict, wrapped_records) where deks_dict maps domain→plaintext
-    DEK and wrapped_records is a list of (domain, WrappedDekRecord) pairs.
-    """
-    deks: dict[str, bytes] = {}
-    records: list[tuple[str, WrappedDekRecord]] = []
-    for domain in domains:
-        dek, record = create_wrapped_dek(passphrase, user_id, domain)
-        deks[domain] = dek
-        records.append((domain, record))
-    return deks, records
-
-
-def wrap_dek(passphrase: str, dek: bytes, user_id: int, domain: str) -> WrappedDekRecord:
-    return wrap_secret_with_aad(passphrase, dek, _build_dek_wrap_aad(user_id, domain))
+def generate_domain_keys(domains: tuple[str, ...]) -> dict[str, bytes]:
+    """Generate independent secrets; current versioned keyslots authenticate them."""
+    if not domains or len(set(domains)) != len(domains):
+        raise ValueError("Soul domain key set is empty or ambiguous")
+    return {domain: os.urandom(KEY_LENGTH) for domain in domains}
 
 
 def wrap_secret_with_aad(passphrase: str, secret: bytes, aad: bytes) -> WrappedDekRecord:
@@ -180,19 +123,6 @@ def wrap_secret_with_aad(passphrase: str, secret: bytes, aad: bytes) -> WrappedD
         wrap_iv=base64.b64encode(iv).decode("ascii"),
         wrap_tag=base64.b64encode(tag).decode("ascii"),
         wrapped_dek=base64.b64encode(ciphertext).decode("ascii"),
-    )
-
-
-def unwrap_dek(
-    passphrase: str,
-    record: WrappedDekRecord,
-    user_id: int,
-    domain: str,
-) -> bytes:
-    return unwrap_secret_with_aad(
-        passphrase,
-        record,
-        _build_dek_wrap_aad(user_id, domain),
     )
 
 

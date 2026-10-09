@@ -1,7 +1,7 @@
 ---
 title: Portable Core Filesystem (Product)
 author: Julio Caesar
-last_edited: 2026-08-16
+last_edited: 2026-10-09
 version: 1
 status: approved
 ---
@@ -14,7 +14,7 @@ status: approved
 | Version | 1 |
 | Status | Approved |
 | Created | 2026-07-12 |
-| Last edited | 2026-08-16 |
+| Last edited | 2026-10-09 |
 
 > Keep the complete portable identity and user-owned experience in one Core while reserving SQLCipher exclusively for ANIMA's internal continuity and excluding device capabilities and external credentials.
 
@@ -62,6 +62,8 @@ The placement rule is:
 - Local export/import uses one versioned, streaming, authenticated ANIMA CORE format with `full`, `soul`, and `fs` payload kinds; it does not create three incompatible archive implementations.
 
 ## What Users See
+
+The 2026-10-09 continuation removes remaining legacy implementation paths and completes current-format history maintenance. Security settings retain 30 days of restore history by default; live content and current trash never expire automatically. History cleanup, permanent trash purge, checkpoint refresh and old-key retirement require owner reauthentication, a verified current full backup, an exact inventory and an expiring one-use confirmation. Local cleanup cannot erase external backups or guarantee physical SSD erasure. Supported Soul schema upgrades retain an independently verified encrypted original before retiring app rows; unavailable historical provenance stays explicit.
 
 - Cold-copying a closed `.anima/`, or choosing **Export ANIMA CORE**, carries ANIMA's Soul and all portable user content coherently.
 - A normal export produces `anima-core-<timestamp>.anima`. Soul-only and CoreFS-only exports appear under Advanced Recovery rather than the primary transfer flow.

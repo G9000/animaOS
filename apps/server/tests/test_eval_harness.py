@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -23,7 +24,6 @@ from anima_server.models import (
     AffectStateRow,
     AgentExperience,
     AgentSkill,
-    ExperienceClusterState,
     ForesightSignal,
     MemoryItem,
     MemoryItemEvidence,
@@ -34,7 +34,7 @@ from anima_server.models import (
     RuntimeThread,
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
-    User,
+    SoulOwner,
     UserProfileField,
     UserProfileFieldEvidence,
 )
@@ -209,10 +209,7 @@ def test_longmemeval_builds_original_transcript_import_sessions() -> None:
 def test_longmemeval_select_dataset_applies_offset_and_limit() -> None:
     from run_longmemeval import select_dataset
 
-    dataset = [
-        {"question_id": f"q{i}", "question_type": "temporal-reasoning"}
-        for i in range(5)
-    ]
+    dataset = [{"question_id": f"q{i}", "question_type": "temporal-reasoning"} for i in range(5)]
 
     selected = select_dataset(dataset, offset=2, limit=2, sample="sequential")
 
@@ -1071,9 +1068,7 @@ def test_eval_import_transcript_raw_chunks_ignores_invalid_session_date(
     assert response.json()["memoryItemsImported"] == 1
     assert response.json()["errors"] == []
     assert plaintext == [
-        "Session date: 2023/99/99\n"
-        "User: I had a GPS issue.\n"
-        "Assistant: The dealership fixed it."
+        "Session date: 2023/99/99\nUser: I had a GPS issue.\nAssistant: The dealership fixed it."
     ]
     assert len(evidence_rows) == 1
     assert evidence_rows[0].observed_at is not None
@@ -1147,20 +1142,21 @@ def test_reset_eval_user_state_evicts_live_corefs_vectors(monkeypatch) -> None:
         _reset_runtime_state(runtime_db, user_id=71, deleted=deleted)
 
         assert deleted["runtime_embeddings"] == 1
-        assert runtime_db.scalar(
-            select(RuntimeEmbedding).where(RuntimeEmbedding.user_id == 71)
-        ) is None
-        assert runtime_db.scalar(
-            select(RuntimeEmbedding).where(RuntimeEmbedding.user_id == 72)
-        ) is not None
-        assert all(
-            index.runtime_embedding_vector(source_type="memory_item", source_id=91)
-            == (1.0, 0.0)
-            for index in target_indexes
+        assert (
+            runtime_db.scalar(select(RuntimeEmbedding).where(RuntimeEmbedding.user_id == 71))
+            is None
         )
         assert (
-            other_index.runtime_embedding_vector(source_type="memory_item", source_id=92)
-            == (0.0, 1.0)
+            runtime_db.scalar(select(RuntimeEmbedding).where(RuntimeEmbedding.user_id == 72))
+            is not None
+        )
+        assert all(
+            index.runtime_embedding_vector(source_type="memory_item", source_id=91) == (1.0, 0.0)
+            for index in target_indexes
+        )
+        assert other_index.runtime_embedding_vector(source_type="memory_item", source_id=92) == (
+            0.0,
+            1.0,
         )
 
         runtime_db.commit()
@@ -1169,14 +1165,25 @@ def test_reset_eval_user_state_evicts_live_corefs_vectors(monkeypatch) -> None:
             index.runtime_embedding_vector(source_type="memory_item", source_id=91) is None
             for index in target_indexes
         )
-        assert (
-            other_index.runtime_embedding_vector(source_type="memory_item", source_id=92)
-            == (0.0, 1.0)
+        assert other_index.runtime_embedding_vector(source_type="memory_item", source_id=92) == (
+            0.0,
+            1.0,
         )
 
 
-def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
+def test_reset_eval_user_state_purges_soul_and_runtime_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent.derived_soul_state import get_cluster_state
     from anima_server.services.eval_reset import reset_eval_user_state
+
+    async def deterministic_embedding(text: str) -> list[float]:
+        return [1.0, 0.0] if "eval" in text else [0.0, 1.0]
+
+    monkeypatch.setattr(
+        "anima_server.services.agent.embeddings.generate_embedding",
+        deterministic_embedding,
+    )
 
     engine = create_engine(
         "sqlite://",
@@ -1192,8 +1199,8 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             other_item = MemoryItem(user_id=2, content="Other fact", category="fact")
             soul_db.add_all(
                 [
-                    User(id=1, username="eval", display_name="Eval User", password_hash="x"),
-                    User(id=2, username="other", display_name="Other User", password_hash="x"),
+                    SoulOwner(id=1, core_owner_id=str(uuid4())),
+                    SoulOwner(id=2, core_owner_id=str(uuid4())),
                     eval_item,
                     other_item,
                 ]
@@ -1274,14 +1281,6 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
                         approach="used other context",
                         quality_score=0.7,
                         cluster_id="other-cluster",
-                    ),
-                    ExperienceClusterState(
-                        user_id=1,
-                        state_json={"clusters": {"eval-cluster": {"count": 1}}},
-                    ),
-                    ExperienceClusterState(
-                        user_id=2,
-                        state_json={"clusters": {"other-cluster": {"count": 1}}},
                     ),
                     AgentSkill(
                         user_id=1,
@@ -1462,6 +1461,9 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             runtime_db.commit()
             soul_db.commit()
 
+            assert get_cluster_state(soul_db, user_id=1)["clusters"]["eval-cluster"]["count"] == 1
+            assert get_cluster_state(soul_db, user_id=2)["clusters"]["other-cluster"]["count"] == 1
+
             deleted = reset_eval_user_state(
                 user_id=1,
                 soul_db=soul_db,
@@ -1481,138 +1483,182 @@ def test_reset_eval_user_state_purges_soul_and_runtime_rows() -> None:
             assert deleted["runtime_workflow_runs"] == 1
             assert deleted["foresight_signals"] == 1
             assert deleted["agent_experiences"] == 1
-            assert deleted["experience_cluster_state"] == 1
+            assert "experience_cluster_state" not in deleted
             assert deleted["agent_skills"] == 1
             assert deleted["affect_state"] == 1
-            assert soul_db.scalars(
-                select(MemoryItem).where(MemoryItem.user_id == 1)
-            ).all() == []
-            assert soul_db.scalars(
-                select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 1)
-            ).all() == []
-            assert soul_db.scalars(
-                select(UserProfileField).where(UserProfileField.user_id == 1)
-            ).all() == []
-            assert soul_db.scalars(
-                select(UserProfileFieldEvidence).where(
-                    UserProfileFieldEvidence.user_id == 1
+            assert soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == 1)).all() == []
+            assert (
+                soul_db.scalars(
+                    select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 1)
+                ).all()
+                == []
+            )
+            assert (
+                soul_db.scalars(select(UserProfileField).where(UserProfileField.user_id == 1)).all()
+                == []
+            )
+            assert (
+                soul_db.scalars(
+                    select(UserProfileFieldEvidence).where(UserProfileFieldEvidence.user_id == 1)
+                ).all()
+                == []
+            )
+            assert (
+                soul_db.scalars(select(ForesightSignal).where(ForesightSignal.user_id == 1)).all()
+                == []
+            )
+            assert (
+                soul_db.scalars(select(AgentExperience).where(AgentExperience.user_id == 1)).all()
+                == []
+            )
+            assert get_cluster_state(soul_db, user_id=1)["clusters"] == {}
+            assert soul_db.scalars(select(AgentSkill).where(AgentSkill.user_id == 1)).all() == []
+            assert (
+                len(soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == 2)).all()) == 1
+            )
+            assert (
+                len(
+                    soul_db.scalars(
+                        select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 2)
+                    ).all()
                 )
-            ).all() == []
-            assert soul_db.scalars(
-                select(ForesightSignal).where(ForesightSignal.user_id == 1)
-            ).all() == []
-            assert soul_db.scalars(
-                select(AgentExperience).where(AgentExperience.user_id == 1)
-            ).all() == []
-            assert soul_db.scalars(
-                select(ExperienceClusterState).where(ExperienceClusterState.user_id == 1)
-            ).all() == []
-            assert soul_db.scalars(
-                select(AgentSkill).where(AgentSkill.user_id == 1)
-            ).all() == []
-            assert len(
-                soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == 2)).all()
-            ) == 1
-            assert len(
-                soul_db.scalars(
-                    select(MemoryItemEvidence).where(MemoryItemEvidence.user_id == 2)
-                ).all()
-            ) == 1
-            assert len(
-                soul_db.scalars(
-                    select(UserProfileField).where(UserProfileField.user_id == 2)
-                ).all()
-            ) == 1
-            assert len(
-                soul_db.scalars(
-                    select(UserProfileFieldEvidence).where(
-                        UserProfileFieldEvidence.user_id == 2
-                    )
-                ).all()
-            ) == 1
-            assert len(
-                soul_db.scalars(
-                    select(ForesightSignal).where(ForesightSignal.user_id == 2)
-                ).all()
-            ) == 1
-            assert len(
-                soul_db.scalars(
-                    select(AgentExperience).where(AgentExperience.user_id == 2)
-                ).all()
-            ) == 1
-            assert len(
-                soul_db.scalars(
-                    select(ExperienceClusterState).where(
-                        ExperienceClusterState.user_id == 2
-                    )
-                ).all()
-            ) == 1
-            assert len(
-                soul_db.scalars(
-                    select(AgentSkill).where(AgentSkill.user_id == 2)
-                ).all()
-            ) == 1
-            assert runtime_db.scalars(
-                select(RuntimeThread).where(RuntimeThread.user_id == 1)
-            ).all() == []
-            assert runtime_db.scalars(
-                select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == 1)
-            ).all() == []
-            assert runtime_db.scalars(
-                select(RuntimeDocument).where(RuntimeDocument.user_id == 1)
-            ).all() == []
-            assert runtime_db.scalars(
-                select(RuntimeDocumentChunk).where(RuntimeDocumentChunk.user_id == 1)
-            ).all() == []
-            assert runtime_db.scalars(
-                select(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == 1)
-            ).all() == []
-            assert runtime_db.scalars(
-                select(RuntimeWorkflowCheckpoint).where(
-                    RuntimeWorkflowCheckpoint.workflow_run_id == 101
+                == 1
+            )
+            assert (
+                len(
+                    soul_db.scalars(
+                        select(UserProfileField).where(UserProfileField.user_id == 2)
+                    ).all()
                 )
-            ).all() == []
-            assert runtime_db.scalars(
-                select(AffectStateRow).where(AffectStateRow.user_id == 1)
-            ).all() == []
-            assert len(
+                == 1
+            )
+            assert (
+                len(
+                    soul_db.scalars(
+                        select(UserProfileFieldEvidence).where(
+                            UserProfileFieldEvidence.user_id == 2
+                        )
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    soul_db.scalars(
+                        select(ForesightSignal).where(ForesightSignal.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    soul_db.scalars(
+                        select(AgentExperience).where(AgentExperience.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert get_cluster_state(soul_db, user_id=2)["clusters"]["other-cluster"]["count"] == 1
+            assert (
+                len(soul_db.scalars(select(AgentSkill).where(AgentSkill.user_id == 2)).all()) == 1
+            )
+            assert (
+                runtime_db.scalars(select(RuntimeThread).where(RuntimeThread.user_id == 1)).all()
+                == []
+            )
+            assert (
                 runtime_db.scalars(
-                    select(AffectStateRow).where(AffectStateRow.user_id == 2)
+                    select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == 1)
                 ).all()
-            ) == 1
-            assert len(
+                == []
+            )
+            assert (
                 runtime_db.scalars(
-                    select(RuntimeThread).where(RuntimeThread.user_id == 2)
+                    select(RuntimeDocument).where(RuntimeDocument.user_id == 1)
                 ).all()
-            ) == 1
-            assert len(
+                == []
+            )
+            assert (
                 runtime_db.scalars(
-                    select(ProfileUpdateCandidate).where(
-                        ProfileUpdateCandidate.user_id == 2
-                    )
+                    select(RuntimeDocumentChunk).where(RuntimeDocumentChunk.user_id == 1)
                 ).all()
-            ) == 1
-            assert len(
+                == []
+            )
+            assert (
                 runtime_db.scalars(
-                    select(RuntimeDocument).where(RuntimeDocument.user_id == 2)
+                    select(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == 1)
                 ).all()
-            ) == 1
-            assert len(
-                runtime_db.scalars(
-                    select(RuntimeDocumentChunk).where(RuntimeDocumentChunk.user_id == 2)
-                ).all()
-            ) == 1
-            assert len(
-                runtime_db.scalars(
-                    select(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == 2)
-                ).all()
-            ) == 1
-            assert len(
+                == []
+            )
+            assert (
                 runtime_db.scalars(
                     select(RuntimeWorkflowCheckpoint).where(
-                        RuntimeWorkflowCheckpoint.workflow_run_id == 201
+                        RuntimeWorkflowCheckpoint.workflow_run_id == 101
                     )
                 ).all()
-            ) == 1
+                == []
+            )
+            assert (
+                runtime_db.scalars(select(AffectStateRow).where(AffectStateRow.user_id == 1)).all()
+                == []
+            )
+            assert (
+                len(
+                    runtime_db.scalars(
+                        select(AffectStateRow).where(AffectStateRow.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    runtime_db.scalars(
+                        select(RuntimeThread).where(RuntimeThread.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    runtime_db.scalars(
+                        select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    runtime_db.scalars(
+                        select(RuntimeDocument).where(RuntimeDocument.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    runtime_db.scalars(
+                        select(RuntimeDocumentChunk).where(RuntimeDocumentChunk.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    runtime_db.scalars(
+                        select(RuntimeWorkflowRun).where(RuntimeWorkflowRun.user_id == 2)
+                    ).all()
+                )
+                == 1
+            )
+            assert (
+                len(
+                    runtime_db.scalars(
+                        select(RuntimeWorkflowCheckpoint).where(
+                            RuntimeWorkflowCheckpoint.workflow_run_id == 201
+                        )
+                    ).all()
+                )
+                == 1
+            )
     finally:
         engine.dispose()

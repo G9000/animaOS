@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -165,10 +165,33 @@ async def test_doubleword_chat_client_enables_parallel_tool_calls() -> None:
 
 @pytest.mark.asyncio
 async def test_openai_compatible_chat_client_serializes_image_content_blocks(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    image_path = tmp_path / "pixel.png"
-    image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage-bytes")
+    from anima_server.services.corefs import asset_authority
+
+    session = object()
+    image_path = "corefs-user://7/object/01J00000000000000000000006"
+    image_bytes = b"\x89PNG\r\n\x1a\nimage-bytes"
+    reads: list[int] = []
+
+    def open_source(*, session: object, object_uri: str, expected_kinds: frozenset[str]):
+        assert session is authority_session
+        assert object_uri == "corefs://object/01J00000000000000000000006"
+        assert expected_kinds == frozenset({"attachment", "gallery-asset"})
+
+        def read_all(*, max_bytes: int) -> bytes:
+            reads.append(max_bytes)
+            return image_bytes
+
+        return SimpleNamespace(read_all=read_all)
+
+    authority_session = session
+    monkeypatch.setattr(
+        asset_authority,
+        "require_canonical_asset_session",
+        lambda user_id: session if user_id == 7 else None,
+    )
+    monkeypatch.setattr(asset_authority, "open_corefs_byte_source", open_source)
     captured_payload: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -202,12 +225,14 @@ async def test_openai_compatible_chat_client_serializes_image_content_blocks(
                     {
                         "type": "image",
                         "mime_type": "image/png",
-                        "path": str(image_path),
+                        "path": image_path,
                     },
                 ]
             )
         ]
     )
+
+    assert reads and all(bound > len(image_bytes) for bound in reads)
 
     assert captured_payload["messages"] == [
         {
@@ -216,9 +241,7 @@ async def test_openai_compatible_chat_client_serializes_image_content_blocks(
                 {"type": "text", "text": "what is this?"},
                 {
                     "type": "image_url",
-                    "image_url": {
-                        "url": "data:image/png;base64,iVBORw0KGgppbWFnZS1ieXRlcw=="
-                    },
+                    "image_url": {"url": "data:image/png;base64,iVBORw0KGgppbWFnZS1ieXRlcw=="},
                 },
             ],
         }
@@ -226,14 +249,26 @@ async def test_openai_compatible_chat_client_serializes_image_content_blocks(
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_chat_client_reports_unreadable_image_attachment() -> None:
+async def test_openai_compatible_chat_client_reports_unreadable_image_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.corefs import asset_authority
+
+    monkeypatch.setattr(
+        asset_authority, "require_canonical_asset_session", lambda user_id: object()
+    )
+
+    def unavailable(**kwargs):
+        raise asset_authority.CoreFsSourceError("Authenticated original is unavailable")
+
+    monkeypatch.setattr(asset_authority, "open_corefs_byte_source", unavailable)
     client = OpenAICompatibleChatClient(
         provider="openai",
         model="gpt-4o-mini",
         base_url="https://openai.test/v1",
     )
 
-    with pytest.raises(RuntimeError, match="Unable to read image attachment"):
+    with pytest.raises(RuntimeError, match="Canonical image attachment is unavailable"):
         await client.ainvoke(
             [
                 HumanMessage(
@@ -241,7 +276,7 @@ async def test_openai_compatible_chat_client_reports_unreadable_image_attachment
                         {
                             "type": "image",
                             "mime_type": "image/png",
-                            "path": "missing-image.png",
+                            "path": "corefs-user://7/object/01J00000000000000000000006",
                         },
                     ]
                 )
@@ -446,7 +481,9 @@ async def test_openai_compatible_chat_client_preserves_malformed_tool_args() -> 
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_chat_client_replays_malformed_history_with_safe_arguments() -> None:
+async def test_openai_compatible_chat_client_replays_malformed_history_with_safe_arguments() -> (
+    None
+):
     captured_payload: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -522,3 +559,29 @@ async def test_openai_compatible_chat_client_replays_malformed_history_with_safe
             "content": "try again",
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_provider_rejects_existing_physical_image_fallback(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from anima_server.services.corefs import asset_authority
+
+    image = tmp_path / "private-original.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nprivate-bytes")
+
+    def unexpected_source(**kwargs):
+        pytest.fail("A noncanonical path must not reach authenticated source resolution")
+
+    monkeypatch.setattr(asset_authority, "open_corefs_byte_source", unexpected_source)
+    client = OpenAICompatibleChatClient(
+        provider="openai", model="gpt-4o-mini", base_url="https://openai.test/v1"
+    )
+    with pytest.raises(RuntimeError, match="Only canonical CoreFS image attachments"):
+        await client.ainvoke(
+            [
+                HumanMessage(
+                    content=[{"type": "image", "mime_type": "image/png", "path": str(image)}]
+                )
+            ]
+        )

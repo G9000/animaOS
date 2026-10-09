@@ -9,11 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 
-from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
-
 from anima_server.config import settings
-from anima_server.models import DiscordLink, TelegramLink
 
 _lock = RLock()
 _VERSION = 1
@@ -97,8 +93,17 @@ def _write(path: Path, links: list[IntegrationLink]) -> None:
     )
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle = os.fdopen(descriptor, "w", encoding="utf-8")
+    except BaseException:
+        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+    try:
+        with handle:
+            if hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), 0o600)
+            else:
+                os.chmod(temporary, 0o600)
             json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
             handle.write("\n")
             handle.flush()
@@ -146,68 +151,7 @@ def unlink_integration(*, provider: str, external_id: str) -> None:
     with _lock:
         current = _load(path)
         retained = [
-            item
-            for item in current
-            if item.provider != provider or item.external_id != external_id
+            item for item in current if item.provider != provider or item.external_id != external_id
         ]
         if retained != current:
             _write(path, retained)
-
-
-def migrate_legacy_integration_links(db: Session, *, user_id: int) -> int:
-    """Copy, verify, then delete this user's portable legacy link rows."""
-    normalized_user_id = int(user_id)
-    telegram = list(
-        db.scalars(
-            select(TelegramLink).where(TelegramLink.user_id == normalized_user_id)
-        ).all()
-    )
-    discord = list(
-        db.scalars(
-            select(DiscordLink).where(DiscordLink.user_id == normalized_user_id)
-        ).all()
-    )
-    if not telegram and not discord:
-        return 0
-    path = _registry_path()
-    additions = [
-        *(
-            IntegrationLink("telegram", str(item.chat_id), normalized_user_id)
-            for item in telegram
-        ),
-        *(
-            IntegrationLink("discord", str(item.channel_id), normalized_user_id)
-            for item in discord
-        ),
-    ]
-    with _lock:
-        links = _load(path)
-        for addition in additions:
-            conflict = next(
-                (
-                    item
-                    for item in links
-                    if item.provider == addition.provider
-                    and (
-                        item.external_id == addition.external_id
-                        or item.user_id == addition.user_id
-                    )
-                ),
-                None,
-            )
-            if conflict is not None and conflict != addition:
-                raise IntegrationRegistryError(
-                    "Legacy integration link conflicts with the machine-local registry."
-                )
-            if conflict is None:
-                links.append(addition)
-        _write(path, links)
-        verified = _load(path)
-        if any(item not in verified for item in additions):
-            raise IntegrationRegistryError("Legacy integration link verification failed.")
-    db.execute(
-        delete(TelegramLink).where(TelegramLink.user_id == normalized_user_id)
-    )
-    db.execute(delete(DiscordLink).where(DiscordLink.user_id == normalized_user_id))
-    db.commit()
-    return len(additions)

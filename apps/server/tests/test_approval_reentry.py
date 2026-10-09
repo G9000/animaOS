@@ -15,7 +15,6 @@ import hashlib
 from collections import deque
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 
 import pytest
 from anima_server.db.base import Base
@@ -31,7 +30,6 @@ from anima_server.services.agent import service as agent_service
 from anima_server.services.agent.adapters.base import BaseLLMAdapter
 from anima_server.services.agent.persistence import (
     append_message,
-    append_user_message,
     cancel_run,
     clear_approval_checkpoint,
     create_run,
@@ -69,6 +67,67 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def canonical_approval_boundary(monkeypatch: pytest.MonkeyPatch, request):
+    """Mock native conversation IO for orchestration tests; retain real Runtime checkpoints/locks."""
+    if not request.node.name.startswith(
+        ("test_approve_or_deny_turn_", "test_persist_approval_checkpoint_")
+    ):
+        return
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import conversation_authority, conversation_mutations
+    from anima_server.services.corefs.messages import ReducedMessage
+
+    sessions = {}
+    messages = {}
+
+    def active(user_id):
+        return sessions.setdefault(user_id, SimpleNamespace(user_id=user_id))
+
+    def append(
+        *, session, thread_id, role, content, display_metadata=None, attachment_uris=(), **kwargs
+    ):
+        assert session is active(session.user_id)
+        thread = messages.setdefault((session.user_id, thread_id), [])
+        identity = f"01J{len(thread):023d}"
+        message = ReducedMessage(
+            identity,
+            None,
+            str(thread_id),
+            len(thread) + 1,
+            1,
+            identity,
+            role,
+            content,
+            tuple(attachment_uris),
+            "2026-10-09T00:00:00Z",
+            display_metadata,
+        )
+        thread.append(message)
+        return message
+
+    def view(*, session, thread_id):
+        return SimpleNamespace(
+            document=SimpleNamespace(legacy_thread_id=thread_id),
+            messages=tuple(messages.get((session.user_id, thread_id), ())),
+        )
+
+    monkeypatch.setattr(conversation_authority, "active_conversation_authority_session", active)
+    monkeypatch.setattr(conversation_mutations, "append_canonical_message", append)
+    monkeypatch.setattr(conversation_authority, "get_canonical_thread", view)
+    monkeypatch.setattr(
+        conversation_authority,
+        "list_canonical_threads",
+        lambda *, session: [
+            view(session=session, thread_id=thread_id)
+            for owner, thread_id in messages
+            if owner == session.user_id
+        ],
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -147,6 +206,7 @@ def _db_session_pair() -> Generator[tuple[Session, Session], None, None]:
         session_one.close()
         engine.dispose()
 
+
 _TEST_USER_COUNTER = 0
 
 
@@ -159,7 +219,16 @@ class _FakeUser:
 
 def _setup_thread_and_run(db: Session) -> tuple[RuntimeThread, RuntimeRun, _FakeUser]:
     user = _FakeUser()
-    thread = get_or_create_thread(db, user.id)
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(user.id) is not None:
+        thread = persistence_module.ensure_runtime_thread_reference(
+            db, user_id=user.id, thread_id=user.id
+        )
+    else:
+        thread = get_or_create_thread(db, user.id)
     run = create_run(
         db,
         thread_id=thread.id,
@@ -904,7 +973,6 @@ async def test_approve_or_deny_turn_persists_and_finalizes(
 @pytest.mark.asyncio
 async def test_approve_or_deny_turn_indexes_original_image_after_success(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     canned_result = AgentResult(
         response="Image turn completed.",
@@ -915,7 +983,6 @@ async def test_approve_or_deny_turn_indexes_original_image_after_success(
     )
     runner = _ApproveResumeRunner(canned_result)
 
-    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kw: None)
 
@@ -925,10 +992,31 @@ async def test_approve_or_deny_turn_indexes_original_image_after_success(
 
     with _db_session() as db:
         thread, run, user = _setup_thread_and_run(db)
-        storage_path = f"users/{user.id}/media/images/{digest[:2]}/{digest}.png"
-        image_path = tmp_path / storage_path
-        image_path.parent.mkdir(parents=True, exist_ok=True)
-        image_path.write_bytes(image_bytes)
+        from types import SimpleNamespace
+
+        from anima_server.services.corefs import (
+            asset_authority,
+            conversation_authority,
+            conversation_mutations,
+        )
+        from anima_server.services.corefs.catalog_reader import stable_opaque_id
+
+        storage_path = f"corefs://object/{stable_opaque_id('approval-image', digest)}"
+
+        def open_source(*, session, object_uri, expected_kinds):
+            assert session.user_id == user.id
+            assert object_uri == asset.storage_path
+            assert expected_kinds == frozenset({"gallery-asset"})
+            return SimpleNamespace(
+                content_sha256=digest, content_type="image/png", size=len(image_bytes)
+            )
+
+        monkeypatch.setattr(
+            asset_authority,
+            "require_canonical_asset_session",
+            conversation_authority.active_conversation_authority_session,
+        )
+        monkeypatch.setattr(asset_authority, "open_corefs_byte_source", open_source)
         asset = RuntimeImageAsset(
             user_id=user.id,
             filename="approval.png",
@@ -942,11 +1030,13 @@ async def test_approve_or_deny_turn_indexes_original_image_after_success(
         )
         db.add(asset)
         db.flush()
+        storage_path = f"corefs://object/{stable_opaque_id('image-asset', str(asset.id))}"
+        asset.storage_path = storage_path
         attachment = StoredAttachment(
             id="approval-image",
             kind="image",
             mime_type="image/png",
-            path=str(image_path),
+            path=f"corefs-user://{user.id}/object/{storage_path.rsplit('/', 1)[-1]}",
             storage_path=storage_path,
             asset_id=asset.id,
             filename="approval.png",
@@ -954,14 +1044,34 @@ async def test_approve_or_deny_turn_indexes_original_image_after_success(
             sha256=digest,
             retention_state="active",
         )
-        append_user_message(
+        canonical = conversation_mutations.append_canonical_message(
+            session=conversation_authority.active_conversation_authority_session(user.id),
+            thread_id=thread.id,
+            role="user",
+            content="please inspect this approval image",
+            attachment_uris=(storage_path,),
+        )
+        reference = persistence_module.append_corefs_message_reference(
             db,
             thread=thread,
             run_id=run.id,
-            content="please inspect this approval image",
-            sequence_id=reserve_message_sequences(db, thread_id=thread.id, count=1),
-            attachments=(attachment,),
+            message=canonical,
+            transient_content_json={"attachments": [attachment.to_content_dict()]},
         )
+        persistence_module.link_message_image_assets(
+            db, message=reference, attachments=(attachment,)
+        )
+
+        def resolve_attachment(*, session, object_uri):
+            assert session.user_id == user.id
+            assert object_uri == storage_path
+            return attachment
+
+        monkeypatch.setattr(
+            "anima_server.services.agent.attachments.resolve_corefs_chat_attachment",
+            resolve_attachment,
+        )
+
         save_approval_checkpoint(
             db,
             thread=thread,
@@ -975,6 +1085,7 @@ async def test_approve_or_deny_turn_indexes_original_image_after_success(
             sequence_id=reserve_message_sequences(db, thread_id=thread.id, count=1),
         )
         db.commit()
+        db.expire_all()  # Simulate resume after reopening Runtime: original bodies are native-only.
 
         from anima_server.services.agent import approve_or_deny_turn
 
@@ -1466,13 +1577,23 @@ async def test_approve_or_deny_turn_restores_retrieval_from_checkpoint(
             runtime_db=db,
         )
 
-        send_message_row = (
+        assistant_row = (
             db.query(RuntimeMessage)
-            .filter(RuntimeMessage.run_id == run.id, RuntimeMessage.tool_name == "send_message")
+            .filter(RuntimeMessage.run_id == run.id, RuntimeMessage.role == "assistant")
             .one()
         )
+        assert assistant_row.corefs_message_id is not None
+        db.refresh(assistant_row)
+        assert assistant_row.content_text is None
+        assert assistant_row.content_json is None
+        checkpoint = (
+            db.query(RuntimeMessage)
+            .filter(RuntimeMessage.run_id == run.id, RuntimeMessage.role == "approval")
+            .one()
+        )
+        stored_retrieval = agent_service.extract_stored_retrieval(checkpoint.content_json)
 
     assert result.retrieval is not None
     assert result.retrieval.retriever == "hybrid"
-    assert send_message_row.content_json is not None
-    assert send_message_row.content_json["retrieval"]["retriever"] == "hybrid"
+    assert stored_retrieval is not None
+    assert stored_retrieval["retriever"] == "hybrid"

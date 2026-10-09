@@ -11,10 +11,12 @@ and prove the cascades actually fire now.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.session import _make_engine
-from anima_server.models import MemoryClaim, MemoryClaimEvidence, User
+from anima_server.models import MemoryClaim, MemoryClaimEvidence, SoulOwner
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import sessionmaker
@@ -41,7 +43,7 @@ def test_ondelete_cascade_actually_fires(fk_engine) -> None:
     MemoryClaimEvidence rows instead of orphaning them."""
     factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
     with factory() as db:
-        user = User(username="mih001", password_hash="x", display_name="MIH")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
         claim = MemoryClaim(
@@ -75,9 +77,7 @@ def test_dangling_foreign_key_insert_is_rejected(fk_engine) -> None:
     factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
     with factory() as db:
         db.add(
-            MemoryClaimEvidence(
-                claim_id=99_999, source_text="orphan", source_kind="user_message"
-            )
+            MemoryClaimEvidence(claim_id=99_999, source_text="orphan", source_kind="user_message")
         )
         with pytest.raises(IntegrityError):
             db.commit()
@@ -93,7 +93,7 @@ def test_set_null_resurrection_is_why_delete_paths_walk_the_chain(fk_engine) -> 
 
     factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
     with factory() as db:
-        user = User(username="mih001b", password_hash="x", display_name="MIH")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
         old = MemoryItem(
@@ -101,9 +101,7 @@ def test_set_null_resurrection_is_why_delete_paths_walk_the_chain(fk_engine) -> 
         )
         db.add(old)
         db.flush()
-        new = MemoryItem(
-            user_id=user.id, content="works as a PM", category="fact", importance=3
-        )
+        new = MemoryItem(user_id=user.id, content="works as a PM", category="fact", importance=3)
         db.add(new)
         db.flush()
         old.superseded_by = new.id
@@ -147,197 +145,277 @@ def _seed_row(conn, table: str, overrides: dict) -> None:
     conn.exec_driver_sql(f"INSERT INTO {table} ({keys}) VALUES ({marks})", tuple(vals.values()))
 
 
-def test_batch_migrations_do_not_cascade_child_rows(tmp_path) -> None:
-    """Regression (PR #132 review, P1): Alembic batch_alter rebuilds a table
-    by copy-create-DROP-rename. With FK enforcement now ON at connect time,
-    the DROP of the old parent fired ON DELETE CASCADE into its children —
-    e.g. upgrading through 20260316_0002 (batch-rebuilds agent_runs)
-    destroyed every agent_steps/agent_messages row. The migration runner
-    must disable FKs for its transaction and re-enable them after."""
+def test_supported_encrypted_soul_upgrade_preserves_retained_fk_graph_and_memory(
+    managed_tmp_path,
+) -> None:
+    """Current native-keyslot owner upgrade preserves retained parent/child records.
+
+    The supported old head is independently backed up before table rebuilds;
+    foreign keys must be restored after the committed, verified encrypted upgrade.
+    """
     from alembic import command
     from alembic.config import Config
-    from anima_server.db.session import _ALEMBIC_INI, _run_alembic_upgrade
+    from anima_server.config import settings
+    from anima_server.db import dispose_cached_engines
+    from anima_server.db import session as soul_session
+    from anima_server.db.user_store import authenticate_account
+    from anima_server.services.corefs.soul_store import _hash_table
+    from anima_server.services.data_crypto import df, ef
+    from anima_server.services.sessions import clear_sqlcipher_key, unlock_session_store
+    from conftest import managed_test_client
 
-    engine = _make_engine(f"sqlite:///{tmp_path / 'mig.db'}")
-    cfg = Config(str(_ALEMBIC_INI))
-
-    # Build the schema as it existed BEFORE the batch rebuild...
-    with engine.connect() as conn, conn.begin():
-        cfg.attributes["connection"] = conn
-        command.upgrade(cfg, "20260316_0001")
-    # ...seed a full parent chain at that revision...
-    with engine.begin() as conn:
-        _seed_row(conn, "users", {"id": 1, "username": "mig", "password_hash": "x", "display_name": "M"})
-        _seed_row(conn, "agent_threads", {"id": 1, "user_id": 1})
-        _seed_row(conn, "agent_runs", {"id": 1, "user_id": 1, "thread_id": 1})
-        _seed_row(conn, "agent_steps", {"id": 1, "run_id": 1})
-        _seed_row(conn, "agent_messages", {"id": 1, "thread_id": 1, "run_id": 1})
-    # ...and upgrade to head through the production runner.
-    _run_alembic_upgrade(engine)
-
-    with engine.connect() as conn:
-        steps = conn.exec_driver_sql("SELECT COUNT(*) FROM agent_steps").scalar()
-        messages = conn.exec_driver_sql("SELECT COUNT(*) FROM agent_messages").scalar()
-        fk_state = conn.exec_driver_sql("PRAGMA foreign_keys").scalar()
-    engine.dispose()
-    assert steps == 1, "batch rebuild cascaded agent_steps away"
-    assert messages == 1, "batch rebuild cascaded agent_messages away"
-    assert fk_state == 1  # enforcement restored for the connection pool
-
-
-def test_memories_scope_restore_preserves_user_owned_rows(fk_engine) -> None:
-    """Regression (PR #132 review, P1): a memories-scope vault import
-    bulk-deleted the users row; with FKs enforced its ON DELETE CASCADE
-    executes IMMEDIATELY (defer_foreign_keys defers checks, not actions),
-    destroying the very tables the scope promises to preserve. Scoped
-    restores now merge user rows in place."""
-    from anima_server.models import AgentThread, MemoryItem, Task
-    from anima_server.services.vault import restore_database_snapshot
-
-    factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
-    with factory() as db:
-        user = User(username="scoped", password_hash="x", display_name="Scoped")
-        db.add(user)
-        db.flush()
-        db.add(AgentThread(user_id=user.id))
-        db.add(Task(user_id=user.id, text="keep me"))
-        db.add(
-            MemoryItem(
-                user_id=user.id, content="old memory", category="fact", importance=3
+    with managed_test_client("supported-retained-fk-upgrade-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "fk-owner", "password": "current-password", "name": "FK owner"},
+        )
+        assert registered.status_code == 201, registered.text
+        owner_id = registered.json()["id"]
+        canonical = soul_session.get_user_database_path(owner_id)
+        with soul_session.get_engine(
+            soul_session.get_user_database_url(owner_id)
+        ).connect() as connection:
+            slots = list(connection.exec_driver_sql("SELECT * FROM soul_keyslots").mappings())
+        old_path = managed_tmp_path / "supported-old-fk-soul.db"
+        engine = soul_session.get_engine(f"sqlite:///{old_path.as_posix()}")
+        config = Config(str(soul_session._ALEMBIC_INI))
+        with engine.begin() as connection:
+            config.attributes["connection"] = connection
+            command.upgrade(config, "20260812_0001")
+            _seed_row(
+                connection,
+                "users",
+                {
+                    "id": owner_id,
+                    "username": "fk-owner",
+                    "password_hash": "obsolete-verifier",
+                    "display_name": "FK owner",
+                },
             )
-        )
-        db.commit()
-        user_id = user.id
-
-    snapshot = {
-        "users": [
-            {
-                "id": user_id,
-                "username": "scoped",
-                "password_hash": "x",
-                "display_name": "Scoped (restored)",
+            for slot in slots:
+                names = ",".join(slot)
+                marks = ",".join("?" for _ in slot)
+                connection.exec_driver_sql(
+                    f"INSERT INTO soul_keyslots ({names}) VALUES ({marks})", tuple(slot.values())
+                )
+            _seed_row(
+                connection,
+                "memory_items",
+                {
+                    "id": 11,
+                    "user_id": owner_id,
+                    "content": ef(
+                        owner_id, "Original retained fact", table="memory_items", field="content"
+                    ),
+                    "category": "fact",
+                    "source": "test",
+                },
+            )
+            _seed_row(
+                connection,
+                "memory_items",
+                {
+                    "id": 12,
+                    "user_id": owner_id,
+                    "content": ef(
+                        owner_id, "Current retained fact", table="memory_items", field="content"
+                    ),
+                    "category": "fact",
+                    "source": "test",
+                },
+            )
+            connection.exec_driver_sql("UPDATE memory_items SET superseded_by=12 WHERE id=11")
+            _seed_row(
+                connection,
+                "memory_claims",
+                {
+                    "id": 21,
+                    "user_id": owner_id,
+                    "namespace": "fact",
+                    "slot": "occupation",
+                    "canonical_key": "fk:occupation",
+                    "value_text": ef(
+                        owner_id, "Engineer", table="memory_claims", field="value_text"
+                    ),
+                    "source_kind": "extraction",
+                },
+            )
+            _seed_row(
+                connection,
+                "memory_claim_evidence",
+                {
+                    "id": 31,
+                    "claim_id": 21,
+                    "source_text": ef(
+                        owner_id,
+                        "I work as an engineer",
+                        table="memory_claim_evidence",
+                        field="source_text",
+                    ),
+                    "source_kind": "user_message",
+                },
+            )
+            _seed_row(
+                connection,
+                "memory_item_evidence",
+                {
+                    "id": 41,
+                    "user_id": owner_id,
+                    "memory_item_id": 12,
+                    "source_kind": "extraction",
+                    "source_text": ef(
+                        owner_id,
+                        "Source retained evidence",
+                        table="memory_item_evidence",
+                        field="source_text",
+                    ),
+                },
+            )
+            _seed_row(
+                connection,
+                "kg_entities",
+                {
+                    "id": 51,
+                    "user_id": owner_id,
+                    "name": "Owner",
+                    "name_normalized": "owner",
+                    "entity_type": "person",
+                    "description": "Retained owner entity",
+                },
+            )
+            _seed_row(
+                connection,
+                "kg_entities",
+                {
+                    "id": 52,
+                    "user_id": owner_id,
+                    "name": "Engineering",
+                    "name_normalized": "engineering",
+                    "entity_type": "discipline",
+                    "description": "Retained discipline entity",
+                },
+            )
+            _seed_row(
+                connection,
+                "kg_relations",
+                {
+                    "id": 61,
+                    "user_id": owner_id,
+                    "source_id": 51,
+                    "destination_id": 52,
+                    "relation_type": "works_in",
+                    "source_memory_id": 12,
+                    "evidence_id": 41,
+                    "status": "active",
+                },
+            )
+            _seed_row(
+                connection,
+                "user_profile_fields",
+                {
+                    "id": 71,
+                    "user_id": owner_id,
+                    "category": "work",
+                    "key": "role",
+                    "value": ef(owner_id, "Engineer", table="user_profile_fields", field="value"),
+                    "source_memory_id": 12,
+                    "source_evidence_id": 41,
+                    "source_claim_evidence_id": 31,
+                    "status": "active",
+                },
+            )
+            tables = (
+                "memory_items",
+                "memory_claims",
+                "memory_claim_evidence",
+                "memory_item_evidence",
+                "kg_entities",
+                "kg_relations",
+                "user_profile_fields",
+            )
+            original_counts = {
+                name: connection.exec_driver_sql(f"SELECT COUNT(*) FROM {name}").scalar_one()
+                for name in tables
             }
-        ],
-        "userKeys": [],
-        "memoryItems": [],
-    }
-    with factory() as db:
-        restore_database_snapshot(db, snapshot, scope="memories")
-        db.commit()
-
-    with factory() as db:
-        assert db.scalars(select(AgentThread)).all() != []  # preserved
-        assert db.scalars(select(Task)).one().text == "keep me"  # preserved
-        assert db.scalars(select(MemoryItem)).all() == []  # memories replaced
-        restored = db.get(User, user_id)
-        assert restored is not None
-        assert restored.display_name == "Scoped (restored)"  # merged in place
-
-
-def test_full_restore_preserves_unexported_user_owned_rows(fk_engine) -> None:
-    """Regression (PR #132 review round 2): even a FULL restore must never
-    bulk-delete users — the cascade reaches user-owned tables the snapshot
-    never exports (presence config, diaries, ...), so a normal
-    backup/restore silently destroyed durable data it could not recreate.
-    Users present in the snapshot are upserted; only users ABSENT from it
-    are pruned (their cascade is the intended account removal)."""
-    from anima_server.models import PresenceConfig
-    from anima_server.services.vault import restore_database_snapshot
-
-    factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
-    with factory() as db:
-        keep = User(username="kept", password_hash="x", display_name="Kept")
-        gone = User(username="gone", password_hash="x", display_name="Gone")
-        db.add_all([keep, gone])
-        db.flush()
-        db.add(PresenceConfig(user_id=keep.id, initiative_enabled=True))
-        db.add(PresenceConfig(user_id=gone.id))
-        db.commit()
-        keep_id, gone_id = keep.id, gone.id
-
-    snapshot = {
-        "users": [
-            {"id": keep_id, "username": "kept", "password_hash": "x", "display_name": "Kept v2"}
-        ],
-        "userKeys": [],
-    }
-    with factory() as db:
-        restore_database_snapshot(db, snapshot, scope="full")
-        db.commit()
-
-    with factory() as db:
-        assert db.get(User, keep_id).display_name == "Kept v2"  # upserted
-        assert db.get(User, gone_id) is None  # absent from snapshot: pruned
-        configs = db.scalars(select(PresenceConfig)).all()
-        # The kept user's unexported presence config SURVIVES the full
-        # restore; the pruned user's cascaded away with the intended removal.
-        assert [c.user_id for c in configs] == [keep_id]
-        assert configs[0].initiative_enabled is True
-
-
-def test_restore_round_trips_memory_item_tags(fk_engine) -> None:
-    """Regression (PR #132 review round 2): tag junction rows cascade away
-    with the MemoryItem bulk delete and were never exported — every restore
-    silently dropped the user's tag filters."""
-    from anima_server.models import MemoryItem, MemoryItemTag
-    from anima_server.services.vault import (
-        export_database_snapshot,
-        restore_database_snapshot,
-    )
-
-    factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
-    with factory() as db:
-        user = User(username="tagger", password_hash="x", display_name="Tagger")
-        db.add(user)
-        db.flush()
-        item = MemoryItem(
-            user_id=user.id, content="tagged memory", category="fact", importance=3
-        )
-        db.add(item)
-        db.flush()
-        db.add(MemoryItemTag(user_id=user.id, item_id=item.id, tag="sailing"))
-        db.commit()
-        snapshot = export_database_snapshot(db, user_id=user.id)
-
-    assert snapshot["memoryItemTags"], "export must include the tag rows"
-
-    with factory() as db:
-        restore_database_snapshot(db, snapshot, scope="memories")
-        db.commit()
-
-    with factory() as db:
-        tag = db.scalars(select(MemoryItemTag)).one()
-        assert tag.tag == "sailing"
-        item = db.scalars(select(MemoryItem)).one()
-        assert tag.item_id == item.id  # FK intact under enforcement
-
-
-def test_memory_item_tags_survive_vault_packaging(fk_engine) -> None:
-    """Regression (PR #132 review round 3): export_database_snapshot returns
-    memoryItemTags, but the packaging allowlists (_MEMORY_TABLES for
-    scope="memories" JSON exports, _CAPSULE_CARD_TABLES for capsules)
-    filtered it out — so importing either artifact restored an empty tag
-    payload after the enforced cascade had deleted the existing rows."""
-    from anima_server.models import MemoryItem, MemoryItemTag
-    from anima_server.services import vault as vault_module
-
-    factory = sessionmaker(bind=fk_engine, autoflush=False, expire_on_commit=False)
-    with factory() as db:
-        user = User(username="pkg", password_hash="x", display_name="Pkg")
-        db.add(user)
-        db.flush()
-        item = MemoryItem(
-            user_id=user.id, content="tagged", category="fact", importance=3
-        )
-        db.add(item)
-        db.flush()
-        db.add(MemoryItemTag(user_id=user.id, item_id=item.id, tag="sailing"))
-        db.commit()
-
-        payload = vault_module._build_vault_payload(
-            db, user_id=user.id, scope="memories"
-        )
-    assert payload["database"]["memoryItemTags"], (
-        "memories-scope packaging dropped the tag rows"
-    )
-    assert "memoryItemTags" in vault_module._CAPSULE_CARD_TABLES
+            stable_tables = (
+                "memory_claims",
+                "memory_claim_evidence",
+                "kg_relations",
+                "user_profile_fields",
+            )
+            original_hashes = {name: _hash_table(connection, name) for name in stable_tables}
+            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+        with engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        unlock_session_store.clear()
+        clear_sqlcipher_key()
+        dispose_cached_engines()
+        canonical.unlink()
+        for suffix in ("-wal", "-shm"):
+            canonical.with_name(canonical.name + suffix).unlink(missing_ok=True)
+        old_path.replace(canonical)
+        assert canonical.read_bytes()[:16] != b"SQLite format 3\x00"
+        profile, deks, _keys = authenticate_account("fk-owner", "current-password")
+        assert profile["id"] == owner_id and deks
+        token = unlock_session_store.create(owner_id, deks)
+        try:
+            upgraded = soul_session.get_engine(soul_session.get_user_database_url(owner_id))
+            with upgraded.connect() as connection:
+                assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+                assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+                assert {
+                    name: connection.exec_driver_sql(f"SELECT COUNT(*) FROM {name}").scalar_one()
+                    for name in tables
+                } == original_counts
+                assert {
+                    name: _hash_table(connection, name) for name in stable_tables
+                } == original_hashes
+                rows = connection.exec_driver_sql(
+                    "SELECT id,content,superseded_by FROM memory_items ORDER BY id"
+                ).all()
+                assert [
+                    (
+                        row.id,
+                        df(owner_id, row.content, table="memory_items", field="content"),
+                        row.superseded_by,
+                    )
+                    for row in rows
+                ] == [(11, "Original retained fact", 12), (12, "Current retained fact", None)]
+                receipt = connection.exec_driver_sql(
+                    "SELECT id,vacuum_completed FROM soul_schema_archives"
+                ).one()
+                assert receipt.vacuum_completed == 1
+            archive = (
+                settings.data_dir.with_name(settings.data_dir.name + ".schema-recovery")
+                / f"{receipt.id}.db"
+            )
+            assert archive.read_bytes()[:16] != b"SQLite format 3\x00"
+            with soul_session.get_engine(f"sqlite:///{archive.as_posix()}").connect() as original:
+                assert {
+                    name: _hash_table(original, name) for name in stable_tables
+                } == original_hashes
+                assert {
+                    name: original.exec_driver_sql(f"SELECT COUNT(*) FROM {name}").scalar_one()
+                    for name in tables
+                } == original_counts
+            with upgraded.begin() as connection:
+                connection.exec_driver_sql("DELETE FROM memory_claims WHERE id=21")
+                assert (
+                    connection.exec_driver_sql(
+                        "SELECT COUNT(*) FROM memory_claim_evidence"
+                    ).scalar_one()
+                    == 0
+                )
+                assert (
+                    connection.exec_driver_sql(
+                        "SELECT source_claim_evidence_id FROM user_profile_fields WHERE id=71"
+                    ).scalar_one()
+                    is None
+                )
+                assert (
+                    connection.exec_driver_sql("SELECT COUNT(*) FROM memory_items").scalar_one()
+                    == 2
+                )
+                assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+        finally:
+            unlock_session_store.revoke(token)

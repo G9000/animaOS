@@ -12,9 +12,9 @@ from anima_server.services.corefs.asset_mutations import (
     trash_canonical_asset,
     upsert_canonical_binary_asset,
 )
-from anima_server.services.corefs.diary_migration import (
-    migration_opaque_id,
+from anima_server.services.corefs.catalog_reader import (
     read_prepared_writing_snapshot,
+    stable_opaque_id,
 )
 from anima_server.services.corefs.indexer import CoreFSImageProjection
 
@@ -127,4 +127,4 @@ def forget_canonical_image(*, session: Any, image_asset_id: int) -> bool:
 
 
 def _retention_stable_id(image_stable_id: str) -> str:
-    return migration_opaque_id("image-retention", image_stable_id)
+    return stable_opaque_id("image-retention", image_stable_id)

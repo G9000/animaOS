@@ -6,11 +6,11 @@ from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
-from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.models.runtime import (
     RuntimeImageAnnotation,
     RuntimeImageAsset,
@@ -29,7 +29,6 @@ from anima_server.services.agent.compaction import compact_thread_context
 from anima_server.services.agent.evidence_retrieval import RetrievalMode, WideEvidenceResult
 from anima_server.services.agent.memory_blocks import MemoryBlock
 from anima_server.services.agent.persistence import (
-    append_message,
     cancel_run,
     create_run,
     persist_agent_result,
@@ -41,11 +40,221 @@ from anima_server.services.agent.prompt_budget import (
 from anima_server.services.agent.runtime_types import StepTrace, ToolExecutionResult
 from anima_server.services.agent.state import AgentResult
 from anima_server.services.documents.rag import DocumentRagResult
-from conftest_runtime import runtime_db_session
+from conftest import managed_test_client
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def current_core_authority(monkeypatch: pytest.MonkeyPatch):
+    """Exercise turns against a real current Core while model boundaries are mocked."""
+    with managed_test_client("agent-service-current-core-") as client:
+        from anima_server.services.core import update_core_manifest
+
+        # These isolated cognition fixtures explicitly use numeric owner 1.
+        update_core_manifest(lambda manifest: manifest.update(next_user_id=1))
+        response = client.post(
+            "/api/auth/register",
+            json={"username": "agent-service", "name": "Alice", "password": "password-one"},
+        )
+        assert response.status_code == 201, response.text
+        import hashlib
+        from dataclasses import replace
+
+        from anima_server.services.corefs.asset_mutations import upsert_canonical_binary_asset
+        from anima_server.services.corefs.catalog_reader import stable_opaque_id
+        from anima_server.services.documents import store as document_store
+        from anima_server.services.sessions import unlock_session_store
+
+        session = unlock_session_store.resolve(response.json()["unlockToken"])
+        original_register = document_store.register_document
+
+        def register_current_fixture_document(db, registration):
+            data = b"document-parser-boundary-fixture:" + registration.filename.encode()
+            stable_id = stable_opaque_id("test-document", registration.filename)
+            upsert_canonical_binary_asset(
+                session=session,
+                stable_id=stable_id,
+                name=registration.filename,
+                object_kind="attachment",
+                content_type=registration.mime_type,
+                data=data,
+            )
+            return original_register(
+                db,
+                replace(
+                    registration,
+                    storage_path=f"corefs://object/{stable_id}",
+                    sha256=hashlib.sha256(data).hexdigest(),
+                    size_bytes=len(data),
+                ),
+            )
+
+        monkeypatch.setattr(document_store, "register_document", register_current_fixture_document)
+        yield response.json()
+
+
+def _canonical_message(row):
+    """Read visible content from its native reference, never persisted Runtime body."""
+    identity = getattr(row, "corefs_message_id", None)
+    if identity is None:
+        return None
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        list_canonical_threads,
+    )
+
+    session = active_conversation_authority_session(row.user_id)
+    assert session is not None
+    return next(
+        message
+        for thread in list_canonical_threads(session=session)
+        for message in thread.messages
+        if message.message_id == identity
+    )
+
+
+def _message_text(row):
+    canonical = _canonical_message(row)
+    return canonical.content if canonical is not None else getattr(row, "content_text", None)
+
+
+def _message_json(row):
+    canonical = _canonical_message(row)
+    if canonical is None:
+        return getattr(row, "content_json", None)
+    from anima_server.services.agent.attachments import resolve_corefs_chat_attachment
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    metadata = dict(canonical.display_metadata or {})
+    if canonical.attachment_uris:
+        authority = active_conversation_authority_session(row.user_id)
+        assert authority is not None
+        metadata["attachments"] = [
+            resolve_corefs_chat_attachment(session=authority, object_uri=uri).to_content_dict()
+            for uri in canonical.attachment_uris
+        ]
+    return metadata
+
+
+@contextmanager
+def runtime_db_session():
+    # The active index and sealed row IDs belong to this one Runtime binding.
+    # A second database with the same IDs would violate that fixture boundary.
+    from anima_server.db.runtime import get_runtime_session_factory
+
+    with get_runtime_session_factory()() as session:
+        yield session
+
+
+def _current_thread(db, *, user_id=1):
+    from anima_server.services.agent.persistence import ensure_runtime_thread_reference
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+    from anima_server.services.corefs.conversation_mutations import create_canonical_thread
+
+    authority = active_conversation_authority_session(user_id)
+    assert authority is not None
+    view = create_canonical_thread(session=authority, force_new=True)
+    return ensure_runtime_thread_reference(
+        db, user_id=user_id, thread_id=int(view.document.legacy_thread_id)
+    )
+
+
+def _append_current_message(db, *, thread, content, role="user"):
+    from anima_server.services.agent.persistence import append_corefs_message_reference
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+    from anima_server.services.corefs.conversation_mutations import (
+        append_canonical_message,
+        reactivate_canonical_thread,
+    )
+
+    authority = active_conversation_authority_session(thread.user_id)
+    assert authority is not None
+    reactivate_canonical_thread(session=authority, thread_id=thread.id)
+    message = append_canonical_message(
+        session=authority, thread_id=thread.id, role=role, content=content
+    )
+    return append_corefs_message_reference(db, thread=thread, message=message, run_id=None)
+
+
+def _mock_indexed_image_recall(monkeypatch, db, *, asset, source_message, annotation, thread):
+    """Use a real native original/message and mock only derived ranking for this service unit test."""
+    import hashlib
+
+    from anima_server.services.corefs.asset_mutations import upsert_canonical_binary_asset
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+    from anima_server.services.corefs.conversation_mutations import (
+        append_canonical_message,
+        create_canonical_thread,
+    )
+    from anima_server.services.images import rag
+    from anima_server.services.images.rag import ImageAnnotationSearchResult
+
+    authority = active_conversation_authority_session(asset.user_id)
+    assert authority is not None
+    stable_id = stable_opaque_id("image-asset", str(asset.id))
+    asset.storage_path = f"corefs://object/{stable_id}"
+    asset.sha256 = hashlib.sha256(PNG_BYTES).hexdigest()
+    upsert_canonical_binary_asset(
+        session=authority,
+        stable_id=stable_id,
+        name=asset.filename,
+        object_kind="gallery-asset",
+        content_type=asset.mime_type,
+        data=PNG_BYTES,
+    )
+    view = create_canonical_thread(session=authority)
+    assert int(view.document.legacy_thread_id) == thread.id
+    metadata = dict(source_message.content_json or {})
+    attachment = metadata["attachments"][0]
+    attachment["storagePath"] = asset.storage_path
+    attachment["sha256"] = asset.sha256
+    native = append_canonical_message(
+        session=authority,
+        thread_id=thread.id,
+        role="user",
+        content=source_message.content_text,
+        attachment_uris=(asset.storage_path,),
+        legacy_message_id=source_message.id,
+    )
+    source_message.corefs_message_id = native.message_id
+    source_message.corefs_event_id = native.current_event_id
+    source_message.corefs_sequence_id = native.sequence
+    source_message.content_text = None
+    source_message.content_json = None
+    db.flush()
+    result = ImageAnnotationSearchResult(
+        image_asset_id=asset.id,
+        user_id=asset.user_id,
+        filename=asset.filename,
+        mime_type=asset.mime_type,
+        source_message_id=source_message.id,
+        source_thread_id=thread.id,
+        attachment_id=stable_id,
+        attachment_url=f"/api/chat/messages/{source_message.id}/attachments/{stable_id}",
+        annotation_id=annotation.id,
+        annotation_kind=annotation.annotation_kind,
+        snippet=annotation.content_text,
+        similarity=0.99,
+        related_sources=(),
+    )
+
+    def ranked(_db, *, user_id, query_embedding, limit):
+        assert user_id == asset.user_id and query_embedding and limit > 0
+        return [result]
+
+    monkeypatch.setattr(rag, "search_image_annotations_by_embedding", ranked)
 
 
 class FailingThenReplyRunner:
@@ -192,7 +401,6 @@ async def test_prepare_turn_context_deletes_attachment_files_on_persistence_fail
         del args, kwargs
         raise RuntimeError("runtime insert failed")
 
-    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
     monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
     monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
     monkeypatch.setattr(agent_service, "_get_companion", lambda user_id: FakeCompanion())
@@ -218,9 +426,7 @@ async def test_prepare_turn_context_deletes_attachment_files_on_persistence_fail
             attachments=[attachment],
         )
 
-    attachment_files = [
-        path for path in (tmp_path / "users").rglob("*") if path.is_file()
-    ]
+    attachment_files = [path for path in (tmp_path / "users").rglob("*") if path.is_file()]
     assert attachment_files == []
 
 
@@ -233,11 +439,7 @@ async def test_failed_turn_retry_keeps_history_clean(
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="retry-me",
-            password_hash="not-used",
-            display_name="Retry Me",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -254,14 +456,14 @@ async def test_failed_turn_retry_keeps_history_clean(
     assert result.response == "Recovered reply."
     assert [run.status for run in runs] == ["failed", "completed"]
     assert [message.sequence_id for message in messages] == [1, 2, 3]
-    assert messages[0].content_text == "first attempt"
+    assert _message_text(messages[0]) == "first attempt"
     assert messages[0].is_in_context is False
-    assert messages[1].content_text == "second attempt"
+    assert _message_text(messages[1]) == "second attempt"
     assert messages[1].is_in_context is True
-    assert messages[2].content_text == "Recovered reply."
+    assert _message_text(messages[2]) == "Recovered reply."
     assert messages[2].is_in_context is True
     assert thread.next_message_sequence == 4
-    assert [message.content_text for message in history] == [
+    assert [_message_text(message) for message in history] == [
         "second attempt",
         "Recovered reply.",
     ]
@@ -278,11 +480,7 @@ async def test_run_agent_passes_only_prior_turns_in_history(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="history-check",
-                password_hash="not-used",
-                display_name="History Check",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -311,11 +509,7 @@ async def test_run_agent_includes_home_greeting_context_in_current_turn(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="home-greeting",
-                password_hash="not-used",
-                display_name="Home Greeting",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -334,9 +528,7 @@ async def test_run_agent_includes_home_greeting_context_in_current_turn(
             )
 
             messages = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .all()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
             )
             thread = runtime_session.query(RuntimeThread).one()
     finally:
@@ -351,7 +543,7 @@ async def test_run_agent_includes_home_greeting_context_in_current_turn(
             None,
         )
     ]
-    assert [(message.role, message.content_text, message.source) for message in messages] == [
+    assert [(message.role, _message_text(message), message.source) for message in messages] == [
         (
             "assistant",
             "Hello there. I hope you and Tappy are having a peaceful start.",
@@ -382,11 +574,7 @@ async def test_run_agent_persists_context_message_pills(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="thought-pills",
-                password_hash="not-used",
-                display_name="Thought Pills",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -409,9 +597,7 @@ async def test_run_agent_persists_context_message_pills(
             )
 
             context_message = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .first()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).first()
             )
             thread = runtime_session.query(RuntimeThread).one()
             display = get_thread_messages_for_display(
@@ -424,7 +610,7 @@ async def test_run_agent_persists_context_message_pills(
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
-    assert extract_stored_pills(context_message.content_json) == [
+    assert extract_stored_pills(_message_json(context_message)) == [
         {"kind": "brief", "label": "DAILY BRIEF", "ref": None},
         {"kind": "emotion", "label": "WISTFUL", "ref": None},
     ]
@@ -445,11 +631,7 @@ async def test_run_agent_includes_today_context_without_persisting_or_caching(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="today-context",
-                password_hash="not-used",
-                display_name="Today Context",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -468,9 +650,7 @@ async def test_run_agent_includes_today_context_without_persisting_or_caching(
             )
 
             messages = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .all()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
             )
             companion = agent_service.get_companion(user.id)
     finally:
@@ -482,7 +662,7 @@ async def test_run_agent_includes_today_context_without_persisting_or_caching(
     assert "Mood: tired" in today_blocks[0][1]
     assert "Energy: low" in today_blocks[0][1]
     assert "Note: keep replies direct" in today_blocks[0][1]
-    assert [(message.role, message.content_text) for message in messages] == [
+    assert [(message.role, _message_text(message)) for message in messages] == [
         ("user", "Can you help me plan this?"),
         ("assistant", "Reply to: Can you help me plan this?"),
     ]
@@ -549,11 +729,7 @@ async def test_run_agent_adds_document_priority_block_for_mixed_pdf_turn(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="document-priority",
-                password_hash="not-used",
-                display_name="Document Priority",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -563,7 +739,7 @@ async def test_run_agent_adds_document_priority_block_for_mixed_pdf_turn(
                     user_id=user.id,
                     filename="manual.pdf",
                     mime_type="application/pdf",
-                    storage_path=f".anima/documents/{user.id}/manual.pdf",
+                    storage_path="corefs://object/01J00000000000000000000001",
                     sha256="4" * 64,
                     size_bytes=100,
                 ),
@@ -642,11 +818,7 @@ async def test_run_agent_omits_personal_memory_blocks_when_pdf_is_selected(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="document-memory-scope",
-                password_hash="not-used",
-                display_name="Document Memory Scope",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -656,7 +828,7 @@ async def test_run_agent_omits_personal_memory_blocks_when_pdf_is_selected(
                     user_id=user.id,
                     filename="CHCC 2026 Price List updated March.pdf",
                     mime_type="application/pdf",
-                    storage_path=f".anima/documents/{user.id}/prices.pdf",
+                    storage_path="corefs://object/01J00000000000000000000001",
                     sha256="5" * 64,
                     size_bytes=100,
                 ),
@@ -723,11 +895,7 @@ async def test_run_agent_persists_document_attachment_and_citation_pills(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="document-pills",
-                password_hash="not-used",
-                display_name="Document Pills",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -739,7 +907,7 @@ async def test_run_agent_persists_document_attachment_and_citation_pills(
                     workflow_run_id=None,
                     filename="CHCC 2026 Price List updated March.pdf",
                     mime_type="application/pdf",
-                    storage_path=f"users/{user.id}/attachments/chcc-price-list.pdf",
+                    storage_path="corefs://object/01J00000000000000000000001",
                     sha256="doc-sha-1",
                     size_bytes=1024,
                     metadata_json=None,
@@ -756,9 +924,7 @@ async def test_run_agent_persists_document_attachment_and_citation_pills(
             )
 
             messages = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .all()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
             )
             thread = runtime_session.query(RuntimeThread).one()
             display = get_thread_messages_for_display(
@@ -771,14 +937,14 @@ async def test_run_agent_persists_document_attachment_and_citation_pills(
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
-    assert extract_stored_pills(messages[0].content_json) == [
+    assert extract_stored_pills(_message_json(messages[0])) == [
         {
             "kind": "document_attachment",
             "label": "CHCC 2026 Price List updated March.pdf",
             "ref": document_id,
         }
     ]
-    assert extract_stored_pills(messages[1].content_json) == [
+    assert extract_stored_pills(_message_json(messages[1])) == [
         {
             "kind": "document_source",
             "label": "CHCC 2026 Price List updated March.pdf",
@@ -846,11 +1012,7 @@ async def test_run_agent_reuses_recent_pdf_context_for_followup_turn(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="document-followup",
-                password_hash="not-used",
-                display_name="Document Followup",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -862,7 +1024,7 @@ async def test_run_agent_reuses_recent_pdf_context_for_followup_turn(
                     workflow_run_id=None,
                     filename="Insta360-X5-technische-daten-spec-sheet.pdf",
                     mime_type="application/pdf",
-                    storage_path=f"users/{user.id}/attachments/insta360-x5.pdf",
+                    storage_path="corefs://object/01J00000000000000000000001",
                     sha256="doc-sha-followup",
                     size_bytes=2048,
                     metadata_json=None,
@@ -922,7 +1084,6 @@ async def test_run_agent_persists_image_source_pill_on_assistant_reply(
     runner = RecordingRunner()
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
-    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
     monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
     monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
 
@@ -935,11 +1096,7 @@ async def test_run_agent_persists_image_source_pill_on_assistant_reply(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="image-pills",
-                password_hash="not-used",
-                display_name="Image Pills",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -952,19 +1109,17 @@ async def test_run_agent_persists_image_source_pill_on_assistant_reply(
             )
 
             messages = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .all()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
             )
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
-    pills = extract_stored_pills(messages[1].content_json)
+    pills = extract_stored_pills(_message_json(messages[1]))
     assert len(pills) == 1
     assert pills[0]["kind"] == "image_source"
     assert pills[0]["label"] == "pixel.png"
     assert isinstance(pills[0]["ref"], str)
-    assert pills[0]["ref"].startswith("img_")
+    assert len(pills[0]["ref"]) == 26
 
 
 @pytest.mark.asyncio
@@ -985,22 +1140,16 @@ async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="recalled-image-pills",
-                password_hash="not-used",
-                display_name="Recalled Image Pills",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
-            thread = RuntimeThread(user_id=user.id, status="active")
-            runtime_session.add(thread)
-            runtime_session.flush()
+            thread = _current_thread(runtime_session, user_id=user.id)
             asset = RuntimeImageAsset(
                 user_id=user.id,
                 filename="talia.png",
                 mime_type="image/png",
-                storage_path="users/1/media/images/talia.png",
+                storage_path="",
                 sha256="c" * 64,
                 size_bytes=len(PNG_BYTES),
                 status="indexed",
@@ -1044,9 +1193,7 @@ async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
                 image_asset_id=asset.id,
                 annotation_kind="vision_caption",
                 content_text=annotation_text,
-                content_hash=RuntimeImageAnnotation.compute_content_hash(
-                    annotation_text
-                ),
+                content_hash=RuntimeImageAnnotation.compute_content_hash(annotation_text),
                 status="active",
             )
             runtime_session.add(annotation)
@@ -1065,6 +1212,14 @@ async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
                     content_preview=annotation_text,
                 )
             )
+            _mock_indexed_image_recall(
+                monkeypatch,
+                runtime_session,
+                asset=asset,
+                source_message=source_message,
+                annotation=annotation,
+                thread=thread,
+            )
             thread.next_message_sequence = 2
 
             await run_agent(
@@ -1075,16 +1230,14 @@ async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
             )
 
             messages = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .all()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
             )
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
     labels = [label for label, _value in runner.requests[0]["memory_blocks"]]
     assert "relevant_images" in labels
-    pills = extract_stored_pills(messages[-1].content_json)
+    pills = extract_stored_pills(_message_json(messages[-1]))
     assert pills == [
         {
             "kind": "image_source",
@@ -1092,10 +1245,10 @@ async def test_run_agent_persists_recalled_image_source_pill_on_assistant_reply(
             "ref": f"image:{asset.id}",
             "assetId": asset.id,
             "mimeType": "image/png",
-            "url": f"/api/chat/messages/{source_message.id}/attachments/img_talia",
+            "url": f"/api/chat/messages/{source_message.id}/attachments/{asset.storage_path.rsplit('/', 1)[-1]}",
             "messageId": source_message.id,
             "threadId": thread.id,
-            "attachmentId": "img_talia",
+            "attachmentId": asset.storage_path.rsplit("/", 1)[-1],
         }
     ]
 
@@ -1118,22 +1271,16 @@ async def test_run_agent_surfaces_upload_context_only_recalled_image_pill(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="upload-context-image-pills",
-                password_hash="not-used",
-                display_name="Upload Context Image Pills",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
-            thread = RuntimeThread(user_id=user.id, status="active")
-            runtime_session.add(thread)
-            runtime_session.flush()
+            thread = _current_thread(runtime_session, user_id=user.id)
             asset = RuntimeImageAsset(
                 user_id=user.id,
                 filename="context-only.png",
                 mime_type="image/png",
-                storage_path="users/1/media/images/context-only.png",
+                storage_path="",
                 sha256="e" * 64,
                 size_bytes=len(PNG_BYTES),
                 status="indexed",
@@ -1177,9 +1324,7 @@ async def test_run_agent_surfaces_upload_context_only_recalled_image_pill(
                 image_asset_id=asset.id,
                 annotation_kind="upload_context",
                 content_text=annotation_text,
-                content_hash=RuntimeImageAnnotation.compute_content_hash(
-                    annotation_text
-                ),
+                content_hash=RuntimeImageAnnotation.compute_content_hash(annotation_text),
                 status="active",
             )
             runtime_session.add(annotation)
@@ -1198,6 +1343,14 @@ async def test_run_agent_surfaces_upload_context_only_recalled_image_pill(
                     content_preview=annotation_text,
                 )
             )
+            _mock_indexed_image_recall(
+                monkeypatch,
+                runtime_session,
+                asset=asset,
+                source_message=source_message,
+                annotation=annotation,
+                thread=thread,
+            )
             thread.next_message_sequence = 2
 
             await run_agent(
@@ -1208,26 +1361,24 @@ async def test_run_agent_surfaces_upload_context_only_recalled_image_pill(
             )
 
             messages = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .all()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
             )
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
     labels = [label for label, _value in runner.requests[0]["memory_blocks"]]
     assert "relevant_images" in labels
-    assert extract_stored_pills(messages[-1].content_json) == [
+    assert extract_stored_pills(_message_json(messages[-1])) == [
         {
             "kind": "image_source",
             "label": "context-only.png",
             "ref": f"image:{asset.id}",
             "assetId": asset.id,
             "mimeType": "image/png",
-            "url": f"/api/chat/messages/{source_message.id}/attachments/img_context_only",
+            "url": f"/api/chat/messages/{source_message.id}/attachments/{asset.storage_path.rsplit('/', 1)[-1]}",
             "messageId": source_message.id,
             "threadId": thread.id,
-            "attachmentId": "img_context_only",
+            "attachmentId": asset.storage_path.rsplit("/", 1)[-1],
         }
     ]
 
@@ -1250,7 +1401,6 @@ async def test_run_agent_uses_current_image_source_pill_when_uploading_image(
     runner = RecordingRunner()
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
-    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
     monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
     monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
     monkeypatch.setattr(embeddings, "generate_embedding", fake_generate_embedding)
@@ -1264,22 +1414,16 @@ async def test_run_agent_uses_current_image_source_pill_when_uploading_image(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="current-image-pills",
-                password_hash="not-used",
-                display_name="Current Image Pills",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
-            thread = RuntimeThread(user_id=user.id, status="active")
-            runtime_session.add(thread)
-            runtime_session.flush()
+            thread = _current_thread(runtime_session, user_id=user.id)
             old_asset = RuntimeImageAsset(
                 user_id=user.id,
                 filename="old-look.png",
                 mime_type="image/png",
-                storage_path=f"users/{user.id}/media/images/old-look.png",
+                storage_path="",
                 sha256="d" * 64,
                 size_bytes=len(PNG_BYTES),
                 status="indexed",
@@ -1323,9 +1467,7 @@ async def test_run_agent_uses_current_image_source_pill_when_uploading_image(
                 image_asset_id=old_asset.id,
                 annotation_kind="upload_context",
                 content_text=annotation_text,
-                content_hash=RuntimeImageAnnotation.compute_content_hash(
-                    annotation_text
-                ),
+                content_hash=RuntimeImageAnnotation.compute_content_hash(annotation_text),
                 status="active",
             )
             runtime_session.add(annotation)
@@ -1344,6 +1486,14 @@ async def test_run_agent_uses_current_image_source_pill_when_uploading_image(
                     content_preview=annotation_text,
                 )
             )
+            _mock_indexed_image_recall(
+                monkeypatch,
+                runtime_session,
+                asset=old_asset,
+                source_message=old_source_message,
+                annotation=annotation,
+                thread=thread,
+            )
             thread.next_message_sequence = 2
 
             await run_agent(
@@ -1355,23 +1505,20 @@ async def test_run_agent_uses_current_image_source_pill_when_uploading_image(
             )
 
             messages = (
-                runtime_session.query(RuntimeMessage)
-                .order_by(RuntimeMessage.sequence_id)
-                .all()
+                runtime_session.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
             )
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
     user_message = messages[-2]
     assistant_message = messages[-1]
-    current_attachment = deserialize_stored_attachments(user_message.content_json)[0]
-    pills = extract_stored_pills(assistant_message.content_json)
+    current_attachment = deserialize_stored_attachments(_message_json(user_message))[0]
+    pills = extract_stored_pills(_message_json(assistant_message))
     assert pills == [
         {
             "kind": "image_source",
             "label": "new-look.png",
             "ref": current_attachment.id,
-            "assetId": current_attachment.asset_id,
             "mimeType": "image/png",
             "url": f"/api/chat/messages/{user_message.id}/attachments/{current_attachment.id}",
             "messageId": user_message.id,
@@ -1392,11 +1539,7 @@ async def test_run_agent_attaches_connected_animus_action_tools(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="action-tools",
-                password_hash="not-used",
-                display_name="Action Tools",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -1451,11 +1594,7 @@ async def test_run_agent_does_not_run_hidden_wide_evidence_retrieval(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="no-hidden-wide-retrieval",
-                password_hash="not-used",
-                display_name="No Hidden Wide Retrieval",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -1483,18 +1622,12 @@ async def test_run_agent_reloads_thread_scoped_memory_on_thread_switch(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="thread-memory",
-                password_hash="not-used",
-                display_name="Thread Memory",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
-            thread_one = RuntimeThread(user_id=user.id, status="active")
-            thread_two = RuntimeThread(user_id=user.id, status="active")
-            runtime_session.add_all([thread_one, thread_two])
-            runtime_session.flush()
+            thread_one = _current_thread(runtime_session, user_id=user.id)
+            thread_two = _current_thread(runtime_session, user_id=user.id)
 
             await run_agent(
                 "thread one turn",
@@ -1532,7 +1665,7 @@ async def test_run_agent_reloads_thread_scoped_memory_on_thread_switch(
 
 def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:
     with runtime_db_session() as session:
-        user_id = 42
+        user_id = 1
 
         thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=2)
         session.add(thread)
@@ -1575,13 +1708,7 @@ def test_persist_agent_result_records_prompt_budget_on_first_step() -> None:
             ),
         )
 
-        persist_agent_result(
-            session,
-            thread=thread,
-            run=run,
-            result=result,
-            initial_sequence_id=1,
-        )
+        agent_service._persist_corefs_step_traces(session, thread=thread, run=run, result=result)
         session.commit()
 
         step = session.query(RuntimeStep).one()
@@ -1672,34 +1799,9 @@ def test_experience_approach_redacts_raw_tool_outputs() -> None:
 
 def test_compaction_accounts_for_reserved_prompt_tokens() -> None:
     with runtime_db_session() as session:
-        user_id = 43
-
-        thread = RuntimeThread(user_id=user_id, status="active", next_message_sequence=3)
-        session.add(thread)
-        session.flush()
-
-        session.add_all(
-            [
-                RuntimeMessage(
-                    thread_id=thread.id,
-                    user_id=user_id,
-                    sequence_id=1,
-                    role="user",
-                    content_text="a" * 40,
-                    is_in_context=True,
-                ),
-                RuntimeMessage(
-                    thread_id=thread.id,
-                    user_id=user_id,
-                    sequence_id=2,
-                    role="assistant",
-                    content_text="b" * 40,
-                    is_in_context=True,
-                ),
-            ]
-        )
-        session.flush()
-
+        thread = _current_thread(session)
+        _append_current_message(session, thread=thread, content="a" * 40, role="user")
+        _append_current_message(session, thread=thread, content="b" * 40, role="assistant")
         result = compact_thread_context(
             session,
             thread=thread,
@@ -1714,77 +1816,154 @@ def test_compaction_accounts_for_reserved_prompt_tokens() -> None:
     assert result.effective_trigger_token_limit == 18
     assert result.reserved_prompt_tokens == 12
     assert summary.sequence_id == 3
-    assert "Conversation summary:" in (summary.content_text or "")
+    assert "Conversation summary:" in (_message_text(summary) or "")
 
 
 @pytest.mark.asyncio
-async def test_proactive_compaction_uses_conservative_prompt_estimate(
+@pytest.mark.parametrize(
+    "runtime_loss",
+    ["none", "all", "partial"],
+    ids=["current-window", "cold-runtime", "partial-runtime"],
+)
+async def test_current_context_overflow_retry_compacts_native_history(
     monkeypatch: pytest.MonkeyPatch,
+    runtime_loss: str,
 ) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_compact(_runtime_db: object, **kwargs: object) -> None:
-        captured.update(kwargs)
-
-    monkeypatch.setattr(agent_service, "compact_thread_context", fake_compact)
-    monkeypatch.setattr(agent_service, "resolve_context_budget_tokens", lambda: 100)
-    monkeypatch.setattr(agent_service.settings, "agent_compaction_trigger_ratio", 0.8)
-
-    turn_ctx = agent_service._TurnContext(
-        history=[agent_service.StoredMessage(role="user", content="h" * 240)],
-        conversation_turn_count=1,
-        memory_blocks=(MemoryBlock(label="test", value="m" * 60),),
+    from anima_server.services.agent import soul_writer
+    from anima_server.services.agent.llm import ContextWindowOverflowError
+    from anima_server.services.agent.runtime_types import (
+        StepContext,
+        StepFailedError,
+        StepProgression,
+    )
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        get_canonical_thread,
     )
 
-    result = await agent_service._proactive_compact_if_needed(
-        object(),
-        thread=SimpleNamespace(id=1),
-        run=SimpleNamespace(id=2),
-        turn_ctx=turn_ctx,
-        user_id=7,
-    )
+    requests: list[list[agent_service.StoredMessage]] = []
 
-    assert result is turn_ctx
-    assert captured["trigger_token_limit"] == 80
-    assert captured["reserved_prompt_tokens"] == 20
+    class OverflowThenReplyRunner:
+        async def invoke(self, user_message, user_id, history, **kwargs):
+            requests.append(list(history))
+            if len(requests) == 1:
+                raise StepFailedError(
+                    ContextWindowOverflowError("prompt exceeds context window"),
+                    StepContext(step_index=0, progression=StepProgression.LLM_REQUESTED),
+                )
+            return AgentResult(
+                response="Recovered after compaction.",
+                model="test-model",
+                provider="test-provider",
+                stop_reason="end_turn",
+                step_traces=[StepTrace(step_index=0, assistant_text="Recovered after compaction.")],
+            )
+
+    async def skip_soul_writer(_user_id):
+        return None
+
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: OverflowThenReplyRunner())
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(soul_writer, "run_soul_writer", skip_soul_writer)
+    monkeypatch.setattr(agent_service.settings, "agent_context_overflow_retry", True)
+    monkeypatch.setattr(agent_service.settings, "agent_compaction_keep_last_messages", 2)
+
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        user = SoulOwner(core_owner_id=str(uuid4()))
+        soul_session.add(user)
+        soul_session.commit()
+        thread = _current_thread(runtime_session, user_id=user.id)
+        for index in range(8):
+            _append_current_message(
+                runtime_session,
+                thread=thread,
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"Earlier turn {index}: " + "long history " * 200,
+            )
+        runtime_session.commit()
+        if runtime_loss == "all":
+            # Preserve encrypted authored content while dropping every SQL
+            # message/thread binding, as after a disposable Runtime rebuild.
+            runtime_session.query(RuntimeMessage).delete(synchronize_session=False)
+            runtime_session.delete(thread)
+            runtime_session.commit()
+            agent_service.invalidate_agent_runtime_cache()
+            assert runtime_session.query(RuntimeMessage).count() == 0
+        elif runtime_loss == "partial":
+            missing = (
+                runtime_session.query(RuntimeMessage)
+                .order_by(RuntimeMessage.sequence_id)
+                .limit(2)
+                .all()
+            )
+            for row in missing:
+                runtime_session.delete(row)
+            from anima_server.services.agent.sequencing import reserve_message_sequences
+
+            # A plaintext leftover is neither a native binding nor a sealed
+            # operational summary and must never become canonical context.
+            runtime_session.add(
+                RuntimeMessage(
+                    user_id=user.id,
+                    thread_id=thread.id,
+                    sequence_id=reserve_message_sequences(
+                        runtime_session, thread_id=thread.id, count=1
+                    ),
+                    role="assistant",
+                    content_text="UNAUTHENTICATED_RUNTIME_TEXT",
+                    is_in_context=True,
+                    token_estimate=100,
+                )
+            )
+            runtime_session.commit()
+            agent_service.invalidate_agent_runtime_cache()
+        result = await run_agent(
+            "Current question",
+            user.id,
+            soul_session,
+            runtime_session,
+            thread_id=thread.id,
+        )
+        summary = (
+            runtime_session.query(RuntimeMessage).filter(RuntimeMessage.role == "summary").one()
+        )
+        native = get_canonical_thread(
+            session=active_conversation_authority_session(user.id),
+            thread_id=thread.id,
+        )
+        assert native is not None
+        assert len(native.messages) == 10
+        from sqlalchemy import select
+
+        stored_summary = runtime_session.execute(
+            select(RuntimeMessage.__table__.c.content_text).where(
+                RuntimeMessage.__table__.c.id == summary.id
+            )
+        ).scalar_one()
+        assert stored_summary is None
+        assert summary.is_in_context
+
+    assert result.response == "Recovered after compaction."
+    assert len(requests) == 2
+    assert len(requests[0]) == 8
+    assert requests[1][0].content.startswith("Conversation summary:")
+    assert sum(len(message.content) for message in requests[1]) < sum(
+        len(message.content) for message in requests[0]
+    )
+    assert all(message.content != "Current question" for message in requests[1])
+    assert all("UNAUTHENTICATED_RUNTIME_TEXT" not in message.content for message in requests[1])
 
 
 def test_companion_history_cache_is_scoped_by_thread() -> None:
     agent_service.invalidate_agent_runtime_cache()
     try:
         with runtime_db_session() as session:
-            user_id = 44
-            thread_one = RuntimeThread(
-                user_id=user_id,
-                status="active",
-                next_message_sequence=2,
-            )
-            thread_two = RuntimeThread(
-                user_id=user_id,
-                status="active",
-                next_message_sequence=2,
-            )
-            session.add_all([thread_one, thread_two])
-            session.flush()
+            user_id = 1
+            thread_one = _current_thread(session, user_id=user_id)
+            thread_two = _current_thread(session, user_id=user_id)
 
-            append_message(
-                session,
-                thread=thread_one,
-                run_id=None,
-                step_id=None,
-                sequence_id=1,
-                role="user",
-                content_text="thread one history",
-            )
-            append_message(
-                session,
-                thread=thread_two,
-                run_id=None,
-                step_id=None,
-                sequence_id=1,
-                role="user",
-                content_text="thread two history",
-            )
+            _append_current_message(session, thread=thread_one, content="thread one history")
+            _append_current_message(session, thread=thread_two, content="thread two history")
             session.commit()
 
             companion = agent_service._get_companion(user_id)
@@ -1803,12 +1982,8 @@ def test_companion_history_cache_is_scoped_by_thread() -> None:
                 thread_id=thread_one.id,
             )
 
-        assert [message.content for message in history_one_again] == [
-            "thread one history"
-        ]
-        assert [message.content for message in history_two] == [
-            "thread two history"
-        ]
+        assert [message.content for message in history_one_again] == ["thread one history"]
+        assert [message.content for message in history_two] == ["thread two history"]
     finally:
         agent_service.invalidate_agent_runtime_cache()
 
@@ -1849,9 +2024,7 @@ def test_persist_agent_result_does_not_overwrite_cancelled_run() -> None:
 
         session.refresh(run)
         persisted_message_count = (
-            session.query(RuntimeMessage)
-            .filter(RuntimeMessage.run_id == run.id)
-            .count()
+            session.query(RuntimeMessage).filter(RuntimeMessage.run_id == run.id).count()
         )
 
     assert run.status == "cancelled"
@@ -1868,17 +2041,11 @@ async def test_cancelled_agent_task_marks_running_run_cancelled(
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="cancel-stream",
-            password_hash="not-used",
-            display_name="Cancel Stream",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
-        task = asyncio.create_task(
-            run_agent("please wait", user.id, soul_session, runtime_session)
-        )
+        task = asyncio.create_task(run_agent("please wait", user.id, soul_session, runtime_session))
         await asyncio.wait_for(runner.started.wait(), timeout=1)
 
         task.cancel()
@@ -1918,12 +2085,9 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
             del runtime_db, thread_id
             return []
 
-    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
     monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
     monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
-    monkeypatch.setattr(
-        agent_service, "_get_companion", lambda user_id: FakeCompanion()
-    )
+    monkeypatch.setattr(agent_service, "_get_companion", lambda user_id: FakeCompanion())
     monkeypatch.setattr(agent_service, "_assemble_turn_context", fail_assemble)
 
     attachment = ChatRequestAttachment(
@@ -1934,11 +2098,7 @@ async def test_stage1_failure_marks_run_failed_and_evicts_user_message(
     )
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="stage1-fail",
-            password_hash="not-used",
-            display_name="Stage1 Fail",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -1975,7 +2135,6 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
             raise RuntimeError("provider failed")
 
     agent_service.invalidate_agent_runtime_cache()
-    monkeypatch.setattr(agent_service.settings, "data_dir", tmp_path)
     monkeypatch.setattr(agent_service.settings, "agent_provider", "openai")
     monkeypatch.setattr(agent_service.settings, "agent_model", "gpt-4o-mini")
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: FailingRunner())
@@ -1990,11 +2149,7 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
 
     try:
         with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-            user = User(
-                username="failed-image-turn",
-                password_hash="not-used",
-                display_name="Failed Image Turn",
-            )
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_session.add(user)
             soul_session.commit()
 
@@ -2009,9 +2164,7 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
 
             run = runtime_session.query(RuntimeRun).one()
             user_msg = (
-                runtime_session.query(RuntimeMessage)
-                .filter(RuntimeMessage.role == "user")
-                .one()
+                runtime_session.query(RuntimeMessage).filter(RuntimeMessage.role == "user").one()
             )
             thread = runtime_session.query(RuntimeThread).one()
             display_messages = get_thread_messages_for_display(
@@ -2036,7 +2189,21 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
     assert user_msg.is_in_context is False
     assert image_link_count == 0
     assert image_asset_count == 0
-    assert display_messages[0]["attachments"] == []
+    from anima_server.services.corefs.asset_authority import open_corefs_byte_source
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    canonical = _canonical_message(user_msg)
+    assert len(canonical.attachment_uris) == 1
+    assert display_messages[0]["attachments"] == [{"corefsUri": canonical.attachment_uris[0]}]
+    authority = active_conversation_authority_session(user.id)
+    assert (
+        open_corefs_byte_source(
+            session=authority, object_uri=canonical.attachment_uris[0]
+        ).read_all()
+        == PNG_BYTES
+    )
     assert annotation_count == 0
     assert embedding_count == 0
 
@@ -2044,47 +2211,40 @@ async def test_failed_image_turn_does_not_leave_active_image_annotations(
 def test_search_knowledge_bundle_tool_returns_concepts_and_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import hashlib
-
-    from anima_server.models.runtime import RuntimeKnowledgeConcept
+    from anima_server.models import MemoryItem
     from anima_server.services.agent import tools as agent_tools
     from anima_server.services.agent.tool_context import (
         ToolContext,
         clear_tool_context,
         set_tool_context,
     )
-    from anima_server.services.ingestion import retrieval as knowledge_retrieval
-    from anima_server.services.ingestion.adapters.text import ingest_text_content
+    from anima_server.services.corefs.asset_authority import require_canonical_asset_session
+    from anima_server.services.corefs.knowledge_authority import (
+        CanonicalKnowledgeDocument,
+        publish_canonical_knowledge_source,
+    )
 
-    def fake_embedding(text: str) -> list[float]:
-        if "portable" in text.lower():
-            return [1.0, *([0.0] * (_EMBED_DIM - 1))]
-        return [0.0, 1.0, *([0.0] * (_EMBED_DIM - 2))]
-
-    monkeypatch.setattr(knowledge_retrieval, "generate_embedding", fake_embedding)
-    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        concept = RuntimeKnowledgeConcept(
-            user_id=1,
-            concept_type="claim",
-            slug="portable-core",
-            title="Portable Core",
-            description="Portable continuity",
-            body_markdown="Portable continuity keeps the local core coherent.",
-            frontmatter_json={"type": "claim", "title": "Portable Core"},
-            content_hash=hashlib.sha256(b"portable").hexdigest(),
-            status="active",
-        )
-        runtime_session.add(concept)
-        runtime_session.flush()
-        _source, _artifacts, spans = ingest_text_content(
-            runtime_session,
-            user_id=1,
-            content="Portable evidence with a source citation.",
+    monkeypatch.setattr(
+        "anima_server.services.ingestion.retrieval.generate_embedding",
+        lambda text: [1.0, *([0.0] * (_EMBED_DIM - 1))],
+    )
+    authority = require_canonical_asset_session(1)
+    content = "Portable continuity keeps the local core coherent. Portable evidence with a source citation."
+    publish_canonical_knowledge_source(
+        session=authority,
+        document=CanonicalKnowledgeDocument(
+            source_kind="text",
+            source_uri="text://portable.txt",
+            source_title="Portable Core",
+            source_media_type="text/plain",
             filename="portable.txt",
-        )
-        knowledge_retrieval.upsert_concept_embedding(runtime_session, concept=concept)
-        knowledge_retrieval.upsert_source_span_embedding(runtime_session, span=spans[0])
-
+            artifact_kind="text",
+            content=content,
+            original_content=content,
+        ),
+    )
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        before = soul_session.query(MemoryItem).count()
         set_tool_context(
             ToolContext(db=soul_session, runtime_db=runtime_session, user_id=1, thread_id=1)
         )
@@ -2092,45 +2252,43 @@ def test_search_knowledge_bundle_tool_returns_concepts_and_evidence(
             output = agent_tools.search_knowledge_bundle("portable continuity")
         finally:
             clear_tool_context()
-
+        assert soul_session.query(MemoryItem).count() == before
     assert "Portable Core" in output
     assert "source_span:" in output
     assert "Saved" not in output
 
 
 def test_search_knowledge_bundle_tool_uses_text_fallback_without_embeddings() -> None:
-    import hashlib
-
-    from anima_server.models.runtime import RuntimeKnowledgeConcept
+    from anima_server.models import MemoryItem
     from anima_server.services.agent import tools as agent_tools
     from anima_server.services.agent.tool_context import (
         ToolContext,
         clear_tool_context,
         set_tool_context,
     )
-    from anima_server.services.ingestion.adapters.text import ingest_text_content
+    from anima_server.services.corefs.asset_authority import require_canonical_asset_session
+    from anima_server.services.corefs.knowledge_authority import (
+        CanonicalKnowledgeDocument,
+        publish_canonical_knowledge_source,
+    )
 
-    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        concept = RuntimeKnowledgeConcept(
-            user_id=1,
-            concept_type="claim",
-            slug="portable-core",
-            title="Portable Core",
-            description="Portable continuity",
-            body_markdown="Portable continuity keeps the local core coherent.",
-            frontmatter_json={"type": "claim", "title": "Portable Core"},
-            content_hash=hashlib.sha256(b"portable").hexdigest(),
-            status="active",
-        )
-        runtime_session.add(concept)
-        runtime_session.flush()
-        ingest_text_content(
-            runtime_session,
-            user_id=1,
-            content="Portable evidence with a source citation.",
+    authority = require_canonical_asset_session(1)
+    content = "Portable continuity keeps the local core coherent. Portable evidence with a source citation."
+    publish_canonical_knowledge_source(
+        session=authority,
+        document=CanonicalKnowledgeDocument(
+            source_kind="text",
+            source_uri="text://portable.txt",
+            source_title="Portable Core",
+            source_media_type="text/plain",
             filename="portable.txt",
-        )
-
+            artifact_kind="text",
+            content=content,
+            original_content=content,
+        ),
+    )
+    with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
+        before = soul_session.query(MemoryItem).count()
         set_tool_context(
             ToolContext(db=soul_session, runtime_db=runtime_session, user_id=1, thread_id=1)
         )
@@ -2138,15 +2296,17 @@ def test_search_knowledge_bundle_tool_uses_text_fallback_without_embeddings() ->
             output = agent_tools.search_knowledge_bundle("portable")
         finally:
             clear_tool_context()
-
+        assert soul_session.query(MemoryItem).count() == before
     assert "Portable Core" in output
     assert "source_span:" in output
-    assert "No compiled knowledge bundle results found" not in output
+    assert "Saved" not in output
 
 
 def test_inline_image_indexing_rolls_back_partial_rows_on_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    calls = []
+
     def fail_after_partial_flush(
         runtime_db: Session,
         *,
@@ -2154,6 +2314,7 @@ def test_inline_image_indexing_rolls_back_partial_rows_on_failure(
         image_asset_ids: list[int],
         upload_context: str,
     ) -> None:
+        calls.append(tuple(image_asset_ids))
         runtime_db.add(
             RuntimeImageAnnotation(
                 user_id=user_id,
@@ -2177,37 +2338,57 @@ def test_inline_image_indexing_rolls_back_partial_rows_on_failure(
 
     with runtime_db_session() as runtime_session:
         asset = RuntimeImageAsset(
-            user_id=7,
+            user_id=1,
             filename="partial.png",
             mime_type="image/png",
-            storage_path="users/7/media/images/aa/partial.png",
+            storage_path="",
             sha256="a" * 64,
             size_bytes=len(PNG_BYTES),
-            retention_state="active",
+            retention_state="transient",
         )
         runtime_session.add(asset)
         runtime_session.flush()
 
+        from anima_server.services.corefs.asset_mutations import upsert_canonical_binary_asset
+        from anima_server.services.corefs.catalog_reader import stable_opaque_id
+        from anima_server.services.corefs.conversation_authority import (
+            active_conversation_authority_session,
+        )
+        from anima_server.services.images.store import resolve_image_byte_source
+
+        authority = active_conversation_authority_session(1)
+        stable_id = stable_opaque_id("image-asset", str(asset.id))
+        asset.storage_path = f"corefs://object/{stable_id}"
+        upsert_canonical_binary_asset(
+            session=authority,
+            stable_id=stable_id,
+            name="partial.png",
+            object_kind="gallery-asset",
+            content_type="image/png",
+            data=PNG_BYTES,
+        )
         agent_service._index_image_attachments_inline(
             runtime_session,
-            user_id=7,
+            user_id=1,
             user_message="partial indexing should not persist",
             attachments=(
                 agent_service.StoredAttachment(
-                    id="partial",
+                    id=stable_id,
                     kind="image",
                     mime_type="image/png",
-                    path="unused",
+                    path=f"corefs-user://1/object/{stable_id}",
                     storage_path=asset.storage_path,
                     asset_id=asset.id,
-                    retention_state="active",
+                    retention_state="transient",
                 ),
             ),
         )
         runtime_session.commit()
 
         annotation_count = runtime_session.query(RuntimeImageAnnotation).count()
+        assert resolve_image_byte_source(asset, user_id=1).read_all() == PNG_BYTES
 
+    assert calls == [(asset.id,)]
     assert annotation_count == 0
 
 
@@ -2223,39 +2404,50 @@ def test_should_retry_after_compaction_only_before_tools_executed(
         StepProgression,
     )
 
-    monkeypatch.setattr(
-        agent_service.settings, "agent_context_overflow_retry", True)
+    monkeypatch.setattr(agent_service.settings, "agent_context_overflow_retry", True)
 
     def make_error(step_index: int, progression: StepProgression) -> StepFailedError:
         ctx = StepContext(step_index=step_index, progression=progression)
         return StepFailedError(ContextWindowOverflowError("too big"), ctx)
 
     # Overflow on the very first LLM request: prompt too large, safe to retry.
-    assert agent_service._should_retry_after_compaction(
-        make_error(0, StepProgression.LLM_REQUESTED)) is True
+    assert (
+        agent_service._should_retry_after_compaction(make_error(0, StepProgression.LLM_REQUESTED))
+        is True
+    )
     # Tools already started within step 0: retry would re-execute them.
-    assert agent_service._should_retry_after_compaction(
-        make_error(0, StepProgression.TOOLS_STARTED)) is False
+    assert (
+        agent_service._should_retry_after_compaction(make_error(0, StepProgression.TOOLS_STARTED))
+        is False
+    )
     # Later step: tools from earlier steps already executed.
-    assert agent_service._should_retry_after_compaction(
-        make_error(1, StepProgression.LLM_REQUESTED)) is False
+    assert (
+        agent_service._should_retry_after_compaction(make_error(1, StepProgression.LLM_REQUESTED))
+        is False
+    )
     # Non-overflow failures never retry.
-    assert agent_service._should_retry_after_compaction(
-        StepFailedError(RuntimeError("boom"), StepContext())) is False
+    assert (
+        agent_service._should_retry_after_compaction(
+            StepFailedError(RuntimeError("boom"), StepContext())
+        )
+        is False
+    )
 
 
 def test_client_error_message_masks_internal_errors() -> None:
     from anima_server.services.agent.llm import LLMConfigError
 
     masked = agent_service.client_error_message(
-        RuntimeError("connection to postgres://user:secret@host failed"))
+        RuntimeError("connection to postgres://user:secret@host failed")
+    )
     assert "secret" not in masked
     assert "internal error" in masked
 
     # Messages written for users pass through unchanged.
-    assert agent_service.client_error_message(
-        LLMConfigError("Choose a vision-capable model.")
-    ) == "Choose a vision-capable model."
+    assert (
+        agent_service.client_error_message(LLMConfigError("Choose a vision-capable model."))
+        == "Choose a vision-capable model."
+    )
 
 
 @pytest.mark.asyncio
@@ -2290,11 +2482,7 @@ async def test_cancel_agent_run_reaches_inflight_turn(
     monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="cancel-mid-turn",
-            password_hash="not-used",
-            display_name="Cancel Mid Turn",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -2307,8 +2495,7 @@ async def test_cancel_agent_run_reaches_inflight_turn(
         # request can find and cancel it.
         run = runtime_session.query(RuntimeRun).one()
         assert run.status == "running"
-        cancelled = await agent_service.cancel_agent_run(
-            run.id, user.id, runtime_session)
+        cancelled = await agent_service.cancel_agent_run(run.id, user.id, runtime_session)
         assert cancelled is not None
 
         result = await asyncio.wait_for(task, timeout=5)
@@ -2347,11 +2534,7 @@ async def test_stage3_persist_failure_marks_run_failed(
     monkeypatch.setattr(agent_service, "_persist_turn_result", boom)
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="stage3-fail",
-            password_hash="not-used",
-            display_name="Stage3 Fail",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -2360,11 +2543,7 @@ async def test_stage3_persist_failure_marks_run_failed(
 
         runtime_session.expire_all()
         run = runtime_session.query(RuntimeRun).one()
-        user_msg = (
-            runtime_session.query(RuntimeMessage)
-            .filter(RuntimeMessage.role == "user")
-            .one()
-        )
+        user_msg = runtime_session.query(RuntimeMessage).filter(RuntimeMessage.role == "user").one()
 
     assert run.status == "failed"
     assert user_msg.is_in_context is False
@@ -2405,17 +2584,11 @@ async def test_stage1_cancellation_marks_run_cancelled_and_evicts_user_message(
         del kwargs
         raise asyncio.CancelledError
 
-    monkeypatch.setattr(
-        agent_service, "_get_companion", lambda user_id: _MinimalCompanion()
-    )
+    monkeypatch.setattr(agent_service, "_get_companion", lambda user_id: _MinimalCompanion())
     monkeypatch.setattr(agent_service, "_assemble_turn_context", cancelled_assemble)
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="stage1-cancel",
-            password_hash="not-used",
-            display_name="Stage1 Cancel",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -2424,11 +2597,7 @@ async def test_stage1_cancellation_marks_run_cancelled_and_evicts_user_message(
 
         runtime_session.expire_all()
         run = runtime_session.query(RuntimeRun).one()
-        user_msg = (
-            runtime_session.query(RuntimeMessage)
-            .filter(RuntimeMessage.role == "user")
-            .one()
-        )
+        user_msg = runtime_session.query(RuntimeMessage).filter(RuntimeMessage.role == "user").one()
 
     assert run.status == "cancelled"
     assert user_msg.is_in_context is False
@@ -2453,20 +2622,12 @@ async def test_stage1b_cancellation_marks_run_cancelled(
             memory_blocks=(),
         )
 
-    monkeypatch.setattr(
-        agent_service, "_get_companion", lambda user_id: _MinimalCompanion()
-    )
+    monkeypatch.setattr(agent_service, "_get_companion", lambda user_id: _MinimalCompanion())
     monkeypatch.setattr(agent_service, "_assemble_turn_context", minimal_assemble)
-    monkeypatch.setattr(
-        agent_service, "_proactive_compact_if_needed", cancelled_compact
-    )
+    monkeypatch.setattr(agent_service, "_proactive_compact_if_needed", cancelled_compact)
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="stage1b-cancel",
-            password_hash="not-used",
-            display_name="Stage1b Cancel",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -2475,11 +2636,7 @@ async def test_stage1b_cancellation_marks_run_cancelled(
 
         runtime_session.expire_all()
         run = runtime_session.query(RuntimeRun).one()
-        user_msg = (
-            runtime_session.query(RuntimeMessage)
-            .filter(RuntimeMessage.role == "user")
-            .one()
-        )
+        user_msg = runtime_session.query(RuntimeMessage).filter(RuntimeMessage.role == "user").one()
 
     assert run.status == "cancelled"
     assert user_msg.is_in_context is False
@@ -2512,11 +2669,7 @@ async def test_stage3_cancellation_marks_run_cancelled(
     monkeypatch.setattr(agent_service, "_persist_turn_result", cancelled_persist)
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="stage3-cancel",
-            password_hash="not-used",
-            display_name="Stage3 Cancel",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -2539,9 +2692,7 @@ async def test_public_stream_closes_shared_pump(
     inner_closed = asyncio.Event()
     created_streams: list[AsyncGenerator[object, None]] = []
 
-    def fake_stream_via_queue(
-        *args: object, **kwargs: object
-    ) -> AsyncGenerator[object, None]:
+    def fake_stream_via_queue(*args: object, **kwargs: object) -> AsyncGenerator[object, None]:
         del args, kwargs
 
         async def inner() -> AsyncGenerator[object, None]:
@@ -2593,30 +2744,20 @@ async def test_stream_shutdown_does_not_deadlock_when_queue_full(
     original_stream_via_queue = agent_service._stream_via_queue
     created_pumps: list[AsyncGenerator[object, None]] = []
 
-    def capture_stream_via_queue(
-        *args: object, **kwargs: object
-    ) -> AsyncGenerator[object, None]:
+    def capture_stream_via_queue(*args: object, **kwargs: object) -> AsyncGenerator[object, None]:
         pump = original_stream_via_queue(*args, **kwargs)
         created_pumps.append(pump)
         return pump
 
-    monkeypatch.setattr(
-        agent_service, "_stream_via_queue", capture_stream_via_queue
-    )
+    monkeypatch.setattr(agent_service, "_stream_via_queue", capture_stream_via_queue)
     tasks_before = set(asyncio.all_tasks())
 
     with _soul_db_session() as soul_session, runtime_db_session() as runtime_session:
-        user = User(
-            username="flood-stream",
-            password_hash="not-used",
-            display_name="Flood Stream",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
-        gen = agent_service.stream_agent(
-            "hello", user.id, soul_session, runtime_session
-        )
+        gen = agent_service.stream_agent("hello", user.id, soul_session, runtime_session)
         first = await asyncio.wait_for(anext(gen), timeout=5)
         assert first is not None
         # Let the worker fill the queue and block on its next put.
@@ -2627,8 +2768,7 @@ async def test_stream_shutdown_does_not_deadlock_when_queue_full(
     leaked_workers = [
         task
         for task in asyncio.all_tasks() - tasks_before
-        if not task.done()
-        and "_stream_via_queue.<locals>.worker" in task.get_coro().__qualname__
+        if not task.done() and "_stream_via_queue.<locals>.worker" in task.get_coro().__qualname__
     ]
     try:
         assert leaked_workers == []
@@ -2696,3 +2836,153 @@ async def test_cancel_agent_run_does_not_leak_preset_event_for_terminal_run(
         result = await agent_service.cancel_agent_run(active_run.id, 7, session)
         assert result is not None
         assert spy.set_calls == [active_run.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False], ids=["approve", "deny"])
+async def test_current_approval_resume_reconstructs_authenticated_tool_pair(
+    monkeypatch: pytest.MonkeyPatch, approved: bool
+):
+    from anima_server.services.agent.adapters.base import BaseLLMAdapter
+    from anima_server.services.agent.persistence import save_approval_checkpoint
+    from anima_server.services.agent.rules import RequiresApprovalToolRule
+    from anima_server.services.agent.runtime import AgentRuntime
+    from anima_server.services.agent.runtime_types import StepExecutionResult, ToolCall
+    from anima_server.services.agent.sequencing import reserve_message_sequences
+    from anima_server.services.agent.tools import tool
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+        get_canonical_thread,
+    )
+
+    executions = []
+    requests = []
+
+    @tool
+    def approved_action(value: str) -> str:
+        """Perform a deterministic operation after approval."""
+        executions.append(value)
+        return "operation complete"
+
+    class StrictProtocolAdapter(BaseLLMAdapter):
+        provider = "test"
+        model = "test-model"
+
+        async def invoke(self, request):
+            requests.append(request)
+            seen = {}
+            for message in request.messages:
+                if message.type == "ai":
+                    for call in message.tool_calls:
+                        seen[call["id"]] = call
+                elif message.type == "tool":
+                    assert message.tool_call_id in seen, "orphan approval tool result"
+                    assert seen[message.tool_call_id]["args"] == {"value": "authenticated argument"}
+            assert "pending-current-call" in seen
+            return StepExecutionResult(assistant_text="Approval handled.")
+
+    runner = AgentRuntime(
+        adapter=StrictProtocolAdapter(),
+        tools=[approved_action],
+        tool_rules=[RequiresApprovalToolRule(tool_name="approved_action")],
+        max_steps=2,
+    )
+    monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    with _soul_db_session() as soul_session:
+        user = SoulOwner(core_owner_id=str(uuid4()))
+        soul_session.add(user)
+        soul_session.commit()
+        with runtime_db_session() as runtime_session:
+            thread = _current_thread(runtime_session, user_id=user.id)
+            _append_current_message(
+                runtime_session, thread=thread, content="Perform the approved operation"
+            )
+            run = create_run(
+                runtime_session,
+                thread_id=thread.id,
+                user_id=user.id,
+                provider="test",
+                model="test-model",
+                mode="blocking",
+            )
+            save_approval_checkpoint(
+                runtime_session,
+                thread=thread,
+                run=run,
+                tool_call=ToolCall(
+                    id="pending-current-call",
+                    name="approved_action",
+                    arguments={"value": "authenticated argument"},
+                ),
+                step_id=None,
+                sequence_id=reserve_message_sequences(
+                    runtime_session, thread_id=thread.id, count=1
+                ),
+            )
+            runtime_session.commit()
+            run_id, thread_id = run.id, thread.id
+        # Reopen a fresh session so tool arguments come from the sealed
+        # authenticated operational record rather than an ORM identity cache.
+        with runtime_db_session() as resumed_session:
+            result = await agent_service.approve_or_deny_turn(
+                run_id,
+                user.id,
+                approved,
+                soul_session,
+                resumed_session,
+            )
+            native = get_canonical_thread(
+                session=active_conversation_authority_session(user.id), thread_id=thread_id
+            )
+            assert native is not None
+            assert [message.content for message in native.messages] == [
+                "Perform the approved operation",
+                "Approval handled.",
+            ]
+    assert result.response == "Approval handled."
+    assert len(requests) == 1
+    assert executions == (["authenticated argument"] if approved else [])
+
+
+def test_current_approval_checkpoint_rejects_another_thread_run_reference():
+    from anima_server.services.agent.persistence import (
+        load_approval_checkpoint,
+        save_approval_checkpoint,
+    )
+    from anima_server.services.agent.runtime_types import ToolCall
+    from anima_server.services.agent.sequencing import reserve_message_sequences
+
+    with runtime_db_session() as runtime_session:
+        first = _current_thread(runtime_session)
+        second = _current_thread(runtime_session)
+        original = create_run(
+            runtime_session,
+            thread_id=first.id,
+            user_id=1,
+            provider="test",
+            model="test",
+            mode="blocking",
+        )
+        checkpoint = save_approval_checkpoint(
+            runtime_session,
+            thread=first,
+            run=original,
+            tool_call=ToolCall(
+                id="original-call", name="approved_action", arguments={"value": "private"}
+            ),
+            step_id=None,
+            sequence_id=reserve_message_sequences(runtime_session, thread_id=first.id, count=1),
+        )
+        unrelated = create_run(
+            runtime_session,
+            thread_id=second.id,
+            user_id=1,
+            provider="test",
+            model="test",
+            mode="blocking",
+        )
+        unrelated.status = "awaiting_approval"
+        unrelated.pending_approval_message_id = checkpoint.id
+        runtime_session.commit()
+        assert load_approval_checkpoint(runtime_session, unrelated.id) is None

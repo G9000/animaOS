@@ -42,18 +42,21 @@ def sync_image_source(
         ).all()
     )
     joined_text = "\n\n".join(annotation.content_text for annotation in annotations)
+    from anima_server.services.images.store import resolve_image_byte_source
+
+    byte_source = resolve_image_byte_source(asset, user_id=asset.user_id)
     source = register_source(
         db,
         SourceIdentity(
             user_id=asset.user_id,
             kind="image",
-            source_uri=f"runtime-image://{asset.id}",
+            source_uri=f"corefs://object/{byte_source.stable_id}",
             content_hash=asset.sha256,
             title=asset.filename,
             media_type=asset.mime_type,
             metadata_json={
                 "runtime_image_asset_id": asset.id,
-                "storage_path": asset.storage_path,
+                "storage_path": f"corefs://object/{byte_source.stable_id}",
                 "size_bytes": asset.size_bytes,
                 "width": asset.width,
                 "height": asset.height,

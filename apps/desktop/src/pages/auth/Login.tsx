@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate } from "react-router-dom";
 import { Button, StandardInput, glass } from "@anima/standard-templates";
 import { api, setUnlockToken } from "../../lib/api";
 import { useAuth } from "../../context/AuthContext";
+import { authUserIdentity } from "../../lib/userIdentity";
 
 type LoginStep = "username" | "password";
 type RecoveryStep = "phrase" | "newPwd" | "confirm";
@@ -79,7 +80,7 @@ export default function Login() {
       try {
         const res = await api.auth.login(username, input);
         setUnlockToken(res.unlockToken);
-        setUser({ id: res.id, username: res.username, name: res.name });
+        setUser(authUserIdentity(res));
         navigate("/");
       } catch (err) {
         setError(err instanceof Error ? err.message : "access denied");
@@ -112,7 +113,7 @@ export default function Login() {
       try {
         const res = await api.auth.recover(phrase, newPassword);
         setUnlockToken(res.unlockToken);
-        setUser({ id: res.id, username: res.username, name: res.name });
+        setUser(authUserIdentity(res));
         navigate("/");
       } catch (err) {
         setError(err instanceof Error ? err.message : "recovery failed");

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from contextlib import suppress
 from datetime import UTC, datetime
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from anima_server.config import settings
@@ -11,11 +14,13 @@ from anima_server.db.base import Base
 from anima_server.models import (
     ForesightSignal,
     ForgetAuditLog,
+    LatentTrace,
     MemoryClaim,
     MemoryClaimEvidence,
     MemoryEpisode,
     MemoryItem,
     MemoryItemEvidence,
+    SoulOwner,
 )
 from anima_server.models.consciousness import SelfModelBlock
 from anima_server.services import anima_core_retrieval as retrieval_module
@@ -35,6 +40,62 @@ from anima_server.services.regeneration_work import regeneration_work_ids
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+def test_regeneration_queue_writes_without_posix_fchmod(monkeypatch):
+    from anima_server.services import regeneration_work as work
+
+    monkeypatch.delattr(work.os, "fchmod", raising=False)
+    work.mark_regeneration_work({(1, "memory_episode", 7), (2, "self_model_block", 9)})
+    assert work.regeneration_work_ids(user_id=1, kind="memory_episode") == frozenset({7})
+    assert work.regeneration_work_ids(user_id=1, kind="self_model_block") == frozenset()
+    assert not tuple(work._path().parent.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("failure_boundary", ["fchmod", "chmod", "fdopen", "replace"])
+def test_regeneration_permission_failure_closes_temp_and_preserves_queue(
+    monkeypatch, failure_boundary
+):
+    import errno
+
+    from anima_server.services import regeneration_work as work
+
+    path = work._path()
+    path.parent.mkdir(parents=True)
+    original = b'{"version":1,"items":[{"userId":1,"kind":"memory_episode","recordId":3}]}\n'
+    path.write_bytes(original)
+    created = []
+    original_mkstemp = work.tempfile.mkstemp
+
+    def capture_temp(*args, **kwargs):
+        result = original_mkstemp(*args, **kwargs)
+        created.append(result)
+        return result
+
+    def reject_permissions(*_args, **_kwargs):
+        raise PermissionError("injected private-file permission failure")
+
+    monkeypatch.setattr(work.tempfile, "mkstemp", capture_temp)
+    if failure_boundary == "chmod":
+        monkeypatch.delattr(work.os, "fchmod", raising=False)
+        monkeypatch.setattr(work.os, "chmod", reject_permissions)
+    else:
+        monkeypatch.setattr(work.os, failure_boundary, reject_permissions, raising=False)
+    try:
+        with pytest.raises(PermissionError, match="injected private-file permission failure"):
+            work.mark_regeneration_work({(1, "memory_episode", 7)})
+        assert path.read_bytes() == original
+        assert created
+        with pytest.raises(OSError) as closed:
+            work.os.fstat(created[0][0])
+        assert closed.value.errno == errno.EBADF
+        assert not tuple(path.parent.glob("*.tmp"))
+    finally:
+        for descriptor, name in created:
+            with suppress(OSError):
+                work.os.close(descriptor)
+            Path(name).unlink(missing_ok=True)
+
 
 _FAKE_DEK = b"0123456789abcdef0123456789abcdef"
 
@@ -361,26 +422,26 @@ class TestForgetMemory:
                 memory_item_id=item.id,
                 source_kind="conversation",
                 evidence_text="I have a dentist appointment tomorrow",
-                runtime_message_ids_json=[101, 102],
+                source_message_uris=[URI_A, URI_B],
             )
         )
         overlapping = ForesightSignal(
             user_id=1,
             content="User has a dentist appointment tomorrow",
             evidence="I have a dentist appointment tomorrow",
-            source_message_ids_json=[102],
+            source_message_uris=[URI_B],
         )
         unrelated = ForesightSignal(
             user_id=1,
             content="User has a product review next week",
             evidence="I have a product review next week",
-            source_message_ids_json=[999],
+            source_message_uris=[URI_A],
         )
         other_user = ForesightSignal(
             user_id=2,
             content="Other user has a dentist appointment tomorrow",
             evidence="I have a dentist appointment tomorrow",
-            source_message_ids_json=[102],
+            source_message_uris=[URI_B],
         )
         db.add_all([overlapping, unrelated, other_user])
         db.flush()
@@ -398,17 +459,15 @@ class TestForgetMemory:
                 user_id=1,
                 memory_item_id=item.id,
                 source_kind="conversation",
-                evidence_text=(
-                    "I like sushi and I have a dentist appointment tomorrow"
-                ),
-                runtime_message_ids_json=[102],
+                evidence_text=("I like sushi and I have a dentist appointment tomorrow"),
+                source_message_uris=[URI_B],
             )
         )
         unrelated_foresight = ForesightSignal(
             user_id=1,
             content="User has a dentist appointment tomorrow",
             evidence="I have a dentist appointment tomorrow",
-            source_message_ids_json=[102],
+            source_message_uris=[URI_B],
         )
         db.add(unrelated_foresight)
         db.flush()
@@ -805,3 +864,228 @@ class TestRedactDerivedReferences:
 
         db.refresh(block)
         assert block.content == "[redacted]"
+
+
+URI_A = "corefs://object/00000000000000000000000000#message=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+URI_B = "corefs://object/00000000000000000000000000#message=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+
+@pytest.mark.parametrize("cleanup_kind", ["foresight", "latent"])
+@pytest.mark.parametrize(
+    "memory_uri,target_uri,memory_historical_id,target_historical_id,should_remove",
+    [
+        (URI_A, URI_A, 501, 601, True),
+        (URI_A, URI_B, 501, 501, False),
+        (None, URI_A, 501, 501, False),
+        (URI_A, None, 501, 501, False),
+    ],
+    ids=[
+        "same-native-source-new-runtime-id",
+        "different-native-source-reused-runtime-id",
+        "unknown-memory-provenance",
+        "unknown-target-provenance",
+    ],
+)
+def test_forget_source_cleanup_uses_core_uri_and_preserves_unknown_history(
+    monkeypatch,
+    managed_tmp_path,
+    cleanup_kind,
+    memory_uri,
+    target_uri,
+    memory_historical_id,
+    target_historical_id,
+    should_remove,
+):
+    from anima_server.config import settings
+
+    monkeypatch.setattr(settings, "core_require_encryption", False)
+    monkeypatch.setattr(settings, "runtime_instance_data_dir", str(managed_tmp_path / "runtime"))
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine, expire_on_commit=False) as db:
+            db.add(SoulOwner(id=1, core_owner_id=str(uuid4())))
+            item = MemoryItem(
+                user_id=1,
+                content="Complete the private launch checklist Friday",
+                category="fact",
+                source="test",
+            )
+            db.add(item)
+            db.flush()
+            db.add(
+                MemoryItemEvidence(
+                    user_id=1,
+                    memory_item_id=item.id,
+                    source_kind="llm",
+                    evidence_text="Launch checklist deadline",
+                    source_message_uri=memory_uri,
+                    provenance_metadata={
+                        "historicalSourceIds": {"runtime_message_id": memory_historical_id},
+                        "provenanceState": "authenticated" if memory_uri else "source_unavailable",
+                    },
+                )
+            )
+            signal = ForesightSignal(
+                user_id=1,
+                content="Complete the private launch checklist Friday",
+                evidence="Launch checklist deadline",
+                source_message_uris=[target_uri] if target_uri else None,
+                provenance_metadata={
+                    "historicalSourceIds": {"source_message_ids_json": [target_historical_id]},
+                    "provenanceState": "authenticated" if target_uri else "source_unavailable",
+                },
+            )
+            original_ref = {
+                "candidate_id": 91,
+                "content_hash": "historical-candidate-digest",
+                "source_message_ids": [target_historical_id],
+                "source_message_uris": [target_uri] if target_uri else [],
+                "provenanceState": "authenticated" if target_uri else "source_unavailable",
+                "opaqueHistoricalMetadata": {"preserve": "original evidence"},
+            }
+            trace = LatentTrace(
+                user_id=1,
+                topic_key="unrelated-native-source-topic",
+                weight=0.5,
+                evidence_refs=[original_ref],
+            )
+            selected = signal if cleanup_kind == "foresight" else trace
+            db.add(selected)
+            db.flush()
+            item_id, selected_id = item.id, selected.id
+            result = forget_memory(db, memory_id=item_id, user_id=1)
+            db.commit()
+            assert result.items_forgotten == 1
+            assert (db.get(type(selected), selected_id) is None) is should_remove
+            if not should_remove and cleanup_kind == "latent":
+                assert db.get(LatentTrace, selected_id).evidence_refs == [original_ref]
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize("commit_root", [False, True])
+def test_profile_candidate_cleanup_waits_for_root_commit_and_discards_root_rollback(
+    monkeypatch, commit_root
+):
+    from anima_server.services.agent import forgetting
+
+    root_engine = create_engine("sqlite://")
+    runtime_engine = create_engine("sqlite://")
+    called = []
+    monkeypatch.setattr(
+        forgetting,
+        "_reject_profile_candidates_for_forget_contexts",
+        lambda *_args, **_kwargs: called.append("candidate_rejected") or 0,
+    )
+    try:
+        with Session(root_engine) as db:
+            outer = db.begin()
+            savepoint = db.begin_nested()
+            forgetting._schedule_profile_candidate_rejection_after_commit(
+                db,
+                user_id=1,
+                source_contexts=[
+                    forgetting.SourceProfileForgetContext((URI_A,), "fact", "Private fact")
+                ],
+                runtime_db_factory=sessionmaker(runtime_engine),
+            )
+            savepoint.commit()
+            assert called == []
+            if commit_root:
+                outer.commit()
+                assert called == ["candidate_rejected"]
+            else:
+                outer.rollback()
+                assert called == []
+    finally:
+        root_engine.dispose()
+        runtime_engine.dispose()
+
+
+def test_latent_writer_records_owned_current_uri_and_preserves_unavailable_history():
+    from types import SimpleNamespace
+
+    from anima_server.services.agent.candidate_ops import create_memory_candidate
+    from anima_server.services.agent.latent_traces import evidence_ref_for_candidate
+    from test_user_profile import _bind_current_profile_source, _current_profile_source_core
+
+    with (
+        _current_profile_source_core() as (
+            owner_id,
+            _soul_factory,
+            runtime_factory,
+            view,
+            first,
+            _second,
+        ),
+        runtime_factory() as runtime_db,
+    ):
+        row = _bind_current_profile_source(
+            runtime_db, user_id=owner_id, view=view, message=first, runtime_id=501
+        )
+        candidate = create_memory_candidate(
+            runtime_db,
+            user_id=owner_id,
+            content="Current source evidence for trace",
+            category="minor_observation",
+            source_message_ids=[row.id],
+        )
+        assert candidate is not None
+        evidence = evidence_ref_for_candidate(candidate, user_id=owner_id)
+        assert evidence["source_message_uris"] == [
+            f"corefs://object/{view.document.thread_id}#message={first.message_id}"
+        ]
+        assert evidence["provenanceState"] == "authenticated"
+        assert evidence["source_message_ids"] == [501]
+        absent = create_memory_candidate(
+            runtime_db,
+            user_id=owner_id,
+            content="Unavailable source trace",
+            category="minor_observation",
+            source_message_ids=[999],
+        )
+        missing = evidence_ref_for_candidate(absent, user_id=owner_id)
+        assert missing["source_message_uris"] == []
+        assert missing["source_message_ids"] == [999]
+        assert missing["provenanceState"] == "source_unavailable"
+        foreign = SimpleNamespace(
+            user_id=owner_id + 1, source_message_ids=[501], content_hash="foreign-candidate"
+        )
+        mismatched = evidence_ref_for_candidate(foreign, user_id=owner_id)
+        assert mismatched["source_message_uris"] == []
+        assert mismatched["source_message_ids"] == [501]
+        assert mismatched["provenanceState"] == "source_unavailable"
+        runtime_db.rollback()
+
+
+def test_profile_candidate_cleanup_discards_savepoint_rollback_before_root_commit(monkeypatch):
+    from anima_server.services.agent import forgetting
+
+    root_engine = create_engine("sqlite://")
+    runtime_engine = create_engine("sqlite://")
+    called = []
+    monkeypatch.setattr(
+        forgetting,
+        "_reject_profile_candidates_for_forget_contexts",
+        lambda *_args, **_kwargs: called.append("candidate_rejected") or 0,
+    )
+    try:
+        with Session(root_engine) as db:
+            outer = db.begin()
+            savepoint = db.begin_nested()
+            forgetting._schedule_profile_candidate_rejection_after_commit(
+                db,
+                user_id=1,
+                source_contexts=[
+                    forgetting.SourceProfileForgetContext((URI_A,), "fact", "Private fact")
+                ],
+                runtime_db_factory=sessionmaker(runtime_engine),
+            )
+            savepoint.rollback()
+            assert called == []
+            outer.commit()
+            assert called == []
+    finally:
+        root_engine.dispose()
+        runtime_engine.dispose()

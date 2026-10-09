@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, MemoryItemEvidence, User
+from anima_server.models import MemoryItem, MemoryItemEvidence, SoulOwner
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.models.runtime_memory import MemoryCandidate
 from anima_server.services.agent.tool_context import (
@@ -50,7 +50,7 @@ def test_memory_item_evidence_persists_source_metadata() -> None:
     observed_at = datetime(2026, 5, 1, 12, 30, tzinfo=UTC)
 
     with _db_session() as db:
-        user = User(username="evidence-user", password_hash="x", display_name="Evidence")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
         item = MemoryItem(
@@ -102,9 +102,10 @@ def test_memory_item_evidence_metadata_and_crypto_domain() -> None:
         "user_id",
         "memory_item_id",
         "source_kind",
-        "runtime_message_id",
-        "runtime_message_ids_json",
-        "transcript_ref",
+        "source_message_uri",
+        "source_message_uris",
+        "provenance_metadata",
+        "source_transcript_uri",
         "speaker",
         "observed_at",
         "confidence",
@@ -116,8 +117,7 @@ def test_memory_item_evidence_metadata_and_crypto_domain() -> None:
 def test_memory_item_evidence_indexes_exist() -> None:
     with _db_session() as db:
         index_names = {
-            index["name"]
-            for index in inspect(db.get_bind()).get_indexes("memory_item_evidence")
+            index["name"] for index in inspect(db.get_bind()).get_indexes("memory_item_evidence")
         }
 
     assert "ix_memory_item_evidence_user_item" in index_names
@@ -127,7 +127,7 @@ def test_memory_item_evidence_indexes_exist() -> None:
 
 def test_explicit_save_candidate_records_source_message_id() -> None:
     with _db_session() as db, runtime_db_session() as runtime_db:
-        user = User(username="explicit-evidence", password_hash="x", display_name="Explicit")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
         thread = RuntimeThread(user_id=user.id, status="active", next_message_sequence=2)

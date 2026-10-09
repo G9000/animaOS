@@ -31,7 +31,6 @@ from anima_server.services.agent.forgetting import HEAT_VISIBILITY_FLOOR, forget
 from anima_server.services.agent.memory_store import get_memory_items, get_memory_items_scored
 from anima_server.services.agent.provenance import add_memory_item_evidence
 from anima_server.services.data_crypto import df
-from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -221,9 +220,7 @@ def test_sub_floor_casual_item_distills_into_tendency_claim(db: Session) -> None
     for value in contribution.contribution_vector.values():
         assert isinstance(value, (int, float))
 
-    audit = db.scalar(
-        select(ForgetAuditLog).where(ForgetAuditLog.trigger == "passive_decay")
-    )
+    audit = db.scalar(select(ForgetAuditLog).where(ForgetAuditLog.trigger == "passive_decay"))
     assert audit is not None
     assert audit.scope == "distilled"
     assert audit.items_forgotten == 1
@@ -247,7 +244,9 @@ def test_distillation_is_idempotent(db: Session) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("memory_class", ["identity", "life_event", "relationship", "active_project"])
+@pytest.mark.parametrize(
+    "memory_class", ["identity", "life_event", "relationship", "active_project"]
+)
 def test_exempt_classes_never_distill(db: Session, memory_class: str) -> None:
     item = _make_item(db, memory_class=memory_class, content="my name is Alex")
     item_id = item.id
@@ -288,8 +287,12 @@ def test_superseded_and_already_distilled_items_are_skipped(db: Session) -> None
 
 
 def test_two_same_signature_items_merge_into_one_tendency(db: Session) -> None:
-    item_a = _make_item(db, content="stressed about work deadlines", importance=2, emotional_salience=0.2)
-    item_b = _make_item(db, content="stressed about work deadlines", importance=4, emotional_salience=0.6)
+    item_a = _make_item(
+        db, content="stressed about work deadlines", importance=2, emotional_salience=0.2
+    )
+    item_b = _make_item(
+        db, content="stressed about work deadlines", importance=4, emotional_salience=0.6
+    )
 
     result = distill_due_items(db, user_id=1, max_per_run=20)
     assert result.distilled == 2
@@ -323,9 +326,7 @@ def test_recompute_tendency_from_ledger_is_the_single_source_of_truth(db: Sessio
 
     # No surviving rows -> None (caller deletes the claim).
     db.execute(
-        delete(TendencyContribution).where(
-            TendencyContribution.tendency_claim_id == claim.id
-        )
+        delete(TendencyContribution).where(TendencyContribution.tendency_claim_id == claim.id)
     )
     db.flush()
     assert recompute_tendency_from_ledger(db, tendency_claim_id=claim.id) is None
@@ -358,9 +359,7 @@ def test_forget_after_distill_multi_contributor_recomputes_exactly(db: Session) 
     forgotten = _make_item(
         db, content="shared tendency topic", importance=5, emotional_salience=0.9
     )
-    survivor = _make_item(
-        db, content="shared tendency topic", importance=1, emotional_salience=0.1
-    )
+    survivor = _make_item(db, content="shared tendency topic", importance=1, emotional_salience=0.1)
 
     distill_due_items(db, user_id=1, max_per_run=20)
     claim = db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency"))
@@ -386,9 +385,7 @@ def test_forget_after_distill_multi_contributor_recomputes_exactly(db: Session) 
     Base.metadata.create_all(engine)
     ReferenceSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with ReferenceSession() as ref_db:
-        _make_item(
-            ref_db, content="shared tendency topic", importance=1, emotional_salience=0.1
-        )
+        _make_item(ref_db, content="shared tendency topic", importance=1, emotional_salience=0.1)
         distill_due_items(ref_db, user_id=1, max_per_run=20)
         ref_claim = ref_db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency"))
         assert ref_claim is not None
@@ -434,9 +431,7 @@ def test_forget_distilled_variant_leaves_no_forgotten_wording(db: Session) -> No
     assert survivor.id in {
         c.tombstone_item_id
         for c in db.scalars(
-            select(TendencyContribution).where(
-                TendencyContribution.tendency_claim_id == claim.id
-            )
+            select(TendencyContribution).where(TendencyContribution.tendency_claim_id == claim.id)
         ).all()
     }
 
@@ -469,9 +464,7 @@ def test_distill_max_per_run_is_respected(db: Session) -> None:
     result = distill_due_items(db, user_id=1, max_per_run=2)
     assert result.distilled == 2
 
-    remaining = db.scalars(
-        select(MemoryItem).where(MemoryItem.distilled_at.is_(None))
-    ).all()
+    remaining = db.scalars(select(MemoryItem).where(MemoryItem.distilled_at.is_(None))).all()
     assert len(remaining) == 3
 
 
@@ -490,49 +483,6 @@ def test_distillation_module_has_no_llm_seam() -> None:
 # ---------------------------------------------------------------------------
 # 8. Vault export/import round-trip
 # ---------------------------------------------------------------------------
-
-
-def test_vault_round_trip_preserves_tendency_ledger_full_scope(db: Session) -> None:
-    _make_item(db, content="vault round trip topic")
-    distill_due_items(db, user_id=1, max_per_run=20)
-
-    snapshot = export_database_snapshot(db, user_id=1)
-    assert len(snapshot["memoryClaims"]) == 1
-    assert len(snapshot["tendencyContributions"]) == 1
-
-    restore_database_snapshot(db, snapshot, scope="full")
-    db.commit()
-
-    claims = db.scalars(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")).all()
-    assert len(claims) == 1
-    contributions = db.scalars(select(TendencyContribution)).all()
-    assert len(contributions) == 1
-    assert contributions[0].tendency_claim_id == claims[0].id
-
-    tombstones = db.scalars(
-        select(MemoryItem).where(MemoryItem.distilled_at.is_not(None))
-    ).all()
-    assert len(tombstones) == 1
-    assert tombstones[0].id == contributions[0].tombstone_item_id
-
-
-def test_vault_memories_scope_restores_tendency_ledger(db: Session) -> None:
-    _make_item(db, content="memories scope topic")
-    distill_due_items(db, user_id=1, max_per_run=20)
-
-    snapshot = export_database_snapshot(db, user_id=1)
-
-    db.execute(delete(TendencyContribution))
-    db.execute(delete(MemoryClaim))
-    db.commit()
-
-    restore_database_snapshot(db, snapshot, scope="memories")
-    db.commit()
-
-    claims = db.scalars(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")).all()
-    assert len(claims) == 1
-    contributions = db.scalars(select(TendencyContribution)).all()
-    assert len(contributions) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -600,8 +550,11 @@ def test_backfill_embeddings_skips_distilled_tombstones(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="to be distilled")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     distill_due_items(db, user_id=1, max_per_run=20)
@@ -618,8 +571,11 @@ def test_evidence_audit_excludes_distilled_tombstones(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="to be distilled")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     distill_due_items(db, user_id=1, max_per_run=20)
@@ -635,8 +591,11 @@ def test_decay_all_heat_leaves_tombstones_untouched(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="to be distilled")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     distill_due_items(db, user_id=1, max_per_run=20)
@@ -660,8 +619,11 @@ def test_distillation_scrubs_tombstone_tags(db: Session) -> None:
     db.add(MemoryItemTag(user_id=1, item_id=item.id, tag="commute"))
     item.tags_json = ["commute"]
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     assert "commute" in get_all_tags(db, user_id=1)
@@ -670,9 +632,7 @@ def test_distillation_scrubs_tombstone_tags(db: Session) -> None:
 
     assert get_all_tags(db, user_id=1) == []
     assert db.get(MemoryItem, item.id).tags_json is None
-    assert db.scalars(
-        select(MemoryItemTag).where(MemoryItemTag.item_id == item.id)
-    ).all() == []
+    assert db.scalars(select(MemoryItemTag).where(MemoryItemTag.item_id == item.id)).all() == []
 
 
 def test_one_contribution_per_tombstone_is_enforced(db: Session) -> None:
@@ -683,8 +643,11 @@ def test_one_contribution_per_tombstone_is_enforced(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="stressed about the commute")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     distill_due_items(db, user_id=1, max_per_run=20)
@@ -712,8 +675,11 @@ def test_topic_purge_reaches_distilled_tendencies(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="likes sushi", category="preference")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     item_id = item.id
@@ -728,8 +694,10 @@ def test_topic_purge_reaches_distilled_tendencies(db: Session) -> None:
 
     # Nothing about the topic survives: claim, ledger, and tombstone gone.
     assert db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency")) is None
-    assert db.scalars(select(TendencyContribution).where(
-        TendencyContribution.user_id == 1)).all() == []
+    assert (
+        db.scalars(select(TendencyContribution).where(TendencyContribution.user_id == 1)).all()
+        == []
+    )
     assert db.get(MemoryItem, item_id) is None
 
 
@@ -756,8 +724,11 @@ def test_eval_reset_clears_tendency_contributions(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="stressed about the commute")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     distill_due_items(db, user_id=1, max_per_run=20)
@@ -815,22 +786,22 @@ def test_distillation_deletes_linked_claim(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="likes sushi", category="preference")
     upsert_claim(
-        db, user_id=1, content="likes sushi", category="preference",
-        memory_item_id=item.id, evidence_text="likes sushi",
+        db,
+        user_id=1,
+        content="likes sushi",
+        category="preference",
+        memory_item_id=item.id,
+        evidence_text="likes sushi",
     )
     db.flush()
     item_id = item.id
-    linked = db.scalars(
-        select(MemoryClaim).where(MemoryClaim.memory_item_id == item_id)
-    ).all()
+    linked = db.scalars(select(MemoryClaim).where(MemoryClaim.memory_item_id == item_id)).all()
     assert len(linked) == 1  # precondition
 
     distill_due_items(db, user_id=1, max_per_run=20)
 
     # The original preference claim linked to the item is gone...
-    assert db.scalars(
-        select(MemoryClaim).where(MemoryClaim.memory_item_id == item_id)
-    ).all() == []
+    assert db.scalars(select(MemoryClaim).where(MemoryClaim.memory_item_id == item_id)).all() == []
     # ...but a tendency claim (unlinked) now exists.
     tendency = db.scalar(select(MemoryClaim).where(MemoryClaim.namespace == "tendency"))
     assert tendency is not None
@@ -871,8 +842,11 @@ def test_evidence_backfill_skips_distilled_tombstones(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="stressed about the commute")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     distill_due_items(db, user_id=1, max_per_run=20)
@@ -892,8 +866,11 @@ def test_direct_delete_of_tombstone_scrubs_ledger(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="stressed about the commute")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     item_id = item.id
@@ -921,8 +898,11 @@ def test_distilled_tendency_surfaces_in_memory_block(db: Session) -> None:
 
     item = _make_item(db, memory_class="casual", content="stressed about the commute")
     add_memory_item_evidence(
-        db, user_id=1, memory_item_id=item.id,
-        evidence_text="x", source_kind="user_message",
+        db,
+        user_id=1,
+        memory_item_id=item.id,
+        evidence_text="x",
+        source_kind="user_message",
     )
     db.flush()
     distill_due_items(db, user_id=1, max_per_run=20)

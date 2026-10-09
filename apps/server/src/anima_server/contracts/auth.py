@@ -54,6 +54,9 @@ class UserResponse(BaseModel):
     birthday: str | None = None
     createdAt: str | None = None
     updatedAt: str | None = None
+    ownerId: str | None = None
+    profileAvailable: bool = True
+    filesystemAvailable: bool = True
 
 
 class RegisterResponse(UserResponse):

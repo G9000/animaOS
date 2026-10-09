@@ -99,6 +99,50 @@ def upsert_source_span_embedding(
     )
 
 
+def retrieve_current_core_knowledge(
+    *,
+    user_id: int,
+    query: str,
+    limit_concepts: int = 5,
+    limit_spans: int = 5,
+) -> KnowledgeRetrievalResult:
+    """Read bounded canonical evidence even when disposable Runtime is empty."""
+    from anima_server.services.corefs.asset_authority import require_canonical_asset_session
+    from anima_server.services.corefs.knowledge_authority import canonical_knowledge_view
+
+    session = require_canonical_asset_session(user_id)
+    view = canonical_knowledge_view(session=session)
+    concepts = view.search_knowledge_concept_projections(
+        query, limit=max(0, min(limit_concepts, 10))
+    )
+    sources = view.search_knowledge_source_projections(query, limit=max(0, min(limit_spans, 10)))
+    return KnowledgeRetrievalResult(
+        concepts=[
+            KnowledgeConceptHit(
+                concept_id=item.concept_id,
+                title=item.title,
+                slug=item.slug,
+                concept_type=item.concept_type,
+                summary=item.description[:1200],
+                score=1.0,
+            )
+            for item in concepts
+        ],
+        evidence_spans=[
+            KnowledgeEvidenceSpanHit(
+                span_id=item.artifact_id,
+                source_id=item.source_id,
+                source_uri=item.source_uri,
+                span_kind="canonical_source",
+                locator={"corefsUri": f"corefs://object/{item.stable_id}"},
+                content_text=item.content_text[:1200],
+                score=1.0,
+            )
+            for item in sources
+        ],
+    )
+
+
 def retrieve_knowledge(
     db: Session,
     *,

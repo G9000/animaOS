@@ -5,10 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-from anima_server.models import PresenceConfig
 
 _consent_locks: dict[int, threading.Lock] = {}
 _consent_locks_guard = threading.Lock()
@@ -53,79 +50,21 @@ class PresenceConfigValues:
 
 
 def get_presence_config_values(db: Session, user_id: int) -> PresenceConfigValues:
-    """Read portable presence from CoreFS; require unlock once authority is active."""
-    from anima_server.services.corefs.authority import (
-        AuthorityState,
-        core_authority_state_or_none,
-    )
+    """Read authenticated portable presence; unsupported or locked Cores fail closed."""
     from anima_server.services.corefs.preferences import (
         active_preference_authority_session,
         read_canonical_presence_values,
     )
 
     authority_session = active_preference_authority_session(user_id)
-    if authority_session is not None:
-        return read_canonical_presence_values(session=authority_session)
-    # An environment that never activated first-release authority (no manifest,
-    # or a pre-release manifest that fails closed at unlock) keeps the legacy
-    # row fallback; an activated Core requires the canonical read above, and a
-    # damaged/unparseable manifest raises here so consent gates fail closed
-    # instead of reverting to legacy defaults.
-    if core_authority_state_or_none() is AuthorityState.AUTHORITATIVE:
+    if authority_session is None:
+        from anima_server.services.corefs.authority import core_authority_state_or_none
+
+        # Preserve authenticated manifest damage detection even without a live
+        # session. Missing authority never grants default presence consent.
+        core_authority_state_or_none()
         raise RuntimeError("Canonical presence preferences require an unlocked CoreFS session.")
-
-    row = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
-    if row is None:
-        return PresenceConfigValues(user_id=user_id)
-    return _to_values(row)
-
-
-def get_or_create_presence_config(db: Session, user_id: int) -> PresenceConfig:
-    row = db.scalar(select(PresenceConfig).where(PresenceConfig.user_id == user_id))
-    if row is not None:
-        return row
-
-    row = PresenceConfig(user_id=user_id)
-    db.add(row)
-    db.flush()
-    return row
-
-
-def update_presence_config(
-    db: Session,
-    user_id: int,
-    updates: dict[str, object],
-) -> PresenceConfigValues:
-    row = get_or_create_presence_config(db, user_id)
-    field_map = {
-        "enabled": "enabled",
-        "mainChatEnabled": "main_chat_enabled",
-        "homeGreetingContextEnabled": "home_greeting_context_enabled",
-        "taskNudgesEnabled": "task_nudges_enabled",
-        "memoryNudgesEnabled": "memory_nudges_enabled",
-        "checkInNudgesEnabled": "checkin_nudges_enabled",
-        "initiativeEnabled": "initiative_enabled",
-    }
-
-    for payload_key, model_key in field_map.items():
-        if payload_key in updates:
-            setattr(row, model_key, bool(updates[payload_key]))
-
-    if "customInstruction" in updates:
-        row.custom_instruction = _normalize_instruction(updates.get("customInstruction"))
-
-    for payload_key, model_key in (
-        ("quietHoursStart", "quiet_hours_start"),
-        ("quietHoursEnd", "quiet_hours_end"),
-    ):
-        if payload_key in updates:
-            setattr(row, model_key, _normalize_quiet_hour(updates.get(payload_key)))
-
-    if "dreamSharing" in updates:
-        row.dream_sharing = _normalize_dream_sharing(updates.get("dreamSharing"))
-
-    db.flush()
-    return _to_values(row)
+    return read_canonical_presence_values(session=authority_session)
 
 
 def apply_presence_config_updates(
@@ -259,20 +198,3 @@ def _normalize_instruction(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
-
-
-def _to_values(row: PresenceConfig) -> PresenceConfigValues:
-    return PresenceConfigValues(
-        user_id=row.user_id,
-        enabled=row.enabled,
-        main_chat_enabled=row.main_chat_enabled,
-        home_greeting_context_enabled=row.home_greeting_context_enabled,
-        task_nudges_enabled=row.task_nudges_enabled,
-        memory_nudges_enabled=row.memory_nudges_enabled,
-        checkin_nudges_enabled=row.checkin_nudges_enabled,
-        custom_instruction=row.custom_instruction,
-        initiative_enabled=row.initiative_enabled,
-        quiet_hours_start=row.quiet_hours_start,
-        quiet_hours_end=row.quiet_hours_end,
-        dream_sharing=row.dream_sharing,
-    )

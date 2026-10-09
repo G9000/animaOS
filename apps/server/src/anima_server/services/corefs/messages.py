@@ -83,6 +83,7 @@ class MessageEvent:
     content: str
     attachment_uris: tuple[str, ...]
     created_at: str
+    display_metadata: dict[str, object] | None = None
 
     def as_dict(self) -> dict[str, object]:
         _validate_event(self)
@@ -100,6 +101,11 @@ class MessageEvent:
             "content": self.content,
             "attachmentUris": list(self.attachment_uris),
             "createdAt": self.created_at,
+            **(
+                {"displayMetadata": self.display_metadata}
+                if self.display_metadata is not None
+                else {}
+            ),
         }
 
 
@@ -115,6 +121,7 @@ class ReducedMessage:
     content: str
     attachment_uris: tuple[str, ...]
     created_at: str
+    display_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,9 +230,11 @@ def decode_thread_document(data: bytes) -> ThreadDocument:
         value = json.loads(data)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ConversationFormatError("thread document is invalid JSON") from exc
-    if not isinstance(value, dict) or value.get("format") != "anima.thread" or value.get(
-        "version"
-    ) != 1:
+    if (
+        not isinstance(value, dict)
+        or value.get("format") != "anima.thread"
+        or value.get("version") != 1
+    ):
         raise ConversationFormatError("thread document format is unsupported")
     try:
         segment_ids = value["segmentIds"]
@@ -276,11 +285,7 @@ def message_segment_references(segment: EncodedMessageSegment) -> tuple[str, ...
     return tuple(
         dict.fromkeys(
             [
-                *(
-                    [segment.previous_segment_id]
-                    if segment.previous_segment_id is not None
-                    else []
-                ),
+                *([segment.previous_segment_id] if segment.previous_segment_id is not None else []),
                 *(
                     uri.rsplit("/", 1)[-1]
                     for event in segment.events
@@ -488,6 +493,7 @@ def _apply_message_event(
         content=event.content,
         attachment_uris=event.attachment_uris,
         created_at=event.created_at,
+        display_metadata=event.display_metadata,
     )
 
 
@@ -499,9 +505,10 @@ def encode_message_segments(
     previous_segment_sha256: str | None = None,
 ) -> tuple[EncodedMessageSegment, ...]:
     """Split events at the 256-event/1-MiB closed segment boundaries."""
-    if previous_segment_sha256 is not None and _SHA256_HEX.fullmatch(
-        previous_segment_sha256
-    ) is None:
+    if (
+        previous_segment_sha256 is not None
+        and _SHA256_HEX.fullmatch(previous_segment_sha256) is None
+    ):
         raise ConversationFormatError("previous message segment hash is invalid")
     if starting_ordinal < 0:
         raise ConversationFormatError("starting message segment ordinal is invalid")
@@ -675,10 +682,7 @@ def decode_message_segment(
         not isinstance(previous, str) or _SHA256_HEX.fullmatch(previous) is None
     ):
         raise ConversationFormatError("message segment chain hash is invalid")
-    if (
-        previous_id != expected_previous_segment_id
-        or previous != expected_previous_sha256
-    ):
+    if previous_id != expected_previous_segment_id or previous != expected_previous_sha256:
         raise ConversationFormatError("message segment chain is discontinuous")
     events = tuple(_event_from_dict(value) for value in raw_events)
     if first_sequence != min(event.sequence for event in events) or last_sequence != max(
@@ -770,7 +774,9 @@ def merge_conversation_sources(
                 continue
             if existing_primary is not None:
                 existing = accepted.get(existing_primary)
-                if existing is not None and _record_fingerprint(existing) == _record_fingerprint(record):
+                if existing is not None and _record_fingerprint(existing) == _record_fingerprint(
+                    record
+                ):
                     duplicate_count += 1
                     for identity in identities:
                         identity_to_primary.setdefault(identity, existing_primary)
@@ -793,9 +799,7 @@ def merge_conversation_sources(
             )
 
     return ConversationMergeResult(
-        records=tuple(
-            sorted(accepted.values(), key=lambda item: (item.sequence, item.message_id))
-        ),
+        records=tuple(sorted(accepted.values(), key=lambda item: (item.sequence, item.message_id))),
         conflicts=tuple(conflicts),
         duplicate_count=duplicate_count,
         excluded_count=excluded_count,
@@ -825,13 +829,10 @@ def _source_conflict_identity(source: object) -> str | None:
 def _validate_thread_document(document: ThreadDocument) -> None:
     if not isinstance(document.thread_id, str) or not document.thread_id:
         raise ConversationFormatError("thread document identity is invalid")
-    if (
-        document.legacy_thread_id is not None
-        and (
-            isinstance(document.legacy_thread_id, bool)
-            or not isinstance(document.legacy_thread_id, (int, str))
-            or not str(document.legacy_thread_id)
-        )
+    if document.legacy_thread_id is not None and (
+        isinstance(document.legacy_thread_id, bool)
+        or not isinstance(document.legacy_thread_id, (int, str))
+        or not str(document.legacy_thread_id)
     ):
         raise ConversationFormatError("thread legacy identity is invalid")
     if document.title is not None and not isinstance(document.title, str):
@@ -853,9 +854,7 @@ def _validate_thread_document(document: ThreadDocument) -> None:
     if not isinstance(document.is_archived, bool):
         raise ConversationFormatError("thread archive state is invalid")
     if not (
-        len(document.segment_ids)
-        == len(document.segment_sha256)
-        == len(document.segment_ranges)
+        len(document.segment_ids) == len(document.segment_sha256) == len(document.segment_ranges)
     ):
         raise ConversationFormatError("thread segment inventory is inconsistent")
     for stable_id in document.segment_ids:
@@ -984,6 +983,7 @@ def _event_from_dict(value: object) -> MessageEvent:
             content=value["content"],
             attachment_uris=tuple(attachments),
             created_at=value["createdAt"],
+            display_metadata=value.get("displayMetadata"),
         )
     except (KeyError, TypeError) as exc:
         raise ConversationFormatError("message event is invalid") from exc
@@ -1000,16 +1000,17 @@ def _validate_event(event: MessageEvent) -> None:
     ):
         if not isinstance(value, str) or not value:
             raise ConversationFormatError(f"{label} is invalid")
-    if (
-        event.legacy_message_id is not None
-        and (
-            isinstance(event.legacy_message_id, bool)
-            or not isinstance(event.legacy_message_id, (int, str))
-            or not str(event.legacy_message_id)
-        )
+    if event.legacy_message_id is not None and (
+        isinstance(event.legacy_message_id, bool)
+        or not isinstance(event.legacy_message_id, (int, str))
+        or not str(event.legacy_message_id)
     ):
         raise ConversationFormatError("message legacy identity is invalid")
-    if isinstance(event.sequence, bool) or not isinstance(event.sequence, int) or event.sequence < 1:
+    if (
+        isinstance(event.sequence, bool)
+        or not isinstance(event.sequence, int)
+        or event.sequence < 1
+    ):
         raise ConversationFormatError("message sequence is invalid")
     if event.kind not in _EVENT_KINDS:
         raise ConversationFormatError("message event kind is invalid")
@@ -1040,6 +1041,32 @@ def _validate_event(event: MessageEvent) -> None:
         raise ConversationFormatError("message event attachments are invalid")
     for uri in event.attachment_uris:
         _validate_core_object_uri(uri)
+    validate_display_metadata(event.display_metadata)
+
+
+def validate_display_metadata(value: object) -> None:
+    """Bound portable visible presentation without retaining execution traces."""
+    if value is None:
+        return
+    from anima_server.schemas.chat import MessagePill
+
+    try:
+        if not isinstance(value, dict) or set(value) - {"source", "pills"}:
+            raise ValueError
+        source = value.get("source")
+        if source is not None and (not isinstance(source, str) or len(source) > 64):
+            raise ValueError
+        pills = value.get("pills", [])
+        if not isinstance(pills, list) or len(pills) > 32:
+            raise ValueError
+        for pill in pills:
+            if not isinstance(pill, dict) or set(pill) - set(MessagePill.model_fields):
+                raise ValueError
+            MessagePill.model_validate(pill)
+        if len(json.dumps(value, allow_nan=False).encode()) > 16 * 1024:
+            raise ValueError
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ConversationFormatError("message display metadata is invalid") from exc
 
 
 def _project_attachment_uris(
@@ -1120,9 +1147,9 @@ def _canonical_timestamp(value: object) -> str:
 
 
 def _opaque_id(domain: str, source_key: str) -> str:
-    from anima_server.services.corefs.diary_migration import migration_opaque_id
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
 
-    return migration_opaque_id(domain, source_key)
+    return stable_opaque_id(domain, source_key)
 
 
 def _canonical_json(value: object) -> bytes:

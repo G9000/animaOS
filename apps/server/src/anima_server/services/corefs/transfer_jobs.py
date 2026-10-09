@@ -24,6 +24,7 @@ from anima_server.services.corefs.archive_transfer import (
     verify_core_archive_v2,
 )
 from anima_server.services.corefs.authority import AuthorityState, read_authority_record
+from anima_server.services.corefs.maintenance_coordination import serialized_core_maintenance
 from anima_server.services.corefs.recovery_access import (
     ControlRecord,
     CoreFsRecoveryAccessError,
@@ -235,6 +236,7 @@ class CoreTransferOperationManager:
         )
         return PreparedTransfer(inventory=inventory, estimate=estimate, probe=probe)
 
+    @serialized_core_maintenance
     def start_export(
         self,
         *,
@@ -288,6 +290,7 @@ class CoreTransferOperationManager:
         operation.cancel.set()
         return operation
 
+    @serialized_core_maintenance
     def register_prepared(
         self,
         *,
@@ -457,6 +460,7 @@ class CoreImportOperationManager:
             probe=probe,
         )
 
+    @serialized_core_maintenance
     def start_import(
         self,
         *,
@@ -570,6 +574,7 @@ class CoreImportOperationManager:
                 response_bytes=response_bytes,
             )
 
+    @serialized_core_maintenance
     def replace_corefs_recovery_credentials(
         self,
         operation_id: str,
@@ -615,6 +620,7 @@ class CoreImportOperationManager:
             result=result,
         )
 
+    @serialized_core_maintenance
     def start_corefs_recovery_export(
         self,
         operation_id: str,
@@ -853,6 +859,7 @@ class CoreImportOperationManager:
             with self._lock:
                 source_operation.phase = "staged_recovery_ready"
 
+    @serialized_core_maintenance
     def schedule_activation(self, operation_id: str, *, user_id: int) -> ImportOperation:
         operation = self.get(operation_id, user_id=user_id)
         with self._lock:

@@ -905,7 +905,12 @@ def _native_filesystem_sources(
         ):
             raise CoreArchiveTransferError("native archive source identity is invalid")
         resolved = Path(source_path).expanduser().resolve(strict=True)
-        if not resolved.is_relative_to(core_root):
+        # Windows native canonicalization retains the extended-length prefix;
+        # pathlib drops it for a non-prefixed input. Normalize this spelling
+        # difference only after resolving both paths, preserving containment.
+        comparable_source = _windows_path_alias(resolved)
+        comparable_root = _windows_path_alias(core_root.resolve(strict=True))
+        if not comparable_source.is_relative_to(comparable_root):
             raise CoreArchiveTransferError("native archive source escaped the active Core")
         sources.append(_source(str(record_type), record_path, resolved))
         seen.add(record_path)
@@ -914,26 +919,42 @@ def _native_filesystem_sources(
     return sources
 
 
+def _windows_path_alias(path: Path) -> Path:
+    if os.name != "nt":
+        return path
+    raw = os.fspath(path)
+    if raw.startswith("\\\\?\\UNC\\"):
+        return Path("\\\\" + raw[8:])
+    if raw.startswith("\\\\?\\") and len(raw) > 6 and raw[5:7] == ":\\":
+        return Path(raw[4:])
+    return path
+
+
 def _freeze_filesystem_pointer(
     sources: list[dict[str, str]],
     *,
     snapshot_root: Path,
 ) -> list[dict[str, str]]:
-    frozen: list[dict[str, str]] = []
-    found_head = False
+    pointers = {"fs/HEAD", "fs/CUTOVER_RECEIPT", "fs/CUTOVER_COMPLETE", "fs/VALIDATION_HEAD"}
+    heads = [source for source in sources if source["recordPath"] == "fs/HEAD"]
+    if len(heads) != 1:
+        raise CoreArchiveTransferError("native archive inventory must select one committed pointer")
+    head_source = Path(heads[0]["sourcePath"])
+    # Native selection binds each archive pointer to current HeadRecord bytes.
+    # Snapshot once so a later live commit cannot split the archived pointer pair.
     for source in sources:
-        if source["recordPath"] != "fs/HEAD":
-            frozen.append(source)
-            continue
-        if found_head:
-            raise CoreArchiveTransferError("native archive inventory repeats fs/HEAD")
-        found_head = True
-        snapshot = snapshot_root / "fs-HEAD"
-        _copy_private_file(Path(source["sourcePath"]), snapshot)
-        frozen.append(_source(source["recordType"], source["recordPath"], snapshot))
-    if not found_head:
-        raise CoreArchiveTransferError("native archive inventory has no committed pointer")
-    return frozen
+        if source["recordPath"] in pointers and Path(source["sourcePath"]) != head_source:
+            raise CoreArchiveTransferError(
+                "native archive recovery pointer does not select the current snapshot"
+            )
+    snapshot = snapshot_root / "fs-HEAD"
+    _copy_private_file(head_source, snapshot)
+    return [
+        _source(source["recordType"], source["recordPath"], snapshot)
+        if source["recordPath"] in pointers
+        else source
+        for source in sources
+    ]
 
 
 def _copy_private_file(source: Path, target: Path) -> None:

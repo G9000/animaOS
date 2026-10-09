@@ -6,7 +6,7 @@ from anima_server.db.session import get_user_session_factory
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import inspect
 
 
 def _register_user(
@@ -115,16 +115,9 @@ def test_greenfield_diary_is_immediately_authoritative_and_corefs_only() -> None
         assert client.delete(f"/api/diary/{entry_id}", headers=headers).status_code == 200
 
         with get_user_session_factory(user_id)() as db:
-            counts = db.execute(
-                text(
-                    "select "
-                    "(select count(*) from diary_folders where user_id = :user_id), "
-                    "(select count(*) from diary_entries where user_id = :user_id), "
-                    "(select count(*) from diary_attachments where user_id = :user_id)"
-                ),
-                {"user_id": user_id},
-            ).one()
-        assert counts == (0, 0, 0)
+            assert not {"diary_folders", "diary_entries", "diary_attachments"}.intersection(
+                inspect(db.get_bind()).get_table_names()
+            )
 
 
 def test_diary_cover_attachment_must_be_own_image() -> None:

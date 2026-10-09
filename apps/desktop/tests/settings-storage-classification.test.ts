@@ -98,38 +98,6 @@ function resolveStorageArgument(
     if (path.endsWith("daemon.ts") && expression.text === "key") {
       return ["anima_daemon_control_token", "ANIMA_DAEMON_CONTROL_TOKEN"];
     }
-    if (path.endsWith("portablePreferences.ts") && expression.text === "key") {
-      return [
-        "anima-theme",
-        "anima-background-config",
-        "anima-translate-lang",
-        "anima_ascii_settings",
-        "anima_clock_format",
-        "anima_dashboard_node_positions",
-        "anima_dashboard_closed_nodes",
-        "anima_bgm_muted",
-        "anima_bgm_state",
-        "anima-background-media-device",
-        "anima_bgm_device_tracks",
-      ];
-    }
-  }
-  if (
-    path.endsWith("portablePreferences.ts") &&
-    ts.isPropertyAccessExpression(expression) &&
-    expression.getText(file) === "item.key"
-  ) {
-    return [
-      "anima-theme",
-      "anima-background-config",
-      "anima-translate-lang",
-      "anima_ascii_settings",
-      "anima_clock_format",
-      "anima_dashboard_node_positions",
-      "anima_dashboard_closed_nodes",
-      "anima_bgm_muted",
-      "anima_bgm_state",
-    ];
   }
   if (ts.isCallExpression(expression) && ts.isIdentifier(expression.expression)) {
     if (expression.expression.text === "keyHintKey") return ["anima:key-hint:*"];

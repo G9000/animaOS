@@ -26,6 +26,9 @@ export interface AuthUser {
   birthday?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
+  ownerId?: string | null;
+  profileAvailable?: boolean;
+  filesystemAvailable?: boolean;
 }
 
 export interface AuthRequestBase {

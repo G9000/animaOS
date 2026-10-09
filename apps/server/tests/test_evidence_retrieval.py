@@ -2,10 +2,11 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import ClassVar
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, MemoryItemEvidence, User
+from anima_server.models import MemoryItem, MemoryItemEvidence, SoulOwner
 from anima_server.services.agent import evidence_retrieval
 from anima_server.services.agent.evidence_retrieval import (
     RetrievalIntent,
@@ -172,7 +173,7 @@ async def test_retrieve_wide_evidence_prefers_observed_at_for_latest(
     monkeypatch.setattr(evidence_retrieval, "df", lambda user_id, value, **kwargs: value)
 
     with _db_session() as db:
-        user = User(username="latest-evidence", password_hash="x", display_name="Latest")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
         old_item = MemoryItem(
@@ -240,7 +241,7 @@ async def test_retrieve_wide_evidence_expands_distinct_evidence_rows_for_counts(
     monkeypatch.setattr(evidence_retrieval, "df", lambda user_id, value, **kwargs: value)
 
     with _db_session() as db:
-        user = User(username="count-evidence", password_hash="x", display_name="Count")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
         item = MemoryItem(
@@ -313,7 +314,7 @@ async def test_retrieve_wide_evidence_preserves_distinct_sessions_for_aggregate(
     )
 
     with _db_session() as db:
-        user = User(username="aggregate-distinct", password_hash="x", display_name="Aggregate")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
         item = MemoryItem(
@@ -400,7 +401,7 @@ async def test_retrieve_wide_evidence_orders_temporal_evidence_by_observed_at(
     monkeypatch.setattr(evidence_retrieval, "df", lambda user_id, value, **kwargs: value)
 
     with _db_session() as db:
-        user = User(username="temporal-evidence", password_hash="x", display_name="Temporal")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
         first = MemoryItem(

@@ -51,14 +51,16 @@ def _add_message(
     sequence_id: int,
     role: str,
     content_text: str,
-    user_id: int = 1,
+    user_id: int | None = None,
     is_in_context: bool = True,
     tool_name: str | None = None,
     token_estimate: int | None = None,
 ) -> RuntimeMessage:
+    owner_thread = db.get(RuntimeThread, thread_id)
+    assert owner_thread is not None
     msg = RuntimeMessage(
         thread_id=thread_id,
-        user_id=user_id,
+        user_id=owner_thread.user_id if user_id is None else user_id,
         run_id=None,
         step_id=None,
         sequence_id=sequence_id,
@@ -532,9 +534,7 @@ async def test_summarize_with_llm_falls_back_from_extraction_provider(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(
-    monkeypatch, caplog
-) -> None:
+async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(monkeypatch, caplog) -> None:
     """A summarizer failure returns None (fallback) and is visible at WARNING
     on the degraded logger instead of a silent debug line."""
     import logging
@@ -545,9 +545,7 @@ async def test_summarize_with_llm_failure_logs_degraded_and_falls_back(
     monkeypatch.setattr(settings, "agent_provider", "anthropic")
     monkeypatch.setattr(settings, "agent_extraction_model", "")
 
-    _patch_provider_client(
-        monkeypatch, _FakeChatClient(error=RuntimeError("provider down"))
-    )
+    _patch_provider_client(monkeypatch, _FakeChatClient(error=RuntimeError("provider down")))
 
     with caplog.at_level(logging.WARNING, logger="anima.runtime.degraded"):
         result = await summarize_with_llm([], transcript_override="User: hi")

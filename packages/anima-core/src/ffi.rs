@@ -2497,15 +2497,17 @@ mod python {
                     "sourcePath": self.canonical_root.join("fs").join("catalogs").join(&catalog_name).to_string_lossy(),
                 }),
             ];
-            for name in ["CUTOVER_RECEIPT", "CUTOVER_COMPLETE"] {
-                let source_path = self.canonical_root.join("fs").join(name);
-                if source_path.is_file() {
-                    sources.push(json!({
-                        "recordType": "catalog",
-                        "recordPath": format!("fs/{name}"),
-                        "sourcePath": source_path.to_string_lossy(),
-                    }));
-                }
+            // A V2 archive is a current-generation snapshot. All four pointer
+            // files use the same authenticated HeadRecord serialization; their
+            // paired cutover lineage remains bound to this catalog's exact epoch.
+            // Native selection reanchors only the archived representation. Python
+            // freezes these records together before streaming; live pointers stay intact.
+            for name in ["CUTOVER_RECEIPT", "CUTOVER_COMPLETE", "VALIDATION_HEAD"] {
+                sources.push(json!({
+                    "recordType": "catalog",
+                    "recordPath": format!("fs/{name}"),
+                    "sourcePath": self.canonical_root.join("fs").join("HEAD").to_string_lossy(),
+                }));
             }
             for entry in committed.catalog().entries() {
                 let Some(object) = entry.object_payload() else {
@@ -2926,6 +2928,161 @@ mod python {
             corefs_wire_to_py(py, snapshot.search_readiness(state))
         }
 
+        #[pyo3(signature=(retained_keys,request_json,runtime_journal_directory=None))]
+        fn maintenance_inventory_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            request_json: &str,
+            runtime_journal_directory: Option<&str>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let request = maintenance_request_json(request_json)?;
+            let keyring = maintenance_keyring(&retained_keys)?;
+            let report = py
+                .allow_threads(|| {
+                    self.coordinator.maintenance_inventory_with_runtime_v1(
+                        &keyring,
+                        &request,
+                        runtime_journal_directory.map(Path::new),
+                    )
+                })
+                .map_err(corefs_maintenance_error)?;
+            maintenance_to_py(py, report)
+        }
+
+        fn maintenance_prune_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            runtime_journal_directory: &str,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let request = maintenance_request_json(request_json)?;
+            let keyring = maintenance_keyring(&retained_keys)?;
+            let report = py
+                .allow_threads(|| {
+                    self.coordinator.maintenance_prune_v1(
+                        &keyring,
+                        Path::new(runtime_journal_directory),
+                        &request,
+                    )
+                })
+                .map_err(corefs_maintenance_error)?;
+            maintenance_to_py(py, report)
+        }
+
+        #[pyo3(signature=(retained_keys,request_json,runtime_journal_directory=None))]
+        fn maintenance_purge_inventory_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            request_json: &str,
+            runtime_journal_directory: Option<&str>,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let request: anima_corefs::transaction::maintenance::PurgeInventoryRequest =
+                maintenance_request_json(request_json)?;
+            let keyring = maintenance_keyring(&retained_keys)?;
+            let mut report = py
+                .allow_threads(|| {
+                    self.coordinator
+                        .maintenance_purge_inventory_v1(&keyring, &request)
+                })
+                .map_err(corefs_maintenance_error)?;
+            if runtime_journal_directory.is_some() {
+                report.inventory = py
+                    .allow_threads(|| {
+                        self.coordinator.maintenance_inventory_with_runtime_v1(
+                            &keyring,
+                            &request.policy,
+                            runtime_journal_directory.map(Path::new),
+                        )
+                    })
+                    .map_err(corefs_maintenance_error)?;
+                for blocker in &report.inventory.blockers {
+                    if !report.blockers.contains(blocker) {
+                        report.blockers.push(blocker.clone());
+                    }
+                }
+            }
+            maintenance_to_py(py, report)
+        }
+
+        fn maintenance_purge_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            runtime_journal_directory: &str,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let request = maintenance_request_json(request_json)?;
+            let keyring = maintenance_keyring(&retained_keys)?;
+            let report = py
+                .allow_threads(|| {
+                    self.coordinator.maintenance_purge_v1(
+                        &keyring,
+                        Path::new(runtime_journal_directory),
+                        &request,
+                    )
+                })
+                .map_err(corefs_maintenance_error)?;
+            maintenance_to_py(py, report)
+        }
+
+        fn maintenance_reanchor_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            runtime_journal_directory: &str,
+            request_json: &str,
+        ) -> PyResult<PyObject> {
+            let _operation = self.acquire_operation()?;
+            let request = maintenance_request_json(request_json)?;
+            let keyring = maintenance_keyring(&retained_keys)?;
+            let report = py
+                .allow_threads(|| {
+                    self.coordinator.maintenance_reanchor_v1(
+                        &keyring,
+                        Path::new(runtime_journal_directory),
+                        &request,
+                    )
+                })
+                .map_err(corefs_maintenance_error)?;
+            maintenance_to_py(py, report)
+        }
+
+        #[pyo3(signature=(retained_keys,request_json,runtime_journal_directory=None))]
+        fn maintenance_lock_v1(
+            slf: PyRef<'_, Self>,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+            request_json: &str,
+            runtime_journal_directory: Option<&str>,
+        ) -> PyResult<PyCorefsMaintenanceLock> {
+            let operation = slf.acquire_operation()?;
+            let coordinator = Arc::clone(&slf.coordinator);
+            let request: anima_corefs::transaction::maintenance::MaintenanceLockRequest =
+                maintenance_request_json(request_json)?;
+            let keyring = maintenance_keyring(&retained_keys)?;
+            let guard = py
+                .allow_threads(|| {
+                    coordinator.maintenance_lock_with_runtime_v1(
+                        &keyring,
+                        &request,
+                        runtime_journal_directory.map(Path::new),
+                    )
+                })
+                .map_err(corefs_maintenance_error)?;
+            Ok(PyCorefsMaintenanceLock {
+                coordinator,
+                held: Mutex::new(Some((guard, operation))),
+                _owner: slf.into_py(py),
+            })
+        }
+
         fn rotate_frk_v1(
             &self,
             py: Python<'_>,
@@ -2952,6 +3109,116 @@ mod python {
                     "recoveryPending": outcome.recovery_pending(),
                 }),
             )
+        }
+    }
+
+    fn maintenance_request_json<T: serde::de::DeserializeOwned>(encoded: &str) -> PyResult<T> {
+        if encoded.len() > 64 * 1024 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS maintenance request exceeds its bound",
+            ));
+        }
+        serde_json::from_str(encoded).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("CoreFS maintenance request is invalid")
+        })
+    }
+    fn maintenance_to_py(py: Python<'_>, value: impl serde::Serialize) -> PyResult<PyObject> {
+        json_value_to_py(
+            py,
+            serde_json::to_value(value).map_err(|_| {
+                pyo3::exceptions::PyRuntimeError::new_err("CoreFS maintenance result is invalid")
+            })?,
+        )
+    }
+    fn maintenance_keyring<'a, 'py>(
+        keys: &'a [PyRef<'py, PyCorefsSubkeys>],
+    ) -> PyResult<anima_corefs::rotation::FrkKeyring<'a>> {
+        if keys.len() > 128 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "CoreFS maintenance keyring exceeds its bound",
+            ));
+        }
+        anima_corefs::rotation::FrkKeyring::new(keys.iter().map(|key| &key.inner)).map_err(|_| {
+            pyo3::exceptions::PyValueError::new_err("CoreFS maintenance keyring is invalid")
+        })
+    }
+    fn corefs_maintenance_error(
+        error: anima_corefs::transaction::maintenance::MaintenanceError,
+    ) -> PyErr {
+        use anima_corefs::transaction::maintenance::MaintenanceError;
+        let code = match error {
+            MaintenanceError::Invalid => "CORE_FS_MAINTENANCE_INVALID",
+            MaintenanceError::Evidence => "CORE_FS_MAINTENANCE_EVIDENCE",
+            MaintenanceError::Conflict => "CORE_FS_MAINTENANCE_CONFLICT",
+            MaintenanceError::Blocked => "CORE_FS_MAINTENANCE_BLOCKED",
+            MaintenanceError::Commit(_) | MaintenanceError::Io(_) => "CORE_FS_MAINTENANCE_FAILED",
+        };
+        pyo3::exceptions::PyRuntimeError::new_err(code)
+    }
+
+    #[pyclass(name = "CorefsMaintenanceLock")]
+    struct PyCorefsMaintenanceLock {
+        coordinator: Arc<anima_corefs::transaction::CoreCommitCoordinator>,
+        held: Mutex<
+            Option<(
+                anima_corefs::transaction::maintenance::MaintenanceLock,
+                CorefsOperationGuard,
+            )>,
+        >,
+        // Keep the session alive until the escaped lifecycle operation has drained.
+        _owner: PyObject,
+    }
+    #[pymethods]
+    impl PyCorefsMaintenanceLock {
+        fn close(&self, py: Python<'_>) {
+            py.allow_threads(|| {
+                let held = self.held.lock().unwrap_or_else(|p| p.into_inner()).take();
+                drop(held);
+            });
+        }
+        fn __enter__(slf: PyRef<'_, Self>) -> PyResult<PyRef<'_, Self>> {
+            if slf.held.lock().unwrap_or_else(|p| p.into_inner()).is_none() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "CoreFS maintenance lock is closed",
+                ));
+            }
+            Ok(slf)
+        }
+        fn __exit__(
+            &self,
+            py: Python<'_>,
+            _ty: &Bound<'_, PyAny>,
+            _value: &Bound<'_, PyAny>,
+            _traceback: &Bound<'_, PyAny>,
+        ) -> bool {
+            self.close(py);
+            false
+        }
+        #[getter]
+        fn inventory(&self, py: Python<'_>) -> PyResult<PyObject> {
+            let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+            let (guard, _) = held.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("CoreFS maintenance lock is closed")
+            })?;
+            maintenance_to_py(py, guard.inventory.clone())
+        }
+        fn verify_inventory_v1(
+            &self,
+            py: Python<'_>,
+            retained_keys: Vec<PyRef<'_, PyCorefsSubkeys>>,
+        ) -> PyResult<PyObject> {
+            let keyring = maintenance_keyring(&retained_keys)?;
+            let report = py
+                .allow_threads(|| {
+                    let held = self.held.lock().unwrap_or_else(|p| p.into_inner());
+                    let (guard, _) = held
+                        .as_ref()
+                        .ok_or(anima_corefs::transaction::maintenance::MaintenanceError::Invalid)?;
+                    self.coordinator
+                        .maintenance_verify_locked_v1(guard, &keyring)
+                })
+                .map_err(corefs_maintenance_error)?;
+            maintenance_to_py(py, report)
         }
     }
 
@@ -5596,6 +5863,7 @@ mod python {
         m.add_class::<PyCorefsWrappedRootKey>()?;
         m.add_class::<PyCorefsWrappedObjectDek>()?;
         m.add_class::<PyCorefsSession>()?;
+        m.add_class::<PyCorefsMaintenanceLock>()?;
         m.add(
             "CorefsPreparationConflictError",
             m.py().get_type_bound::<CorefsPreparationConflictError>(),
@@ -6213,6 +6481,226 @@ mod python {
                         .unwrap_err();
                     assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
                 });
+            }
+        }
+
+        mod corefs_maintenance {
+            use super::*;
+
+            #[test]
+            fn archive_inventory_reanchors_snapshot_pointers_without_changing_live_lineage() {
+                let (_root, session) = super::corefs_session::native_session(
+                    "archive-reanchor",
+                    "ffi-archive-reanchor",
+                );
+                with_python(|py| {
+                    let old_keys =
+                        derive_corefs_subkeys(&SecretBytes::new(vec![0x36; 32]).unwrap(), 1)
+                            .unwrap();
+                    session
+                        .coordinator
+                        .initialize_validation_snapshot(&old_keys, &[], |n| {
+                            CatalogGeneration::new(
+                                n,
+                                vec![CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                                    OpaqueId::parse("01J00000000000000000000000").unwrap(),
+                                    None,
+                                    PortableName::parse("Core").unwrap(),
+                                    FolderOwner::User,
+                                    AnimaAccess::Write,
+                                ))],
+                            )
+                        })
+                        .unwrap();
+                    session
+                        .coordinator
+                        .commit_first_mutation(
+                            &old_keys,
+                            1,
+                            &[],
+                            &[],
+                            |current, n| {
+                                CatalogGeneration::new(n, current.unwrap().entries().to_vec())
+                            },
+                            |_| Ok(()),
+                        )
+                        .unwrap();
+                    let old_receipt =
+                        std::fs::read(session.canonical_root.join("fs/CUTOVER_RECEIPT")).unwrap();
+                    let keys = PyCorefsSubkeys {
+                        inner: derive_corefs_subkeys(&SecretBytes::new(vec![0x37; 32]).unwrap(), 2)
+                            .unwrap(),
+                    };
+                    session
+                        .coordinator
+                        .rotate_frk(
+                            &anima_corefs::rotation::FrkKeyring::new([&old_keys]).unwrap(),
+                            &keys.inner,
+                            2,
+                            |_| Ok(()),
+                        )
+                        .unwrap();
+                    let inventory = session.archive_inventory_v2(py, &keys).unwrap();
+                    let wire = py
+                        .import_bound("json")
+                        .unwrap()
+                        .getattr("dumps")
+                        .unwrap()
+                        .call1((inventory.bind(py),))
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap();
+                    let inventory: Value = serde_json::from_str(&wire).unwrap();
+                    for pointer in [
+                        "fs/HEAD",
+                        "fs/CUTOVER_RECEIPT",
+                        "fs/CUTOVER_COMPLETE",
+                        "fs/VALIDATION_HEAD",
+                    ] {
+                        let record = inventory["sources"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|source| source["recordPath"] == pointer)
+                            .unwrap();
+                        assert_eq!(
+                            Path::new(record["sourcePath"].as_str().unwrap())
+                                .canonicalize()
+                                .unwrap(),
+                            session
+                                .canonical_root
+                                .join("fs/HEAD")
+                                .canonicalize()
+                                .unwrap(),
+                            "archive recovery pointer must select the captured current generation"
+                        );
+                    }
+                    assert_eq!(
+                        std::fs::read(session.canonical_root.join("fs/CUTOVER_RECEIPT")).unwrap(),
+                        old_receipt,
+                        "export inspection must not reanchor live pointers"
+                    );
+                });
+                session.close_native().unwrap();
+            }
+
+            #[test]
+            fn maintenance_rejects_operations_after_session_close_begins() {
+                let (_root, session) = super::corefs_session::native_session(
+                    "maintenance-closed",
+                    "ffi-maintenance-closed",
+                );
+                session.begin_close_native();
+                with_python(|py| {
+                    let error = session
+                        .maintenance_inventory_v1(py, Vec::new(), "{}", None)
+                        .unwrap_err();
+                    assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                    assert!(error.to_string().contains("CoreFS session"));
+                });
+            }
+
+            #[test]
+            fn held_maintenance_guard_verifies_without_relocking_and_rejects_after_close() {
+                let (_root, session) = super::corefs_session::native_session(
+                    "maintenance-held",
+                    "ffi-maintenance-held",
+                );
+                with_python(|py| {
+                    let keys = Py::new(
+                        py,
+                        PyCorefsSubkeys {
+                            inner: derive_corefs_subkeys(
+                                &SecretBytes::new(vec![0x75; 32]).unwrap(),
+                                1,
+                            )
+                            .unwrap(),
+                        },
+                    )
+                    .unwrap();
+                    let borrowed = keys.bind(py).borrow();
+                    session
+                        .coordinator
+                        .initialize_validation_snapshot(&borrowed.inner, &[], |n| {
+                            CatalogGeneration::new(
+                                n,
+                                vec![CatalogGenerationEntry::folder(CatalogEntryCommon::new(
+                                    OpaqueId::parse("01J00000000000000000000000").unwrap(),
+                                    None,
+                                    PortableName::parse("Core").unwrap(),
+                                    FolderOwner::User,
+                                    AnimaAccess::Write,
+                                ))],
+                            )
+                        })
+                        .unwrap();
+                    session
+                        .coordinator
+                        .commit_first_mutation(
+                            &borrowed.inner,
+                            1,
+                            &[],
+                            &[],
+                            |current, n| {
+                                CatalogGeneration::new(n, current.unwrap().entries().to_vec())
+                            },
+                            |_| Ok(()),
+                        )
+                        .unwrap();
+                    drop(borrowed);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis() as u64;
+                    let request = json!({"retentionDays":30,"nowMs":now,"pins":[]}).to_string();
+                    let inventory = session
+                        .maintenance_inventory_v1(py, vec![keys.bind(py).borrow()], &request, None)
+                        .unwrap();
+                    let digest: String = inventory
+                        .bind(py)
+                        .get_item("inventoryDigest")
+                        .unwrap()
+                        .extract()
+                        .unwrap();
+                    let request=json!({"retentionDays":30,"nowMs":now,"pins":[],"expectedInventoryDigest":digest}).to_string();
+                    let py_session = Py::new(
+                        py,
+                        PyCorefsSession {
+                            canonical_root: session.canonical_root.clone(),
+                            core_id: session.core_id.clone(),
+                            coordinator: Arc::clone(&session.coordinator),
+                            lifecycle: Arc::clone(&session.lifecycle),
+                        },
+                    )
+                    .unwrap();
+                    let guard = PyCorefsSession::maintenance_lock_v1(
+                        py_session.bind(py).borrow(),
+                        py,
+                        vec![keys.bind(py).borrow()],
+                        &request,
+                        None,
+                    )
+                    .unwrap();
+                    drop(py_session);
+                    let verified = guard
+                        .verify_inventory_v1(py, vec![keys.bind(py).borrow()])
+                        .unwrap();
+                    assert_eq!(
+                        verified
+                            .bind(py)
+                            .get_item("headGeneration")
+                            .unwrap()
+                            .extract::<u64>()
+                            .unwrap(),
+                        2
+                    );
+                    guard.close(py);
+                    assert!(guard
+                        .verify_inventory_v1(py, vec![keys.bind(py).borrow()])
+                        .is_err());
+                    assert!(guard.inventory(py).is_err());
+                });
+                session.close_native().unwrap();
             }
         }
 
@@ -6929,7 +7417,7 @@ mod python {
             }
 
             #[test]
-            fn blocked_fence_cancellation_is_bounded_and_falls_back_unknown() {
+            fn blocked_fence_cancellation_is_bounded_and_refuses_new_lease_during_release() {
                 #[cfg(windows)]
                 {
                     let (fixture, session, control) = cached_windows_session("blocked-fence-real");
@@ -6962,7 +7450,15 @@ mod python {
                     let closer = thread::spawn(move || close_session.close_native());
                     assert!(control.wait_until_cancel_requested(Duration::from_secs(2)));
                     control.release_read_pause();
-                    assert!(operation.join().unwrap().is_ok());
+                    // The already admitted operation drains after its fence becomes Unknown.
+                    // Opening a fresh validation lease during Closing must fail closed.
+                    let error = operation.join().unwrap().unwrap_err();
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("CoreFS object-lease release is in progress"),
+                        "unexpected release result: {error:?}"
+                    );
                     assert!(closer.join().unwrap().is_ok());
 
                     assert!(started.elapsed() < Duration::from_secs(2));

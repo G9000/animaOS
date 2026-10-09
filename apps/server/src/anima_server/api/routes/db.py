@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 from anima_server.api.deps.db_mode import require_sqlite_mode
 from anima_server.api.deps.unlock import read_unlock_token, require_unlocked_session
 from anima_server.db import get_db
-from anima_server.models import User
-from anima_server.services.auth import verify_password
+from anima_server.models import SoulOwner
+from anima_server.services.auth import verify_current_password
 from anima_server.services.crypto import (
     ENCRYPTED_PREFIX,
     decrypt_text_with_dek,
@@ -29,7 +29,7 @@ router = APIRouter(prefix="/api/db", tags=["db"])
 
 MAX_ROWS = 500
 DB_VIEWER_REAUTH_WINDOW_SECONDS = 300
-PROTECTED_TABLES = {"users", "user_keys", "alembic_version"}
+PROTECTED_TABLES = {"soul_owners", "soul_keyslots", "soul_schema_archives", "alembic_version"}
 
 # Map (actual_table, actual_column) → (aad_table, aad_field) for columns
 # where encryption used different table/field names than the real DB schema.
@@ -73,7 +73,7 @@ _FALLBACK_UNSAFE_QUERY_RE = re.compile(
     re.IGNORECASE,
 )
 _PROTECTED_TABLE_QUERY_RE = re.compile(
-    r'(?<!\w)(?:"(?:alembic_version|user_keys|users)"|(?:alembic_version|user_keys|users))(?!\w)',
+    r'(?<!\w)(?:"(?:alembic_version|soul_owners|soul_keyslots|soul_schema_archives)"|(?:alembic_version|soul_owners|soul_keyslots|soul_schema_archives))(?!\w)',
     re.IGNORECASE,
 )
 _SQLITE_DENY_ACTIONS = {
@@ -318,11 +318,11 @@ def verify_db_password(
 ) -> dict[str, bool]:
     """Re-verify the user's password before exposing decrypted DB content."""
     session = require_unlocked_session(request)
-    user = db.get(User, session.user_id)
+    user = db.get(SoulOwner, session.user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
-    result = verify_password(body.password, user.password_hash)
-    if not result.valid:
+    result = verify_current_password(body.password)
+    if not result:
         raise HTTPException(status_code=401, detail="Invalid password")
     unlock_session_store.set_db_viewer_verified_at(read_unlock_token(request), time.time())
     return {"verified": True}

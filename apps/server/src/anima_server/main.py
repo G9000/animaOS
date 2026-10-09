@@ -23,6 +23,7 @@ from .api.routes.consciousness import router as consciousness_router
 from .api.routes.core import router as core_router
 from .api.routes.corefs import router as corefs_router
 from .api.routes.corefs_access import router as corefs_access_router
+from .api.routes.corefs_maintenance import router as corefs_maintenance_router
 from .api.routes.corefs_security import router as corefs_security_router
 from .api.routes.corefs_transfer import router as corefs_transfer_router
 from .api.routes.credentials import router as credentials_router
@@ -528,6 +529,7 @@ def create_app() -> FastAPI:
     app.include_router(corefs_router)
     app.include_router(corefs_access_router)
     app.include_router(corefs_security_router)
+    app.include_router(corefs_maintenance_router)
     app.include_router(corefs_transfer_router)
     app.include_router(credentials_router)
     app.include_router(db_router)

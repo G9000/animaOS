@@ -6,12 +6,13 @@ import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import anima_server.models as models
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryClaimEvidence, User
+from anima_server.models import MemoryClaimEvidence, SoulOwner
 from anima_server.services.agent.claims import upsert_claim
 from anima_server.services.data_crypto import df, ef
 from sqlalchemy import create_engine, select
@@ -44,8 +45,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="profile-user", display_name="Profile User", password_hash="x")
+def _make_user(db: Session) -> SoulOwner:
+    user = SoulOwner(core_owner_id=str(uuid4()))
     db.add(user)
     db.flush()
     return user
@@ -496,7 +497,9 @@ def test_reconcile_profile_from_claims_maps_active_claims_to_profile_fields() ->
         profile = {(field.category, field.key): field for field in active}
         work_evidence_count = len(profile[("work", "occupation")].evidence)
         has_claim_evidence = (
-            db.scalar(select(MemoryClaimEvidence).where(MemoryClaimEvidence.claim_id == work_claim.id))
+            db.scalar(
+                select(MemoryClaimEvidence).where(MemoryClaimEvidence.claim_id == work_claim.id)
+            )
             is not None
         )
 
@@ -1093,12 +1096,15 @@ def test_forget_memory_restores_previous_profile_field_when_replacement_forgotte
     assert restored_previous is not None
     assert restored_previous.status == "active"
     assert restored_previous.superseded_by_id is None
-    assert df(
-        user.id,
-        restored_previous.value_text,
-        table="user_profile_fields",
-        field="value_text",
-    ) == "designer"
+    assert (
+        df(
+            user.id,
+            restored_previous.value_text,
+            table="user_profile_fields",
+            field="value_text",
+        )
+        == "designer"
+    )
     assert restored_previous.source_memory_id == first_item.id
     assert restored_previous.source_evidence_id == first_evidence.id
     assert forgotten_replacement is None
@@ -1106,134 +1112,209 @@ def test_forget_memory_restores_previous_profile_field_when_replacement_forgotte
     assert remaining_previous_evidence_ids == [first_evidence.id]
 
 
-def test_forget_memory_deletes_profile_field_sourced_by_runtime_message() -> None:
-    service = _profile_service()
-    from anima_server.models import (
-        MemoryItem,
-        MemoryItemEvidence,
-        UserProfileField,
-        UserProfileFieldEvidence,
+@contextmanager
+def _current_profile_source_core():
+    """Real encrypted Soul and native messages with disposable Runtime bindings."""
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.db.session import ensure_user_database
+    from anima_server.services.corefs.conversation_mutations import (
+        append_canonical_message,
+        create_canonical_thread,
     )
-    from anima_server.services.agent.forgetting import forget_memory
+    from anima_server.services.sessions import unlock_session_store
+    from conftest import managed_test_client
 
-    with _db_session() as db:
-        user = _make_user(db)
-        item = MemoryItem(
-            user_id=user.id,
-            content=ef(
-                user.id,
-                "works as a founder",
-                table="memory_items",
-                field="content",
-            ),
-            category="fact",
-            importance=3,
-            source="test",
+    with managed_test_client("profile-forget-current-source-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "source-owner", "name": "Source owner", "password": "password-one"},
         )
-        db.add(item)
-        db.flush()
-        memory_evidence = MemoryItemEvidence(
-            user_id=user.id,
-            memory_item_id=item.id,
-            source_kind="llm",
-            runtime_message_id=202,
-            evidence_text=ef(
-                user.id,
-                "I am the founder building AnimaOS",
-                table="memory_item_evidence",
-                field="evidence_text",
-            ),
+        assert registered.status_code == 201, registered.text
+        account = registered.json()
+        session = unlock_session_store.resolve(account["unlockToken"])
+        assert session is not None
+        view = create_canonical_thread(session=session, force_new=True)
+        first = append_canonical_message(
+            session=session,
+            thread_id=view.document.thread_id,
+            role="user",
+            content="I am the founder building AnimaOS and live in Paris",
         )
-        db.add(memory_evidence)
-        db.flush()
-        field = service.upsert_profile_field(
-            db,
-            user_id=user.id,
-            category="work",
-            key="role",
-            value="Founder building AnimaOS",
-            confidence=0.9,
-            evidence_text="I am the founder building AnimaOS",
-            source_kind="profile_llm",
-            runtime_message_id=202,
+        second = append_canonical_message(
+            session=session,
+            thread_id=view.document.thread_id,
+            role="user",
+            content="A separate observation about the founder building AnimaOS",
         )
-        field_id = field.id
-        profile_evidence_id = field.evidence[0].id
-
-        result = forget_memory(db, memory_id=item.id, user_id=user.id)
-        active_after_forget = service.list_profile_fields(db, user_id=user.id)
-        forgotten_field = db.get(UserProfileField, field_id)
-        forgotten_evidence = db.get(UserProfileFieldEvidence, profile_evidence_id)
-
-    assert result.items_forgotten == 1
-    assert active_after_forget == []
-    assert forgotten_field is None
-    assert forgotten_evidence is None
+        yield (
+            account["id"],
+            ensure_user_database(account["id"]),
+            get_runtime_session_factory(),
+            view,
+            first,
+            second,
+        )
 
 
-def test_forget_memory_deletes_single_token_profile_field_from_runtime_message() -> None:
-    service = _profile_service()
-    from anima_server.models import (
-        MemoryItem,
-        MemoryItemEvidence,
-        UserProfileField,
-        UserProfileFieldEvidence,
+def _bind_current_profile_source(runtime_db, *, user_id, view, message, runtime_id):
+    from anima_server.models.runtime import RuntimeMessage
+    from anima_server.services.agent.persistence import ensure_runtime_thread_reference
+
+    thread = ensure_runtime_thread_reference(
+        runtime_db, user_id=user_id, thread_id=view.document.legacy_thread_id
     )
+    row = RuntimeMessage(
+        id=runtime_id,
+        user_id=user_id,
+        thread_id=thread.id,
+        role=message.role,
+        sequence_id=message.sequence,
+        corefs_message_id=message.message_id,
+        corefs_event_id=message.current_event_id,
+        corefs_sequence_id=message.sequence,
+        content_text=None,
+        content_json=None,
+    )
+    runtime_db.add(row)
+    runtime_db.flush()
+    return row
+
+
+def _drop_profile_runtime_bindings(runtime_db):
+    from anima_server.models.runtime import RuntimeMessage, RuntimeThread
+
+    runtime_db.query(RuntimeMessage).delete(synchronize_session=False)
+    runtime_db.query(RuntimeThread).delete(synchronize_session=False)
+    runtime_db.commit()
+    runtime_db.expunge_all()
+
+
+@pytest.mark.parametrize(
+    "value,content,evidence_text,category,key,other_source",
+    [
+        (
+            "Founder building AnimaOS",
+            "works as a founder",
+            "I am the founder building AnimaOS",
+            "work",
+            "role",
+            False,
+        ),
+        ("Paris", "lives in Paris", "Paris", "identity", "location", False),
+        (
+            "Founder building AnimaOS",
+            "works as a founder",
+            "I am the founder building AnimaOS",
+            "work",
+            "role",
+            True,
+        ),
+    ],
+    ids=[
+        "derived-role-after-runtime-loss",
+        "single-token-after-runtime-loss",
+        "reused-id-other-native-source",
+    ],
+)
+def test_forget_profile_uses_durable_canonical_sources_after_runtime_loss(
+    value,
+    content,
+    evidence_text,
+    category,
+    key,
+    other_source,
+):
+    from anima_server.models import MemoryItem, UserProfileField, UserProfileFieldEvidence
     from anima_server.services.agent.forgetting import forget_memory
+    from anima_server.services.agent.provenance import add_memory_item_evidence
+    from anima_server.services.corefs.soul_provenance import runtime_source_transaction
 
-    with _db_session() as db:
-        user = _make_user(db)
-        item = MemoryItem(
-            user_id=user.id,
-            content=ef(
-                user.id,
-                "lives in Paris",
-                table="memory_items",
-                field="content",
-            ),
-            category="fact",
-            importance=3,
-            source="test",
-        )
-        db.add(item)
-        db.flush()
-        memory_evidence = MemoryItemEvidence(
-            user_id=user.id,
-            memory_item_id=item.id,
-            source_kind="llm",
-            runtime_message_id=203,
-            evidence_text=ef(
-                user.id,
-                "I live in Paris",
-                table="memory_item_evidence",
-                field="evidence_text",
-            ),
-        )
-        db.add(memory_evidence)
-        db.flush()
-        field = service.upsert_profile_field(
-            db,
-            user_id=user.id,
-            category="identity",
-            key="location",
-            value="Paris",
-            confidence=0.9,
-            evidence_text="Paris",
-            source_kind="profile_llm",
-            runtime_message_id=203,
-        )
-        field_id = field.id
-        profile_evidence_id = field.evidence[0].id
+    service = _profile_service()
+    with _current_profile_source_core() as (
+        user_id,
+        soul_factory,
+        runtime_factory,
+        view,
+        first,
+        second,
+    ):
+        with soul_factory() as db, runtime_factory() as runtime_db:
+            original = _bind_current_profile_source(
+                runtime_db, user_id=user_id, view=view, message=first, runtime_id=202
+            )
+            runtime_db.commit()
+            item = MemoryItem(
+                user_id=user_id,
+                content=ef(user_id, content, table="memory_items", field="content"),
+                category="fact",
+                importance=3,
+                source="test",
+            )
+            db.add(item)
+            db.flush()
+            memory_evidence = add_memory_item_evidence(
+                db,
+                user_id=user_id,
+                memory_item_id=item.id,
+                evidence_text=evidence_text,
+                source_kind="llm",
+                runtime_db=runtime_db,
+                runtime_thread_id=original.thread_id,
+                runtime_message_id=original.id,
+            )
+            assert memory_evidence is not None
+            assert (
+                memory_evidence.source_message_uri
+                == f"corefs://object/{view.document.thread_id}#message={first.message_id}"
+            )
+            item_id = item.id
+            db.commit()
+            _drop_profile_runtime_bindings(runtime_db)
 
-        result = forget_memory(db, memory_id=item.id, user_id=user.id)
-        active_after_forget = service.list_profile_fields(db, user_id=user.id)
-        forgotten_field = db.get(UserProfileField, field_id)
-        forgotten_evidence = db.get(UserProfileFieldEvidence, profile_evidence_id)
+            # The same native source receives a new Runtime ID after rebuild;
+            # alternatively, that old ID now identifies a different source.
+            rebound = _bind_current_profile_source(
+                runtime_db,
+                user_id=user_id,
+                view=view,
+                message=second if other_source else first,
+                runtime_id=202 if other_source else 303,
+            )
+            runtime_db.commit()
+            with runtime_source_transaction(runtime_db):
+                field = service.upsert_profile_field(
+                    db,
+                    user_id=user_id,
+                    category=category,
+                    key=key,
+                    value=value,
+                    confidence=0.9,
+                    evidence_text=evidence_text,
+                    source_kind="profile_llm",
+                    runtime_thread_id=rebound.thread_id,
+                    runtime_message_id=rebound.id,
+                )
+            field_id, profile_evidence_id = field.id, field.evidence[0].id
+            assert (
+                field.evidence[0].source_message_uri
+                == f"corefs://object/{view.document.thread_id}#message={(second if other_source else first).message_id}"
+            )
+            db.commit()
+            _drop_profile_runtime_bindings(runtime_db)
 
-    assert result.items_forgotten == 1
-    assert active_after_forget == []
-    assert forgotten_field is None
-    assert forgotten_evidence is None
+        # No Runtime message or thread survives; only encrypted durable Soul
+        # provenance may authorize derived-field cleanup.
+        with soul_factory() as db:
+            result = forget_memory(db, memory_id=item_id, user_id=user_id)
+            active = service.list_profile_fields(db, user_id=user_id)
+            assert result.items_forgotten == 1
+            if other_source:
+                assert [field.id for field in active] == [field_id]
+                assert db.get(UserProfileFieldEvidence, profile_evidence_id) is not None
+            else:
+                assert active == []
+                assert db.get(UserProfileField, field_id) is None
+                assert db.get(UserProfileFieldEvidence, profile_evidence_id) is None
 
 
 def test_forget_memory_preserves_unrelated_profile_field_from_same_turn() -> None:
@@ -1352,25 +1433,32 @@ def test_forget_memory_preserves_same_turn_profile_field_with_one_shared_token()
     assert evidence_count == 1
 
 
-def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> None:
-    service = _profile_service()
-    from anima_server.models import MemoryItem, MemoryItemEvidence
+@pytest.mark.parametrize(
+    "other_source", [False, True], ids=["rebound-native-source", "reused-id-other-source"]
+)
+def test_forget_memory_rejects_only_current_bound_profile_candidates(other_source) -> None:
+    from anima_server.models import MemoryItem
     from anima_server.services.agent.forgetting import forget_memory
+    from anima_server.services.agent.provenance import add_memory_item_evidence
 
-    with (
-        _soul_session_factory() as soul_factory,
-        _runtime_session_factory() as runtime_session_factory,
+    service = _profile_service()
+    with _current_profile_source_core() as (
+        user_id,
+        soul_factory,
+        runtime_factory,
+        view,
+        first,
+        second,
     ):
-        with soul_factory() as db:
-            user = _make_user(db)
-            user_id = user.id
+        with soul_factory() as db, runtime_factory() as runtime_db:
+            original = _bind_current_profile_source(
+                runtime_db, user_id=user_id, view=view, message=first, runtime_id=501
+            )
+            runtime_db.commit()
             item = MemoryItem(
                 user_id=user_id,
                 content=ef(
-                    user_id,
-                    "works as founder of AnimaOS",
-                    table="memory_items",
-                    field="content",
+                    user_id, "works as founder of AnimaOS", table="memory_items", field="content"
                 ),
                 category="fact",
                 importance=3,
@@ -1378,24 +1466,31 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
             )
             db.add(item)
             db.flush()
-            db.add(
-                MemoryItemEvidence(
-                    user_id=user_id,
-                    memory_item_id=item.id,
-                    source_kind="llm",
-                    runtime_message_id=501,
-                    evidence_text=ef(
-                        user_id,
-                        "I work as founder of AnimaOS",
-                        table="memory_item_evidence",
-                        field="evidence_text",
-                    ),
-                )
+            evidence = add_memory_item_evidence(
+                db,
+                user_id=user_id,
+                memory_item_id=item.id,
+                evidence_text="I work as founder of AnimaOS",
+                source_kind="llm",
+                runtime_db=runtime_db,
+                runtime_thread_id=original.thread_id,
+                runtime_message_id=original.id,
             )
-            db.commit()
+            assert (
+                evidence.source_message_uri
+                == f"corefs://object/{view.document.thread_id}#message={first.message_id}"
+            )
             item_id = item.id
-
-        with runtime_session_factory() as runtime_db:
+            db.commit()
+            _drop_profile_runtime_bindings(runtime_db)
+            rebound = _bind_current_profile_source(
+                runtime_db,
+                user_id=user_id,
+                view=view,
+                message=second if other_source else first,
+                runtime_id=501 if other_source else 601,
+            )
+            runtime_db.commit()
             pending = service.create_profile_update_candidate(
                 runtime_db,
                 user_id=user_id,
@@ -1403,16 +1498,16 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
                 key="role",
                 value="Founder",
                 evidence_text="I work as founder of AnimaOS",
-                source_message_ids=[501],
+                source_message_ids=[rebound.id],
             )
-            shared_token = service.create_profile_update_candidate(
+            shared = service.create_profile_update_candidate(
                 runtime_db,
                 user_id=user_id,
                 category="active_projects",
                 key="active_project",
                 value="AnimaOS",
                 evidence_text="AnimaOS is an active project",
-                source_message_ids=[501],
+                source_message_ids=[rebound.id],
             )
             unrelated = service.create_profile_update_candidate(
                 runtime_db,
@@ -1421,41 +1516,24 @@ def test_forget_memory_rejects_pending_profile_candidates_from_source_turn() -> 
                 key="likes",
                 value="Cats",
                 evidence_text="I like cats",
-                source_message_ids=[501],
+                source_message_ids=[rebound.id],
             )
             runtime_db.commit()
-            pending_id = pending.id
-            shared_token_id = shared_token.id
-            unrelated_id = unrelated.id
-
+            pending_id, shared_id, unrelated_id = pending.id, shared.id, unrelated.id
         with soul_factory() as db:
             result = forget_memory(
-                db,
-                memory_id=item_id,
-                user_id=user_id,
-                runtime_db_factory=runtime_session_factory,
+                db, memory_id=item_id, user_id=user_id, runtime_db_factory=runtime_factory
             )
             db.commit()
-
-        with runtime_session_factory() as runtime_db:
-            rejected_candidate = service.get_profile_update_candidate(
-                runtime_db,
-                candidate_id=pending_id,
-            )
-            untouched_candidate = service.get_profile_update_candidate(
-                runtime_db,
-                candidate_id=unrelated_id,
-            )
-            shared_token_candidate = service.get_profile_update_candidate(
-                runtime_db,
-                candidate_id=shared_token_id,
-            )
-
-    assert result.items_forgotten == 1
-    assert rejected_candidate.status == "rejected"
-    assert rejected_candidate.processed_at is not None
-    assert shared_token_candidate.status == "extracted"
-    assert untouched_candidate.status == "extracted"
+        with runtime_factory() as runtime_db:
+            rejected = service.get_profile_update_candidate(runtime_db, candidate_id=pending_id)
+            shared = service.get_profile_update_candidate(runtime_db, candidate_id=shared_id)
+            unrelated = service.get_profile_update_candidate(runtime_db, candidate_id=unrelated_id)
+            assert result.items_forgotten == 1
+            assert rejected.status == ("extracted" if other_source else "rejected")
+            assert (rejected.processed_at is not None) is (not other_source)
+            assert shared.status == "extracted"
+            assert unrelated.status == "extracted"
 
 
 @pytest.mark.asyncio
@@ -1498,23 +1576,31 @@ async def test_profile_synthesis_task_reconciles_claims_to_profile_fields(
                 fields = service.list_profile_fields(db, user_id=user_id)
 
         assert result["profile_fields_reconciled"] == 1
-        assert [(field.category, field.key) for field in fields] == [
-            ("work", "occupation")
-        ]
+        assert [(field.category, field.key) for field in fields] == [("work", "occupation")]
     finally:
         settings.agent_provider = original_provider
 
 
-def test_static_memory_blocks_include_structured_user_profile_block() -> None:
+def test_static_memory_blocks_include_structured_user_profile_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = _profile_service()
-    from anima_server.models import AgentThread
+    from anima_server.models.runtime import RuntimeThread
+    from anima_server.services.agent import memory_blocks
     from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
+    from conftest_runtime import runtime_db_session
 
-    with _db_session() as db:
+    monkeypatch.setattr(memory_blocks, "read_active_account_profile", lambda user_id: None)
+    monkeypatch.setattr(
+        memory_blocks, "require_active_task_authority_session", lambda user_id: object()
+    )
+    monkeypatch.setattr(memory_blocks, "list_canonical_tasks", lambda *, session: [])
+
+    with _db_session() as db, runtime_db_session() as runtime_db:
         user = _make_user(db)
-        thread = AgentThread(user_id=user.id, status="active")
-        db.add(thread)
-        db.flush()
+        thread = RuntimeThread(user_id=user.id, status="active")
+        runtime_db.add(thread)
+        runtime_db.flush()
         service.upsert_profile_field(
             db,
             user_id=user.id,
@@ -1532,7 +1618,9 @@ def test_static_memory_blocks_include_structured_user_profile_block() -> None:
             evidence_text="we are building memory",
         )
 
-        blocks = build_runtime_memory_blocks(db, user_id=user.id, thread_id=thread.id)
+        blocks = build_runtime_memory_blocks(
+            db, user_id=user.id, thread_id=thread.id, runtime_db=runtime_db
+        )
 
     labels = [block.label for block in blocks]
     assert "user_profile" in labels
@@ -1616,9 +1704,7 @@ async def test_user_profile_api_lists_corrects_and_retracts_fields(
 
     assert [field.value for field in listed.fields] == ["Product manager"]
     assert corrected.value == "Founder building AnimaOS"
-    assert corrected.evidence[0].evidenceText == (
-        "Actually, I am the founder building AnimaOS"
-    )
+    assert corrected.evidence[0].evidenceText == ("Actually, I am the founder building AnimaOS")
     assert old_field.status == "superseded"
     assert old_field.superseded_by_id == corrected.id
     assert retracted.status == "retracted"
@@ -1778,7 +1864,10 @@ async def test_soul_writer_promotes_profile_update_candidates() -> None:
     service = _profile_service()
     from anima_server.services.agent.soul_writer import run_soul_writer
 
-    with _soul_session_factory() as soul_factory, _runtime_session_factory() as runtime_session_factory:
+    with (
+        _soul_session_factory() as soul_factory,
+        _runtime_session_factory() as runtime_session_factory,
+    ):
         with soul_factory() as db:
             user = _make_user(db)
             user_id = user.id
@@ -1826,7 +1915,10 @@ async def test_soul_writer_profile_retry_preserves_newer_profile_field() -> None
 
     older_observed = datetime(2026, 1, 1, tzinfo=UTC)
     newer_observed = datetime(2026, 2, 1, tzinfo=UTC)
-    with _soul_session_factory() as soul_factory, _runtime_session_factory() as runtime_session_factory:
+    with (
+        _soul_session_factory() as soul_factory,
+        _runtime_session_factory() as runtime_session_factory,
+    ):
         with soul_factory() as db:
             user = _make_user(db)
             user_id = user.id
@@ -1889,7 +1981,10 @@ async def test_soul_writer_profile_retry_preserves_newer_profile_field() -> None
 
 def test_profile_update_candidate_can_be_reextracted_after_promotion() -> None:
     service = _profile_service()
-    with _runtime_session_factory() as runtime_session_factory, runtime_session_factory() as runtime_db:
+    with (
+        _runtime_session_factory() as runtime_session_factory,
+        runtime_session_factory() as runtime_db,
+    ):
         first = service.create_profile_update_candidate(
             runtime_db,
             user_id=1,

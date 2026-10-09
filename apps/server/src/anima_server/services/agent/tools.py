@@ -86,8 +86,7 @@ def _schema_for_hint(hint: Any) -> dict[str, object]:
 
     origin = get_origin(hint)
     if origin in (Union, UnionType):
-        non_none_args = [arg for arg in get_args(
-            hint) if arg is not type(None)]
+        non_none_args = [arg for arg in get_args(hint) if arg is not type(None)]
         if len(non_none_args) == 1:
             return _schema_for_hint(non_none_args[0])
 
@@ -127,7 +126,9 @@ def _core_memory_label_error(label: str) -> str:
     )
     runtime_hint = _RUNTIME_BLOCK_LABEL_HINTS.get(label)
     if runtime_hint is not None:
-        guidance += f" '{label}' is a runtime block label, not a writable core-memory label. {runtime_hint}"
+        guidance += (
+            f" '{label}' is a runtime block label, not a writable core-memory label. {runtime_hint}"
+        )
     guidance += " Use note_to_self for session-only scratch context and save_to_memory for durable facts or preferences."
     return f"Invalid label '{label}'. {guidance}"
 
@@ -140,8 +141,7 @@ def _read_self_model_block(*, ctx: Any, section: str) -> str:
     )
 
     if ctx.runtime_db is None:
-        block = get_self_model_block(
-            ctx.db, user_id=ctx.user_id, section=section)
+        block = get_self_model_block(ctx.db, user_id=ctx.user_id, section=section)
         if block is None:
             return ""
         return render_self_model_section(block, user_id=ctx.user_id)
@@ -175,10 +175,7 @@ def _format_time_snapshot(*, label: str, tzinfo: Any) -> str:
     local_now = datetime.now(UTC).astimezone(tzinfo)
     utc_now = local_now.astimezone(UTC)
     timezone_name = local_now.tzname() or label
-    return (
-        f"{label}: {local_now.isoformat()} ({timezone_name}). "
-        f"UTC: {utc_now.isoformat()}"
-    )
+    return f"{label}: {local_now.isoformat()} ({timezone_name}). UTC: {utc_now.isoformat()}"
 
 
 def _invalidate_memory_cache(user_id: int) -> None:
@@ -240,8 +237,7 @@ def dismiss_note(key: str) -> str:
     from anima_server.services.agent.tool_context import get_tool_context
 
     ctx = get_tool_context()
-    removed = remove_session_note(
-        ctx.runtime_db, thread_id=ctx.thread_id, key=key)
+    removed = remove_session_note(ctx.runtime_db, thread_id=ctx.thread_id, key=key)
     if removed:
         from anima_server.services.agent.companion import get_companion
 
@@ -268,8 +264,7 @@ def save_to_memory(key: str, category: str = "fact", importance: str = "3", tags
     if category not in ("fact", "preference", "goal", "relationship"):
         category = "fact"
 
-    parsed_tags = [t.strip().lower()
-                   for t in tags.split(",") if t.strip()] if tags else None
+    parsed_tags = [t.strip().lower() for t in tags.split(",") if t.strip()] if tags else None
     source_message_ids = _latest_user_source_message_ids(ctx)
 
     # Try session-note promotion first (the original two-step flow).
@@ -331,11 +326,7 @@ def _latest_user_source_message_ids(ctx: Any) -> list[int] | None:
         .order_by(RuntimeMessage.sequence_id.desc())
     )
     message = next(
-        (
-            candidate
-            for candidate in messages
-            if candidate.content_text is not None
-        ),
+        (candidate for candidate in messages if candidate.content_text is not None),
         None,
     )
     return [int(message.id)] if message is not None else None
@@ -390,37 +381,34 @@ def complete_goal(title: str) -> str:
     return f"Could not find intention: {title}"
 
 
+def _canonical_task_context():
+    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.corefs.task_authority import require_active_task_authority_session
+
+    ctx = get_tool_context()
+    return ctx, require_active_task_authority_session(ctx.user_id)
+
+
+def _task_memory_changed(ctx) -> None:
+    _invalidate_memory_cache(ctx.user_id)
+    ctx.memory_modified = True
+
+
 @tool
 def create_task(text: str, due_date: str = "", priority: str = "2") -> str:
     """Create a task on the user's task list. due_date: YYYY-MM-DD or empty. priority: 1 (low) to 5 (critical)."""
-    from anima_server.models.task import Task
     from anima_server.schemas.task import normalize_due_date, normalize_task_text
-    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.corefs.task_mutations import create_canonical_task
 
-    ctx = get_tool_context()
+    ctx, session = _canonical_task_context()
     pri = 2
     with contextlib.suppress(ValueError, TypeError):
         pri = max(1, min(5, int(priority)))
-
     normalized_text = normalize_task_text(text)
-    normalized_due_date = normalize_due_date(due_date)
-
-    task = Task(
-        user_id=ctx.user_id,
-        text=normalized_text,
-        priority=pri,
-        due_date=normalized_due_date,
+    task = create_canonical_task(
+        session=session, text=normalized_text, priority=pri, due_date=normalize_due_date(due_date)
     )
-    ctx.db.add(task)
-    ctx.db.flush()
-
-    from anima_server.services.agent.companion import get_companion
-
-    companion = get_companion(ctx.user_id)
-    if companion is not None:
-        companion.invalidate_memory()
-    ctx.memory_modified = True
-
+    _task_memory_changed(ctx)
     result = f"Task created: {normalized_text}"
     if task.due_date:
         result += f" (due {task.due_date})"
@@ -430,28 +418,25 @@ def create_task(text: str, due_date: str = "", priority: str = "2") -> str:
 @tool
 def list_tasks(include_done: str = "false") -> str:
     """List the user's open tasks (set include_done=true to include completed)."""
-    from sqlalchemy import select
+    from anima_server.services.corefs.task_authority import list_canonical_tasks
 
-    from anima_server.models.task import Task
-    from anima_server.services.agent.tool_context import get_tool_context
-
-    ctx = get_tool_context()
-    query = select(Task).where(Task.user_id == ctx.user_id)
+    _ctx, session = _canonical_task_context()
+    tasks = sorted(
+        list_canonical_tasks(session=session),
+        key=lambda task: (task.priority, task.created_at or ""),
+        reverse=True,
+    )
+    tasks.sort(key=lambda task: task.done)
     if include_done.lower() not in ("true", "yes", "1"):
-        query = query.where(Task.done == False)  # noqa: E712
-    query = query.order_by(
-        Task.done, Task.priority.desc(), Task.created_at.desc())
-    tasks = list(ctx.db.scalars(query).all())
-
+        tasks = [task for task in tasks if not task.done]
     if not tasks:
         return "No tasks found."
-
-    lines: list[str] = []
-    for t in tasks:
-        status = "[done]" if t.done else "[open]"
-        line = f"- {status} {t.text} (priority {t.priority})"
-        if t.due_date:
-            line += f" due {t.due_date}"
+    lines = []
+    for task in tasks:
+        state = "[done]" if task.done else "[open]"
+        line = f"- {state} {task.text} (priority {task.priority})"
+        if task.due_date:
+            line += f" due {task.due_date}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -459,37 +444,29 @@ def list_tasks(include_done: str = "false") -> str:
 @tool
 def complete_task(text: str) -> str:
     """Mark a task as done by providing its text (or close match)."""
-    from sqlalchemy import select
+    from anima_server.services.corefs.task_authority import list_canonical_tasks
+    from anima_server.services.corefs.task_mutations import update_canonical_task
 
-    from anima_server.models.task import Task
-    from anima_server.services.agent.tool_context import get_tool_context
-
-    ctx = get_tool_context()
-    tasks = list(
-        ctx.db.scalars(
-            select(Task).where(Task.user_id == ctx.user_id, Task.done == False)  # noqa: E712
-        ).all()
-    )
+    ctx, session = _canonical_task_context()
+    tasks = [task for task in list_canonical_tasks(session=session) if not task.done]
     if not tasks:
         return "No open tasks found."
-
-    best_task = _find_matching_task(tasks, text)
-    if best_task is None:
+    task = _find_matching_task(tasks, text)
+    if task is None:
         return f"Could not find a matching task for: {text}"
-
-    best_task.done = True
-    best_task.completed_at = datetime.now(UTC)
-    best_task.updated_at = datetime.now(UTC)
-    ctx.db.flush()
-
-    from anima_server.services.agent.companion import get_companion
-
-    companion = get_companion(ctx.user_id)
-    if companion is not None:
-        companion.invalidate_memory()
-    ctx.memory_modified = True
-
-    return f"Completed: {best_task.text}"
+    updated = update_canonical_task(
+        session=session,
+        legacy_id=task.legacy_id,
+        text=None,
+        done=True,
+        priority=None,
+        due_date=None,
+        due_date_present=False,
+    )
+    if updated is None:
+        return f"Could not find a matching task for: {text}"
+    _task_memory_changed(ctx)
+    return f"Completed: {updated.text}"
 
 
 def _find_matching_task(tasks: Sequence[Any], text: str) -> Any | None:
@@ -506,8 +483,7 @@ def _find_matching_task(tasks: Sequence[Any], text: str) -> Any | None:
         text_words = set(text_lower.split())
         task_words = set(task_lower.split())
         if text_words and task_words:
-            overlap = len(text_words & task_words) / \
-                max(len(text_words), len(task_words))
+            overlap = len(text_words & task_words) / max(len(text_words), len(task_words))
             if overlap > best_score:
                 best_score = overlap
                 best_task = t
@@ -523,125 +499,81 @@ def _parse_task_done_value(value: str) -> bool:
         return True
     if normalized in ("false", "no", "0", "open", "todo", "pending"):
         return False
-    raise ValueError(
-        "done must be one of true/false, yes/no, done/open, or 1/0.")
+    raise ValueError("done must be one of true/false, yes/no, done/open, or 1/0.")
 
 
 @tool
 def update_task(
-    text: str,
-    new_text: str = "",
-    due_date: str = "",
-    priority: str = "",
-    done: str = "",
+    text: str, new_text: str = "", due_date: str = "", priority: str = "", done: str = ""
 ) -> str:
     """Update an existing task by text (or close match). Leave fields empty to keep them unchanged. due_date accepts YYYY-MM-DD to set, or none/clear/remove to clear. done accepts true/false, yes/no, or done/open."""
-    from sqlalchemy import select
-
-    from anima_server.models.task import Task
     from anima_server.schemas.task import normalize_due_date, normalize_task_text
-    from anima_server.services.agent.tool_context import get_tool_context
+    from anima_server.services.corefs.task_authority import list_canonical_tasks
+    from anima_server.services.corefs.task_mutations import update_canonical_task
 
-    ctx = get_tool_context()
-    tasks = list(
-        ctx.db.scalars(
-            select(Task).where(Task.user_id == ctx.user_id).order_by(
-                Task.done, Task.created_at.desc())
-        ).all()
+    ctx, session = _canonical_task_context()
+    tasks = sorted(
+        list_canonical_tasks(session=session), key=lambda task: task.created_at or "", reverse=True
     )
+    tasks.sort(key=lambda task: task.done)
     if not tasks:
         return "No tasks found."
-
     task = _find_matching_task(tasks, text)
     if task is None:
         return f"Could not find a matching task for: {text}"
-
-    updates: list[str] = []
+    patch = dict(text=None, done=None, priority=None, due_date=None, due_date_present=False)
+    updates = []
     if new_text.strip():
-        normalized_text = normalize_task_text(new_text)
-        if normalized_text != task.text:
-            task.text = normalized_text
-            updates.append(f"text='{normalized_text}'")
-
+        normalized = normalize_task_text(new_text)
+        if normalized != task.text:
+            patch["text"] = normalized
+            updates.append(f"text='{normalized}'")
     if priority.strip():
         try:
-            parsed_priority = max(1, min(5, int(priority)))
+            parsed = max(1, min(5, int(priority)))
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "priority must be an integer between 1 and 5.") from exc
-        if parsed_priority != task.priority:
-            task.priority = parsed_priority
-            updates.append(f"priority={parsed_priority}")
-
+            raise ValueError("priority must be an integer between 1 and 5.") from exc
+        if parsed != task.priority:
+            patch["priority"] = parsed
+            updates.append(f"priority={parsed}")
     if due_date.strip():
-        normalized_due_date_input = due_date.strip().lower()
-        if normalized_due_date_input in ("none", "clear", "remove"):
-            if task.due_date is not None:
-                task.due_date = None
-                updates.append("due date cleared")
-        else:
-            normalized_due_date = normalize_due_date(due_date)
-            if normalized_due_date != task.due_date:
-                task.due_date = normalized_due_date
-                updates.append(f"due={normalized_due_date}")
-
+        cleared = due_date.strip().lower() in ("none", "clear", "remove")
+        normalized_due = None if cleared else normalize_due_date(due_date)
+        if normalized_due != task.due_date:
+            patch.update(due_date=normalized_due, due_date_present=True)
+            updates.append("due date cleared" if cleared else f"due={normalized_due}")
     if done.strip():
         parsed_done = _parse_task_done_value(done)
         if parsed_done != task.done:
-            task.done = parsed_done
-            task.completed_at = datetime.now(UTC) if parsed_done else None
+            patch["done"] = parsed_done
             updates.append("marked done" if parsed_done else "reopened")
-
     if not updates:
         return f"No changes applied to task: {task.text}"
-
-    task.updated_at = datetime.now(UTC)
-    ctx.db.flush()
-
-    from anima_server.services.agent.companion import get_companion
-
-    companion = get_companion(ctx.user_id)
-    if companion is not None:
-        companion.invalidate_memory()
-    ctx.memory_modified = True
-
-    return f"Updated task '{task.text}': " + ", ".join(updates)
+    updated = update_canonical_task(session=session, legacy_id=task.legacy_id, **patch)
+    if updated is None:
+        return f"Could not find a matching task for: {text}"
+    _task_memory_changed(ctx)
+    return f"Updated task '{updated.text}': " + ", ".join(updates)
 
 
 @tool
 def delete_task(text: str) -> str:
     """Delete a task by text (or close match). Use this when the user wants a task removed entirely."""
-    from sqlalchemy import select
+    from anima_server.services.corefs.task_authority import list_canonical_tasks
+    from anima_server.services.corefs.task_mutations import delete_canonical_task
 
-    from anima_server.models.task import Task
-    from anima_server.services.agent.tool_context import get_tool_context
-
-    ctx = get_tool_context()
-    tasks = list(
-        ctx.db.scalars(
-            select(Task).where(Task.user_id == ctx.user_id).order_by(
-                Task.done, Task.created_at.desc())
-        ).all()
+    ctx, session = _canonical_task_context()
+    tasks = sorted(
+        list_canonical_tasks(session=session), key=lambda task: task.created_at or "", reverse=True
     )
+    tasks.sort(key=lambda task: task.done)
     if not tasks:
         return "No tasks found."
-
     task = _find_matching_task(tasks, text)
-    if task is None:
+    if task is None or not delete_canonical_task(session=session, legacy_id=task.legacy_id):
         return f"Could not find a matching task for: {text}"
-
-    deleted_text = task.text
-    ctx.db.delete(task)
-    ctx.db.flush()
-
-    from anima_server.services.agent.companion import get_companion
-
-    companion = get_companion(ctx.user_id)
-    if companion is not None:
-        companion.invalidate_memory()
-    ctx.memory_modified = True
-
-    return f"Deleted task: {deleted_text}"
+    _task_memory_changed(ctx)
+    return f"Deleted task: {task.text}"
 
 
 def _search_candidates(
@@ -683,8 +615,7 @@ def _search_candidates(
         if query_words and content_words:
             overlap = len(query_words & content_words) / len(query_words)
             if overlap >= 0.4:
-                scored.append(
-                    (overlap * 0.8, f"[pending] {c.content}", c.category))
+                scored.append((overlap * 0.8, f"[pending] {c.content}", c.category))
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored[:limit]
@@ -711,8 +642,7 @@ def recall_memory(
     if cat and cat not in ("fact", "preference", "goal", "relationship"):
         cat = None
 
-    parsed_tags = [t.strip().lower()
-                   for t in tags.split(",") if t.strip()] if tags else None
+    parsed_tags = [t.strip().lower() for t in tags.split(",") if t.strip()] if tags else None
 
     # Use hybrid search (semantic + keyword) via Phase 1 infrastructure
     scored: list[tuple[float, str, str]] = []
@@ -734,8 +664,7 @@ def recall_memory(
             tags=parsed_tags,
         )
         if loop is not None:
-            result = asyncio.run_coroutine_threadsafe(
-                coro, loop).result(timeout=30)
+            result = asyncio.run_coroutine_threadsafe(coro, loop).result(timeout=30)
         else:
             result = asyncio.run(coro)
         hybrid_count = 0
@@ -746,15 +675,13 @@ def recall_memory(
             scored.append(
                 (
                     score,
-                    df(ctx.user_id, item.content,
-                       table="memory_items", field="content"),
+                    df(ctx.user_id, item.content, table="memory_items", field="content"),
                     item.category,
                 )
             )
         search_paths["hybrid"] = hybrid_count
     except Exception as exc:
-        logger.warning("hybrid_search failed for query=%r: %s",
-                       query_stripped, exc)
+        logger.warning("hybrid_search failed for query=%r: %s", query_stripped, exc)
         search_paths["hybrid"] = f"error: {exc}"
 
     # Text-based fallback: used when hybrid fails OR returns no items
@@ -770,8 +697,7 @@ def recall_memory(
             limit=40,
         )
         for item in items:
-            plaintext = df(ctx.user_id, item.content,
-                           table="memory_items", field="content")
+            plaintext = df(ctx.user_id, item.content, table="memory_items", field="content")
             content_lower = plaintext.lower()
             if query_lower in content_lower:
                 keyword_count += 1
@@ -799,13 +725,11 @@ def recall_memory(
         )
         query_lower = query_stripped.lower()
         for ep in episodes:
-            ep_plaintext = df(ctx.user_id, ep.summary,
-                              table="memory_episodes", field="summary")
+            ep_plaintext = df(ctx.user_id, ep.summary, table="memory_episodes", field="summary")
             summary_lower = ep_plaintext.lower()
             if query_lower in summary_lower:
                 episode_count += 1
-                scored.append(
-                    (0.9, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
+                scored.append((0.9, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
                 continue
             query_words = set(query_lower.split())
             summary_words = set(summary_lower.split())
@@ -813,8 +737,7 @@ def recall_memory(
                 overlap = len(query_words & summary_words) / len(query_words)
                 if overlap >= 0.5:
                     episode_count += 1
-                    scored.append(
-                        (overlap, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
+                    scored.append((overlap, f"[Episode {ep.date}] {ep_plaintext}", "episode"))
         search_paths["episodes"] = episode_count
     else:
         search_paths["episodes"] = "skipped (category filter)"
@@ -934,8 +857,7 @@ def search_long_memory(query: str, mode: str = "aggregate") -> str:
     route_line = ""
     if route_plan is not None:
         route_line = (
-            f"Route: {route_plan.route_label} -> {parsed_mode.value}: "
-            f"{route_plan.route_reason}"
+            f"Route: {route_plan.route_label} -> {parsed_mode.value}: {route_plan.route_reason}"
         )
 
     if not result.semantic_results:
@@ -957,7 +879,7 @@ def search_long_memory(query: str, mode: str = "aggregate") -> str:
 def search_knowledge_bundle(query: str, mode: str = "balanced") -> str:
     """Search compiled knowledge bundles and source evidence spans without writing memory."""
     from anima_server.services.agent.tool_context import get_tool_context
-    from anima_server.services.ingestion.retrieval import retrieve_knowledge
+    from anima_server.services.ingestion.retrieval import retrieve_current_core_knowledge
 
     query_stripped = query.strip()
     if not query_stripped:
@@ -966,8 +888,7 @@ def search_knowledge_bundle(query: str, mode: str = "balanced") -> str:
         return "Unknown knowledge search mode. Valid modes: balanced, concepts, evidence."
 
     ctx = get_tool_context()
-    result = retrieve_knowledge(
-        ctx.runtime_db,
+    result = retrieve_current_core_knowledge(
         user_id=ctx.user_id,
         query=query_stripped,
         limit_concepts=0 if mode == "evidence" else 5,
@@ -1038,9 +959,7 @@ def search_images(query: str, limit: str = "5") -> str:
         source_text = "; ".join(part for part in source_parts if part)
         source_suffix = f"; {source_text}" if source_text else ""
         if len(result.related_sources) > 1:
-            source_suffix = (
-                f"{source_suffix}; related_sources={len(result.related_sources) - 1}"
-            )
+            source_suffix = f"{source_suffix}; related_sources={len(result.related_sources) - 1}"
         snippet = " ".join(result.snippet.split())
         if len(snippet) > 220:
             snippet = snippet[:219].rstrip() + "..."
@@ -1057,10 +976,7 @@ def search_images(query: str, limit: str = "5") -> str:
                     f"attachment={source.attachment_id}" if source.attachment_id else None,
                     f"url={source.attachment_url}" if source.attachment_url else None,
                 ]
-                related_lines.append(
-                    "    "
-                    + "; ".join(part for part in parts if part)
-                )
+                related_lines.append("    " + "; ".join(part for part in parts if part))
             if related_lines:
                 lines.append("  related:")
                 lines.extend(f"  {line}" for line in related_lines)
@@ -1164,10 +1080,7 @@ def get_user_timezone() -> str:
         return _format_time_snapshot(label=f"Saved user timezone ({saved_label})", tzinfo=saved_tz)
 
     local_tz = datetime.now().astimezone().tzinfo or UTC
-    return (
-        "No saved user timezone. "
-        + _format_time_snapshot(label="Local time", tzinfo=local_tz)
-    )
+    return "No saved user timezone. " + _format_time_snapshot(label="Local time", tzinfo=local_tz)
 
 
 @tool
@@ -1181,12 +1094,10 @@ def set_user_timezone(timezone_name: str) -> str:
     existing_timezone = extract_timezone_value(existing_content)
     if existing_timezone:
         with contextlib.suppress(ValueError):
-            existing_normalized, _existing_tz = normalize_timezone_spec(
-                existing_timezone)
+            existing_normalized, _existing_tz = normalize_timezone_spec(existing_timezone)
             if existing_normalized == normalized:
-                return (
-                    f"User timezone already set to {normalized}. "
-                    + _format_time_snapshot(label=f"Saved user timezone ({normalized})", tzinfo=tzinfo)
+                return f"User timezone already set to {normalized}. " + _format_time_snapshot(
+                    label=f"Saved user timezone ({normalized})", tzinfo=tzinfo
                 )
 
     store_timezone_in_world_context(
@@ -1199,9 +1110,8 @@ def set_user_timezone(timezone_name: str) -> str:
 
     ctx.memory_modified = True
     _invalidate_memory_cache(ctx.user_id)
-    return (
-        f"Saved user timezone as {normalized}. "
-        + _format_time_snapshot(label=f"Saved user timezone ({normalized})", tzinfo=tzinfo)
+    return f"Saved user timezone as {normalized}. " + _format_time_snapshot(
+        label=f"Saved user timezone ({normalized})", tzinfo=tzinfo
     )
 
 
@@ -1225,9 +1135,9 @@ def consolidate_pending_memory() -> str:
         loop = None
 
     if loop is not None:
-        result = asyncio.run_coroutine_threadsafe(
-            run_soul_writer(ctx.user_id), loop
-        ).result(timeout=60)
+        result = asyncio.run_coroutine_threadsafe(run_soul_writer(ctx.user_id), loop).result(
+            timeout=60
+        )
     else:
         result = asyncio.run(run_soul_writer(ctx.user_id))
 
@@ -1245,7 +1155,13 @@ def consolidate_pending_memory() -> str:
         + result.candidates_folded
         + result.candidates_failed
     )
-    if pending_before == 0 and result.ops_processed == 0 and result.ops_skipped == 0 and result.ops_failed == 0 and total_candidate_work == 0:
+    if (
+        pending_before == 0
+        and result.ops_processed == 0
+        and result.ops_skipped == 0
+        and result.ops_failed == 0
+        and total_candidate_work == 0
+    ):
         return "No pending memory ops or queued memory candidates required consolidation."
 
     return (
@@ -1283,8 +1199,7 @@ def list_pending_memory_ops(label: CoreMemoryLabel | None = None) -> str:
         user_id=ctx.user_id,
         target_block=label,
     )
-    core_ops = [
-        op for op in pending_ops if op.target_block in _CORE_MEMORY_LABELS]
+    core_ops = [op for op in pending_ops if op.target_block in _CORE_MEMORY_LABELS]
     if not core_ops:
         return (
             f"No pending {label} memory ops."
@@ -1295,9 +1210,7 @@ def list_pending_memory_ops(label: CoreMemoryLabel | None = None) -> str:
     lines: list[str] = []
     for op in core_ops:
         if op.op_type == "replace" and op.old_content is not None:
-            lines.append(
-                f"- [{op.target_block}] replace: {op.old_content} -> {op.content}"
-            )
+            lines.append(f"- [{op.target_block}] replace: {op.old_content} -> {op.content}")
         else:
             lines.append(f"- [{op.target_block}] {op.op_type}: {op.content}")
     return f"Pending core-memory ops ({len(core_ops)}):\n" + "\n".join(lines)
@@ -1512,8 +1425,7 @@ def _start_mod_tools_refresh() -> None:
             except Exception:
                 logger.debug("mod-tools loaded callback failed", exc_info=True)
 
-    _threading.Thread(
-        target=_worker, daemon=True, name="mod-tools-refresh").start()
+    _threading.Thread(target=_worker, daemon=True, name="mod-tools-refresh").start()
 
 
 def _fetch_and_cache_mod_tools() -> list[Any]:
@@ -1565,6 +1477,7 @@ def _build_mod_tool(schema: dict[str, Any]) -> Any:
 
     def _fn(**kwargs: Any) -> str:
         from anima_server.services.agent.tool_context import get_tool_context
+
         ctx = get_tool_context()
         payload = {"userId": ctx.user_id, **kwargs}
         try:
@@ -1645,8 +1558,7 @@ def prepare_action_tool_schemas(
     result: list[dict[str, Any]] = []
     for schema in schemas:
         s = copy.deepcopy(schema)
-        params = s.get(
-            "parameters", {"type": "object", "properties": {}, "required": []})
+        params = s.get("parameters", {"type": "object", "properties": {}, "required": []})
         result.append(
             {
                 "type": "function",
@@ -1666,8 +1578,7 @@ def get_tool_summaries(tools: Sequence[Any] | None = None) -> list[str]:
     summaries: list[str] = []
 
     for agent_tool in resolved_tools:
-        name = getattr(agent_tool, "name", "") or getattr(
-            agent_tool, "__name__", "tool")
+        name = getattr(agent_tool, "name", "") or getattr(agent_tool, "__name__", "tool")
         description = getattr(agent_tool, "description", "") or ""
         normalized_description = " ".join(description.strip().split())
         if normalized_description:

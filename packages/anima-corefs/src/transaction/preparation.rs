@@ -1537,6 +1537,268 @@ struct PreparationLayout {
     receipts: Dir,
 }
 
+#[derive(Default)]
+pub(super) struct MaintenancePreparationPins {
+    pub(super) frk_versions: BTreeSet<u32>,
+    pub(super) object_ids: BTreeSet<String>,
+    pub(super) physical_names: BTreeSet<String>,
+    pub(super) catalog_pins: BTreeSet<(u64, String)>,
+    pub(super) record_hashes: BTreeSet<String>,
+    pub(super) archives: Vec<MaintenancePreparationArchive>,
+}
+
+pub(super) struct MaintenancePreparationArchive {
+    pub(super) id: String,
+    pub(super) terminal_digest: String,
+    pub(super) frk_versions: BTreeSet<u32>,
+    pub(super) object_ids: BTreeSet<String>,
+    pub(super) physical_names: BTreeSet<String>,
+    pub(super) catalog_pins: BTreeSet<(u64, String)>,
+    pub(super) published: Option<(u64, String)>,
+    pub(super) objects: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl super::CoreCommitCoordinator {
+    pub(super) fn maintenance_preparation_pins_locked(
+        &self,
+        keyring: &crate::rotation::FrkKeyring<'_>,
+    ) -> Result<MaintenancePreparationPins, PreparationError> {
+        let preparations = match self.fs_dir.open_dir(PREPARATIONS_DIRECTORY) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Ok(MaintenancePreparationPins::default())
+            }
+            Err(_) => return Err(PreparationError::InvalidLayout),
+        };
+        super::validate_linked_directory(&self.fs_dir, PREPARATIONS_DIRECTORY, &preparations)?;
+        let mut pins = MaintenancePreparationPins::default();
+        let mut archives = 0;
+        let mut records = 0;
+        let mut checked_objects = BTreeSet::new();
+        for entry in preparations.entries()? {
+            archives += 1;
+            if archives > 1024 {
+                return Err(PreparationError::LimitExceeded("retained preparations"));
+            }
+            let preparation_id = entry?
+                .file_name()
+                .into_string()
+                .map_err(|_| PreparationError::InvalidLayout)?;
+            validate_opaque(&preparation_id, "retained preparation ID")?;
+            let layout = open_preparation_layout(&preparations, &preparation_id)?;
+            let mut archived = MaintenancePreparationArchive {
+                id: preparation_id.clone(),
+                terminal_digest: String::new(),
+                frk_versions: BTreeSet::new(),
+                object_ids: BTreeSet::new(),
+                physical_names: BTreeSet::new(),
+                catalog_pins: BTreeSet::new(),
+                published: None,
+                objects: BTreeMap::new(),
+            };
+            let mut snapshots = BTreeMap::new();
+            let mut receipts = Vec::new();
+            for (directory, kind, limit) in [
+                (
+                    &layout.snapshots,
+                    PreparationRecordKind::Snapshot,
+                    MAX_PREPARATION_SNAPSHOT_ENVELOPE_SIZE,
+                ),
+                (
+                    &layout.descriptors,
+                    PreparationRecordKind::DescriptorSegment,
+                    MAX_DESCRIPTOR_SEGMENT_ENVELOPE_SIZE,
+                ),
+                (
+                    &layout.intent,
+                    PreparationRecordKind::FinalIntentSegment,
+                    MAX_FINAL_INTENT_SEGMENT_ENVELOPE_SIZE,
+                ),
+                (
+                    &layout.receipts,
+                    PreparationRecordKind::Receipt,
+                    MAX_PREPARATION_RECEIPT_ENVELOPE_SIZE,
+                ),
+            ] {
+                for entry in directory.entries()? {
+                    records += 1;
+                    if records > 200_000 {
+                        return Err(PreparationError::LimitExceeded(
+                            "retained preparation records",
+                        ));
+                    }
+                    let name = entry?
+                        .file_name()
+                        .into_string()
+                        .map_err(|_| PreparationError::InvalidLayout)?;
+                    let encoded = super::read_bounded_in(directory, OsStr::new(&name), limit)?;
+                    let version = sealed_required_frk_version(&encoded)?;
+                    let keys = keyring
+                        .require(version)
+                        .map_err(|_| PreparationError::RetainedFrkMissing(version))?;
+                    pins.frk_versions.insert(version);
+                    archived.frk_versions.insert(version);
+                    let digest = sha256_hex(&encoded);
+                    pins.record_hashes.insert(digest.clone());
+                    let (context, number) = match kind {
+                        PreparationRecordKind::Snapshot => {
+                            let snapshot =
+                                PreparationSnapshot::open(&encoded, keys, &self.core_id, version)?;
+                            validate_reconciliation_snapshot_manifest(&snapshot)?;
+                            validate_referenced_segments(&layout, &snapshot, keys, &self.core_id)?;
+                            if let (Some(generation), Some(hash)) = (
+                                snapshot.expected_validation_generation,
+                                snapshot.expected_validation_catalog_sha256.clone(),
+                            ) {
+                                pins.catalog_pins.insert((generation, hash.clone()));
+                                archived.catalog_pins.insert((generation, hash));
+                            }
+                            snapshots.insert(digest.clone(), snapshot.clone());
+                            (snapshot.preparation_id, snapshot.sequence)
+                        }
+                        PreparationRecordKind::DescriptorSegment => {
+                            let segment = PreparedObjectDescriptorSegment::open(
+                                &encoded,
+                                keys,
+                                &self.core_id,
+                                version,
+                            )?;
+                            for descriptor in &segment.descriptors {
+                                let prepared = prepared_revision_from_descriptor(descriptor)?;
+                                let wrapper_version = prepared.wrapped_dek.frk_version();
+                                let wrapper_keys =
+                                    keyring.require(wrapper_version).map_err(|_| {
+                                        PreparationError::RetainedFrkMissing(wrapper_version)
+                                    })?;
+                                pins.frk_versions.insert(wrapper_version);
+                                archived.frk_versions.insert(wrapper_version);
+                                pins.object_ids.insert(descriptor.stable_id.clone());
+                                archived.object_ids.insert(descriptor.stable_id.clone());
+                                archived
+                                    .objects
+                                    .entry(descriptor.stable_id.clone())
+                                    .or_default()
+                                    .insert(descriptor.physical_name.clone());
+                                pins.physical_names.insert(descriptor.physical_name.clone());
+                                archived
+                                    .physical_names
+                                    .insert(descriptor.physical_name.clone());
+                                if checked_objects.insert(descriptor.physical_name.clone()) {
+                                    self.validate_prepared_revision_file(&prepared)?;
+                                }
+                                validate_prepared_descriptor_envelope(
+                                    self,
+                                    wrapper_keys,
+                                    descriptor,
+                                    &prepared,
+                                )?;
+                            }
+                            (segment.preparation_id, u64::from(segment.segment_index))
+                        }
+                        PreparationRecordKind::FinalIntentSegment => {
+                            let segment =
+                                FinalIntentSegment::open(&encoded, keys, &self.core_id, version)?;
+                            (segment.preparation_id, u64::from(segment.segment_index))
+                        }
+                        PreparationRecordKind::Receipt => {
+                            let receipt =
+                                PreparationReceipt::open(&encoded, keys, &self.core_id, version)?;
+                            if name != receipt_file_name(&receipt.receipt_id) {
+                                return Err(PreparationError::ReceiptConflict);
+                            }
+                            receipts.push((digest.clone(), receipt.clone()));
+                            if let (Some(generation), Some(hash)) = (
+                                receipt.validation_generation,
+                                receipt.validation_catalog_sha256,
+                            ) {
+                                pins.catalog_pins.insert((generation, hash.clone()));
+                                archived.catalog_pins.insert((generation, hash));
+                            }
+                            pins.frk_versions.extend(receipt.retained_frk_versions);
+                            (receipt.preparation_id, receipt.final_snapshot_sequence)
+                        }
+                        PreparationRecordKind::Head => return Err(PreparationError::InvalidLayout),
+                    };
+                    if context != preparation_id {
+                        return Err(PreparationError::InvalidLayout);
+                    }
+                    if kind != PreparationRecordKind::Receipt
+                        && name != format!("{number:020}-{digest}.{}", kind.immutable_suffix()?)
+                    {
+                        return Err(PreparationError::InvalidLayout);
+                    }
+                }
+            }
+            if receipts.is_empty() && snapshots.is_empty() {
+                continue;
+            }
+            if receipts.len() != 1 {
+                return Err(PreparationError::ReceiptConflict);
+            }
+            let (digest, receipt) = receipts.pop().ok_or(PreparationError::ReceiptConflict)?;
+            let snapshot = snapshots
+                .get(&receipt.final_snapshot_ciphertext_sha256)
+                .ok_or(PreparationError::MissingSnapshot)?;
+            if snapshot.sequence != receipt.final_snapshot_sequence
+                || snapshots
+                    .values()
+                    .any(|value| value.sequence > snapshot.sequence)
+            {
+                return Err(PreparationError::StaleSnapshotReplay);
+            }
+            let keys = keyring
+                .require(receipt.required_frk_version)
+                .map_err(|_| PreparationError::RetainedFrkMissing(receipt.required_frk_version))?;
+            if receipt.receipt_id
+                != deterministic_receipt_id(
+                    keys,
+                    &preparation_id,
+                    receipt.outcome,
+                    &receipt.final_snapshot_ciphertext_sha256,
+                )?
+            {
+                return Err(PreparationError::ReceiptConflict);
+            }
+            if receipt.outcome == PreparationReceiptOutcome::Completed {
+                let generation = receipt
+                    .validation_generation
+                    .ok_or(PreparationError::ReceiptConflict)?;
+                let catalog_hash = receipt
+                    .validation_catalog_sha256
+                    .ok_or(PreparationError::ReceiptConflict)?;
+                let name = format!("catalog-{generation:020}-{catalog_hash}.acore");
+                let encoded = super::read_bounded_in(
+                    &self.catalogs_dir,
+                    OsStr::new(&name),
+                    crate::catalog::MAX_CATALOG_ENVELOPE_SIZE,
+                )?;
+                let head = crate::head::HeadRecord::new_for_catalog(
+                    keys,
+                    &self.core_id,
+                    &encoded,
+                    keys.frk_version(),
+                )
+                .map_err(super::CommitError::from)?;
+                if head.generation() != generation || head.catalog_hash() != catalog_hash {
+                    return Err(PreparationError::ReceiptConflict);
+                }
+                let (_, catalog) = self.load_pointer_for_head(keyring, head)?;
+                if snapshot.intended_validation_catalog_sha256.as_deref()
+                    != Some(canonical_catalog_sha256(&catalog)?.as_str())
+                {
+                    return Err(PreparationError::FinalIntentMismatch);
+                }
+                archived.published = Some((generation, catalog_hash));
+            } else if receipt.outcome != PreparationReceiptOutcome::Abandoned {
+                return Err(PreparationError::ReceiptConflict);
+            }
+            archived.terminal_digest = digest;
+            pins.archives.push(archived);
+        }
+        Ok(pins)
+    }
+}
+
 struct LoadedPreparation {
     head: PreparationHeadRecord,
     snapshot: PreparationSnapshot,
@@ -1564,6 +1826,7 @@ impl super::CoreCommitCoordinator {
         validate_begin_request(request)?;
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?;
         let result = if let Some(pointer) = pointer {
@@ -1662,6 +1925,7 @@ impl super::CoreCommitCoordinator {
     ) -> Result<PreparationStatus, PreparationError> {
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::Missing)?;
         let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
@@ -1696,6 +1960,7 @@ impl super::CoreCommitCoordinator {
         }
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
         let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
@@ -1874,6 +2139,7 @@ impl super::CoreCommitCoordinator {
 
         {
             let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+            self.ensure_maintenance_write_allowed_locked()?;
             self.validate_pinned_layout()?;
             let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
             let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
@@ -1934,6 +2200,7 @@ impl super::CoreCommitCoordinator {
         )?;
 
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
         let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
@@ -2112,6 +2379,7 @@ impl super::CoreCommitCoordinator {
         validate_final_intent_entries(entries, segment_items)?;
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
         let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
@@ -2216,6 +2484,7 @@ impl super::CoreCommitCoordinator {
         validate_seal_request(request)?;
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::CasConflict)?;
         let loaded = self.load_active_preparation_locked(&commit_lock, keys, pointer)?;
@@ -2355,6 +2624,7 @@ impl super::CoreCommitCoordinator {
         validate_finalize_request(request)?;
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
         let layout = open_preparation_layout(&preparations, &request.preparation_id)?;
@@ -2556,6 +2826,7 @@ impl super::CoreCommitCoordinator {
         validate_abandon_request(request)?;
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let preparations = open_required_directory(&self.fs_dir, PREPARATIONS_DIRECTORY)?;
         let layout = open_preparation_layout(&preparations, &request.preparation_id)?;
@@ -2663,6 +2934,7 @@ impl super::CoreCommitCoordinator {
             .map_err(|error| PreparationError::Commit(error.into()))?;
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let quarantine =
             super::ensure_child_directory(&self.fs_dir, PREPARATION_QUARANTINE_DIRECTORY)?;
@@ -2734,6 +3006,7 @@ impl super::CoreCommitCoordinator {
     ) -> Result<Vec<u32>, PreparationError> {
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let versions = self.quarantined_preparation_frk_versions_locked(keyring)?;
         drop(commit_lock);
@@ -2764,7 +3037,7 @@ impl super::CoreCommitCoordinator {
             })
     }
 
-    fn quarantined_preparation_frk_versions_locked(
+    pub(super) fn quarantined_preparation_frk_versions_locked(
         &self,
         keyring: &crate::rotation::FrkKeyring<'_>,
     ) -> Result<Vec<u32>, PreparationError> {
@@ -2841,6 +3114,7 @@ impl super::CoreCommitCoordinator {
         validate_reconciliation_request(request)?;
         let _lease_operation = self.admit_lease_publication_operation()?;
         let commit_lock = super::CoreCommitLock::acquire_in(&self.root_dir, &self.fs_dir)?;
+        self.ensure_maintenance_write_allowed_locked()?;
         self.validate_pinned_layout()?;
         let pointer = read_pointer_bytes(&self.fs_dir)?.ok_or(PreparationError::Missing)?;
         let (loaded, layout) =

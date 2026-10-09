@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from anima_server.config import settings
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent import invalidate_agent_runtime_cache, run_agent
 from anima_server.services.agent.consolidation import (
@@ -18,6 +18,8 @@ from anima_server.services.agent.consolidation import (
     drain_background_memory_tasks,
     run_background_extraction,
 )
+from anima_server.services.agent.reflection import cancel_pending_reflection
+from conftest import managed_test_client
 from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -78,9 +80,7 @@ async def test_run_background_extraction_creates_candidates() -> None:
 
             with rt_factory() as rt_db:
                 candidates = list(
-                    rt_db.query(MemoryCandidate)
-                    .filter(MemoryCandidate.user_id == 1)
-                    .all()
+                    rt_db.query(MemoryCandidate).filter(MemoryCandidate.user_id == 1).all()
                 )
 
         contents = [c.content.lower() for c in candidates]
@@ -120,9 +120,7 @@ async def test_run_background_extraction_normalizes_whitespace_before_regex() ->
 
             with rt_factory() as rt_db:
                 candidates = list(
-                    rt_db.query(MemoryCandidate)
-                    .filter(MemoryCandidate.user_id == 1)
-                    .all()
+                    rt_db.query(MemoryCandidate).filter(MemoryCandidate.user_id == 1).all()
                 )
 
         contents = [c.content for c in candidates]
@@ -206,9 +204,7 @@ async def test_run_background_extraction_attaches_source_ids_to_regex_candidates
 
             with rt_factory() as rt_db:
                 candidates = list(
-                    rt_db.scalars(
-                        select(MemoryCandidate).where(MemoryCandidate.user_id == 1)
-                    ).all()
+                    rt_db.scalars(select(MemoryCandidate).where(MemoryCandidate.user_id == 1)).all()
                 )
 
         assert candidates
@@ -365,9 +361,7 @@ async def test_run_background_extraction_stores_profile_update_candidates(
 
             with rt_factory() as rt_db:
                 candidate = rt_db.scalar(
-                    select(ProfileUpdateCandidate).where(
-                        ProfileUpdateCandidate.user_id == 1
-                    )
+                    select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.user_id == 1)
                 )
 
         assert candidate is not None
@@ -492,9 +486,7 @@ async def test_rejected_emotion_signal_does_not_move_affect(
             )
 
             with rt_factory() as rt_db:
-                row = rt_db.scalar(
-                    select(AffectStateRow).where(AffectStateRow.user_id == 1)
-                )
+                row = rt_db.scalar(select(AffectStateRow).where(AffectStateRow.user_id == 1))
 
         assert row is None
     finally:
@@ -545,9 +537,7 @@ async def test_accepted_emotion_signal_moves_affect(
             )
 
             with rt_factory() as rt_db:
-                row = rt_db.scalar(
-                    select(AffectStateRow).where(AffectStateRow.user_id == 1)
-                )
+                row = rt_db.scalar(select(AffectStateRow).where(AffectStateRow.user_id == 1))
 
         assert row is not None
         assert row.valence > 0.0
@@ -587,9 +577,7 @@ async def test_affect_applies_only_after_batch_commit(
             "anima_server.services.agent.consolidation.extract_memories_via_llm",
             fake_extract_memories_via_llm,
         )
-        monkeypatch.setattr(
-            consolidation, "_apply_affect_turn_deltas_best_effort", fake_affect
-        )
+        monkeypatch.setattr(consolidation, "_apply_affect_turn_deltas_best_effort", fake_affect)
 
         with runtime_db_session() as runtime_session:
             rt_engine = runtime_session.get_bind()
@@ -621,9 +609,7 @@ async def test_affect_applies_only_after_batch_commit(
             )
 
         assert "affect" in events
-        last_commit_index = max(
-            i for i, event in enumerate(events) if event == "commit"
-        )
+        last_commit_index = max(i for i, event in enumerate(events) if event == "commit")
         assert events.index("affect") > last_commit_index
     finally:
         settings.agent_provider = original_provider
@@ -672,6 +658,7 @@ async def test_affect_skipped_when_batch_commit_fails(
                 session_count += 1
                 session = real_factory()
                 if session_count == 2:  # Phase C session
+
                     def failing_commit() -> None:
                         raise RuntimeError("simulated Phase C commit failure")
 
@@ -687,9 +674,7 @@ async def test_affect_skipped_when_batch_commit_fails(
             )
 
             with real_factory() as rt_db:
-                row = rt_db.scalar(
-                    select(AffectStateRow).where(AffectStateRow.user_id == 1)
-                )
+                row = rt_db.scalar(select(AffectStateRow).where(AffectStateRow.user_id == 1))
 
         assert row is None
     finally:
@@ -730,9 +715,7 @@ async def test_llm_extraction_failure_creates_retryable_work() -> None:
                 )
 
             with rt_factory() as rt_db:
-                failures = list(
-                    rt_db.scalars(select(MemoryExtractionFailure)).all()
-                )
+                failures = list(rt_db.scalars(select(MemoryExtractionFailure)).all())
 
         assert len(failures) == 1
         failure = failures[0]
@@ -753,18 +736,25 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
         settings.agent_provider = "scaffold"
         invalidate_agent_runtime_cache()
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
-            new=AsyncMock(return_value=[]),
-        ) as run_sleeptime_agents, patch(
-            "anima_server.services.agent.consolidation.run_background_extraction",
-            new=AsyncMock(return_value=None),
-        ) as run_background_extraction, _db_session() as session, runtime_db_session() as runtime_session:
-            user = User(
-                username="background-memory",
-                password_hash="not-used",
-                display_name="Background Memory",
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
+                new=AsyncMock(return_value=[]),
+            ) as run_sleeptime_agents,
+            patch(
+                "anima_server.services.agent.consolidation.run_background_extraction",
+                new=AsyncMock(return_value=None),
+            ) as run_background_extraction,
+            _db_session() as session,
+            runtime_db_session() as runtime_session,
+            managed_test_client("consolidation-current-core-") as client,
+        ):
+            registered = client.post(
+                "/api/auth/register",
+                json={"username": "owner", "password": "current-password", "name": "Owner"},
             )
+            assert registered.status_code == 201, registered.text
+            user = SoulOwner(id=registered.json()["id"], core_owner_id=registered.json()["ownerId"])
             session.add(user)
             session.commit()
 
@@ -775,6 +765,18 @@ async def test_run_agent_schedules_background_memory_consolidation() -> None:
                 runtime_session,
             )
             await drain_background_memory_tasks()
+            await cancel_pending_reflection()
+            import asyncio
+
+            from anima_server.services.agent import service
+
+            pending = tuple(
+                task
+                for task in service._background_tasks
+                if task.get_loop() is asyncio.get_running_loop()
+            )
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
     finally:
         settings.agent_provider = original_provider
         invalidate_agent_runtime_cache()
@@ -793,18 +795,25 @@ async def test_run_agent_routes_third_turn_into_sleeptime_orchestrator() -> None
         settings.agent_provider = "scaffold"
         invalidate_agent_runtime_cache()
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
-            new=AsyncMock(return_value=[]),
-        ) as run_sleeptime_agents, patch(
-            "anima_server.services.agent.consolidation.run_background_extraction",
-            new=AsyncMock(return_value=None),
-        ) as run_background_extraction, _db_session() as session, runtime_db_session() as runtime_session:
-            user = User(
-                username="background-memory-third-turn",
-                password_hash="not-used",
-                display_name="Background Memory Third Turn",
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
+                new=AsyncMock(return_value=[]),
+            ) as run_sleeptime_agents,
+            patch(
+                "anima_server.services.agent.consolidation.run_background_extraction",
+                new=AsyncMock(return_value=None),
+            ) as run_background_extraction,
+            _db_session() as session,
+            runtime_db_session() as runtime_session,
+            managed_test_client("consolidation-current-core-") as client,
+        ):
+            registered = client.post(
+                "/api/auth/register",
+                json={"username": "owner", "password": "current-password", "name": "Owner"},
             )
+            assert registered.status_code == 201, registered.text
+            user = SoulOwner(id=registered.json()["id"], core_owner_id=registered.json()["ownerId"])
             session.add(user)
             session.commit()
 
@@ -816,6 +825,18 @@ async def test_run_agent_routes_third_turn_into_sleeptime_orchestrator() -> None
 
             result = await run_agent("third turn", user.id, session, runtime_session)
             await drain_background_memory_tasks()
+            await cancel_pending_reflection()
+            import asyncio
+
+            from anima_server.services.agent import service
+
+            pending = tuple(
+                task
+                for task in service._background_tasks
+                if task.get_loop() is asyncio.get_running_loop()
+            )
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
     finally:
         settings.agent_provider = original_provider
         invalidate_agent_runtime_cache()

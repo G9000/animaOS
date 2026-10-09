@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
 from anima_server.db import get_db
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.schemas.telegram import (
     TelegramLinkRequest,
     TelegramLinkResponse,
@@ -16,7 +16,6 @@ from anima_server.schemas.telegram import (
 from anima_server.services.integration_registry import (
     link_integration,
     lookup_integration,
-    migrate_legacy_integration_links,
     unlink_integration,
 )
 
@@ -45,14 +44,13 @@ def link_telegram(
             detail="Invalid link secret.",
         )
 
-    user = db.get(User, payload.userId)
+    user = db.get(SoulOwner, payload.userId)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"User {payload.userId} not found.",
         )
 
-    migrate_legacy_integration_links(db, user_id=payload.userId)
     link_integration(
         provider="telegram",
         external_id=str(payload.chatId),
@@ -69,7 +67,6 @@ def lookup_telegram(
     db: Session = Depends(get_db),
 ) -> TelegramLinkResponse:
     session = require_unlocked_session(request)
-    migrate_legacy_integration_links(db, user_id=session.user_id)
     link = lookup_integration(provider="telegram", external_id=str(chatId))
     if link is None or link.user_id != session.user_id:
         raise HTTPException(
@@ -86,7 +83,6 @@ def unlink_telegram(
     db: Session = Depends(get_db),
 ) -> dict[str, str]:
     session = require_unlocked_session(request)
-    migrate_legacy_integration_links(db, user_id=session.user_id)
     link = lookup_integration(provider="telegram", external_id=str(chatId))
     if link is not None and link.user_id == session.user_id:
         unlink_integration(provider="telegram", external_id=str(chatId))

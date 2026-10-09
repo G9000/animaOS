@@ -4,11 +4,13 @@ import ast
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.models.consciousness import SelfModelBlock
 from anima_server.services.agent.tool_context import (
     ToolContext,
@@ -44,6 +46,24 @@ def _soul_db_session() -> Generator[Session, None, None]:
         session.close()
         Base.metadata.drop_all(bind=engine)
         engine.dispose()
+
+
+def _mock_empty_current_task_library(monkeypatch: pytest.MonkeyPatch, *, user_id: int = 1):
+    """The queue unit tests declare an unrelated authenticated empty task view."""
+    from anima_server.services.agent import memory_blocks
+
+    authority = SimpleNamespace(user_id=user_id)
+
+    def require_owner(requested_user_id):
+        assert requested_user_id == user_id
+        return authority
+
+    def current_tasks(*, session):
+        assert session is authority
+        return []
+
+    monkeypatch.setattr(memory_blocks, "require_active_task_authority_session", require_owner)
+    monkeypatch.setattr(memory_blocks, "list_canonical_tasks", current_tasks)
 
 
 def test_create_pending_op_append() -> None:
@@ -127,8 +147,7 @@ def test_core_memory_append_creates_pending_op_without_writing_soul() -> None:
         from anima_server.models import PendingMemoryOp
         from anima_server.services.agent.tools import core_memory_append
 
-        user = User(username="append-pending", password_hash="x",
-                    display_name="Append Pending")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -180,8 +199,7 @@ def test_core_memory_append_creates_pending_op_without_writing_soul() -> None:
 def test_core_memory_append_invalid_label_explains_runtime_block_misuse() -> None:
     from anima_server.services.agent.tools import core_memory_append
 
-    result = core_memory_append(
-        "self_working_memory", "Remember this for later.")
+    result = core_memory_append("self_working_memory", "Remember this for later.")
 
     assert "Invalid label 'self_working_memory'." in result
     assert "runtime block label" in result
@@ -195,8 +213,7 @@ def test_core_memory_replace_validates_against_merged_view() -> None:
         from anima_server.services.agent.pending_ops import create_pending_op
         from anima_server.services.agent.tools import core_memory_replace
 
-        user = User(username="replace-merged", password_hash="x",
-                    display_name="Replace Merged")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -258,8 +275,7 @@ def test_core_memory_replace_guides_when_old_text_is_missing() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.tools import core_memory_replace
 
-        user = User(username="replace-missing", password_hash="x",
-                    display_name="Replace Missing")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -301,8 +317,7 @@ def test_read_core_memory_returns_merged_block_content() -> None:
         from anima_server.services.agent.pending_ops import create_pending_op
         from anima_server.services.agent.tools import read_core_memory
 
-        user = User(username="read-core-memory", password_hash="x",
-                    display_name="Read Core Memory")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -350,8 +365,7 @@ def test_list_pending_memory_ops_formats_core_queue() -> None:
         from anima_server.services.agent.pending_ops import create_pending_op
         from anima_server.services.agent.tools import list_pending_memory_ops
 
-        user = User(username="list-pending-memory", password_hash="x",
-                    display_name="List Pending Memory")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
 
@@ -402,8 +416,7 @@ def test_set_user_timezone_updates_world_section() -> None:
         from anima_server.services.agent.memory_blocks import build_world_context_block
         from anima_server.services.agent.tools import set_user_timezone
 
-        user = User(username="set-user-timezone", password_hash="x",
-                    display_name="Set User Timezone")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -446,8 +459,7 @@ def test_get_user_timezone_and_current_datetime_use_saved_timezone() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.tools import current_datetime, get_user_timezone
 
-        user = User(username="get-user-timezone", password_hash="x",
-                    display_name="Get User Timezone")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -487,8 +499,7 @@ def test_set_user_timezone_rejects_invalid_values() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.tools import set_user_timezone
 
-        user = User(username="invalid-user-timezone", password_hash="x",
-                    display_name="Invalid User Timezone")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
 
@@ -512,8 +523,7 @@ def test_current_datetime_falls_back_when_saved_timezone_is_invalid() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.tools import current_datetime
 
-        user = User(username="invalid-stored-timezone", password_hash="x",
-                    display_name="Invalid Stored Timezone")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -545,18 +555,21 @@ def test_current_datetime_falls_back_when_saved_timezone_is_invalid() -> None:
     assert "UTC:" in result
 
 
-def test_world_context_block_is_separate_from_human_block() -> None:
+def test_world_context_block_is_separate_from_human_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    from anima_server.services.agent import memory_blocks
+
+    def current_profile(user_id):
+        assert user_id == 1
+        return SimpleNamespace(display_name="Alice", gender=None, age=None, birthday=None)
+
+    monkeypatch.setattr(memory_blocks, "read_active_account_profile", current_profile)
     with _soul_db_session() as soul_db:
         from anima_server.services.agent.memory_blocks import (
             build_human_core_block,
             build_world_context_block,
         )
 
-        user = User(
-            username="timezone-human-block",
-            password_hash="x",
-            display_name="Alice",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -595,8 +608,7 @@ def test_consolidate_pending_memory_runs_soul_writer() -> None:
         from anima_server.services.agent.soul_writer import SoulWriterResult
         from anima_server.services.agent.tools import consolidate_pending_memory
 
-        user = User(username="consolidate-pending", password_hash="x",
-                    display_name="Consolidate Pending")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
 
@@ -636,8 +648,7 @@ def test_update_human_memory_creates_full_replace_pending_op() -> None:
         from anima_server.models import PendingMemoryOp
         from anima_server.services.agent.tools import update_human_memory
 
-        user = User(username="full-replace", password_hash="x",
-                    display_name="Full Replace")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
 
@@ -673,8 +684,7 @@ def test_build_merged_block_content_applies_ops_in_order() -> None:
         from anima_server.services.agent.memory_blocks import build_merged_block_content
         from anima_server.services.agent.pending_ops import create_pending_op
 
-        user = User(username="merged-order", password_hash="x",
-                    display_name="Merged Order")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -735,8 +745,7 @@ def test_build_pending_ops_block_renders_orphaned_updates() -> None:
         from anima_server.services.agent.memory_blocks import build_pending_ops_block
         from anima_server.services.agent.pending_ops import create_pending_op
 
-        user = User(username="pending-block", password_hash="x",
-                    display_name="Pending Block")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
 
@@ -764,8 +773,7 @@ def test_build_pending_ops_block_returns_none_when_empty() -> None:
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.memory_blocks import build_pending_ops_block
 
-        user = User(username="pending-empty", password_hash="x",
-                    display_name="Pending Empty")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
 
@@ -774,13 +782,15 @@ def test_build_pending_ops_block_returns_none_when_empty() -> None:
     assert block is None
 
 
-def test_runtime_memory_blocks_show_pending_writes_in_later_turns() -> None:
+def test_runtime_memory_blocks_show_pending_writes_in_later_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_empty_current_task_library(monkeypatch)
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
         from anima_server.services.agent.pending_ops import create_pending_op
 
-        user = User(username="pending-future-turn",
-                    password_hash="x", display_name="Future Turn")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         soul_db.add(
@@ -818,13 +828,13 @@ def test_runtime_memory_blocks_show_pending_writes_in_later_turns() -> None:
     assert "Has a dog named Biscuit" in human_block.value
 
 
-def test_runtime_memory_blocks_show_pending_explicit_saves() -> None:
+def test_runtime_memory_blocks_show_pending_explicit_saves(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_empty_current_task_library(monkeypatch)
     with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
         from anima_server.services.agent.candidate_ops import create_memory_candidate
         from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 
-        user = User(username="pending-explicit-save",
-                    password_hash="x", display_name="Explicit Save")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
 
@@ -878,8 +888,7 @@ async def test_run_agent_records_pending_op_traceability(
                 ToolCall(
                     id="call-1",
                     name="core_memory_append",
-                    arguments={"label": "human",
-                               "content": "Has a dog named Biscuit"},
+                    arguments={"label": "human", "content": "Has a dog named Biscuit"},
                 )
             )
             assert result.is_error is False
@@ -893,20 +902,33 @@ async def test_run_agent_records_pending_op_traceability(
 
     runner = RecordingRunner()
     monkeypatch.setattr(agent_service, "get_or_build_runner", lambda: runner)
-    monkeypatch.setattr(
-        agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
+    monkeypatch.setattr(agent_service, "_run_post_turn_hooks", lambda **kwargs: None)
 
-    with _soul_db_session() as soul_db, runtime_db_session() as runtime_db:
-        user = User(username="service-trace", password_hash="x",
-                    display_name="Service Trace")
-        soul_db.add(user)
-        soul_db.commit()
+    import json
 
-        result = await agent_service.run_agent("remember this", user.id, soul_db, runtime_db)
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.services.core import get_manifest_path, update_core_manifest
+    from conftest import managed_test_client
 
-        run = runtime_db.scalar(
-            select(RuntimeRun).order_by(RuntimeRun.id.desc()))
-        op = runtime_db.scalar(select(PendingMemoryOp))
+    # This orchestration regression uses real current Core authority and a
+    # disposable Runtime binding; only the model and cognition DB are doubles.
+    with managed_test_client("pending-op-current-turn-") as client:
+        update_core_manifest(lambda manifest: manifest.update(next_user_id=1))
+        registration = client.post(
+            "/api/auth/register",
+            json={"username": "pending-owner", "name": "Alice", "password": "password-one"},
+        )
+        assert registration.status_code == 201, registration.text
+        account = registration.json()
+        manifest = json.loads(get_manifest_path().read_text())
+        with _soul_db_session() as soul_db, get_runtime_session_factory()() as runtime_db:
+            user = SoulOwner(id=account["id"], core_owner_id=manifest["owner_id"])
+            soul_db.add(user)
+            soul_db.commit()
+
+            result = await agent_service.run_agent("remember this", user.id, soul_db, runtime_db)
+            run = runtime_db.scalar(select(RuntimeRun).order_by(RuntimeRun.id.desc()))
+            op = runtime_db.scalar(select(PendingMemoryOp))
 
     assert result.response == "Noted."
     assert run is not None

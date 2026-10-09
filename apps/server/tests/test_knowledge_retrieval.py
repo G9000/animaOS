@@ -4,7 +4,7 @@ import hashlib
 
 from anima_server.models.runtime import RuntimeKnowledgeConcept
 from anima_server.models.runtime_embedding import RuntimeEmbedding
-from anima_server.services.ingestion.adapters.text import ingest_text_content
+from corefs_ingestion_test_support import seed_captured_text_projection
 from sqlalchemy import select
 
 pytest_plugins = ("conftest_runtime",)
@@ -60,7 +60,7 @@ def test_retrieve_knowledge_returns_concepts_and_evidence_spans(runtime_db) -> N
         title="Portable Core",
         body="Portable continuity keeps the local core coherent.",
     )
-    _source, _artifacts, spans = ingest_text_content(
+    _source, _artifacts, spans = seed_captured_text_projection(
         runtime_db,
         user_id=1,
         content="Citation evidence for portable continuity.",
@@ -95,7 +95,7 @@ def test_retrieve_knowledge_fills_missing_span_hits_from_text(runtime_db) -> Non
         title="Portable Core",
         body="Portable continuity keeps the local core coherent.",
     )
-    _source, _artifacts, spans = ingest_text_content(
+    _source, _artifacts, spans = seed_captured_text_projection(
         runtime_db,
         user_id=1,
         content="Portable continuity appears only in span text.",
@@ -131,7 +131,7 @@ def test_retrieve_knowledge_fills_missing_concept_hits_from_text(runtime_db) -> 
         title="Portable Core",
         body="Portable continuity keeps the local core coherent.",
     )
-    _source, _artifacts, spans = ingest_text_content(
+    _source, _artifacts, spans = seed_captured_text_projection(
         runtime_db,
         user_id=1,
         content="Portable continuity evidence with a span embedding.",
@@ -187,13 +187,14 @@ def test_retrieve_knowledge_is_user_scoped(runtime_db) -> None:
         select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.id == other.id)
     )
 
+
 def test_retrieve_knowledge_lexical_arm_promotes_exact_token_span(runtime_db) -> None:
     from anima_server.services.ingestion.retrieval import (
         retrieve_knowledge,
         upsert_source_span_embedding,
     )
 
-    _source, _artifacts, spans = ingest_text_content(
+    _source, _artifacts, spans = seed_captured_text_projection(
         runtime_db,
         user_id=1,
         content=(
@@ -227,7 +228,6 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
     import hashlib
 
     from anima_server.models.runtime import (
-        RuntimeSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
     )
@@ -240,23 +240,28 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
     def _sha(value: str) -> str:
         return hashlib.sha256(value.encode()).hexdigest()
 
-    source = RuntimeSource(
+    from corefs_ingestion_test_support import register_simulated_authored_source
+
+    original_content = (
+        "Embedded body about gardens.\n\nThe E-17 fault body ingested during an embedding outage."
+    )
+    source = register_simulated_authored_source(
+        runtime_db,
         user_id=7,
         kind="markdown",
-        source_uri="markdown://mixed.md",
-        content_hash=_sha("mixed"),
+        origin="mixed.md",
+        original_bytes=original_content.encode("utf-8"),
         title="Mixed Coverage",
         media_type="text/markdown",
-        status="indexed",
+        metadata={},
     )
-    runtime_db.add(source)
-    runtime_db.flush()
+    source.status = "indexed"
     artifact = RuntimeSourceArtifact(
         user_id=7,
         source_id=source.id,
         artifact_kind="markdown",
-        content_text="Embedded body.\n\nE-17 fault body.",
-        content_hash=_sha("artifact"),
+        content_text=original_content,
+        content_hash=_sha(original_content),
     )
     runtime_db.add(artifact)
     runtime_db.flush()
@@ -268,7 +273,7 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
         locator_json={"paragraph_index": 0},
         locator_hash=RuntimeSourceSpan.compute_locator_hash({"paragraph_index": 0}),
         content_text="Embedded body about gardens.",
-        content_hash=_sha("embedded"),
+        content_hash=_sha("Embedded body about gardens."),
     )
     unembedded_span = RuntimeSourceSpan(
         user_id=7,
@@ -278,7 +283,7 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
         locator_json={"paragraph_index": 1},
         locator_hash=RuntimeSourceSpan.compute_locator_hash({"paragraph_index": 1}),
         content_text="The E-17 fault body ingested during an embedding outage.",
-        content_hash=_sha("unembedded"),
+        content_hash=_sha("The E-17 fault body ingested during an embedding outage."),
     )
     runtime_db.add_all([embedded_span, unembedded_span])
     runtime_db.flush()
@@ -314,10 +319,10 @@ def test_unembedded_spans_stay_keyword_searchable_in_hybrid(runtime_db) -> None:
 
 
 def test_text_fallback_excludes_section_spans(runtime_db) -> None:
-    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
     from anima_server.services.ingestion.retrieval import retrieve_knowledge_text
+    from corefs_ingestion_test_support import seed_captured_markdown_projection
 
-    _source, _artifacts, spans = ingest_markdown_content(
+    _source, _artifacts, spans = seed_captured_markdown_projection(
         runtime_db,
         user_id=1,
         content="# Relay Guide\n\nUnique zephyrblade paragraph body.",
@@ -349,11 +354,11 @@ def test_hybrid_retrieval_excludes_embedded_section_spans(runtime_db) -> None:
     carry an embedding. The dense query must still exclude it, and result
     assembly must not let a filtered-out row consume a result slot.
     """
-    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
     from anima_server.services.ingestion.retrieval import (
         retrieve_knowledge,
         upsert_source_span_embedding,
     )
+    from corefs_ingestion_test_support import seed_captured_markdown_projection
 
     def _section_favoring_embedding(text: str) -> list[float]:
         # The merged section body (both paragraphs) matches the query exactly,
@@ -364,7 +369,7 @@ def test_hybrid_retrieval_excludes_embedded_section_spans(runtime_db) -> None:
             return [0.8, 0.6, *([0.0] * (_EMBED_DIM - 2))]
         return [1.0, *([0.0] * (_EMBED_DIM - 1))]
 
-    _source, _artifacts, spans = ingest_markdown_content(
+    _source, _artifacts, spans = seed_captured_markdown_projection(
         runtime_db,
         user_id=1,
         content="# Portable Core\n\nAlpha anchor line.\n\nBeta second line.",
@@ -373,9 +378,7 @@ def test_hybrid_retrieval_excludes_embedded_section_spans(runtime_db) -> None:
     )
     section = next(span for span in spans if span.span_kind == "section")
     paragraph = next(
-        span
-        for span in spans
-        if span.span_kind == "paragraph" and "Alpha" in span.content_text
+        span for span in spans if span.span_kind == "paragraph" and "Alpha" in span.content_text
     )
     for span in (section, paragraph):
         upsert_source_span_embedding(

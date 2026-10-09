@@ -7,11 +7,12 @@ import threading
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryItem, MemoryItemEvidence, User
+from anima_server.models import MemoryItem, MemoryItemEvidence, SoulOwner
 from anima_server.models.consciousness import SelfModelBlock
 from anima_server.models.pending_memory_op import PendingMemoryOp
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
@@ -123,9 +124,7 @@ def _make_thread_bound_soul_factory(
         def _assert_owner_thread(self, operation: str) -> None:
             current_thread = threading.get_ident()
             if current_thread != self._owner_thread:
-                cross_thread_accesses.append(
-                    (operation, self._owner_thread, current_thread)
-                )
+                cross_thread_accesses.append((operation, self._owner_thread, current_thread))
                 raise AssertionError(
                     f"Session.{operation} used from thread {current_thread}; "
                     f"owner thread is {self._owner_thread}"
@@ -169,7 +168,7 @@ async def test_run_soul_writer_no_work() -> None:
 
     # Create a user in soul DB
     with soul_factory() as soul_db:
-        user = User(username="no-work", password_hash="x", display_name="No Work")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         user_id = user.id
@@ -228,7 +227,7 @@ async def test_run_soul_writer_retries_failed_extraction_work(
 
     try:
         with soul_factory() as soul_db:
-            user = User(username="retry-extraction", password_hash="x", display_name="Retry")
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_db.add(user)
             soul_db.commit()
             user_id = user.id
@@ -319,9 +318,7 @@ async def test_retry_skips_inflight_pending_but_recovers_stale(
 
     original_provider = settings.agent_provider
     settings.agent_provider = "openai"
-    monkeypatch.setattr(
-        "anima_server.services.agent.llm.create_llm", lambda: _FakeLLM()
-    )
+    monkeypatch.setattr("anima_server.services.agent.llm.create_llm", lambda: _FakeLLM())
 
     soul_engine = _create_soul_engine()
     runtime_engine = _create_runtime_engine()
@@ -330,7 +327,7 @@ async def test_retry_skips_inflight_pending_but_recovers_stale(
 
     try:
         with soul_factory() as soul_db:
-            user = User(username="stale-pending", password_hash="x", display_name="S")
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_db.add(user)
             soul_db.commit()
             user_id = user.id
@@ -417,15 +414,13 @@ async def test_run_soul_writer_retries_failed_extraction_from_source_messages(
 
     try:
         with soul_factory() as soul_db:
-            user = User(username="retry-source", password_hash="x", display_name="Retry Source")
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_db.add(user)
             soul_db.commit()
             user_id = user.id
 
         long_prefix = "context " * 40
-        full_user_message = (
-            f"{long_prefix}The important late fact is rare-mango-marker."
-        )
+        full_user_message = f"{long_prefix}The important late fact is rare-mango-marker."
         with runtime_factory() as runtime_db:
             thread = RuntimeThread(user_id=user_id, status="closed", next_message_sequence=3)
             runtime_db.add(thread)
@@ -496,7 +491,7 @@ async def test_process_candidate_promote() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="promote-test", password_hash="x", display_name="Promote Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         user_id = user.id
@@ -559,7 +554,7 @@ async def test_process_candidate_promote_creates_memory_item_evidence() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="evidence-promote", password_hash="x", display_name="Evidence")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         user_id = user.id
@@ -629,8 +624,8 @@ async def test_candidate_evidence_ignores_source_messages_from_other_users() -> 
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user_one = User(username="source-owner", password_hash="x", display_name="Source Owner")
-        user_two = User(username="candidate-owner", password_hash="x", display_name="Candidate")
+        user_one = SoulOwner(core_owner_id=str(uuid4()))
+        user_two = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add_all([user_one, user_two])
         soul_db.commit()
         other_user_id = user_one.id
@@ -733,11 +728,7 @@ async def test_inline_embedding_uses_event_loop_owned_soul_session(
     )
 
     with soul_factory() as soul_db:
-        user = User(
-            username="inline-embed-thread",
-            password_hash="x",
-            display_name="Inline Embed Thread",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         user_id = user.id
@@ -789,7 +780,7 @@ async def test_process_candidate_duplicate_reinforced() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="dup-test", password_hash="x", display_name="Dup Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -853,7 +844,7 @@ async def test_process_candidate_user_explicit_always_promotes() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="explicit-test", password_hash="x", display_name="Explicit Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -915,7 +906,7 @@ async def test_process_candidate_user_explicit_always_promotes() -> None:
 def test_plan_candidate_promotion_user_explicit() -> None:
     """plan_candidate_promotion returns 'promote' for user_explicit regardless of content."""
     with _soul_db_session() as soul_db:
-        user = User(username="plan-explicit", password_hash="x", display_name="Plan Explicit")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -963,7 +954,7 @@ async def test_process_candidate_correction_supersedes() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="correction-test", password_hash="x", display_name="Correction Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1035,7 +1026,7 @@ async def test_pending_op_append_idempotent() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="idempotent-test", password_hash="x", display_name="Idempotent")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1135,7 +1126,7 @@ async def test_per_item_error_isolation() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="isolation-test", password_hash="x", display_name="Isolation Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         user_id = user.id
@@ -1240,7 +1231,7 @@ async def test_access_sync_runs_with_no_candidates() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="access-sync", password_hash="x", display_name="Access Sync")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1305,7 +1296,7 @@ async def test_retrieval_feedback_sync_updates_used_items_without_penalizing_mix
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-feedback", password_hash="x", display_name="Feedback")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1394,7 +1385,7 @@ def test_retrieval_feedback_sync_dry_run_keeps_rows_unsynced() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-dry-run", password_hash="x", display_name="Dry Run")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1455,7 +1446,7 @@ def test_retrieval_feedback_sync_only_marks_selected_rows(
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-selected-rows", password_hash="x", display_name="Selected Rows")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1545,7 +1536,7 @@ async def test_retrieval_feedback_sync_decays_heat_for_zero_reference_run() -> N
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-zero-ref", password_hash="x", display_name="Zero Ref")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1607,7 +1598,7 @@ async def test_retrieval_feedback_sync_penalizes_corrected_items() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-corrected", password_hash="x", display_name="Corrected")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1661,14 +1652,16 @@ async def test_retrieval_feedback_sync_penalizes_corrected_items() -> None:
 
 
 @pytest.mark.asyncio
-async def test_retrieval_feedback_sync_warms_heat_without_importance_boost_on_weak_used_evidence() -> None:
+async def test_retrieval_feedback_sync_warms_heat_without_importance_boost_on_weak_used_evidence() -> (
+    None
+):
     soul_engine = _create_soul_engine()
     runtime_engine = _create_runtime_engine()
     soul_factory = _make_soul_factory(soul_engine)
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-weak-evidence", password_hash="x", display_name="Weak Evidence")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1730,7 +1723,7 @@ async def test_retrieval_feedback_heat_warming_changes_scored_retrieval_order() 
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-order", password_hash="x", display_name="Retrieval Order")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1801,7 +1794,7 @@ async def test_retrieval_feedback_heat_cooling_changes_scored_retrieval_order() 
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retrieval-cooling-order", password_hash="x", display_name="Retrieval Cooling")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1849,7 +1842,9 @@ async def test_retrieval_feedback_heat_cooling_changes_scored_retrieval_order() 
     )
 
     assert result.retrieval_feedback_sync.get("corrected_counts", {}).get(cooled_item_id) == 1
-    assert result.retrieval_feedback_sync.get("evidence_heat_factors", {}).get(cooled_item_id) == 0.92
+    assert (
+        result.retrieval_feedback_sync.get("evidence_heat_factors", {}).get(cooled_item_id) == 0.92
+    )
     assert cooled_item_id not in result.retrieval_feedback_sync.get("importance_deltas", {})
 
     with soul_factory() as soul_db:
@@ -1882,7 +1877,7 @@ async def test_ops_processed_before_candidates() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="order-test", password_hash="x", display_name="Order Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -1964,7 +1959,7 @@ async def test_failed_candidate_retried_then_permanent() -> None:
     runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="retry-test", password_hash="x", display_name="Retry Test")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         user_id = user.id
@@ -2051,9 +2046,7 @@ async def test_phase4_runtime_commit_failure_does_not_lose_soul_promotion(
     base_runtime_factory = _make_runtime_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(
-            username="phase4-commit-fail", password_hash="x", display_name="Phase4"
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         user_id = user.id
@@ -2086,6 +2079,7 @@ async def test_phase4_runtime_commit_failure_does_not_lose_soul_promotion(
         call_count["n"] += 1
         session = base_runtime_factory()
         if call_count["n"] == 6:
+
             def _raise_on_commit() -> None:
                 raise RuntimeError("simulated runtime commit failure (Phase 4)")
 
@@ -2108,9 +2102,7 @@ async def test_phase4_runtime_commit_failure_does_not_lose_soul_promotion(
     #    runtime commit failure, because soul commits before runtime.
     with soul_factory() as soul_db:
         patterns = soul_db.scalars(
-            select(CoreEmotionalPattern).where(
-                CoreEmotionalPattern.user_id == user_id
-            )
+            select(CoreEmotionalPattern).where(CoreEmotionalPattern.user_id == user_id)
         ).all()
         assert len(patterns) >= 1
         assert any(p.dominant_emotion == "frustrated" for p in patterns)

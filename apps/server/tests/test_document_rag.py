@@ -40,6 +40,7 @@ def _pin_reranker_off(monkeypatch: Any) -> None:
     # valid regardless of the reranker's default.
     monkeypatch.setattr(settings, "retrieval_reranker", "off")
 
+
 # Derived from the actual bound column rather than hardcoded: the pgvector
 # column dimension is fixed once per process (baked in at first import of
 # RuntimeEmbedding from the then-current default embedding provider), so a
@@ -51,17 +52,56 @@ def _embedding(*values: float) -> list[float]:
     return [*values, *([0.0] * (_TEST_EMBEDDING_DIM - len(values)))]
 
 
+def _register_current_fixture_document(
+    runtime_db: Session, registration: DocumentRegistration
+) -> RuntimeDocument:
+    """Mock original-byte authority only; retain real registration and indexing.
+
+    Parser output and vector retrieval are deterministic test inputs here. The
+    declared original belongs to the requested owner at a canonical object URI;
+    no host file or Runtime body grants original-asset authority.
+    """
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import asset_authority
+
+    authority_session = SimpleNamespace(user_id=registration.user_id)
+
+    def require_session(user_id: int):
+        assert user_id == registration.user_id
+        return authority_session
+
+    def open_source(*, session, object_uri, expected_kinds):
+        assert session is authority_session
+        assert object_uri == registration.storage_path
+        assert object_uri.startswith("corefs://object/")
+        assert expected_kinds == frozenset({"attachment"})
+        return SimpleNamespace(
+            content_type=registration.mime_type,
+            content_sha256=registration.sha256,
+            size=registration.size_bytes,
+        )
+
+    with pytest.MonkeyPatch.context() as boundary:
+        boundary.setattr(asset_authority, "require_canonical_asset_session", require_session)
+        boundary.setattr(asset_authority, "open_corefs_byte_source", open_source)
+        return register_document(runtime_db, registration)
+
+
 def _registration(
     *,
     user_id: int = 1,
     filename: str = "notes.md",
     sha256: str = "d" * 64,
 ) -> DocumentRegistration:
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
+
+    stable_id = stable_opaque_id("fixture-document", f"{user_id}:{sha256}")
     return DocumentRegistration(
         user_id=user_id,
         filename=filename,
         mime_type="text/markdown",
-        storage_path=f".anima/documents/{user_id}/{filename}",
+        storage_path=f"corefs://object/{stable_id}",
         sha256=sha256,
         size_bytes=512,
     )
@@ -73,7 +113,7 @@ def _document_with_chunks(
     user_id: int = 1,
     chunks: list[str] | None = None,
 ) -> tuple[RuntimeDocument, list[RuntimeDocumentChunk]]:
-    document = register_document(runtime_db, _registration(user_id=user_id))
+    document = _register_current_fixture_document(runtime_db, _registration(user_id=user_id))
     chunk_texts = ["alpha notes", "beta notes"] if chunks is None else chunks
     inserted = replace_document_chunks(
         runtime_db,
@@ -113,7 +153,7 @@ def _document_with_extracted_chunks(
     sha256: str = "d" * 64,
     chunks: list[ExtractedDocumentChunk],
 ) -> tuple[RuntimeDocument, list[RuntimeDocumentChunk]]:
-    document = register_document(
+    document = _register_current_fixture_document(
         runtime_db,
         _registration(user_id=user_id, filename=filename, sha256=sha256),
     )
@@ -186,9 +226,7 @@ def _patch_pgvec_upsert(monkeypatch: Any) -> list[dict[str, Any]]:
 
 def _embedding_rows(runtime_db: Session) -> list[RuntimeEmbedding]:
     return list(
-        runtime_db.scalars(
-            select(RuntimeEmbedding).order_by(RuntimeEmbedding.source_id)
-        ).all()
+        runtime_db.scalars(select(RuntimeEmbedding).order_by(RuntimeEmbedding.source_id)).all()
     )
 
 
@@ -242,9 +280,7 @@ def test_embed_document_chunks_indexes_chunks_as_document_sources(
     assert indexed == 2
     assert [row.source_type for row in rows] == ["document_chunk", "document_chunk"]
     assert [row.source_id for row in rows] == [chunks[0].id, chunks[1].id]
-    assert [row.content_hash for row in rows] == [
-        chunk.content_hash for chunk in chunks
-    ]
+    assert [row.content_hash for row in rows] == [chunk.content_hash for chunk in chunks]
 
 
 def test_embed_document_chunks_skips_matching_existing_embeddings(
@@ -259,18 +295,24 @@ def test_embed_document_chunks_skips_matching_existing_embeddings(
         calls.append(text)
         return _embedding(1.0, float(len(calls)))
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 2
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 0
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 2
+    )
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 0
+    )
     assert calls == ["alpha notes", "beta notes"]
     assert get_unembedded_chunks(runtime_db, user_id=1, document_id=document.id) == []
 
@@ -301,12 +343,15 @@ def test_embed_document_chunks_tracks_bound_corefs_vectors_after_commit(
         calls.append(text)
         return _embedding(float(len(calls)), 1.0)
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 2
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 2
+    )
     assert document.status == "indexed"
     assert all(
         row.embedding is None and row.embedding_checksum is None
@@ -323,17 +368,23 @@ def test_embed_document_chunks_tracks_bound_corefs_vectors_after_commit(
         is not None
         for chunk in chunks
     )
-    assert get_unembedded_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-    ) == []
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 0
+    assert (
+        get_unembedded_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+        )
+        == []
+    )
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 0
+    )
     assert calls == ["alpha notes", "beta notes"]
 
 
@@ -364,12 +415,15 @@ def test_search_document_chunks_repairs_cleared_bound_corefs_vectors_once(
     runtime_db.commit()
     document, chunks = _document_with_chunks(runtime_db)
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=lambda _text: _embedding(1.0, 1.0),
-    ) == 2
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=lambda _text: _embedding(1.0, 1.0),
+        )
+        == 2
+    )
     runtime_db.commit()
     calls: list[str] = []
 
@@ -389,12 +443,15 @@ def test_search_document_chunks_repairs_cleared_bound_corefs_vectors_once(
     index.begin_runtime_embedding_rebuild(embedding_fingerprint="new-space")
     calls.clear()
 
-    assert search_document_chunks(
-        runtime_db,
-        user_id=1,
-        query="alpha",
-        embedding_fn=embedding_fn,
-    ) == []
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="alpha",
+            embedding_fn=embedding_fn,
+        )
+        == []
+    )
     assert calls == ["alpha", "alpha notes", "beta notes"]
     runtime_db.commit()
     assert all(
@@ -451,12 +508,15 @@ def test_bound_corefs_vector_repair_candidate_scan_uses_one_query(
                 )
             ],
         )
-        assert embed_document_chunks(
-            runtime_db,
-            user_id=1,
-            document_id=document.id,
-            embedding_fn=lambda _text: _embedding(1.0, 1.0),
-        ) == 1
+        assert (
+            embed_document_chunks(
+                runtime_db,
+                user_id=1,
+                document_id=document.id,
+                embedding_fn=lambda _text: _embedding(1.0, 1.0),
+            )
+            == 1
+        )
     runtime_db.commit()
     statements: list[str] = []
     bind = runtime_db.get_bind()
@@ -473,11 +533,14 @@ def test_bound_corefs_vector_repair_candidate_scan_uses_one_query(
 
     event.listen(bind, "before_cursor_execute", record_statement)
     try:
-        assert _indexed_documents_without_current_vectors(
-            runtime_db,
-            user_id=1,
-            document_ids=None,
-        ) == []
+        assert (
+            _indexed_documents_without_current_vectors(
+                runtime_db,
+                user_id=1,
+                document_ids=None,
+            )
+            == []
+        )
     finally:
         event.remove(bind, "before_cursor_execute", record_statement)
 
@@ -519,12 +582,15 @@ def test_bound_corefs_partial_vector_repair_discards_deferred_writes(
             return None
         return _embedding(1.0, 1.0)
 
-    assert search_document_chunks(
-        runtime_db,
-        user_id=1,
-        query="alpha",
-        embedding_fn=embedding_fn,
-    ) == []
+    assert (
+        search_document_chunks(
+            runtime_db,
+            user_id=1,
+            query="alpha",
+            embedding_fn=embedding_fn,
+        )
+        == []
+    )
     assert calls == ["alpha", "alpha notes", "beta notes"]
     assert _embedding_rows(runtime_db) == []
 
@@ -552,12 +618,15 @@ def test_embed_document_chunks_reindexes_changed_chunk_content(
         calls.append(text)
         return _embedding(float(len(calls)), 0.5)
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 2
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 2
+    )
 
     changed = runtime_db.get(RuntimeDocumentChunk, chunks[1].id)
     assert changed is not None
@@ -565,18 +634,20 @@ def test_embed_document_chunks_reindexes_changed_chunk_content(
     changed.content_hash = RuntimeEmbedding.compute_content_hash(changed.content_text)
     runtime_db.flush()
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 1
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 1
+    )
     assert calls == ["alpha notes", "beta notes", "beta notes updated"]
 
     rows = _embedding_rows(runtime_db)
     assert [row.content_hash for row in rows] == [
-        chunk.content_hash
-        for chunk in list_document_chunks(runtime_db, document_id=document.id)
+        chunk.content_hash for chunk in list_document_chunks(runtime_db, document_id=document.id)
     ]
 
 
@@ -611,12 +682,15 @@ def test_embedding_table_reset_marks_resumable_indexed_documents_unembedded(
     document.workflow_run_id = run.id
     runtime_db.flush()
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=lambda _text: _embedding(0.2, 0.8),
-    ) == 2
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=lambda _text: _embedding(0.2, 0.8),
+        )
+        == 2
+    )
     assert document.status == "indexed"
     assert document.indexed_at is not None
 
@@ -632,11 +706,14 @@ def test_embedding_table_reset_marks_resumable_indexed_documents_unembedded(
     assert marked == 1
     assert document.status == "registered"
     assert document.indexed_at is None
-    assert get_unembedded_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-    ) == chunks
+    assert (
+        get_unembedded_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+        )
+        == chunks
+    )
 
 
 def test_embedding_table_reset_preserves_terminal_indexed_documents(
@@ -653,12 +730,15 @@ def test_embedding_table_reset_preserves_terminal_indexed_documents(
     document.workflow_run_id = run.id
     runtime_db.flush()
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=lambda _text: _embedding(0.2, 0.8),
-    ) == 2
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=lambda _text: _embedding(0.2, 0.8),
+        )
+        == 2
+    )
     assert document.status == "indexed"
     assert document.indexed_at is not None
 
@@ -683,23 +763,29 @@ def test_dimension_reset_inventory_with_null_vectors_remains_unembedded(
     _patch_pgvec_upsert(monkeypatch)
     document, chunks = _document_with_chunks(runtime_db)
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=lambda _text: _embedding(0.2, 0.8),
-    ) == 2
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=lambda _text: _embedding(0.2, 0.8),
+        )
+        == 2
+    )
     for row in _embedding_rows(runtime_db):
         row.embedding = None
         row.embedding_checksum = None
     runtime_db.flush()
 
     assert document.status == "indexed"
-    assert get_unembedded_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-    ) == chunks
+    assert (
+        get_unembedded_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+        )
+        == chunks
+    )
 
 
 def test_embed_document_chunks_does_not_mark_empty_document_indexed(
@@ -735,21 +821,27 @@ def test_embed_document_chunks_missing_document_returns_zero_without_embedding_c
         calls.append(text)
         return _embedding(1.0)
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=999,
-        embedding_fn=embedding_fn,
-    ) == 0
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=999,
+            embedding_fn=embedding_fn,
+        )
+        == 0
+    )
     assert calls == []
 
     document, _chunks = _document_with_chunks(runtime_db, user_id=2)
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 0
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 0
+    )
     assert calls == []
 
 
@@ -825,12 +917,15 @@ def test_get_unembedded_chunks_orders_by_chunk_index(
         calls.append(text)
         return _embedding(1.0)
 
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=embedding_fn,
-    ) == 3
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=embedding_fn,
+        )
+        == 3
+    )
 
     middle = list_document_chunks(runtime_db, document_id=document.id)[1]
     middle.content_text = "second changed"
@@ -1115,12 +1210,15 @@ def test_search_document_chunks_repairs_retained_null_vectors_after_dimension_re
 ) -> None:
     _patch_pgvec_upsert(monkeypatch)
     document, chunks = _document_with_chunks(runtime_db)
-    assert embed_document_chunks(
-        runtime_db,
-        user_id=1,
-        document_id=document.id,
-        embedding_fn=lambda _text: _embedding(0.2, 0.8),
-    ) == 2
+    assert (
+        embed_document_chunks(
+            runtime_db,
+            user_id=1,
+            document_id=document.id,
+            embedding_fn=lambda _text: _embedding(0.2, 0.8),
+        )
+        == 2
+    )
     _mark_document_indexed(runtime_db, document)
     for row in _embedding_rows(runtime_db):
         row.embedding = None
@@ -1138,9 +1236,7 @@ def test_search_document_chunks_repairs_retained_null_vectors_after_dimension_re
         **_kwargs: Any,
     ) -> list[VectorSearchResult]:
         current_source_ids = {
-            row.source_id
-            for row in _embedding_rows(runtime_db)
-            if row.embedding is not None
+            row.source_id for row in _embedding_rows(runtime_db) if row.embedding is not None
         }
         if chunks[0].id not in current_source_ids:
             return []
@@ -1334,9 +1430,7 @@ def test_search_document_chunks_filters_indexed_chunk_ids_before_unscoped_search
         source_id_query: Any | None = None,
     ) -> list[VectorSearchResult]:
         source_query_ids = (
-            list(runtime_db.scalars(source_id_query).all())
-            if source_id_query is not None
-            else None
+            list(runtime_db.scalars(source_id_query).all()) if source_id_query is not None else None
         )
         search_calls.append(
             {

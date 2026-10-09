@@ -11,13 +11,13 @@ from sqlalchemy import select
 from anima_server.db.session import get_user_session_factory
 from anima_server.db.user_store import authenticate_account
 from anima_server.models.runtime import RuntimeMessage, RuntimeRun
-from anima_server.models.user import User
 from anima_server.services.agent.client_actions import (
     ActionToolConnection as ClientConnection,
 )
 from anima_server.services.agent.client_actions import (
     action_registry as registry,
 )
+from anima_server.services.corefs.account_profile import read_account_profile_for_session
 from anima_server.services.sessions import unlock_session_store
 
 logger = logging.getLogger(__name__)
@@ -60,13 +60,10 @@ async def _authenticate(
                 }
             )
             return None
-        # Look up username from DB
-        db = get_user_session_factory(session.user_id)()
-        try:
-            user = db.get(User, session.user_id)
-            resolved_username = user.username if user else (username or "")
-        finally:
-            db.close()
+        profile = read_account_profile_for_session(session)
+        if profile is None:
+            return None
+        resolved_username = profile.username
         return (
             ClientConnection(
                 websocket=ws,
@@ -215,9 +212,7 @@ async def ws_agent(websocket: WebSocket) -> None:
         logger.info("WebSocket client disconnected: user_id=%d", conn.user_id)
     finally:
         try:
-            connection_tasks = [
-                task for task in (turn_task, approval_task) if task is not None
-            ]
+            connection_tasks = [task for task in (turn_task, approval_task) if task is not None]
             for task in connection_tasks:
                 if not task.done():
                     task.cancel()

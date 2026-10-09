@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 
 from anima_server.db.base import Base
-from anima_server.models import AgentExperience, AgentSkill, ExperienceClusterState, User
+from anima_server.models import AgentExperience, AgentSkill, SoulOwner
 from anima_server.services.data_crypto import df
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
@@ -37,8 +37,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="experience-user", display_name="Experience User", password_hash="x")
+def _make_user(db: Session) -> SoulOwner:
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     db.add(user)
     db.flush()
     return user
@@ -210,7 +210,7 @@ def test_experience_clustering_is_stable_across_state_reload() -> None:
     assert reloaded_second.cluster_id == first_cluster
 
 
-def test_existing_experience_cluster_state_updates_persist_across_sessions() -> None:
+def test_experience_centroids_rebuild_across_sessions() -> None:
     from anima_server.services.agent.agent_experience import (
         AgentExperienceCandidate,
         assign_experience_to_cluster,
@@ -260,17 +260,18 @@ def test_existing_experience_cluster_state_updates_persist_across_sessions() -> 
                     created_at=datetime.now(UTC) + timedelta(days=3),
                 ),
             )
-            assert assign_experience_to_cluster(db, user_id=user_id, experience=second) == cluster_id
+            assert (
+                assign_experience_to_cluster(db, user_id=user_id, experience=second) == cluster_id
+            )
             second_id = second.id
             db.commit()
 
         with factory() as db:
-            state = db.scalar(
-                select(ExperienceClusterState).where(ExperienceClusterState.user_id == user_id)
-            )
+            from anima_server.services.agent.derived_soul_state import get_cluster_state
 
-        assert state is not None
-        cluster = state.state_json["clusters"][cluster_id]
+            state = get_cluster_state(db, user_id=user_id)
+
+        cluster = state["clusters"][cluster_id]
         assert cluster["count"] == 2
         assert cluster["experience_ids"] == [first_id, second_id]
     finally:
@@ -315,12 +316,14 @@ def test_unembedded_experiences_do_not_enter_skill_clusters() -> None:
         cluster_id = assign_experience_to_cluster(db, user_id=user.id, experience=embedded)
         skill = maybe_distill_skill_for_cluster(db, user_id=user.id, cluster_id=cluster_id)
         db.flush()
-        states = list(db.scalars(select(ExperienceClusterState)).all())
+        from anima_server.services.agent.derived_soul_state import get_cluster_state
+
+        state = get_cluster_state(db, user_id=user.id)
         skills = list(db.scalars(select(AgentSkill)).all())
 
     assert cluster_id == f"cluster_{user.id}_000"
     assert skill is None
-    assert len(states) == 1
+    assert len(state["clusters"]) == 1
     assert skills == []
 
 

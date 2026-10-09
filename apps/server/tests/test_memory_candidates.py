@@ -1,4 +1,5 @@
 """Tests for Soul Writer runtime models and candidate lifecycle."""
+
 from __future__ import annotations
 
 import hashlib
@@ -28,7 +29,9 @@ def pg_session():
 
 def _content_hash(user_id: int, category: str, importance_source: str, content: str) -> str:
     normalized = content.strip().lower()
-    return hashlib.sha256(f"{user_id}:{category}:{importance_source}:{normalized}".encode()).hexdigest()
+    return hashlib.sha256(
+        f"{user_id}:{category}:{importance_source}:{normalized}".encode()
+    ).hexdigest()
 
 
 def test_create_memory_candidate(pg_session: Session) -> None:
@@ -95,8 +98,12 @@ def test_create_memory_extraction_failure(pg_session: Session) -> None:
 
 def test_candidate_status_lifecycle(pg_session: Session) -> None:
     candidate = MemoryCandidate(
-        user_id=1, content="test", category="fact",
-        importance=3, importance_source="llm", source="llm",
+        user_id=1,
+        content="test",
+        category="fact",
+        importance=3,
+        importance_source="llm",
+        source="llm",
         content_hash=_content_hash(1, "fact", "llm", "test"),
     )
     pg_session.add(candidate)
@@ -156,7 +163,10 @@ def test_sync_access_metadata(pg_session: Session) -> None:
     pg_session.flush()
 
     result = sync_access_metadata(
-        user_id=1, runtime_db=pg_session, soul_db=None, dry_run=True,
+        user_id=1,
+        runtime_db=pg_session,
+        soul_db=None,
+        dry_run=True,
     )
     assert result["items_synced"] == 1
     assert result["access_counts"] == {42: 3}
@@ -165,7 +175,7 @@ def test_sync_access_metadata(pg_session: Session) -> None:
 def test_store_memory_item_dry_run_does_not_write() -> None:
     """store_memory_item(dry_run=True) returns analysis without writing."""
     from anima_server.db.base import Base
-    from anima_server.models import MemoryItem, User
+    from anima_server.models import MemoryItem, SoulOwner
     from anima_server.services.agent.memory_store import store_memory_item
     from sqlalchemy import create_engine, func, select
     from sqlalchemy.orm import sessionmaker
@@ -175,13 +185,16 @@ def test_store_memory_item_dry_run_does_not_write() -> None:
     factory = sessionmaker(bind=engine)
 
     with factory() as session:
-        user = User(username="dry-run-test", password_hash="x", display_name="Test")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         session.add(user)
         session.flush()
 
         result = store_memory_item(
-            session, user_id=user.id, content="Likes cats",
-            category="preference", source="extraction",
+            session,
+            user_id=user.id,
+            content="Likes cats",
+            category="preference",
+            source="extraction",
             dry_run=True,
         )
         assert result.action == "added"
@@ -194,13 +207,15 @@ def test_store_memory_item_dry_run_does_not_write() -> None:
 def test_create_memory_candidate_dedup(pg_session: Session) -> None:
     from anima_server.services.agent.candidate_ops import create_memory_candidate
 
-    c1 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
-                                  category="preference", source="llm")
+    c1 = create_memory_candidate(
+        pg_session, user_id=1, content="likes cats", category="preference", source="llm"
+    )
     assert c1 is not None
 
     # Duplicate — same user, category, importance_source, content
-    c2 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
-                                  category="preference", source="llm")
+    c2 = create_memory_candidate(
+        pg_session, user_id=1, content="likes cats", category="preference", source="llm"
+    )
     assert c2 is None  # rejected by dedup check
 
 
@@ -269,11 +284,17 @@ def test_create_memory_candidate_duplicate_requeues_with_merged_salience(
 def test_correction_and_extraction_not_deduped(pg_session: Session) -> None:
     from anima_server.services.agent.candidate_ops import create_memory_candidate
 
-    c1 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
-                                  category="preference", source="llm")
-    c2 = create_memory_candidate(pg_session, user_id=1, content="likes cats",
-                                  category="preference", importance_source="correction",
-                                  source="feedback")
+    c1 = create_memory_candidate(
+        pg_session, user_id=1, content="likes cats", category="preference", source="llm"
+    )
+    c2 = create_memory_candidate(
+        pg_session,
+        user_id=1,
+        content="likes cats",
+        category="preference",
+        importance_source="correction",
+        source="feedback",
+    )
     assert c1 is not None
     assert c2 is not None  # different importance_source → different hash
 
@@ -285,12 +306,14 @@ def test_count_eligible_candidates(pg_session: Session) -> None:
     )
 
     # Create a few candidates in different states
-    c1 = create_memory_candidate(pg_session, user_id=1, content="fact one",
-                                  category="fact", source="llm")
+    c1 = create_memory_candidate(
+        pg_session, user_id=1, content="fact one", category="fact", source="llm"
+    )
     assert c1 is not None
 
-    c2 = create_memory_candidate(pg_session, user_id=1, content="fact two",
-                                  category="fact", source="regex")
+    c2 = create_memory_candidate(
+        pg_session, user_id=1, content="fact two", category="fact", source="regex"
+    )
     assert c2 is not None
 
     # Mark one as promoted (should not count)
@@ -303,8 +326,9 @@ def test_count_eligible_candidates(pg_session: Session) -> None:
 def test_create_memory_candidate_invalid_category(pg_session: Session) -> None:
     from anima_server.services.agent.candidate_ops import create_memory_candidate
 
-    c = create_memory_candidate(pg_session, user_id=1, content="test",
-                                 category="invalid_cat", source="llm")
+    c = create_memory_candidate(
+        pg_session, user_id=1, content="test", category="invalid_cat", source="llm"
+    )
     assert c is not None
     assert c.category == "fact"  # falls back to "fact"
 
@@ -312,12 +336,19 @@ def test_create_memory_candidate_invalid_category(pg_session: Session) -> None:
 def test_create_memory_candidate_importance_clamped(pg_session: Session) -> None:
     from anima_server.services.agent.candidate_ops import create_memory_candidate
 
-    c = create_memory_candidate(pg_session, user_id=1, content="important thing",
-                                 category="goal", source="llm", importance=10)
+    c = create_memory_candidate(
+        pg_session,
+        user_id=1,
+        content="important thing",
+        category="goal",
+        source="llm",
+        importance=10,
+    )
     assert c is not None
     assert c.importance == 5  # clamped to max
 
-    c2 = create_memory_candidate(pg_session, user_id=1, content="low thing",
-                                  category="goal", source="llm", importance=-1)
+    c2 = create_memory_candidate(
+        pg_session, user_id=1, content="low thing", category="goal", source="llm", importance=-1
+    )
     assert c2 is not None
     assert c2.importance == 1  # clamped to min

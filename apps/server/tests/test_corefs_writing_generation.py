@@ -1,323 +1,225 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Event, Thread
 
-import sqlcipher3
-from alembic import command
-from alembic.config import Config
-from anima_server.db.session import _run_alembic_upgrade
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.engine import Engine
-from sqlalchemy.pool import NullPool
+import pytest
+from anima_server.db.session import _run_alembic_upgrade, get_user_session_factory
+from anima_server.services.corefs import logical
+from anima_server.services.corefs.soul_store import _database_inventory
+from anima_server.services.corefs.writing_authority import read_canonical_writing_catalog
+from anima_server.services.sessions import unlock_session_store
+from conftest import managed_test_client
+from sqlalchemy import create_engine, inspect
 
-SERVER_ROOT = Path(__file__).resolve().parents[1]
-WRITING_GENERATION_REVISION = "20260812_0001"
+_RETIRED_WRITING_TABLES = {
+    "users",
+    "diary_entries",
+    "diary_folders",
+    "diary_attachments",
+    "corefs_writing_source_state",
+}
 
 
-def _engine(database: Path, *, encrypted: bool = False) -> Engine:
-    engine = create_engine(
-        f"sqlite:///{database.as_posix()}",
-        future=True,
-        poolclass=NullPool,
-        module=sqlcipher3 if encrypted else None,
-        connect_args={"check_same_thread": False},
-    )
+def test_fresh_soul_head_has_no_app_writing_tables_or_generation_triggers(managed_tmp_path: Path):
+    engine = create_engine(f"sqlite:///{(managed_tmp_path / 'current-soul.db').as_posix()}")
+    try:
+        _run_alembic_upgrade(engine)
+        with engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one()
+                == "20261009_0001"
+            )
+            assert not _RETIRED_WRITING_TABLES.intersection(inspect(connection).get_table_names())
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_corefs_writing_source_%'"
+                ).all()
+                == []
+            )
+            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+    finally:
+        engine.dispose()
+
+
+def test_untracked_writing_source_is_rejected_without_schema_repair_or_data_loss(
+    managed_tmp_path: Path,
+):
+    engine = create_engine(f"sqlite:///{(managed_tmp_path / 'unsupported-writing.db').as_posix()}")
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT)")
+            connection.exec_driver_sql("INSERT INTO users VALUES (7, 'original-private-owner')")
+            original_schema = connection.exec_driver_sql(
+                "SELECT sql FROM sqlite_master ORDER BY name"
+            ).all()
+        with pytest.raises(ValueError, match="Unsupported untracked Soul schema"):
+            _run_alembic_upgrade(engine)
+        with engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql("SELECT sql FROM sqlite_master ORDER BY name").all()
+                == original_schema
+            )
+            assert connection.exec_driver_sql("SELECT id,username FROM users").all() == [
+                (7, "original-private-owner")
+            ]
+    finally:
+        engine.dispose()
+
+
+def test_current_native_writing_advances_catalog_and_fences_stale_writers_without_soul_mutation():
+    with managed_test_client("current-native-writing-generation-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={"username": "writer", "password": "current-password", "name": "Writer"},
+        )
+        assert registered.status_code == 201, registered.text
+        owner_id = registered.json()["id"]
+        headers = {"x-anima-unlock": registered.json()["unlockToken"]}
+        session = unlock_session_store.resolve(registered.json()["unlockToken"])
+        assert session is not None
+        original_catalog = read_canonical_writing_catalog(session=session)
+        factory = get_user_session_factory(owner_id)
+        with factory() as soul_db, soul_db.get_bind().connect() as connection:
+            original_soul = _database_inventory(connection)
+            assert not _RETIRED_WRITING_TABLES.intersection(inspect(connection).get_table_names())
+        created = client.post(
+            "/api/diary",
+            headers=headers,
+            json={
+                "userId": owner_id,
+                "entryDate": "2026-10-09",
+                "title": "Private native writing",
+                "body": "<p>Original private body</p>",
+            },
+        )
+        assert created.status_code == 201, created.text
+        after_create = read_canonical_writing_catalog(session=session)
+        assert after_create.selection.generation == original_catalog.selection.generation + 1
+        assert after_create.selection.catalog_hash != original_catalog.selection.catalog_hash
+        entry_id = created.json()["id"]
+        updated = client.patch(
+            f"/api/diary/{entry_id}", headers=headers, json={"body": "<p>Preserved revision</p>"}
+        )
+        assert updated.status_code == 200, updated.text
+        after_update = read_canonical_writing_catalog(session=session)
+        assert after_update.selection.generation == after_create.selection.generation + 1
+        assert after_update.entries[0].document.html == "<p>Preserved revision</p>"
+        with pytest.raises(logical.CoreFsMutationUnavailable, match="snapshot_stale"):
+            logical.execute_mutation_v1(
+                corefs_session=session.corefs_session,
+                keys=session.corefs_keys,
+                selected=original_catalog.selection.snapshot,
+                principal="user",
+                mutation={
+                    "operation": "create_folder",
+                    "path": "/Journal/Rejected stale writer",
+                    "stableId": "0" * 26,
+                },
+            )
+        after_rejection = read_canonical_writing_catalog(session=session)
+        assert after_rejection.selection == after_update.selection
+        assert not any(folder.name == "Rejected stale writer" for folder in after_rejection.folders)
+        with factory() as soul_db, soul_db.get_bind().connect() as connection:
+            assert _database_inventory(connection) == original_soul
+            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+
+
+def _historical_engine(database: Path, *, encrypted: bool):
+    from sqlalchemy import event
+    from sqlalchemy.pool import NullPool
+
+    kwargs = {"module": __import__("sqlcipher3")} if encrypted else {}
+    engine = create_engine(f"sqlite:///{database.as_posix()}", poolclass=NullPool, **kwargs)
 
     @event.listens_for(engine, "connect")
-    def _set_pragmas(dbapi_connection, _connection_record) -> None:  # type: ignore[no-untyped-def]
-        cursor = dbapi_connection.cursor()
+    def configure(connection, _record):
         if encrypted:
-            cursor.execute(f"PRAGMA key = \"x'{bytes(range(32)).hex()}'\"")
-            cursor.execute("PRAGMA cipher_page_size = 4096")
-        cursor.execute("PRAGMA foreign_keys = ON")
-        cursor.execute("PRAGMA busy_timeout = 1000")
-        cursor.close()
+            connection.execute(f"PRAGMA key = \"x'{bytes(range(32)).hex()}'\"")
+        connection.execute("PRAGMA foreign_keys = ON")
 
     return engine
 
 
-def _migrate(engine: Engine, revision: str, *, downgrade: bool = False) -> None:
-    config = Config(str(SERVER_ROOT / "alembic_core.ini"))
+def _upgrade_direct(engine, revision):
+    from alembic import command
+    from alembic.config import Config
+    from anima_server.db.session import _ALEMBIC_INI
+
+    config = Config(str(_ALEMBIC_INI))
     with engine.begin() as connection:
+        connection.connection.driver_connection.execute("BEGIN IMMEDIATE")
+        assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
         config.attributes["connection"] = connection
-        if downgrade:
-            command.downgrade(config, revision)
-        else:
-            command.upgrade(config, revision)
+        command.upgrade(config, revision)
 
 
-def _insert_user(connection, user_id: int, username: str) -> None:  # type: ignore[no-untyped-def]
-    connection.execute(
-        text(
-            "INSERT INTO users (id, username, password_hash, display_name) "
-            "VALUES (:id, :username, 'hash', :username)"
-        ),
-        {"id": user_id, "username": username},
-    )
-
-
-def _generation(connection, user_id: int) -> int | None:  # type: ignore[no-untyped-def]
-    return connection.scalar(
-        text("SELECT generation FROM corefs_writing_source_state WHERE user_id = :user_id"),
-        {"user_id": user_id},
-    )
-
-
-def _insert_entry(connection, *, user_id: int, body: str = "body") -> int:  # type: ignore[no-untyped-def]
-    result = connection.execute(
-        text(
-            "INSERT INTO diary_entries (user_id, entry_date, body, source) "
-            "VALUES (:user_id, '2026-08-12', :body, 'user')"
-        ),
-        {"user_id": user_id, "body": body},
-    )
-    return int(result.lastrowid)
-
-
-def test_writing_generation_migration_supports_prior_head_and_roundtrip(
-    managed_tmp_path: Path,
-) -> None:
-    engine = _engine(managed_tmp_path / "writing-generation-migration.db")
-    _migrate(engine, "20260721_0001")
-
-    with engine.begin() as connection:
-        assert (
-            connection.scalar(
-                text(
-                    "SELECT COUNT(*) FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'corefs_writing_source_state'"
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_historical_writing_triggers_retire_before_fk_enabled_table_drops(
+    managed_tmp_path: Path, encrypted
+):
+    engine = _historical_engine(managed_tmp_path / "historical-writing.db", encrypted=encrypted)
+    try:
+        _upgrade_direct(engine, "20260812_0001")
+        with engine.connect() as connection:
+            assert (
+                len(
+                    connection.exec_driver_sql(
+                        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_corefs_writing_source_%'"
+                    ).all()
                 )
+                == 12
             )
-            == 0
-        )
-
-    _migrate(engine, "head")
-    with engine.begin() as connection:
-        assert (
-            connection.scalar(
-                text(
-                    "SELECT COUNT(*) FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'corefs_writing_source_state'"
-                )
+        _upgrade_direct(engine, "head")
+        with engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'trg_corefs_writing_source_%'"
+                ).all()
+                == []
             )
-            == 1
-        )
-        trigger_count = connection.scalar(
-            text(
-                "SELECT COUNT(*) FROM sqlite_master "
-                "WHERE type = 'trigger' AND name LIKE 'trg_corefs_writing_source_%'"
+            assert not _RETIRED_WRITING_TABLES.intersection(inspect(connection).get_table_names())
+            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+    finally:
+        engine.dispose()
+
+
+def test_writing_trigger_retirement_rolls_back_with_failed_schema_transaction(
+    managed_tmp_path: Path, monkeypatch
+):
+    from alembic import op
+
+    engine = _historical_engine(managed_tmp_path / "writing-rollback.db", encrypted=True)
+    try:
+        _upgrade_direct(engine, "20260812_0001")
+        with engine.connect() as connection:
+            original_schema = connection.exec_driver_sql(
+                "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY name"
+            ).all()
+            original_counts = {
+                name: connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar_one()
+                for name in inspect(connection).get_table_names()
+            }
+        original_drop = op.drop_table
+
+        def fail_after_app_drop(name, *args, **kwargs):
+            original_drop(name, *args, **kwargs)
+            if name == "diary_attachments":
+                raise RuntimeError("injected after trigger and table retirement")
+
+        monkeypatch.setattr(op, "drop_table", fail_after_app_drop)
+        with pytest.raises(RuntimeError, match="injected after trigger"):
+            _run_alembic_upgrade(engine)
+        with engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql(
+                    "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY name"
+                ).all()
+                == original_schema
             )
-        )
-        assert trigger_count == 12
-
-    _migrate(engine, "20260802_0001", downgrade=True)
-    with engine.begin() as connection:
-        assert (
-            connection.scalar(
-                text(
-                    "SELECT COUNT(*) FROM sqlite_master "
-                    "WHERE type IN ('table', 'trigger') "
-                    "AND (name = 'corefs_writing_source_state' "
-                    "OR name LIKE 'trg_corefs_writing_source_%')"
-                )
-            )
-            == 0
-        )
-
-    _migrate(engine, "head")
-    with engine.begin() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            WRITING_GENERATION_REVISION
-        )
-    engine.dispose()
-
-
-def test_writing_generation_migration_fresh_upgrade(managed_tmp_path: Path) -> None:
-    engine = _engine(managed_tmp_path / "writing-generation-fresh.db")
-    _migrate(engine, "head")
-    with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            WRITING_GENERATION_REVISION
-        )
-        assert (
-            connection.scalar(
-                text(
-                    "SELECT COUNT(*) FROM sqlite_master "
-                    "WHERE type = 'table' AND name = 'corefs_writing_source_state'"
-                )
-            )
-            == 1
-        )
-    engine.dispose()
-
-
-def test_legacy_unstamped_database_receives_authoritative_generation_triggers(
-    managed_tmp_path: Path,
-) -> None:
-    engine = _engine(managed_tmp_path / "writing-generation-legacy-create-all.db")
-    with engine.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE users ("
-                "id INTEGER PRIMARY KEY, username VARCHAR(64) NOT NULL UNIQUE, "
-                "password_hash VARCHAR(255) NOT NULL, display_name VARCHAR(120) NOT NULL)"
-            )
-        )
-
-    _run_alembic_upgrade(engine)
-    with engine.begin() as connection:
-        _insert_user(connection, 1, "legacy-writer")
-        _insert_entry(connection, user_id=1)
-        assert _generation(connection, 1) == 1
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == (
-            WRITING_GENERATION_REVISION
-        )
-    engine.dispose()
-
-
-def test_all_legacy_writing_mutations_advance_transactionally_and_per_user(
-    managed_tmp_path: Path,
-) -> None:
-    engine = _engine(managed_tmp_path / "writing-generation-triggers.db")
-    _migrate(engine, "head")
-
-    with engine.begin() as connection:
-        _insert_user(connection, 1, "writer-one")
-        _insert_user(connection, 2, "writer-two")
-
-        folder_id = int(
-            connection.execute(
-                text("INSERT INTO diary_folders (user_id, name) VALUES (1, 'folder')")
-            ).lastrowid
-        )
-        assert _generation(connection, 1) == 1
-        assert _generation(connection, 2) is None
-
-        connection.execute(
-            text("UPDATE diary_folders SET name = 'renamed' WHERE id = :id"),
-            {"id": folder_id},
-        )
-        assert _generation(connection, 1) == 2
-
-        entry_id = _insert_entry(connection, user_id=1)
-        assert _generation(connection, 1) == 3
-        connection.execute(
-            text("UPDATE diary_entries SET body = 'changed' WHERE id = :id"),
-            {"id": entry_id},
-        )
-        assert _generation(connection, 1) == 4
-
-        attachment_id = int(
-            connection.execute(
-                text(
-                    "INSERT INTO diary_attachments "
-                    "(entry_id, user_id, kind, mime_type, size_bytes, storage_path, sha256) "
-                    "VALUES (:entry_id, 1, 'file', 'application/octet-stream', 3, 'one.bin', :sha)"
-                ),
-                {"entry_id": entry_id, "sha": "a" * 64},
-            ).lastrowid
-        )
-        assert _generation(connection, 1) == 5
-        connection.execute(
-            text("UPDATE diary_attachments SET caption = 'changed' WHERE id = :id"),
-            {"id": attachment_id},
-        )
-        assert _generation(connection, 1) == 6
-        connection.execute(
-            text("DELETE FROM diary_attachments WHERE id = :id"),
-            {"id": attachment_id},
-        )
-        assert _generation(connection, 1) == 7
-
-        second_entry_id = _insert_entry(connection, user_id=2, body="other")
-        assert _generation(connection, 2) == 1
-        assert _generation(connection, 1) == 7
-        connection.execute(
-            text("DELETE FROM diary_entries WHERE id = :id"),
-            {"id": second_entry_id},
-        )
-        assert _generation(connection, 2) == 2
-
-        before_cascade = _generation(connection, 1)
-        cascading_attachment = connection.execute(
-            text(
-                "INSERT INTO diary_attachments "
-                "(entry_id, user_id, kind, mime_type, size_bytes, storage_path, sha256) "
-                "VALUES (:entry_id, 1, 'file', 'application/octet-stream', 4, 'cascade.bin', :sha)"
-            ),
-            {"entry_id": entry_id, "sha": "b" * 64},
-        )
-        assert cascading_attachment.lastrowid is not None
-        before_entry_delete = _generation(connection, 1)
-        connection.execute(
-            text("DELETE FROM diary_entries WHERE id = :id"),
-            {"id": entry_id},
-        )
-        assert _generation(connection, 1) is not None
-        assert _generation(connection, 1) >= int(before_entry_delete) + 2
-        assert int(before_entry_delete) > int(before_cascade)
-
-        before_folder_delete = _generation(connection, 1)
-        connection.execute(
-            text("DELETE FROM diary_folders WHERE id = :id"),
-            {"id": folder_id},
-        )
-        assert _generation(connection, 1) == int(before_folder_delete) + 1
-
-    with engine.connect() as connection:
-        committed_generation = _generation(connection, 1)
-
-    transaction = engine.connect()
-    transaction.exec_driver_sql("BEGIN")
-    transaction.execute(text("INSERT INTO diary_folders (user_id, name) VALUES (1, 'rolled back')"))
-    assert _generation(transaction, 1) == int(committed_generation) + 1
-    transaction.rollback()
-    transaction.close()
-
-    with engine.connect() as connection:
-        assert _generation(connection, 1) == committed_generation
-    engine.dispose()
-
-
-def test_begin_immediate_blocks_a_second_legacy_writer_until_release(
-    managed_tmp_path: Path,
-) -> None:
-    engine = _engine(managed_tmp_path / "writing-generation-fence.db", encrypted=True)
-    _migrate(engine, "head")
-    with engine.begin() as connection:
-        _insert_user(connection, 1, "fenced-writer")
-
-    fence = engine.connect()
-    fence.exec_driver_sql("BEGIN IMMEDIATE")
-    attempted = Event()
-    finished = Event()
-    errors: list[BaseException] = []
-
-    def write_on_second_connection() -> None:
-        try:
-            with engine.begin() as connection:
-                attempted.set()
-                connection.execute(
-                    text("INSERT INTO diary_folders (user_id, name) VALUES (1, 'blocked')")
-                )
-        except BaseException as exc:  # pragma: no cover - assertion reports the concrete failure
-            errors.append(exc)
-        finally:
-            finished.set()
-
-    writer = Thread(target=write_on_second_connection, daemon=True)
-    writer.start()
-    assert attempted.wait(timeout=1)
-    assert not finished.wait(timeout=0.05)
-    assert _generation(fence, 1) is None
-
-    fence.rollback()
-    fence.close()
-    assert finished.wait(timeout=1)
-    writer.join(timeout=1)
-    assert not errors
-
-    with engine.connect() as connection:
-        assert _generation(connection, 1) == 1
-    engine.dispose()
+            assert {
+                name: connection.exec_driver_sql(f'SELECT COUNT(*) FROM "{name}"').scalar_one()
+                for name in inspect(connection).get_table_names()
+            } == original_counts
+            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+    finally:
+        engine.dispose()

@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from anima_server.config import settings
-from anima_server.models import AgentMessage, AgentThread, MemoryEpisode, Task
+from anima_server.models import MemoryEpisode
 from anima_server.services.agent.inner_life.dream_receipt import (
     claim_cutoff,
     claim_expires_at,
@@ -31,6 +31,10 @@ from anima_server.services.agent.inner_life.dream_receipt import (
     release_claim,
 )
 from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+from anima_server.services.corefs.task_authority import (
+    list_canonical_tasks,
+    require_active_task_authority_session,
+)
 from anima_server.services.data_crypto import df
 from anima_server.services.presence_config import (
     PresenceConfigValues,
@@ -253,11 +257,7 @@ def _latest_runtime_user_message(runtime_db: Session, user_id: int) -> object | 
             .order_by(RuntimeMessage.created_at.desc())
         )
         return next(
-            (
-                message
-                for message in messages
-                if message.content_text not in (None, "")
-            ),
+            (message for message in messages if message.content_text not in (None, "")),
             None,
         )
     except Exception as exc:
@@ -375,9 +375,7 @@ def _finalize_ambient_dream(
             "dream released unvoiced",
             user_id,
         )
-        return _VoicedDream(
-            message=message, ctx=dataclasses.replace(ctx, ambient_dream=None)
-        )
+        return _VoicedDream(message=message, ctx=dataclasses.replace(ctx, ambient_dream=None))
 
 
 def _dream_free_static_greeting(ctx: GreetingContext) -> str | None:
@@ -425,9 +423,7 @@ class _VoicedDream:
     claim_token: str | None = None
 
 
-def _release_ambient_dream_claim(
-    db: Session, *, dream_id: int, user_id: int, token: str
-) -> None:
+def _release_ambient_dream_claim(db: Session, *, dream_id: int, user_id: int, token: str) -> None:
     """Drop a claim this request took but will NOT voice (IL-015: clears
     ``claimed_at``; ``surfaced`` was never set, since only an acknowledged
     receipt sets that).
@@ -438,9 +434,7 @@ def _release_ambient_dream_claim(
     flight.
     """
     try:
-        released = release_claim(
-            db, dream_id=dream_id, user_id=user_id, token=token
-        )
+        released = release_claim(db, dream_id=dream_id, user_id=user_id, token=token)
         db.commit()
         if not released:
             logger.info(
@@ -449,9 +443,7 @@ def _release_ambient_dream_claim(
             )
     except Exception:
         db.rollback()
-        logger.warning(
-            "Failed to release ambient dream claim %s", dream_id, exc_info=True
-        )
+        logger.warning("Failed to release ambient dream claim %s", dream_id, exc_info=True)
 
 
 def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | None:
@@ -544,8 +536,7 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | 
                 .where(
                     DreamJournal.id == candidate_id,
                     DreamJournal.surfaced.is_(False),
-                    (DreamJournal.claimed_at.is_(None))
-                    | (DreamJournal.claimed_at < stale_before),
+                    (DreamJournal.claimed_at.is_(None)) | (DreamJournal.claimed_at < stale_before),
                 )
                 .values(claimed_at=claim_at)
                 .returning(DreamJournal.id, DreamJournal.narrative)
@@ -560,8 +551,7 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | 
             # RETURNING gives us the value pre-commit, so an unusable
             # narrative rolls the claim back and the entry stays retriable.
             narrative = (
-                df(user_id, claimed.narrative, table="dream_journal", field="narrative")
-                or ""
+                df(user_id, claimed.narrative, table="dream_journal", field="narrative") or ""
             ).strip()
             # df() fails OPEN (returns the stored value) when the DEK went
             # away, so an intact ciphertext envelope means "not decrypted".
@@ -583,20 +573,14 @@ def _resolve_ambient_dream(db: Session, *, user_id: int) -> AmbientDreamClaim | 
         except Exception:
             # Decryption raised (corrupt AAD, revoked DEK, ...): never burn
             # the claim on a dream we cannot read.
-            logger.warning(
-                "Ambient dream claim aborted for user %s", user_id, exc_info=True
-            )
+            logger.warning("Ambient dream claim aborted for user %s", user_id, exc_info=True)
             db.rollback()
             return None
 
-    return AmbientDreamClaim(
-        dream_id=claimed.id, narrative=narrative[:240], claimed_at=claim_at
-    )
+    return AmbientDreamClaim(dream_id=claimed.id, narrative=narrative[:240], claimed_at=claim_at)
 
 
-def _reset_dream_residue_after_surfacing(
-    runtime_db: Session | None, *, user_id: int
-) -> None:
+def _reset_dream_residue_after_surfacing(runtime_db: Session | None, *, user_id: int) -> None:
     """IL-010 (PR #130 review): surfacing a dream through the ambient
     greeting must drain the runtime ``dream_residue`` pressure exactly like
     the initiative-delivery path does (``reset_drive`` + starvation-history
@@ -609,9 +593,7 @@ def _reset_dream_residue_after_surfacing(
     try:
         from anima_server.models.runtime_consciousness import DriveStateRow
 
-        row = runtime_db.scalar(
-            select(DriveStateRow).where(DriveStateRow.user_id == user_id)
-        )
+        row = runtime_db.scalar(select(DriveStateRow).where(DriveStateRow.user_id == user_id))
         if row is None:
             return
         row.dream_residue = 0.0
@@ -688,9 +670,7 @@ def _resolve_held_thought(
         return None
     from anima_server.models.runtime_consciousness import DriveStateRow
 
-    drive_row = runtime_db.scalar(
-        select(DriveStateRow).where(DriveStateRow.user_id == user_id)
-    )
+    drive_row = runtime_db.scalar(select(DriveStateRow).where(DriveStateRow.user_id == user_id))
     if (
         drive_row is None
         or drive_row.unresolved_thread < settings.greeting_held_thought_min_pressure
@@ -715,9 +695,7 @@ def _resolve_held_thought(
     local_zone = tz or system_zoneinfo()
     local_today = now.astimezone(local_zone).date()
     horizon_days = settings.initiative_unresolved_thread_horizon_days
-    row = db.scalar(
-        _open_in_horizon_foresight(user_id, local_today, horizon_days).limit(1)
-    )
+    row = db.scalar(_open_in_horizon_foresight(user_id, local_today, horizon_days).limit(1))
     if row is None:
         return None
     # Gap-spanning check (condition 4 above), in Python rather than SQL so
@@ -758,36 +736,45 @@ def gather_greeting_context(
     """Collect context for greeting generation."""
     # Get tasks info
     now = datetime.now(UTC)
-    tasks = db.scalars(
-        select(Task).where(Task.user_id == user_id,
-                           Task.completed_at.is_(None))
-    ).all()
+    task_session = require_active_task_authority_session(user_id)
+    tasks = [task for task in list_canonical_tasks(session=task_session) if not task.done]
 
-    open_count = 0
+    open_count = len(tasks)
     overdue_count = 0
     deadlines: list[str] = []
-
     for task in tasks:
-        open_count += 1
         if task.due_date:
-            if task.due_date < now:
+            due = date.fromisoformat(task.due_date)
+            if due < now.date():
                 overdue_count += 1
-            elif (task.due_date - now).days <= 3:
-                deadlines.append(task.title)
+            elif (due - now.date()).days <= 3:
+                deadlines.append(task.text)
 
     # Get last conversation time
     last_message = (
-        _latest_runtime_user_message(runtime_db, user_id)
-        if runtime_db is not None
-        else None
+        _latest_runtime_user_message(runtime_db, user_id) if runtime_db is not None else None
     )
     if last_message is None:
-        last_message = db.scalar(
-            select(AgentMessage)
-            .join(AgentThread, AgentMessage.thread_id == AgentThread.id)
-            .where(AgentThread.user_id == user_id, AgentMessage.role == "user")
-            .order_by(AgentMessage.created_at.desc())
+        from types import SimpleNamespace
+
+        from anima_server.services.corefs.content_authority import CoreFsAuthorityUnavailable
+        from anima_server.services.corefs.conversation_authority import (
+            active_conversation_authority_session,
+            list_canonical_threads,
         )
+
+        conversation_session = active_conversation_authority_session(user_id)
+        if conversation_session is None:
+            raise CoreFsAuthorityUnavailable(
+                "Canonical conversations require an unlocked CoreFS session."
+            )
+        timestamps = [
+            datetime.fromisoformat(message.created_at)
+            for thread in list_canonical_threads(session=conversation_session)
+            for message in thread.messages
+            if message.role == "user"
+        ]
+        last_message = SimpleNamespace(created_at=max(timestamps)) if timestamps else None
 
     days_since = None
     if last_message and last_message.created_at:
@@ -829,9 +816,7 @@ def gather_greeting_context(
 
     identity_block = get_identity_block(db, user_id=user_id)
     identity_summary = (
-        render_self_model_section(identity_block, user_id=user_id)
-        if identity_block
-        else None
+        render_self_model_section(identity_block, user_id=user_id) if identity_block else None
     )
 
     inner_state_block = None
@@ -844,15 +829,11 @@ def gather_greeting_context(
             inner_state_block = working_context.get("inner_state")
             working_memory_block = working_context.get("working_memory")
     except Exception:
-        inner_state_block = get_self_model_block(
-            db, user_id=user_id, section="inner_state")
-        working_memory_block = get_self_model_block(
-            db, user_id=user_id, section="working_memory")
+        inner_state_block = get_self_model_block(db, user_id=user_id, section="inner_state")
+        working_memory_block = get_self_model_block(db, user_id=user_id, section="working_memory")
 
     inner_state_summary = (
-        render_self_model_section(inner_state_block, user_id=user_id)
-        if inner_state_block
-        else None
+        render_self_model_section(inner_state_block, user_id=user_id) if inner_state_block else None
     )
     working_memory_summary = (
         render_self_model_section(working_memory_block, user_id=user_id)
@@ -889,13 +870,10 @@ def gather_greeting_context(
     is_birthday = False
     days_until_birthday: int | None = None
     try:
-        from sqlalchemy import text as _text
+        from anima_server.services.corefs.account_profile import read_active_account_profile
 
-        birthday_row = db.execute(
-            _text("SELECT birthday FROM users WHERE id = :uid"),
-            {"uid": user_id},
-        ).fetchone()
-        birthday_str = birthday_row[0] if birthday_row else None
+        profile = read_active_account_profile(user_id)
+        birthday_str = profile.birthday if profile is not None else None
         is_birthday, days_until_birthday = _birthday_context(birthday_str, now.date())
     except Exception:
         pass
@@ -930,8 +908,7 @@ def build_static_greeting(ctx: GreetingContext) -> str:
     elif ctx.days_since_last_chat == 1:
         parts.append("Good to see you today.")
     else:
-        parts.append(
-            f"It's been {ctx.days_since_last_chat} days. Welcome back.")
+        parts.append(f"It's been {ctx.days_since_last_chat} days. Welcome back.")
 
     if ctx.held_thought:
         parts.append(f'Something you mentioned stayed with me — "{ctx.held_thought}".')
@@ -1219,9 +1196,7 @@ async def generate_greeting(
 
     if settings.agent_provider == "scaffold":
         base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
-        voiced = _finalize_ambient_dream(
-            db, ctx, dream_claim, user_id=user_id, message=base
-        )
+        voiced = _finalize_ambient_dream(db, ctx, dream_claim, user_id=user_id, message=base)
         return GreetingResult(
             message=voiced.message,
             context=voiced.ctx,
@@ -1243,9 +1218,7 @@ async def generate_greeting(
         emotional_context = f"Last emotional read:\n{ctx.emotional_summary}"
     affect_hint = _render_affect_hint(runtime_db, user_id=user_id)
     if affect_hint:
-        emotional_context = (
-            f"{emotional_context}\nYour own current mood: {affect_hint}."
-        ).strip()
+        emotional_context = (f"{emotional_context}\nYour own current mood: {affect_hint}.").strip()
 
     time_context = ""
     if ctx.days_since_last_chat is not None:
@@ -1266,26 +1239,21 @@ async def generate_greeting(
         s = "s" if ctx.overdue_task_count != 1 else ""
         task_parts.append(f"{ctx.overdue_task_count} overdue task{s}")
     if ctx.upcoming_deadlines:
-        task_parts.append(
-            f"Upcoming deadlines: {', '.join(ctx.upcoming_deadlines[:3])}")
+        task_parts.append(f"Upcoming deadlines: {', '.join(ctx.upcoming_deadlines[:3])}")
     if ctx.open_task_count:
         task_parts.append(f"{ctx.open_task_count} open tasks total")
     if ctx.current_focus:
         task_parts.append(f"Current focus: {ctx.current_focus}")
     if task_parts:
-        task_context = "Task context:\n" + \
-            "\n".join(f"- {p}" for p in task_parts)
+        task_context = "Task context:\n" + "\n".join(f"- {p}" for p in task_parts)
 
     memory_context_parts: list[str] = []
     if ctx.inner_state_summary:
-        memory_context_parts.append(
-            f"Your inner state:\n{ctx.inner_state_summary}")
+        memory_context_parts.append(f"Your inner state:\n{ctx.inner_state_summary}")
     if ctx.working_memory_summary:
-        memory_context_parts.append(
-            f"Things you're holding in mind:\n{ctx.working_memory_summary}")
+        memory_context_parts.append(f"Things you're holding in mind:\n{ctx.working_memory_summary}")
     if ctx.recent_episode_summary:
-        memory_context_parts.append(
-            f"Recent conversations:\n{ctx.recent_episode_summary}")
+        memory_context_parts.append(f"Recent conversations:\n{ctx.recent_episode_summary}")
     memory_context = "\n\n".join(memory_context_parts)
 
     if ctx.is_birthday:
@@ -1293,8 +1261,7 @@ async def generate_greeting(
     elif ctx.days_until_birthday is not None and ctx.days_until_birthday <= 7:
         days = ctx.days_until_birthday
         time_context = (
-            time_context
-            + f"\nThe user's birthday is in {days} day{'s' if days != 1 else ''}."
+            time_context + f"\nThe user's birthday is in {days} day{'s' if days != 1 else ''}."
         ).strip()
 
     if ctx.held_thought:
@@ -1364,16 +1331,12 @@ async def generate_greeting(
             # decrypted dream narrative to a cloud provider — breaking both
             # the on-device promise in AiSettings and this feature's own
             # invariant that the dream never enters any LLM prompt.
-            pills = await generate_thought_pills(
-                prompt_loader, greeting_message=message, ctx=ctx
-            )
+            pills = await generate_thought_pills(prompt_loader, greeting_message=message, ctx=ctx)
             # Voicing is OUR responsibility, not the model's — and the
             # decision runs under the consent lock, appending the same
             # sentence the static greeting uses while keeping the pre-append
             # text as the LLM-safe handoff copy (PR #130 review).
-            voiced = _finalize_ambient_dream(
-                db, ctx, dream_claim, user_id=user_id, message=message
-            )
+            voiced = _finalize_ambient_dream(db, ctx, dream_claim, user_id=user_id, message=message)
             return GreetingResult(
                 ambient_dream_id=voiced.dream_id,
                 ambient_dream_expires_at=voiced.expires_at,
@@ -1390,9 +1353,7 @@ async def generate_greeting(
 
     # Fallback to static
     base = build_static_greeting(dataclasses.replace(ctx, ambient_dream=None))
-    voiced = _finalize_ambient_dream(
-        db, ctx, dream_claim, user_id=user_id, message=base
-    )
+    voiced = _finalize_ambient_dream(db, ctx, dream_claim, user_id=user_id, message=base)
     return GreetingResult(
         message=voiced.message,
         context=voiced.ctx,
@@ -1465,8 +1426,7 @@ async def generate_thought_pills(
         context=context_block,
     )
     system_content = (
-        "You label a greeting with 2-4 short tags. "
-        "Respond with ONLY a JSON array, no prose."
+        "You label a greeting with 2-4 short tags. Respond with ONLY a JSON array, no prose."
     )
 
     try:
@@ -1527,11 +1487,7 @@ async def generate_proactive_notice(
 
     effective_instruction = (instruction or "").strip() or config.custom_instruction
     ctx = gather_greeting_context(db, user_id=user_id, runtime_db=runtime_db)
-    if (
-        runtime_db is not None
-        and config.memory_nudges_enabled
-        and not effective_instruction
-    ):
+    if runtime_db is not None and config.memory_nudges_enabled and not effective_instruction:
         image_candidate = select_proactive_image_candidate(runtime_db, user_id=user_id)
         if image_candidate is not None:
             mark_proactive_image_prompted(
@@ -1568,9 +1524,7 @@ async def generate_proactive_notice(
         prompt_parts.append("Today is the user's birthday.")
     elif ctx.days_until_birthday is not None and ctx.days_until_birthday <= 7:
         days = ctx.days_until_birthday
-        prompt_parts.append(
-            f"The user's birthday is in {days} day{'s' if days != 1 else ''}."
-        )
+        prompt_parts.append(f"The user's birthday is in {days} day{'s' if days != 1 else ''}.")
     if effective_instruction:
         prompt_parts.append(f"User customization: {effective_instruction}")
     if config.task_nudges_enabled and ctx.overdue_task_count:
@@ -1643,6 +1597,7 @@ async def generate_proactive_notice(
 
 _REFLECTION_LLM_TIMEOUT_SECONDS = 8.0
 _REFLECTION_LLM_MAX_TOKENS = 80
+
 
 @dataclass(frozen=True)
 class ReflectionResult:
@@ -1746,9 +1701,7 @@ async def generate_reflection(
     # --- Attempt memory-curiosity anchor first ---
     anchor = _find_curiosity_anchor(db, user_id)
     if anchor:
-        anchor_summary = df(
-            user_id, anchor.summary, table="memory_episodes", field="summary"
-        )
+        anchor_summary = df(user_id, anchor.summary, table="memory_episodes", field="summary")
         try:
             prompt = prompt_loader.memory_curiosity(
                 identity_context=identity_context,

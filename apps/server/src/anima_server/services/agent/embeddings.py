@@ -1,8 +1,7 @@
 """Vector embedding support for semantic memory search.
 
-Generates embeddings via LLM providers and stores them in both:
-- RuntimeEmbedding table in PostgreSQL via pgvector (for fast ANN search)
-- MemoryItem.embedding_json (portable cache for .anima/ transfers)
+Generates embeddings via LLM providers for disposable Runtime indexes and
+unlock-scoped memory. Soul retains the text needed to rebuild them.
 
 OpenAI-compatible providers use /v1/embeddings. Ollama uses its native
 /api/embed endpoint.
@@ -177,19 +176,14 @@ def _validate_embedding_provider_configuration(provider: str) -> None:
         "openai",
         "doubleword",
     ) and not _resolve_embedding_api_key(provider):
-        key_hint = (
-            "ANIMA_AGENT_EMBEDDING_API_KEY, saved provider API key, "
-            "or ANIMA_AGENT_API_KEY"
-        )
+        key_hint = "ANIMA_AGENT_EMBEDDING_API_KEY, saved provider API key, or ANIMA_AGENT_API_KEY"
         env_name = _EMBEDDING_API_KEY_ENV.get(provider)
         if env_name is not None:
             key_hint = (
                 "ANIMA_AGENT_EMBEDDING_API_KEY, saved provider API key, "
                 f"ANIMA_AGENT_API_KEY, or {env_name}"
             )
-        raise LLMConfigError(
-            f"{key_hint} is required when embedding_provider='{provider}'"
-        )
+        raise LLMConfigError(f"{key_hint} is required when embedding_provider='{provider}'")
 
 
 def validate_provider_configuration(provider: str) -> None:
@@ -449,7 +443,8 @@ def get_embedding_cache_stats() -> dict[str, int]:
     """Return cache hit/miss counters for monitoring."""
     with _provider_unavailable_lock:
         cooling_down = sum(
-            1 for unavailable_until in _provider_unavailable_until.values()
+            1
+            for unavailable_until in _provider_unavailable_until.values()
             if unavailable_until > time.monotonic()
         )
     return {
@@ -480,14 +475,14 @@ async def generate_embedding(text: str) -> list[float] | None:
 
     skip_reason = _embedding_skip_reason(provider)
     if skip_reason is not None:
-        logger.debug(
-            "Skipping embedding generation for provider %s: %s", provider, skip_reason)
+        logger.debug("Skipping embedding generation for provider %s: %s", provider, skip_reason)
         return None
 
     missing_model_reason = _missing_default_model_reason(provider)
     if missing_model_reason is not None:
         logger.debug(
-            "Skipping embedding generation for provider %s: %s", provider, missing_model_reason)
+            "Skipping embedding generation for provider %s: %s", provider, missing_model_reason
+        )
         return None
 
     # Check cache first
@@ -502,8 +497,7 @@ async def generate_embedding(text: str) -> list[float] | None:
     try:
         validate_provider_configuration(provider)
     except LLMConfigError as exc:
-        logger.debug(
-            "Skipping embedding generation for provider %s: %s", provider, exc)
+        logger.debug("Skipping embedding generation for provider %s: %s", provider, exc)
         return None
 
     try:
@@ -518,8 +512,7 @@ async def generate_embedding(text: str) -> list[float] | None:
             # openrouter, vllm — all OpenAI-compatible
             result = await _embed_openai_compatible(prepared_text)
     except LLMConfigError as exc:
-        logger.debug(
-            "Skipping embedding generation for provider %s: %s", provider, exc)
+        logger.debug("Skipping embedding generation for provider %s: %s", provider, exc)
         return None
     except httpx.HTTPError as exc:
         _mark_provider_unavailable(
@@ -530,8 +523,7 @@ async def generate_embedding(text: str) -> list[float] | None:
         )
         return None
     except Exception:
-        logger.exception(
-            "Embedding generation failed for provider %s", provider)
+        logger.exception("Embedding generation failed for provider %s", provider)
         return None
 
     if result is not None:
@@ -686,9 +678,7 @@ def _semantic_ranked_ids(
         # against them would be wrong or raise.  Degrade loudly (once per
         # process the contract check logged ERROR).  The gate is per-user:
         # another user completing their re-embed doesn't re-enable this one.
-        logger.debug(
-            "Semantic leg skipped for user %d: re-embed required", user_id
-        )
+        logger.debug("Semantic leg skipped for user %d: re-embed required", user_id)
         return []
 
     rust_ranked = _semantic_ranked_ids_via_rust(
@@ -716,13 +706,34 @@ def _semantic_ranked_ids(
         )
     except Exception:
         logger.debug("Semantic search failed in hybrid_search")
-        return []
+        vs_results = []
 
-    return [
-        (int(result["id"]), float(result["similarity"]))
-        for result in vs_results
-        if float(result["similarity"]) >= similarity_threshold
-    ]
+    if vs_results:
+        return [
+            (int(result["id"]), float(result["similarity"]))
+            for result in vs_results
+            if float(result["similarity"]) >= similarity_threshold
+        ]
+
+    # Runtime and native indexes are disposable. Cold recall still works from
+    # retained text while those indexes are empty or unavailable; model vectors
+    # rebuild lazily in the current unlocked Core scope.
+    ranked: list[tuple[int, float]] = []
+    for item in db.scalars(
+        select(MemoryItem).where(
+            MemoryItem.user_id == user_id,
+            MemoryItem.superseded_by.is_(None),
+            MemoryItem.distilled_at.is_(None),
+        )
+    ).all():
+        embedding, _ = _validated_cached_embedding(item)
+        if embedding is None:
+            continue
+        similarity = cosine_similarity(query_embedding, embedding)
+        if similarity >= similarity_threshold:
+            ranked.append((item.id, similarity))
+    ranked.sort(key=lambda pair: pair[1], reverse=True)
+    return ranked[:limit]
 
 
 def _semantic_ranked_ids_via_rust(
@@ -797,6 +808,7 @@ async def semantic_search(
         for item in db.scalars(
             select(MemoryItem).where(
                 MemoryItem.id.in_(item_ids),
+                MemoryItem.user_id == user_id,
                 # Best-effort index cleanup after distillation may lag, so
                 # exclude tombstones SQL-side rather than trust the index.
                 MemoryItem.distilled_at.is_(None),
@@ -822,12 +834,10 @@ async def embed_memory_item(
 ) -> bool:
     """Generate and store an embedding for a single memory item.
 
-    Stores in both the embedding_json column (for portability/fallback)
-    and the RuntimeEmbedding table in PG (for fast search via pgvector).
+    Stores only in unlock-scoped memory and the disposable Runtime index.
     Returns True if successful.
     """
-    plaintext = df(item.user_id, item.content,
-                   table="memory_items", field="content")
+    plaintext = df(item.user_id, item.content, table="memory_items", field="content")
     prepared_text = prepare_embedding_text(plaintext)
     embedding = await generate_embedding(prepared_text)
     if embedding is None:
@@ -888,18 +898,18 @@ async def backfill_embeddings(
     """Generate embeddings for all items that don't have one yet. Returns count of items embedded."""
     items = list(
         db.scalars(
-            select(MemoryItem)
-            .where(
+            select(MemoryItem).where(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
-                MemoryItem.embedding_json.is_(None),
                 # IL5 tombstones are content-free with a nulled embedding by
                 # design — never an "unembedded active item" to backfill.
                 MemoryItem.distilled_at.is_(None),
             )
-            .limit(batch_size)
         ).all()
     )
+    from anima_server.services.agent.derived_soul_state import _entry
+
+    items = [item for item in items if _entry(item, rebuild=False) is None][:batch_size]
 
     if not items:
         return 0
@@ -946,13 +956,12 @@ def sync_to_vector_store(
     *,
     user_id: int,
 ) -> int:
-    """Sync all items with existing embeddings into the vector store. Used after vault import."""
+    """Rebuild disposable indexes from retained Soul text and unlock-scoped vectors."""
     items = list(
         db.scalars(
             select(MemoryItem).where(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
-                MemoryItem.embedding_json.isnot(None),
             )
         ).all()
     )
@@ -992,8 +1001,7 @@ def sync_to_vector_store(
 
         return rebuild_user_index(user_id, index_data, db=db)
     except Exception:
-        logger.exception(
-            "Failed to sync embeddings to vector store for user %d", user_id)
+        logger.exception("Failed to sync embeddings to vector store for user %d", user_id)
         # Preserve the retry: the caller consumed the dirty marker before this
         # pass, so if the vector store is still unavailable we must re-arm it or
         # a later maintenance pass would never retry and the user stays missing
@@ -1009,13 +1017,12 @@ def sync_embeddings_to_runtime(
     *,
     user_id: int,
 ) -> int:
-    """Sync cached soul embeddings into the runtime pgvector store."""
+    """Rebuild runtime pgvector from retained text and unlock-scoped vectors."""
     items = list(
         soul_db.scalars(
             select(MemoryItem).where(
                 MemoryItem.user_id == user_id,
                 MemoryItem.superseded_by.is_(None),
-                MemoryItem.embedding_json.isnot(None),
             )
         ).all()
     )
@@ -1028,12 +1035,10 @@ def sync_embeddings_to_runtime(
 
         runtime_db = get_runtime_session_factory()()
     except RuntimeError:
-        logger.debug(
-            "Runtime PG unavailable for embedding sync for user %d", user_id)
+        logger.debug("Runtime PG unavailable for embedding sync for user %d", user_id)
         return -1
     except Exception:
-        logger.debug("Failed to open runtime PG session for user %d",
-                     user_id, exc_info=True)
+        logger.debug("Failed to open runtime PG session for user %d", user_id, exc_info=True)
         return -1
 
     try:
@@ -1048,8 +1053,7 @@ def sync_embeddings_to_runtime(
             if embedding is None:
                 continue
 
-            plaintext = df(user_id, item.content,
-                           table="memory_items", field="content")
+            plaintext = df(user_id, item.content, table="memory_items", field="content")
             with contextlib.suppress(Exception):
                 from anima_server.services.agent.memory_store import (
                     sync_memory_item_to_retrieval_index,
@@ -1077,8 +1081,7 @@ def sync_embeddings_to_runtime(
         return count
     except Exception:
         runtime_db.rollback()
-        logger.exception(
-            "Failed to sync embeddings to runtime PG for user %d", user_id)
+        logger.exception("Failed to sync embeddings to runtime PG for user %d", user_id)
         return -1
     finally:
         runtime_db.close()
@@ -1150,24 +1153,18 @@ def _blend_keyword_scores(
     n = len(results)
     rrf_scores = [score for _, score in results]
     max_rrf = max(rrf_scores)
-    norm_rrf = (
-        [score / max_rrf for score in rrf_scores] if max_rrf > 0.0 else [0.0] * n
-    )
+    norm_rrf = [score / max_rrf for score in rrf_scores] if max_rrf > 0.0 else [0.0] * n
 
     if not keyword_ranked:
         # No lexical signal to blend — return the RRF ranking (already sorted)
         # rescaled to [0, 1] so it is comparable to the blended path and
         # survives the downstream absolute-threshold gate.
-        return [
-            (item, norm_rrf[i]) for i, (item, _original_score) in enumerate(results)
-        ]
+        return [(item, norm_rrf[i]) for i, (item, _original_score) in enumerate(results)]
 
     bm25_by_id = {item_id: score for item_id, score in keyword_ranked}
     bm25_scores = [bm25_by_id.get(item.id, 0.0) for item, _ in results]
     max_bm25 = max(bm25_scores)
-    norm_bm25 = (
-        [score / max_bm25 for score in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
-    )
+    norm_bm25 = [score / max_bm25 for score in bm25_scores] if max_bm25 > 0.0 else [0.0] * n
 
     combined = [
         (item, rrf_weight * norm_rrf[i] + bm25_weight * norm_bm25[i])
@@ -1216,9 +1213,7 @@ def recency_heat_rerank(
             days = max(0.0, (ref_now - recency_ref).total_seconds() / 86400.0)
             recency = math.exp(-days / tau_days)
         heat_norm = (item.heat or 0.0) / max_heat if max_heat > 0.0 else 0.0
-        blended.append(
-            (item, w_rel * score + w_recency * recency + w_heat * heat_norm)
-        )
+        blended.append((item, w_rel * score + w_recency * recency + w_heat * heat_norm))
 
     blended.sort(key=lambda pair: pair[1], reverse=True)
     return blended
@@ -1251,12 +1246,10 @@ def _reciprocal_rank_fusion(
     scores: dict[int, float] = {}
 
     for rank, (item_id, _sim) in enumerate(semantic_ranked):
-        scores[item_id] = scores.get(
-            item_id, 0.0) + semantic_weight / (_RRF_K + rank + 1)
+        scores[item_id] = scores.get(item_id, 0.0) + semantic_weight / (_RRF_K + rank + 1)
 
     for rank, (item_id, _sim) in enumerate(keyword_ranked):
-        scores[item_id] = scores.get(
-            item_id, 0.0) + keyword_weight / (_RRF_K + rank + 1)
+        scores[item_id] = scores.get(item_id, 0.0) + keyword_weight / (_RRF_K + rank + 1)
 
     merged = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return merged
@@ -1360,6 +1353,7 @@ async def hybrid_search(
             for item in db.scalars(
                 select(MemoryItem).where(
                     MemoryItem.id.in_(merged_ids),
+                    MemoryItem.user_id == user_id,
                     # Tombstone guard: a lagging index must not resurface a
                     # distilled item through the hybrid-search path.
                     MemoryItem.distilled_at.is_(None),
@@ -1496,7 +1490,8 @@ async def generate_embeddings_batch(
     skip_reason = _embedding_skip_reason(provider)
     if skip_reason is not None:
         logger.debug(
-            "Skipping batch embedding generation for provider %s: %s", provider, skip_reason)
+            "Skipping batch embedding generation for provider %s: %s", provider, skip_reason
+        )
         return [None] * len(texts)
 
     missing_model_reason = _missing_default_model_reason(provider)
@@ -1546,9 +1541,7 @@ async def generate_embeddings_batch(
 
 def _prepare_non_empty_items(texts: list[str]) -> list[tuple[int, str]]:
     """Return ``(original_index, prepared_text)`` pairs for non-empty texts."""
-    prepared_items = [
-        (index, prepare_embedding_text(text)) for index, text in enumerate(texts)
-    ]
+    prepared_items = [(index, prepare_embedding_text(text)) for index, text in enumerate(texts)]
     return [item for item in prepared_items if item[1]]
 
 
@@ -1581,7 +1574,7 @@ async def _batch_embed_openai_compatible(
     batch_size = min(max_batch_size, len(texts))
 
     for start in range(0, len(texts), batch_size):
-        chunk = texts[start: start + batch_size]
+        chunk = texts[start : start + batch_size]
         current_batch = len(chunk)
 
         while current_batch >= 1:
@@ -1589,7 +1582,7 @@ async def _batch_embed_openai_compatible(
                 async with httpx.AsyncClient(timeout=60.0) as client:
                     # Process sub-chunks if we had to halve
                     for sub_start in range(0, len(chunk), current_batch):
-                        sub_chunk = chunk[sub_start: sub_start + current_batch]
+                        sub_chunk = chunk[sub_start : sub_start + current_batch]
                         resp = await client.post(
                             f"{base_url}/embeddings",
                             headers=headers,

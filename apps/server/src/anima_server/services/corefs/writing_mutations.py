@@ -9,13 +9,13 @@ from threading import RLock
 from typing import Any
 
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.catalog_reader import (
+    portable_catalog_component,
+    stable_opaque_id,
+)
 from anima_server.services.corefs.content_authority import (
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
-)
-from anima_server.services.corefs.diary_migration import (
-    migration_opaque_id,
-    portable_catalog_component,
 )
 from anima_server.services.corefs.formats import (
     DIARY_CONTENT_TYPE,
@@ -62,7 +62,7 @@ def create_canonical_diary_entry(
                 if record.document.legacy_id is not None
             }
             legacy_id = _new_legacy_id(existing_ids)
-            stable_id = migration_opaque_id("diary-entry", str(legacy_id))
+            stable_id = stable_opaque_id("diary-entry", str(legacy_id))
             now = _timestamp()
             document = DiaryDocument(
                 format_version=1,
@@ -128,7 +128,7 @@ def upsert_canonical_draft(
 ) -> CanonicalDraft:
     with _writing_lock(int(session.user_id)):
         catalog = read_canonical_writing_catalog(session=session)
-        stable_id = migration_opaque_id("diary-draft", draft_id)
+        stable_id = stable_opaque_id("diary-draft", draft_id)
         existing = next(
             (draft for draft in catalog.drafts if draft.document.stable_id == stable_id),
             None,
@@ -401,7 +401,7 @@ def create_canonical_diary_folder(*, session: Any, name: str) -> CanonicalDiaryF
         for _attempt in range(_MAX_ATTEMPTS):
             catalog = read_canonical_writing_catalog(session=session)
             legacy_id = _new_legacy_id({folder.legacy_id for folder in catalog.folders})
-            seed = migration_opaque_id("diary-folder", str(legacy_id))
+            seed = stable_opaque_id("diary-folder", str(legacy_id))
             component = portable_catalog_component(f"{legacy_id}--{name}", stable_id=seed)
             try:
                 _execute(

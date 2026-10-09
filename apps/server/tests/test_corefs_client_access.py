@@ -52,6 +52,60 @@ def _clear_capabilities() -> None:
     client_capability_broker.revoke_all()
 
 
+def test_registry_write_supports_platform_without_descriptor_chmod(tmp_path, monkeypatch):
+    from anima_server.services.corefs import client_access
+
+    registry = tmp_path / "corefs-client-access.json"
+    monkeypatch.setattr(client_access, "_registry_path", lambda: registry)
+    monkeypatch.setattr(client_access, "get_core_id", lambda: "core-a")
+    monkeypatch.setattr(client_access, "_local_instance_id", lambda: "instance-a")
+    monkeypatch.delattr(os, "fchmod", raising=False)
+    payload = client_access._empty_registry()
+    client_access._write(payload)
+    assert client_access._load() == payload
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_registry_permission_failure_closes_handle_before_cleanup(tmp_path, monkeypatch):
+    from anima_server.services.corefs import client_access
+
+    registry = tmp_path / "corefs-client-access.json"
+    monkeypatch.setattr(client_access, "_registry_path", lambda: registry)
+    monkeypatch.setattr(client_access, "get_core_id", lambda: "core-a")
+    monkeypatch.setattr(client_access, "_local_instance_id", lambda: "instance-a")
+
+    def denied(descriptor, mode):
+        raise PermissionError("injected permission failure")
+
+    monkeypatch.setattr(os, "fchmod", denied, raising=False)
+    with pytest.raises(PermissionError, match="injected permission failure"):
+        client_access._write(client_access._empty_registry())
+    assert not registry.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_registry_file_open_failure_closes_raw_descriptor(tmp_path, monkeypatch):
+    from anima_server.services.corefs import client_access
+
+    registry = tmp_path / "corefs-client-access.json"
+    monkeypatch.setattr(client_access, "_registry_path", lambda: registry)
+    monkeypatch.setattr(client_access, "get_core_id", lambda: "core-a")
+    monkeypatch.setattr(client_access, "_local_instance_id", lambda: "instance-a")
+    descriptors = []
+
+    def denied(descriptor, mode):
+        descriptors.append(descriptor)
+        raise OSError("injected file-open failure")
+
+    monkeypatch.setattr(os, "fdopen", denied)
+    with pytest.raises(OSError, match="injected file-open failure"):
+        client_access._write(client_access._empty_registry())
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert not registry.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_grants_require_user_confirmation_and_follow_stable_folder_id(
     managed_tmp_path: Path,
 ) -> None:

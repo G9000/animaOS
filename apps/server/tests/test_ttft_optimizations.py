@@ -6,10 +6,11 @@ from __future__ import annotations
 import asyncio
 import time
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.services.agent import embeddings
 from anima_server.services.agent.delegation import DelegatedToolResult
 from anima_server.services.agent.executor import ToolExecutor
@@ -29,7 +30,7 @@ def soul_factory():
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with factory() as db:
-        db.add(User(username="ttft", password_hash="x", display_name="T"))
+        db.add(SoulOwner(core_owner_id=str(uuid4())))
         db.commit()
     yield factory
     engine.dispose()

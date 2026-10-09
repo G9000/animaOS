@@ -23,10 +23,20 @@ from anima_server.services.documents.parsing import (
     ExtractionOutcome,
 )
 from anima_server.services.documents.pdf_text import PageText
+from corefs_document_test_support import CanonicalDocumentOriginals, canonical_document_uri
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 pytest_plugins = ("conftest_runtime",)
+
+
+@pytest.fixture(autouse=True)
+def canonical_original_boundary(monkeypatch):
+    originals = CanonicalDocumentOriginals()
+    originals.install(monkeypatch)
+    monkeypatch.setattr(f"{__name__}.register_document", originals.register)
+    return originals
+
 
 # Derived from the actual bound column rather than hardcoded: the pgvector
 # column dimension is fixed once per process (baked in at first import of
@@ -100,7 +110,7 @@ def preview_document(
             user_id=user_id,
             filename="manual.pdf",
             mime_type="application/pdf",
-            storage_path=f".anima/documents/{user_id}/manual.pdf",
+            storage_path=canonical_document_uri(user_id, "a" * 64),
             sha256="a" * 64,
             size_bytes=2048,
         ),
@@ -187,12 +197,8 @@ def test_reparse_uses_default_embedder_for_source_sync_when_none_passed(
         recorded["embedding_fn"] = kwargs.get("embedding_fn")
         return real_sync_document_source(*args, **kwargs)
 
-    monkeypatch.setattr(
-        reparse, "sync_document_source", recording_sync_document_source
-    )
-    monkeypatch.setattr(
-        reparse, "generate_embedding", lambda text: _embedding(0.4, 0.5, 0.6)
-    )
+    monkeypatch.setattr(reparse, "sync_document_source", recording_sync_document_source)
+    monkeypatch.setattr(reparse, "generate_embedding", lambda text: _embedding(0.4, 0.5, 0.6))
 
     result = reparse.reparse_document(
         runtime_db,
@@ -328,9 +334,7 @@ def test_reparse_returns_parser_unavailable_when_extraction_raises_parsing_error
     status mapping."""
 
     def raise_parsing_error(path: str) -> Any:
-        raise DocumentParsingError(
-            "the quality parser is not installed; install the docling extra"
-        )
+        raise DocumentParsingError("the quality parser is not installed; install the docling extra")
 
     monkeypatch.setattr(reparse, "extract_document_text", raise_parsing_error)
 
@@ -364,9 +368,9 @@ def test_list_reparse_candidates_returns_non_docling_indexed(
     runtime_db: Session,
     preview_document: RuntimeDocument,
 ) -> None:
-    assert reparse.list_reparse_candidates(
-        runtime_db, user_id=preview_document.user_id
-    ) == [preview_document.id]
+    assert reparse.list_reparse_candidates(runtime_db, user_id=preview_document.user_id) == [
+        preview_document.id
+    ]
 
 
 def test_list_reparse_candidates_excludes_docling_documents(
@@ -376,10 +380,7 @@ def test_list_reparse_candidates_excludes_docling_documents(
     preview_document.parse_quality = "docling"
     runtime_db.flush()
 
-    assert (
-        reparse.list_reparse_candidates(runtime_db, user_id=preview_document.user_id)
-        == []
-    )
+    assert reparse.list_reparse_candidates(runtime_db, user_id=preview_document.user_id) == []
 
 
 def test_list_reparse_candidates_excludes_unindexed_documents(
@@ -389,10 +390,7 @@ def test_list_reparse_candidates_excludes_unindexed_documents(
     preview_document.status = "registered"
     runtime_db.flush()
 
-    assert (
-        reparse.list_reparse_candidates(runtime_db, user_id=preview_document.user_id)
-        == []
-    )
+    assert reparse.list_reparse_candidates(runtime_db, user_id=preview_document.user_id) == []
 
 
 def test_mark_docling_reparse_failed_excludes_within_cooldown(
@@ -413,9 +411,12 @@ def test_mark_docling_reparse_failed_excludes_within_cooldown(
     )
     runtime_db.flush()
 
-    assert reparse.list_reparse_candidates(
-        runtime_db, user_id=preview_document.user_id, failure_cooldown_hours=24
-    ) == []
+    assert (
+        reparse.list_reparse_candidates(
+            runtime_db, user_id=preview_document.user_id, failure_cooldown_hours=24
+        )
+        == []
+    )
 
 
 def test_mark_docling_reparse_failed_excludes_sealed_document_within_cooldown(
@@ -440,7 +441,7 @@ def test_mark_docling_reparse_failed_excludes_sealed_document_within_cooldown(
             user_id=7,
             filename="sealed-manual.pdf",
             mime_type="application/pdf",
-            storage_path=".anima/documents/7/sealed-manual.pdf",
+            storage_path=canonical_document_uri(7, "b" * 64),
             sha256="b" * 64,
             size_bytes=2048,
         ),
@@ -453,7 +454,7 @@ def test_mark_docling_reparse_failed_excludes_sealed_document_within_cooldown(
             user_id=7,
             filename="later-manual.pdf",
             mime_type="application/pdf",
-            storage_path=".anima/documents/7/later-manual.pdf",
+            storage_path=canonical_document_uri(7, "c" * 64),
             sha256="c" * 64,
             size_bytes=2048,
         ),
@@ -476,9 +477,9 @@ def test_mark_docling_reparse_failed_excludes_sealed_document_within_cooldown(
     runtime_db.expunge_all()
 
     assert raw_metadata is None
-    assert reparse.list_reparse_candidates(
-        runtime_db, user_id=7, failure_cooldown_hours=24
-    ) == [later_document.id]
+    assert reparse.list_reparse_candidates(runtime_db, user_id=7, failure_cooldown_hours=24) == [
+        later_document.id
+    ]
 
 
 def test_list_reparse_candidates_retries_failed_document_after_cooldown(
@@ -516,6 +517,6 @@ def test_list_reparse_candidates_ignores_failure_marker_when_cooldown_disabled(
     assert reparse.list_reparse_candidates(
         runtime_db, user_id=preview_document.user_id, failure_cooldown_hours=0
     ) == [preview_document.id]
-    assert reparse.list_reparse_candidates(
-        runtime_db, user_id=preview_document.user_id
-    ) == [preview_document.id]
+    assert reparse.list_reparse_candidates(runtime_db, user_id=preview_document.user_id) == [
+        preview_document.id
+    ]

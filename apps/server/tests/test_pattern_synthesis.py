@@ -4,11 +4,12 @@ import json
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import datetime
+from uuid import uuid4
 
 import pytest
 from anima_server.config import settings
 from anima_server.db.base import Base
-from anima_server.models import MemoryEpisode, MemoryItem, User
+from anima_server.models import MemoryEpisode, MemoryItem, SoulOwner
 from anima_server.services.data_crypto import df, ef
 from anima_server.services.regeneration_work import mark_regeneration_work
 from anima_server.services.sessions import unlock_session_store
@@ -52,8 +53,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="pattern-user", display_name="Pattern User", password_hash="x")
+def _make_user(db: Session) -> SoulOwner:
+    user = SoulOwner(core_owner_id=str(uuid4()))
     db.add(user)
     db.flush()
     return user
@@ -143,9 +144,7 @@ def test_episode_sampling_skips_stale_episodes_marked_for_regeneration() -> None
             topics=["private"],
             significance=5,
         )
-        mark_regeneration_work(
-            {(int(user.id), "memory_episode", int(stale.id))}
-        )
+        mark_regeneration_work({(int(user.id), "memory_episode", int(stale.id))})
         active_first = _episode(
             db,
             user_id=user.id,
@@ -229,7 +228,6 @@ def test_prompt_episode_rendering_decrypts_emotional_arc() -> None:
             rendered = _render_episodes_for_prompt([episode], user_id=user.id)
         finally:
             unlock_session_store.revoke(token)
-
 
     assert "anxious -> relieved" in rendered
     assert "enc2:" not in rendered

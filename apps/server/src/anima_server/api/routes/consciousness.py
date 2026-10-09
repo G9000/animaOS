@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -20,7 +20,6 @@ from anima_server.services.corefs.account_profile import (
 )
 from anima_server.services.corefs.asset_authority import (
     CoreFsSourceError,
-    asset_corefs_authority_active,
     open_corefs_byte_source,
     read_canonical_asset_catalog,
 )
@@ -29,15 +28,14 @@ from anima_server.services.corefs.asset_mutations import (
     trash_canonical_asset,
     upsert_canonical_binary_asset,
 )
-from anima_server.services.corefs.diary_migration import migration_opaque_id
+from anima_server.services.corefs.catalog_reader import stable_opaque_id
 from anima_server.services.corefs.logical import CoreFsMutationUnavailable
-from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 from anima_server.services.data_crypto import df
 
 router = APIRouter(prefix="/api/consciousness", tags=["consciousness"])
 logger = logging.getLogger(__name__)
 
-_AGENT_AVATAR_STABLE_ID = migration_opaque_id("identity-avatar", "agent-profile")
+_AGENT_AVATAR_STABLE_ID = stable_opaque_id("identity-avatar", "agent-profile")
 
 
 def _agent_avatar_url(user_id: int) -> str:
@@ -47,8 +45,7 @@ def _agent_avatar_url(user_id: int) -> str:
 def _canonical_agent_avatar_url(*, session: object, user_id: int) -> str | None:
     catalog = read_canonical_asset_catalog(session=session)
     if any(
-        record.stable_id == _AGENT_AVATAR_STABLE_ID
-        and record.object_kind == "gallery-asset"
+        record.stable_id == _AGENT_AVATAR_STABLE_ID and record.object_kind == "gallery-asset"
         for record in catalog.assets
     ):
         return _agent_avatar_url(user_id)
@@ -281,10 +278,7 @@ def _list_pending_ops(runtime_db: Session | None, *, user_id: int) -> list[dict[
 
     from anima_server.services.agent.pending_ops import get_pending_ops
 
-    return [
-        _pending_op_dict(op=op)
-        for op in get_pending_ops(runtime_db, user_id=user_id)
-    ]
+    return [_pending_op_dict(op=op) for op in get_pending_ops(runtime_db, user_id=user_id)]
 
 
 def _profile_field_response(*, user_id: int, field) -> UserProfileFieldResponse:
@@ -372,7 +366,13 @@ async def get_full_self_model(
     sections: dict[str, object] = {}
 
     for section_name, block in blocks.items():
-        if section_name in {"identity", "growth_log", "inner_state", "working_memory", "intentions"}:
+        if section_name in {
+            "identity",
+            "growth_log",
+            "inner_state",
+            "working_memory",
+            "intentions",
+        }:
             continue
         content = render_self_model_section(block, user_id=user_id)
         # Overlay unconsolidated pending ops for writable core-memory blocks
@@ -381,7 +381,10 @@ async def get_full_self_model(
             from anima_server.services.agent.memory_blocks import build_merged_block_content
 
             content = build_merged_block_content(
-                db, runtime_db, user_id=user_id, section=section_name,
+                db,
+                runtime_db,
+                user_id=user_id,
+                section=section_name,
             )
         sections[section_name] = _section_dict(
             content=content,
@@ -431,8 +434,7 @@ async def get_full_self_model(
     intentions_block = get_active_intentions(runtime_db or db, user_id=user_id)
     if intentions_block is not None:
         sections["intentions"] = _section_dict(
-            content=render_self_model_section(
-                intentions_block, user_id=user_id),
+            content=render_self_model_section(intentions_block, user_id=user_id),
             version=intentions_block.version,
             updated_by=intentions_block.updated_by,
             updated_at=intentions_block.updated_at,
@@ -457,8 +459,7 @@ async def get_pending_memory_ops(
     return PendingMemoryOpsResponse(
         userId=user_id,
         pendingOps=[
-            PendingMemoryOpResponse(**op)
-            for op in _list_pending_ops(runtime_db, user_id=user_id)
+            PendingMemoryOpResponse(**op) for op in _list_pending_ops(runtime_db, user_id=user_id)
         ],
     )
 
@@ -522,10 +523,7 @@ async def get_user_profile(
 
     return UserProfileResponse(
         userId=user_id,
-        fields=[
-            _profile_field_response(user_id=user_id, field=field)
-            for field in fields
-        ],
+        fields=[_profile_field_response(user_id=user_id, field=field) for field in fields],
     )
 
 
@@ -632,8 +630,7 @@ async def get_self_model_section(
     if section == "identity":
         block = get_identity_block(db, user_id=user_id)
         if block is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
             section=section,
             content=render_self_model_section(block, user_id=user_id),
@@ -662,11 +659,9 @@ async def get_self_model_section(
         )
 
     if section in {"inner_state", "working_memory"}:
-        block = get_working_context(
-            runtime_db or db, user_id=user_id).get(section)
+        block = get_working_context(runtime_db or db, user_id=user_id).get(section)
         if block is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
             section=section,
             content=render_self_model_section(block, user_id=user_id),
@@ -678,8 +673,7 @@ async def get_self_model_section(
     if section == "intentions":
         block = get_active_intentions(runtime_db or db, user_id=user_id)
         if block is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
         return _section_response(
             section=section,
             content=render_self_model_section(block, user_id=user_id),
@@ -690,15 +684,17 @@ async def get_self_model_section(
 
     block = get_self_model_block(db, user_id=user_id, section=section)
     if block is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Section not found")
 
     content = render_self_model_section(block, user_id=user_id)
     if runtime_db is not None and section in ("human", "persona"):
         from anima_server.services.agent.memory_blocks import build_merged_block_content
 
         content = build_merged_block_content(
-            db, runtime_db, user_id=user_id, section=section,
+            db,
+            runtime_db,
+            user_id=user_id,
+            section=section,
         )
 
     return _section_response(
@@ -745,20 +741,15 @@ async def update_self_model_section(
     if section in {"identity", "soul", "user_directive", "intentions"}:
         from anima_server.models import AgentProfile
 
-        profile = db.query(AgentProfile).filter(
-            AgentProfile.user_id == user_id).first()
+        profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
         try:
             setup_complete = authoritative_setup_complete(
                 session=session,
-                legacy_value=bool(profile.setup_complete) if profile is not None else False,
+                soul_value=bool(profile.setup_complete) if profile is not None else False,
             )
         except AccountProfileAuthorityError as exc:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-        if (
-            profile is not None
-            and setup_complete
-            and not payload.allowIdentityOverride
-        ):
+        if profile is not None and setup_complete and not payload.allowIdentityOverride:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Identity override required to change {section}",
@@ -844,8 +835,7 @@ async def get_agent_profile(
         parse_thinking_monologue,
     )
 
-    profile = db.query(AgentProfile).filter(
-        AgentProfile.user_id == user_id).first()
+    profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
     if profile is None:
         return {
             "agentName": "Anima",
@@ -860,19 +850,17 @@ async def get_agent_profile(
     try:
         setup_complete = authoritative_setup_complete(
             session=session,
-            legacy_value=bool(profile.setup_complete),
+            soul_value=bool(profile.setup_complete),
         )
     except AccountProfileAuthorityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    avatar_url = profile.avatar_url
-    if asset_corefs_authority_active(session):
-        try:
-            avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
-        except CoreFsSourceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
+    try:
+        avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
+    except CoreFsSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return {
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
@@ -902,23 +890,21 @@ async def get_agent_biography_preview(
         user_id=user_id,
         runtime_db=runtime_db,
     )
-    if asset_corefs_authority_active(session):
-        try:
-            preview["avatarUrl"] = _canonical_agent_avatar_url(
-                session=session,
-                user_id=user_id,
-            )
-        except CoreFsSourceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
+    try:
+        preview["avatarUrl"] = _canonical_agent_avatar_url(
+            session=session,
+            user_id=user_id,
+        )
+    except CoreFsSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return AgentBiographyPreviewResponse(
         **{
             **preview,
             "sections": [
-                AgentBiographyPreviewSectionResponse(**section)
-                for section in preview["sections"]
+                AgentBiographyPreviewSectionResponse(**section) for section in preview["sections"]
             ],
         },
     )
@@ -946,16 +932,14 @@ async def update_agent_profile(
         serialize_thinking_monologue,
     )
 
-    profile = db.query(AgentProfile).filter(
-        AgentProfile.user_id == user_id).first()
+    profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
     if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
     try:
         setup_complete = authoritative_setup_complete(
             session=session,
-            legacy_value=bool(profile.setup_complete),
+            soul_value=bool(profile.setup_complete),
         )
     except AccountProfileAuthorityError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
@@ -1036,14 +1020,11 @@ async def update_agent_profile(
         )
 
     if relationship_changed:
-        human_block = get_self_model_block(
-            db, user_id=user_id, section="human")
+        human_block = get_self_model_block(db, user_id=user_id, section="human")
         if human_block:
-            content = df(user_id, human_block.content,
-                         table="self_model_blocks", field="content")
+            content = df(user_id, human_block.content, table="self_model_blocks", field="content")
             lines = content.split("\n")
-            new_lines = [
-                line for line in lines if not line.startswith("Relationship:")]
+            new_lines = [line for line in lines if not line.startswith("Relationship:")]
             if profile.relationship:
                 new_lines.append(f"Relationship: {profile.relationship}")
             set_self_model_block(
@@ -1084,43 +1065,25 @@ async def update_agent_profile(
         )
 
     db.commit()
-    if account_profile_corefs_authority_active(session):
-        try:
-            update_canonical_account_profile(session=session, setup_complete=True)
-        except (
-            AccountProfileAuthorityError,
-            CoreFsMutationUnavailable,
-            ValueError,
-        ) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={"code": str(exc)},
-            ) from exc
-    else:
-        try:
-            prepare_writing_source_catalog(session=session, db=db)
-        except Exception as exc:
-            logger.exception("Encrypted account profile shadow validation failed")
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "corefs_account_shadow_validation_failed",
-                    "message": (
-                        "The agent profile was saved, but its encrypted account shadow "
-                        "needs retry."
-                    ),
-                },
-            ) from exc
+    try:
+        update_canonical_account_profile(session=session, setup_complete=True)
+    except (
+        AccountProfileAuthorityError,
+        CoreFsMutationUnavailable,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": str(exc)},
+        ) from exc
 
-    avatar_url = profile.avatar_url
-    if asset_corefs_authority_active(session):
-        try:
-            avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
-        except CoreFsSourceError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
+    try:
+        avatar_url = _canonical_agent_avatar_url(session=session, user_id=user_id)
+    except CoreFsSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return {
         "agentName": profile.agent_name,
         "relationship": profile.relationship,
@@ -1148,8 +1111,7 @@ async def generate_agent_thinking_monologue(
     }
 
 
-ALLOWED_AVATAR_TYPES = {"image/png", "image/jpeg",
-                        "image/gif", "image/webp", "image/svg+xml"}
+ALLOWED_AVATAR_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"}
 MAX_AVATAR_SIZE = 2 * 1024 * 1024  # 2 MB
 
 
@@ -1183,47 +1145,12 @@ async def upload_agent_avatar(
         )
 
     from anima_server.models import AgentProfile
-    from anima_server.services.storage import get_user_data_dir
 
-    profile = db.query(AgentProfile).filter(
-        AgentProfile.user_id == user_id).first()
+    profile = db.query(AgentProfile).filter(AgentProfile.user_id == user_id).first()
     if profile is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
     avatar_url = _agent_avatar_url(user_id)
-    if asset_corefs_authority_active(session):
-        ext_map = {
-            "image/png": ".png",
-            "image/jpeg": ".jpg",
-            "image/gif": ".gif",
-            "image/webp": ".webp",
-            "image/svg+xml": ".svg",
-        }
-        ext = ext_map.get(file.content_type, ".png")
-        try:
-            upsert_canonical_binary_asset(
-                session=session,
-                stable_id=_AGENT_AVATAR_STABLE_ID,
-                name=f"agent-profile-avatar{ext}",
-                object_kind="gallery-asset",
-                content_type=file.content_type,
-                data=data,
-                replace_existing=True,
-            )
-        except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        return {"avatarUrl": avatar_url}
-
-    from anima_server.services.corefs.asset_authority import (
-        require_legacy_asset_mutation_allowed,
-    )
-
-    require_legacy_asset_mutation_allowed(user_id)
-
     ext_map = {
         "image/png": ".png",
         "image/jpeg": ".jpg",
@@ -1232,20 +1159,21 @@ async def upload_agent_avatar(
         "image/svg+xml": ".svg",
     }
     ext = ext_map.get(file.content_type, ".png")
-    avatar_dir = get_user_data_dir(user_id) / "avatars"
-    avatar_dir.mkdir(parents=True, exist_ok=True)
-    avatar_path = avatar_dir / f"agent{ext}"
-
-    # Remove old avatar files with different extensions
-    for old in avatar_dir.glob("agent.*"):
-        if old != avatar_path:
-            old.unlink(missing_ok=True)
-
-    avatar_path.write_bytes(data)
-
-    profile.avatar_url = avatar_url
-    db.commit()
-
+    try:
+        upsert_canonical_binary_asset(
+            session=session,
+            stable_id=_AGENT_AVATAR_STABLE_ID,
+            name=f"agent-profile-avatar{ext}",
+            object_kind="gallery-asset",
+            content_type=file.content_type,
+            data=data,
+            replace_existing=True,
+        )
+    except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return {"avatarUrl": avatar_url}
 
 
@@ -1258,50 +1186,28 @@ async def get_agent_avatar(
     """Serve the agent's avatar image."""
     session = await require_unlocked_user_async(request, user_id)
 
-    from anima_server.services.storage import get_user_data_dir
-
-    if asset_corefs_authority_active(session):
-        try:
-            if _canonical_agent_avatar_url(session=session, user_id=user_id) is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="No avatar found",
-                )
-            core_source = open_corefs_byte_source(
-                session=session,
-                object_uri=f"corefs://object/{_AGENT_AVATAR_STABLE_ID}",
-                expected_kinds=frozenset({"gallery-asset"}),
-            )
-        except HTTPException:
-            raise
-        except CoreFsSourceError as exc:
+    try:
+        if _canonical_agent_avatar_url(session=session, user_id=user_id) is None:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        return StreamingResponse(
-            core_source.iter_chunks(),
-            media_type=core_source.content_type,
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No avatar found",
+            )
+        core_source = open_corefs_byte_source(
+            session=session,
+            object_uri=f"corefs://object/{_AGENT_AVATAR_STABLE_ID}",
+            expected_kinds=frozenset({"gallery-asset"}),
         )
-
-    avatar_dir = get_user_data_dir(user_id) / "avatars"
-    if avatar_dir.is_dir():
-        for candidate in avatar_dir.glob("agent.*"):
-            if candidate.is_file():
-                media_map = {
-                    ".png": "image/png",
-                    ".jpg": "image/jpeg",
-                    ".jpeg": "image/jpeg",
-                    ".gif": "image/gif",
-                    ".webp": "image/webp",
-                    ".svg": "image/svg+xml",
-                }
-                media_type = media_map.get(
-                    candidate.suffix.lower(), "application/octet-stream")
-                return FileResponse(candidate, media_type=media_type)
-
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                        detail="No avatar found")
+    except HTTPException:
+        raise
+    except CoreFsSourceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return StreamingResponse(
+        core_source.iter_chunks(),
+        media_type=core_source.content_type,
+    )
 
 
 @router.delete("/{user_id}/agent-profile/avatar")
@@ -1313,39 +1219,16 @@ async def delete_agent_avatar(
     """Delete the agent's custom avatar, reverting to default."""
     session = await require_unlocked_user_async(request, user_id)
 
-    if asset_corefs_authority_active(session):
-        try:
-            trash_canonical_asset(
-                session=session,
-                stable_id=_AGENT_AVATAR_STABLE_ID,
-            )
-        except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=str(exc),
-            ) from exc
-        return {"avatarUrl": None}
-
-    from anima_server.services.corefs.asset_authority import (
-        require_legacy_asset_mutation_allowed,
-    )
-
-    require_legacy_asset_mutation_allowed(user_id)
-
-    from anima_server.models import AgentProfile
-    from anima_server.services.storage import get_user_data_dir
-
-    profile = db.query(AgentProfile).filter(
-        AgentProfile.user_id == user_id).first()
-    if profile is not None:
-        profile.avatar_url = None
-        db.commit()
-
-    avatar_dir = get_user_data_dir(user_id) / "avatars"
-    if avatar_dir.is_dir():
-        for old in avatar_dir.glob("agent.*"):
-            old.unlink(missing_ok=True)
-
+    try:
+        trash_canonical_asset(
+            session=session,
+            stable_id=_AGENT_AVATAR_STABLE_ID,
+        )
+    except (AssetMutationError, CoreFsSourceError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     return {"avatarUrl": None}
 
 
@@ -1372,8 +1255,7 @@ async def get_agent_state(
         thoughtSource=state.thought_source,
         chatPrompt=state.chat_prompt,
         contextMessages=[
-            AgentStateContextMessageResponse(**message)
-            for message in state.context_messages
+            AgentStateContextMessageResponse(**message) for message in state.context_messages
         ],
         affectHint=state.affect_hint,
     )
@@ -1404,8 +1286,9 @@ async def get_emotional_state(
     if signals:
         emotion_scores: dict[str, float] = {}
         for signal in signals[:5]:
-            emotion_scores[signal.emotion] = emotion_scores.get(
-                signal.emotion, 0) + signal.confidence
+            emotion_scores[signal.emotion] = (
+                emotion_scores.get(signal.emotion, 0) + signal.confidence
+            )
         if emotion_scores:
             dominant = max(emotion_scores, key=emotion_scores.get)
 

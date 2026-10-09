@@ -9,11 +9,12 @@ turn while one conversation could double-count toward a pattern.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.models.runtime import RuntimeBackgroundTaskRun
 from anima_server.models.runtime_memory import ContradictionCheck
 from sqlalchemy import create_engine, select
@@ -49,7 +50,7 @@ def rt_factory():
 
 def _make_user(soul_factory) -> int:
     with soul_factory() as db:
-        user = User(username="dirty-checks", password_hash="x", display_name="DC")
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.commit()
         return user.id
@@ -533,24 +534,18 @@ class TestEmotionalPromotionGate:
         self._add_signals(rt_factory, user_id, 2)
         with soul_factory() as soul_db, rt_factory() as rt_db:
             assert (
-                should_promote_emotional_patterns(
-                    soul_db=soul_db, pg_db=rt_db, user_id=user_id
-                )
+                should_promote_emotional_patterns(soul_db=soul_db, pg_db=rt_db, user_id=user_id)
                 is False
             )
 
         self._add_signals(rt_factory, user_id, 1)
         with soul_factory() as soul_db, rt_factory() as rt_db:
             assert (
-                should_promote_emotional_patterns(
-                    soul_db=soul_db, pg_db=rt_db, user_id=user_id
-                )
+                should_promote_emotional_patterns(soul_db=soul_db, pg_db=rt_db, user_id=user_id)
                 is True
             )
 
-    def test_distinct_emotions_do_not_trip_gate(
-        self, soul_factory, rt_factory
-    ) -> None:
+    def test_distinct_emotions_do_not_trip_gate(self, soul_factory, rt_factory) -> None:
         """Three signals of three *different* emotions must not fire the gate:
         promotion needs one emotion to recur, so firing here would scan 50
         SQLCipher rows, promote nothing, and (last_observed unchanged) re-fire
@@ -576,9 +571,7 @@ class TestEmotionalPromotionGate:
 
         with soul_factory() as soul_db, rt_factory() as rt_db:
             assert (
-                should_promote_emotional_patterns(
-                    soul_db=soul_db, pg_db=rt_db, user_id=user_id
-                )
+                should_promote_emotional_patterns(soul_db=soul_db, pg_db=rt_db, user_id=user_id)
                 is False
             )
 
@@ -586,15 +579,11 @@ class TestEmotionalPromotionGate:
         self._add_signals(rt_factory, user_id, 3)  # 3x "curious"
         with soul_factory() as soul_db, rt_factory() as rt_db:
             assert (
-                should_promote_emotional_patterns(
-                    soul_db=soul_db, pg_db=rt_db, user_id=user_id
-                )
+                should_promote_emotional_patterns(soul_db=soul_db, pg_db=rt_db, user_id=user_id)
                 is True
             )
 
-    def test_existing_patterns_gate_on_new_signals(
-        self, soul_factory, rt_factory
-    ) -> None:
+    def test_existing_patterns_gate_on_new_signals(self, soul_factory, rt_factory) -> None:
         from anima_server.models.soul_consciousness import CoreEmotionalPattern
         from anima_server.services.agent.emotional_patterns import (
             should_promote_emotional_patterns,
@@ -618,9 +607,7 @@ class TestEmotionalPromotionGate:
         # No new signals since last promotion → skip.
         with soul_factory() as soul_db, rt_factory() as rt_db:
             assert (
-                should_promote_emotional_patterns(
-                    soul_db=soul_db, pg_db=rt_db, user_id=user_id
-                )
+                should_promote_emotional_patterns(soul_db=soul_db, pg_db=rt_db, user_id=user_id)
                 is False
             )
 
@@ -631,9 +618,7 @@ def test_reflection_signal_dedupes_within_window(rt_factory) -> None:
     )
 
     with rt_factory() as rt_db:
-        first = record_emotional_signal(
-            rt_db, user_id=1, emotion="curious", confidence=0.8
-        )
+        first = record_emotional_signal(rt_db, user_id=1, emotion="curious", confidence=0.8)
         assert first is not None
         rt_db.commit()
 

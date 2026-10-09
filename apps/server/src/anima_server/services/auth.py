@@ -2,82 +2,31 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from anima_server.models import User, UserKey
-from anima_server.services.crypto import (
-    WrappedDekRecord,
-    create_wrapped_deks_for_domains,
-    unwrap_dek,
-    wrap_dek,
-)
+from anima_server.models import SoulOwner
+from anima_server.services.crypto import generate_domain_keys
 from anima_server.services.data_crypto import ALL_DOMAINS
-
-PASSWORD_HASHER = PasswordHasher(
-    time_cost=3,
-    memory_cost=64 * 1024,
-    parallelism=4,
-    hash_len=32,
-    salt_len=16,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class PasswordVerification:
-    valid: bool
-    needs_rehash: bool = False
 
 
 def normalize_username(username: str) -> str:
     return username.strip().lower()
 
 
-def hash_password(password: str) -> str:
-    return PASSWORD_HASHER.hash(password)
+def get_user_by_id(db: Session, user_id: int) -> SoulOwner | None:
+    return db.get(SoulOwner, user_id)
 
 
-def verify_password(password: str, encoded_password: str) -> PasswordVerification:
-    if not encoded_password.startswith("$argon2"):
-        return PasswordVerification(valid=False)
-
-    try:
-        PASSWORD_HASHER.verify(encoded_password, password)
-    except (InvalidHashError, VerificationError, VerifyMismatchError):
-        return PasswordVerification(valid=False)
-    return PasswordVerification(
-        valid=True,
-        needs_rehash=PASSWORD_HASHER.check_needs_rehash(encoded_password),
-    )
-
-
-def get_user_by_username(db: Session, username: str) -> User | None:
-    return db.scalar(select(User).where(User.username == username))
-
-
-def get_user_by_id(db: Session, user_id: int) -> User | None:
-    return db.get(User, user_id)
-
-
-def get_user_keys_by_user_id(db: Session, user_id: int) -> list[UserKey]:
-    return list(db.scalars(select(UserKey).where(UserKey.user_id == user_id)).all())
-
-
-def build_user_key(user_id: int, domain: str, wrapped_dek: WrappedDekRecord) -> UserKey:
-    return UserKey(
-        user_id=user_id,
-        domain=domain,
-        kdf_salt=wrapped_dek.kdf_salt,
-        kdf_time_cost=wrapped_dek.kdf_time_cost,
-        kdf_memory_cost_kib=wrapped_dek.kdf_memory_cost_kib,
-        kdf_parallelism=wrapped_dek.kdf_parallelism,
-        kdf_key_length=wrapped_dek.kdf_key_length,
-        wrap_iv=wrapped_dek.wrap_iv,
-        wrap_tag=wrapped_dek.wrap_tag,
-        wrapped_dek=wrapped_dek.wrapped_dek,
-    )
+@dataclass(frozen=True, slots=True)
+class AccountProfile:
+    id: int
+    username: str
+    display_name: str
+    gender: str | None = None
+    age: int | None = None
+    birthday: str | None = None
+    created_at: object = None
+    updated_at: object = None
 
 
 def create_user(
@@ -92,26 +41,21 @@ def create_user(
     agent_type: str = "companion",
     *,
     user_id: int | None = None,
-) -> tuple[User, dict[str, bytes]]:
+    commit: bool = True,
+) -> tuple[AccountProfile, dict[str, bytes]]:
     from anima_server.models import AgentProfile, SelfModelBlock
     from anima_server.services.agent.system_prompt import render_origin_block, render_persona_seed
 
     if user_id is None:
-        raise ValueError("User id is required to create wrapped DEKs")
+        raise ValueError("Owner compatibility id is required")
 
-    deks, wrapped_records = create_wrapped_deks_for_domains(
-        password, ALL_DOMAINS, user_id)
-    user = User(
-        id=user_id,
-        username=username,
-        password_hash=hash_password(password),
-        display_name=display_name,
-    )
-    db.add(user)
+    deks = generate_domain_keys(ALL_DOMAINS)
+    from anima_server.services.core import get_owner_id
+
+    owner = SoulOwner(id=user_id, core_owner_id=get_owner_id())
+    db.add(owner)
     db.flush()
-
-    for domain, wrapped_dek in wrapped_records:
-        db.add(build_user_key(user.id, domain, wrapped_dek))
+    user = AccountProfile(id=user_id, username=username, display_name=display_name)
 
     # Seed structured agent profile for fast lookup
     db.add(
@@ -125,12 +69,11 @@ def create_user(
     )
 
     # Seed immutable origin block
-    # Note: stored as plaintext at registration time. Field-level encryption
-    # is applied later when blocks are updated via set_self_model_block()
-    # (which calls ef()). The vault export handles both plaintext and
-    # encrypted content transparently.
+    # SQLCipher protects this seed at rest. Later updates apply field-level
+    # encryption through set_self_model_block() using the current domain keys.
     soul_content = render_origin_block(
-        agent_name=agent_name, creator_name=display_name, agent_type=agent_type)
+        agent_name=agent_name, creator_name=display_name, agent_type=agent_type
+    )
     db.add(
         SelfModelBlock(
             user_id=user.id,
@@ -152,8 +95,7 @@ def create_user(
     try:
         resolve_persona_template_path(persona_template)
     except Exception as exc:
-        raise ValueError(
-            f"Invalid persona template: {persona_template!r}") from exc
+        raise ValueError(f"Invalid persona template: {persona_template!r}") from exc
 
     persona_content = render_persona_seed(
         persona_template, agent_name=agent_name, creator_name=display_name
@@ -206,140 +148,19 @@ def create_user(
             )
         )
 
-    db.commit()
-    db.refresh(user)
-    return user, deks
-
-
-def authenticate_user(db: Session, username: str, password: str) -> tuple[User, dict[str, bytes]]:
-    user = get_user_by_username(db, username)
-    if user is None:
-        raise ValueError(f"User not found in DB: {username}")
-
-    verification = verify_password(password, user.password_hash)
-    if not verification.valid:
-        raise ValueError(f"Password verification failed for user: {username}")
-
-    all_keys = get_user_keys_by_user_id(db, user.id)
-    # Skip recovery-wrapped keys — they use the mnemonic, not the password
-    user_keys = [k for k in all_keys if not k.domain.startswith("recovery:")]
-    if not user_keys:
-        raise RuntimeError(f"User {user.id} is missing key material")
-
-    # Legacy migration: single key without domain → clone to all domains
-    if len(user_keys) == 1 and (user_keys[0].domain == "memories" or not user_keys[0].domain):
-        deks = _migrate_legacy_single_key(db, user.id, password, user_keys[0])
-    else:
-        deks = _unwrap_all_domain_keys(password, user_keys)
-
-    if verification.needs_rehash:
-        user.password_hash = hash_password(password)
+    if commit:
         db.commit()
-        db.refresh(user)
+    else:
+        db.flush()
+    db.refresh(owner)
+    from dataclasses import replace
 
-    return user, deks
-
-
-def _migrate_legacy_single_key(
-    db: Session,
-    user_id: int,
-    password: str,
-    legacy_key: UserKey,
-) -> dict[str, bytes]:
-    """Migrate a legacy single-DEK user to per-domain DEKs.
-
-    The legacy DEK is preserved for all domains (same key, new architecture).
-    Future key rotation will produce independent per-domain keys.
-    """
-    legacy_domain = legacy_key.domain or "memories"
-    legacy_dek = unwrap_dek(password, to_wrapped_dek_record(
-        legacy_key), user_id, legacy_domain)
-
-    deks: dict[str, bytes] = {}
-    for domain in ALL_DOMAINS:
-        if domain == (legacy_key.domain or "memories"):
-            deks[domain] = legacy_dek
-            continue
-        # Wrap the same DEK under a new row for each domain
-        wrapped = wrap_dek(password, legacy_dek, user_id, domain)
-        db.add(build_user_key(user_id, domain, wrapped))
-        deks[domain] = legacy_dek
-
-    # Update legacy row to ensure it has explicit domain
-    if not legacy_key.domain or legacy_key.domain == "memories":
-        legacy_key.domain = "memories"
-
-    db.commit()
-    return deks
+    return replace(user, created_at=owner.created_at, updated_at=owner.updated_at), deks
 
 
-def _unwrap_all_domain_keys(
-    password: str,
-    user_keys: list[UserKey],
-) -> dict[str, bytes]:
-    """Unwrap all per-domain DEKs from stored UserKey records."""
-    deks: dict[str, bytes] = {}
-    for uk in user_keys:
-        try:
-            dek = unwrap_dek(password, to_wrapped_dek_record(
-                uk), uk.user_id, uk.domain)
-            deks[uk.domain] = dek
-        except Exception as exc:
-            raise ValueError("Invalid credentials") from exc
-    return deks
+def serialize_user(user: AccountProfile) -> dict[str, object]:
+    from anima_server.services.core import get_owner_id
 
-
-def change_user_password(
-    db: Session,
-    user: User,
-    old_password: str,
-    new_password: str,
-    current_deks: dict[str, bytes],
-) -> None:
-    verification = verify_password(old_password, user.password_hash)
-    if not verification.valid:
-        raise ValueError("Invalid credentials")
-
-    user.password_hash = hash_password(new_password)
-
-    all_keys = get_user_keys_by_user_id(db, user.id)
-    user_keys = [k for k in all_keys if not k.domain.startswith("recovery:")]
-    if not user_keys:
-        raise RuntimeError(f"User {user.id} is missing key material")
-
-    # Re-wrap each domain DEK with the new password
-    for uk in user_keys:
-        dek = current_deks.get(uk.domain)
-        if dek is None:
-            continue
-        wrapped = wrap_dek(new_password, dek, uk.user_id, uk.domain)
-        uk.kdf_salt = wrapped.kdf_salt
-        uk.kdf_time_cost = wrapped.kdf_time_cost
-        uk.kdf_memory_cost_kib = wrapped.kdf_memory_cost_kib
-        uk.kdf_parallelism = wrapped.kdf_parallelism
-        uk.kdf_key_length = wrapped.kdf_key_length
-        uk.wrap_iv = wrapped.wrap_iv
-        uk.wrap_tag = wrapped.wrap_tag
-        uk.wrapped_dek = wrapped.wrapped_dek
-
-    db.commit()
-    db.refresh(user)
-
-
-def to_wrapped_dek_record(user_key: UserKey) -> WrappedDekRecord:
-    return WrappedDekRecord(
-        kdf_salt=user_key.kdf_salt,
-        kdf_time_cost=user_key.kdf_time_cost,
-        kdf_memory_cost_kib=user_key.kdf_memory_cost_kib,
-        kdf_parallelism=user_key.kdf_parallelism,
-        kdf_key_length=user_key.kdf_key_length,
-        wrap_iv=user_key.wrap_iv,
-        wrap_tag=user_key.wrap_tag,
-        wrapped_dek=user_key.wrapped_dek,
-    )
-
-
-def serialize_user(user: User) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": user.id,
         "username": user.username,
@@ -347,9 +168,50 @@ def serialize_user(user: User) -> dict[str, object]:
         "gender": user.gender,
         "age": user.age,
         "birthday": user.birthday,
+        "ownerId": get_owner_id(),
+        "profileAvailable": True,
+        "filesystemAvailable": True,
     }
     if user.created_at is not None:
         payload["createdAt"] = user.created_at.isoformat()
     if user.updated_at is not None:
         payload["updatedAt"] = user.updated_at.isoformat()
     return payload
+
+
+def serialize_soul_owner(owner: SoulOwner) -> dict[str, object]:
+    """A usable Soul identity with explicitly unavailable private FS profile fields."""
+    return {
+        "id": owner.id,
+        "ownerId": owner.core_owner_id,
+        "username": "",
+        "name": "",
+        "gender": None,
+        "age": None,
+        "birthday": None,
+        "createdAt": owner.created_at.isoformat(),
+        "updatedAt": owner.updated_at.isoformat(),
+        "profileAvailable": False,
+        "filesystemAvailable": False,
+    }
+
+
+def verify_current_password(password: str) -> bool:
+    """Reauthenticate against the current AAD-bound manifest hierarchy."""
+    from cryptography.exceptions import InvalidTag
+
+    from anima_server.services.corefs.keyslots import unlock_manifest_key_hierarchy
+    from anima_server.services.corefs.types import PayloadScope, WrappingPath
+    from anima_server.services.sessions import get_sqlcipher_key
+
+    try:
+        roots = unlock_manifest_key_hierarchy(
+            credential=password,
+            wrapping_path=WrappingPath.PASSWORD,
+        )
+        if roots.scope is PayloadScope.FS:
+            return roots.sqlcipher_key is None and bool(roots.frks)
+        cached = get_sqlcipher_key()
+        return roots.sqlcipher_key is not None and (cached is None or roots.sqlcipher_key == cached)
+    except (InvalidTag, KeyError, TypeError, ValueError):
+        return False

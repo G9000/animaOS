@@ -1,9 +1,7 @@
-"""ARH-004: retry caps, archival backoff, and restart-safe gates.
+"""Retry caps, native closed history, and restart-safe cognitive gates.
 
-Poison-pill pending ops must stop retrying at the cap instead of churning
-on every soul-writer run; failed thread archival must back off instead of
-re-firing every 60s sweep forever; the deep-monologue 24h gate must survive
-a process restart.
+Poison-pill pending ops stop at the retry cap. Authored closed-thread history
+stays in encrypted CoreFS; deep-monologue gates survive a process restart.
 """
 
 from __future__ import annotations
@@ -11,13 +9,14 @@ from __future__ import annotations
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.models.pending_memory_op import PendingMemoryOp
-from anima_server.models.runtime import RuntimeBackgroundTaskRun, RuntimeThread
+from anima_server.models.runtime import RuntimeBackgroundTaskRun
 from anima_server.models.runtime_memory import MemoryCandidate
 from anima_server.services.agent.soul_writer import MAX_RETRY_COUNT, run_soul_writer
 from sqlalchemy import create_engine, select
@@ -59,7 +58,7 @@ def _content_hash(user_id: int, category: str, importance_source: str, content: 
 
 def _make_user(soul_factory: sessionmaker[Session], username: str) -> int:
     with soul_factory() as soul_db:
-        user = User(username=username, password_hash="x", display_name=username)
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_db.add(user)
         soul_db.commit()
         return user.id
@@ -212,9 +211,7 @@ async def test_duplicate_hash_candidate_does_not_abort_batch_mates() -> None:
         )
 
         with runtime_factory() as runtime_db:
-            candidates = {
-                c.content: c for c in runtime_db.scalars(select(MemoryCandidate))
-            }
+            candidates = {c.content: c for c in runtime_db.scalars(select(MemoryCandidate))}
 
         dupe = [
             c
@@ -234,157 +231,69 @@ async def test_duplicate_hash_candidate_does_not_abort_batch_mates() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Archival backoff
+# Canonical history survives thread closure without sidecar archival
 # --------------------------------------------------------------------------- #
 
 
-def _make_closed_thread(runtime_factory: sessionmaker[Session], user_id: int) -> int:
-    with runtime_factory() as db:
-        thread = RuntimeThread(
-            user_id=user_id,
-            status="closed",
-            closed_at=datetime.now(UTC),
-            is_archived=False,
-        )
-        db.add(thread)
-        db.commit()
-        return thread.id
-
-
 @pytest.mark.asyncio
-async def test_archival_failure_backs_off_instead_of_retrying_every_sweep(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_native_closed_history_stays_readable_without_jsonl_archival():
+    from anima_server.config import settings
     from anima_server.services.agent import eager_consolidation
+    from anima_server.services.corefs.conversation_authority import get_canonical_thread
+    from anima_server.services.corefs.conversation_mutations import (
+        append_canonical_message,
+        close_canonical_thread,
+        create_canonical_thread,
+    )
+    from anima_server.services.sessions import unlock_session_store
+    from conftest import managed_test_client
 
-    runtime_engine = _create_runtime_engine()
-    runtime_factory = _factory(runtime_engine)
-
-    try:
-        thread_id = _make_closed_thread(runtime_factory, user_id=1)
-
-        attempts: list[int] = []
-
-        async def failing_close(**kwargs) -> None:
-            attempts.append(kwargs["thread_id"])
-            raise RuntimeError("transcripts dir unwritable")
-
-        monkeypatch.setattr(eager_consolidation, "on_thread_close", failing_close)
-
-        await eager_consolidation.inactivity_sweep(
-            runtime_db_factory=runtime_factory,
-            soul_db_factory=lambda: None,
+    with managed_test_client("current-native-closed-history-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "closed-history",
+                "password": "password-one",
+                "name": "History owner",
+            },
         )
-        assert attempts == [thread_id]
-        with runtime_factory() as db:
-            thread = db.get(RuntimeThread, thread_id)
-            assert thread.archive_retry_count == 1
-            assert thread.archive_next_retry_at is not None
-            assert thread.archive_failed is False
-
-        # An immediate second sweep must NOT retry (backoff window).
-        await eager_consolidation.inactivity_sweep(
-            runtime_db_factory=runtime_factory,
-            soul_db_factory=lambda: None,
+        assert registered.status_code == 201, registered.text
+        account = registered.json()
+        session = unlock_session_store.resolve(account["unlockToken"])
+        assert session is not None
+        view = create_canonical_thread(session=session, force_new=True)
+        append_canonical_message(
+            session=session,
+            thread_id=view.document.thread_id,
+            role="user",
+            content="Keep this authenticated closed-thread history",
         )
-        assert attempts == [thread_id]
-        with runtime_factory() as db:
-            thread = db.get(RuntimeThread, thread_id)
-            assert thread.archive_retry_count == 1
-    finally:
-        runtime_engine.dispose()
+        close_canonical_thread(session=session, thread_id=view.document.thread_id)
 
+        def no_runtime_history_authority():
+            raise AssertionError("Native closed history cannot depend on Runtime transcript bodies")
 
-@pytest.mark.asyncio
-async def test_archival_gives_up_terminally_at_the_cap(
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    from anima_server.services.agent import eager_consolidation
-
-    runtime_engine = _create_runtime_engine()
-    runtime_factory = _factory(runtime_engine)
-
-    try:
-        thread_id = _make_closed_thread(runtime_factory, user_id=1)
-        with runtime_factory() as db:
-            thread = db.get(RuntimeThread, thread_id)
-            thread.archive_retry_count = eager_consolidation._ARCHIVE_MAX_RETRIES - 1
-            thread.archive_next_retry_at = datetime.now(UTC) - timedelta(minutes=1)
-            db.commit()
-
-        async def failing_close(**kwargs) -> None:
-            raise RuntimeError("still broken")
-
-        monkeypatch.setattr(eager_consolidation, "on_thread_close", failing_close)
-
-        with caplog.at_level(logging.WARNING, logger="anima.runtime.degraded"):
+        await eager_consolidation.on_thread_close(
+            thread_id=view.document.legacy_thread_id,
+            user_id=account["id"],
+            runtime_db_factory=no_runtime_history_authority,
+            soul_db_factory=no_runtime_history_authority,
+        )
+        assert (
             await eager_consolidation.inactivity_sweep(
-                runtime_db_factory=runtime_factory,
-                soul_db_factory=lambda: None,
+                runtime_db_factory=no_runtime_history_authority,
+                soul_db_factory=no_runtime_history_authority,
             )
-
-        with runtime_factory() as db:
-            thread = db.get(RuntimeThread, thread_id)
-            assert thread.archive_failed is True
-        assert any(
-            r.name == "anima.runtime.degraded" and "permanently failed" in r.getMessage()
-            for r in caplog.records
+            == 0
         )
-
-        # Terminal threads are never picked up again.
-        attempts: list[int] = []
-
-        async def counting_close(**kwargs) -> None:
-            attempts.append(kwargs["thread_id"])
-
-        monkeypatch.setattr(eager_consolidation, "on_thread_close", counting_close)
-        await eager_consolidation.inactivity_sweep(
-            runtime_db_factory=runtime_factory,
-            soul_db_factory=lambda: None,
-        )
-        assert attempts == []
-    finally:
-        runtime_engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_successful_archival_clears_retry_state(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from anima_server.services.agent import eager_consolidation
-
-    runtime_engine = _create_runtime_engine()
-    runtime_factory = _factory(runtime_engine)
-
-    try:
-        thread_id = _make_closed_thread(runtime_factory, user_id=1)
-        with runtime_factory() as db:
-            thread = db.get(RuntimeThread, thread_id)
-            thread.archive_retry_count = 3
-            thread.archive_next_retry_at = datetime.now(UTC) - timedelta(minutes=1)
-            db.commit()
-
-        async def succeeding_close(**kwargs) -> None:
-            with runtime_factory() as db:
-                thread = db.get(RuntimeThread, kwargs["thread_id"])
-                thread.is_archived = True
-                db.commit()
-
-        monkeypatch.setattr(eager_consolidation, "on_thread_close", succeeding_close)
-        await eager_consolidation.inactivity_sweep(
-            runtime_db_factory=runtime_factory,
-            soul_db_factory=lambda: None,
-        )
-
-        with runtime_factory() as db:
-            thread = db.get(RuntimeThread, thread_id)
-            assert thread.is_archived is True
-            assert thread.archive_retry_count == 0
-            assert thread.archive_next_retry_at is None
-            assert thread.archive_failed is False
-    finally:
-        runtime_engine.dispose()
+        assert await eager_consolidation.prune_expired_transcripts() == 0
+        restored = get_canonical_thread(session=session, thread_id=view.document.thread_id)
+        assert restored is not None
+        assert restored.document.status == "closed"
+        assert [message.content for message in restored.messages] == [
+            "Keep this authenticated closed-thread history",
+        ]
+        assert list(settings.data_dir.rglob("*.jsonl*")) == []
 
 
 # --------------------------------------------------------------------------- #
@@ -423,14 +332,9 @@ def test_deep_monologue_gate_survives_restart(
     try:
         # Fresh process: the in-memory dict is empty.
         monkeypatch.setattr(sleep_tasks, "_last_deep_monologue", {})
-        _add_monologue_run(
-            runtime_factory, user_id=7, completed_at=datetime.now(UTC)
-        )
+        _add_monologue_run(runtime_factory, user_id=7, completed_at=datetime.now(UTC))
         assert (
-            sleep_tasks._should_run_deep_monologue(
-                7, runtime_db_factory=runtime_factory
-            )
-            is False
+            sleep_tasks._should_run_deep_monologue(7, runtime_db_factory=runtime_factory) is False
         )
 
         # A run older than the interval re-arms the monologue.
@@ -440,12 +344,7 @@ def test_deep_monologue_gate_survives_restart(
             user_id=8,
             completed_at=datetime.now(UTC) - timedelta(hours=25),
         )
-        assert (
-            sleep_tasks._should_run_deep_monologue(
-                8, runtime_db_factory=runtime_factory
-            )
-            is True
-        )
+        assert sleep_tasks._should_run_deep_monologue(8, runtime_db_factory=runtime_factory) is True
 
         # A completed task run whose monologue reported errors does not gate.
         monkeypatch.setattr(sleep_tasks, "_last_deep_monologue", {})
@@ -455,11 +354,6 @@ def test_deep_monologue_gate_survives_restart(
             completed_at=datetime.now(UTC),
             errors=["LLM parse failure"],
         )
-        assert (
-            sleep_tasks._should_run_deep_monologue(
-                9, runtime_db_factory=runtime_factory
-            )
-            is True
-        )
+        assert sleep_tasks._should_run_deep_monologue(9, runtime_db_factory=runtime_factory) is True
     finally:
         runtime_engine.dispose()

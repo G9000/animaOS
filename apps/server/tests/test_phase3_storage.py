@@ -12,11 +12,12 @@ from __future__ import annotations
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from uuid import uuid4
 
 import anima_server.services.agent.embeddings as emb
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryClaimEvidence, MemoryItem, MemoryItemTag, User
+from anima_server.models import MemoryClaimEvidence, MemoryItem, MemoryItemTag, SoulOwner
 from anima_server.services.agent.claims import (
     derive_canonical_key,
     get_active_claims,
@@ -66,8 +67,8 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _make_user(db: Session) -> User:
-    user = User(username="phase3_tester", display_name="Tester", password_hash="x")
+def _make_user(db: Session) -> SoulOwner:
+    user = SoulOwner(core_owner_id=str(uuid4()))
     db.add(user)
     db.flush()
     return user

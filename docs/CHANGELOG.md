@@ -1,5 +1,9 @@
 # Docs Changelog
 
+## 2026-10-09
+
+- reconciled CoreFS architecture with the approved current-only release: opaque Soul ownership, verified encrypted schema recovery copies, retained cognitive provenance, unlock-scoped derived vectors, and user-only 30-day history maintenance with backup and key-reference checks
+
 ## 2026-07-13
 
 - reconciled the approved Portable Core Filesystem PRD, design, plan, and tickets with merged main: retained the Journal's sanitized rich HTML contract while extracting inline media into encrypted CoreFS objects, classified the new document parsing/tool/context/compiler plaintext boundaries, added the current ingestion/retrieval tests and architecture docs to migration scope, and replaced the ambiguous catalog benchmark with explicit live/tombstone/max-size fixtures

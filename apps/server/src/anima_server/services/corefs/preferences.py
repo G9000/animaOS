@@ -13,23 +13,22 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.catalog_reader import (
+    CatalogReadError,
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
 from anima_server.services.corefs.content_authority import (
     CoreFsAuthorityUnavailable,
     authenticated_content_authority,
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
 )
-from anima_server.services.corefs.diary_migration import (
-    DiaryMigrationError,
-    read_prepared_writing_body,
-    read_prepared_writing_snapshot,
-)
 from anima_server.services.corefs.formats import (
     PREFERENCES_CONTENT_TYPE,
     decode_preferences_document,
     encode_preferences_document,
 )
-from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
 
 PORTABLE_PREFERENCE_KEYS = frozenset(
     {
@@ -178,7 +177,7 @@ def read_portable_preferences(*, session: Any) -> dict[str, Any]:
         decoded = decode_preferences_document(
             read_prepared_writing_body(session=session, item=matches[0])
         )
-    except (DiaryMigrationError, ValueError) as exc:
+    except (CatalogReadError, ValueError) as exc:
         raise PortablePreferenceError("Encrypted preferences failed authentication.") from exc
     return dict(decoded.values)
 
@@ -212,22 +211,7 @@ def update_portable_preferences(
     db: Session,
     values: Mapping[str, Any],
 ) -> dict[str, Any]:
-    patch = validate_portable_preference_patch(values)
-    with portable_preference_lock(int(session.user_id)):
-        try:
-            prepare_writing_source_catalog(
-                session=session,
-                db=db,
-                portable_preference_updates=patch,
-            )
-            current = read_portable_preferences(session=session)
-        except (DiaryMigrationError, ValueError) as exc:
-            raise PortablePreferenceError(
-                "Encrypted portable preferences could not be updated."
-            ) from exc
-    if any(current.get(key) != value for key, value in patch.items()):
-        raise PortablePreferenceError("Encrypted preference verification failed.")
-    return current
+    return update_canonical_preferences(session=session, values=values)
 
 
 def update_canonical_preferences(
@@ -280,7 +264,7 @@ def _update_canonical_preferences(
         )
         try:
             objects = read_prepared_writing_snapshot(session=session).objects
-        except (DiaryMigrationError, ValueError) as exc:
+        except (CatalogReadError, ValueError) as exc:
             raise PortablePreferenceError("Encrypted preferences could not be opened.") from exc
         matches = [item for item in objects if item.kind == "preferences"]
         if len(matches) != 1:
@@ -290,7 +274,7 @@ def _update_canonical_preferences(
             current = decode_preferences_document(
                 read_prepared_writing_body(session=session, item=item)
             )
-        except (DiaryMigrationError, ValueError) as exc:
+        except (CatalogReadError, ValueError) as exc:
             raise PortablePreferenceError("Encrypted preferences failed authentication.") from exc
         merged = dict(current.values)
         merged.update(patch)

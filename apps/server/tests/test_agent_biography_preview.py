@@ -3,9 +3,12 @@ from __future__ import annotations
 from collections.abc import Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
+from uuid import uuid4
 
+import pytest
 from anima_server.db.base import Base
-from anima_server.models import AgentProfile, AgentThread, User
+from anima_server.models import AgentProfile, SoulOwner
 from anima_server.models.runtime_consciousness import (
     ActiveIntention,
     CurrentEmotion,
@@ -42,18 +45,23 @@ def _db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def test_agent_biography_preview_compiles_profile_and_prompt_context() -> None:
+def test_agent_biography_preview_compiles_profile_and_prompt_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.agent import biography_preview, memory_blocks
+
+    # Model biography assembly independently of authenticated account storage.
+    profile = SimpleNamespace(display_name="Leo", gender=None, age=None, birthday=None)
+    monkeypatch.setattr(biography_preview, "read_active_account_profile", lambda user_id: profile)
+    monkeypatch.setattr(memory_blocks, "read_active_account_profile", lambda user_id: profile)
+    monkeypatch.setattr(
+        memory_blocks, "require_active_task_authority_session", lambda user_id: object()
+    )
+    monkeypatch.setattr(memory_blocks, "list_canonical_tasks", lambda *, session: [])
     with _db_session() as db, runtime_db_session() as runtime_db:
-        user = User(
-            username="bio-preview",
-            display_name="Leo",
-            password_hash="x",
-            birthday="1995-05-23",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
-        thread = AgentThread(user_id=user.id, status="active")
-        db.add(thread)
         db.add(
             AgentProfile(
                 user_id=user.id,

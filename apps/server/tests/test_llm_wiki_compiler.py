@@ -18,10 +18,9 @@ from anima_server.services.ingestion.artifacts import replace_source_artifacts_a
 from anima_server.services.ingestion.compiler import compile_source_to_concepts
 from anima_server.services.ingestion.models import (
     SourceArtifactInput,
-    SourceIdentity,
     SourceSpanInput,
 )
-from anima_server.services.ingestion.sources import register_source
+from corefs_ingestion_test_support import register_simulated_authored_source
 from sqlalchemy import func, select, text
 
 pytest_plugins = ("conftest_runtime",)
@@ -31,7 +30,6 @@ pytest_plugins = ("conftest_runtime",)
 # RuntimeEmbedding from the then-current default embedding provider), so a
 # literal here would drift out of sync whenever that default changes.
 _EMBED_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
-
 
 
 @pytest.fixture(autouse=True)
@@ -47,17 +45,29 @@ def _embedding_for(text: str) -> list[float]:
     return [1.0, *([0.0] * (_EMBED_DIM - 1))]
 
 
-def _source_with_spans(runtime_db) -> tuple[RuntimeSource, list[RuntimeSourceSpan]]:
-    source = register_source(
+def _compiler_source(runtime_db, *, name: str, content: str, title: str) -> RuntimeSource:
+    """Simulate owner-bound original bytes; compiler/artifact writes stay real."""
+    source = register_simulated_authored_source(
         runtime_db,
-        SourceIdentity(
-            user_id=1,
-            kind="markdown",
-            source_uri="file://notes.md",
-            content_hash=_sha("raw source"),
-            title="Notes",
-            media_type="text/markdown",
-        ),
+        user_id=1,
+        kind="markdown",
+        origin=name,
+        original_bytes=content.encode("utf-8"),
+        title=title,
+        media_type="text/markdown",
+        metadata={"filename": name},
+    )
+    assert source.source_uri.startswith("corefs://object/")
+    assert source.content_hash == _sha(content)
+    return source
+
+
+def _source_with_spans(runtime_db) -> tuple[RuntimeSource, list[RuntimeSourceSpan]]:
+    source = _compiler_source(
+        runtime_db,
+        name="notes.md",
+        content="Anima keeps source evidence.\n\nOpen questions should stay visible.",
+        title="Notes",
     )
     _, spans = replace_source_artifacts_and_spans(
         runtime_db,
@@ -98,7 +108,9 @@ def test_compiler_creates_concepts_citations_links_and_completed_run(runtime_db)
             _concept_payload("entity", "entity-anima", "Anima", [spans[0].id]),
             _concept_payload("claim", "claim-source-evidence", "Source evidence", [spans[0].id]),
             _concept_payload("question", "question-open", "Open question", [spans[1].id]),
-            _concept_payload("decision", "decision-keep-citations", "Keep citations", [spans[0].id]),
+            _concept_payload(
+                "decision", "decision-keep-citations", "Keep citations", [spans[0].id]
+            ),
         ],
         "links": [
             {
@@ -118,9 +130,7 @@ def test_compiler_creates_concepts_citations_links_and_completed_run(runtime_db)
         model=lambda request: json.dumps(payload),
     )
 
-    concept_types = set(
-        runtime_db.scalars(select(RuntimeKnowledgeConcept.concept_type)).all()
-    )
+    concept_types = set(runtime_db.scalars(select(RuntimeKnowledgeConcept.concept_type)).all())
     assert result.concept_count == 6
     assert result.link_count == 1
     assert concept_types == {
@@ -142,12 +152,8 @@ def test_compiler_discards_noncanonical_link_types_at_storage_boundary(
     source, spans = _source_with_spans(runtime_db)
     payload = {
         "concepts": [
-            _concept_payload(
-                "source_summary", "source-notes", "Notes", [spans[0].id]
-            ),
-            _concept_payload(
-                "topic", "topic-evidence", "Evidence", [spans[0].id]
-            ),
+            _concept_payload("source_summary", "source-notes", "Notes", [spans[0].id]),
+            _concept_payload("topic", "topic-evidence", "Evidence", [spans[0].id]),
         ],
         "links": [
             {
@@ -362,9 +368,7 @@ def test_compiler_resolves_links_to_existing_concepts_not_in_payload(runtime_db)
 
     link = runtime_db.scalar(select(RuntimeKnowledgeLink))
     source_concept = runtime_db.scalar(
-        select(RuntimeKnowledgeConcept).where(
-            RuntimeKnowledgeConcept.slug == "source-notes"
-        )
+        select(RuntimeKnowledgeConcept).where(RuntimeKnowledgeConcept.slug == "source-notes")
     )
     assert result.status == "completed"
     assert result.link_count == 1
@@ -437,9 +441,7 @@ def test_later_compiler_failure_rolls_back_partial_concept_writes(runtime_db) ->
         span_ids=[spans[0].id],
         model=lambda request: json.dumps(
             {
-                "concepts": [
-                    _concept_payload("topic", "partial-topic", "Partial", [spans[0].id])
-                ],
+                "concepts": [_concept_payload("topic", "partial-topic", "Partial", [spans[0].id])],
                 "links": ["not an object"],
             }
         ),
@@ -747,16 +749,11 @@ def test_source_refresh_preserves_citations_for_unchanged_spans(runtime_db) -> N
 
 def test_compiler_rejects_spans_from_a_different_source(runtime_db) -> None:
     first_source, _first_spans = _source_with_spans(runtime_db)
-    second_source = register_source(
+    second_source = _compiler_source(
         runtime_db,
-        SourceIdentity(
-            user_id=1,
-            kind="markdown",
-            source_uri="file://second.md",
-            content_hash=_sha("second raw source"),
-            title="Second",
-            media_type="text/markdown",
-        ),
+        name="second.md",
+        content="Foreign source evidence.",
+        title="Second",
     )
     _, second_spans = replace_source_artifacts_and_spans(
         runtime_db,
@@ -870,23 +867,14 @@ def test_compiler_merging_existing_concept_retains_other_source_citations(runtim
         source_id=first_source.id,
         span_ids=[first_spans[0].id],
         model=lambda request: json.dumps(
-            {
-                "concepts": [
-                    _concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])
-                ]
-            }
+            {"concepts": [_concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])]}
         ),
     )
-    second_source = register_source(
+    second_source = _compiler_source(
         runtime_db,
-        SourceIdentity(
-            user_id=1,
-            kind="markdown",
-            source_uri="file://second.md",
-            content_hash=_sha("second source"),
-            title="Second",
-            media_type="text/markdown",
-        ),
+        name="second.md",
+        content="Second source evidence.",
+        title="Second",
     )
     _, second_spans = replace_source_artifacts_and_spans(
         runtime_db,
@@ -954,23 +942,14 @@ def test_compiler_recompile_keeps_shared_concept_active_for_other_sources(
         source_id=first_source.id,
         span_ids=[first_spans[0].id],
         model=lambda request: json.dumps(
-            {
-                "concepts": [
-                    _concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])
-                ]
-            }
+            {"concepts": [_concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])]}
         ),
     )
-    second_source = register_source(
+    second_source = _compiler_source(
         runtime_db,
-        SourceIdentity(
-            user_id=1,
-            kind="markdown",
-            source_uri="file://second.md",
-            content_hash=_sha("second source"),
-            title="Second",
-            media_type="text/markdown",
-        ),
+        name="second.md",
+        content="Second source evidence.",
+        title="Second",
     )
     _, second_spans = replace_source_artifacts_and_spans(
         runtime_db,
@@ -1035,16 +1014,11 @@ def test_compiler_recompile_clears_stale_links_for_shared_concepts(
     runtime_db,
 ) -> None:
     first_source, first_spans = _source_with_spans(runtime_db)
-    second_source = register_source(
+    second_source = _compiler_source(
         runtime_db,
-        SourceIdentity(
-            user_id=1,
-            kind="markdown",
-            source_uri="file://second.md",
-            content_hash=_sha("second source"),
-            title="Second",
-            media_type="text/markdown",
-        ),
+        name="second.md",
+        content="Second alpha.\n\nSecond beta.",
+        title="Second",
     )
     _, second_spans = replace_source_artifacts_and_spans(
         runtime_db,
@@ -1130,9 +1104,9 @@ def test_compiler_recompile_clears_stale_links_for_shared_concepts(
 
     assert result.status == "completed"
     assert [concept.status for concept in concepts] == ["active", "active"]
-    assert {
-        concept.metadata_json["compiled_from_source_id"] for concept in concepts
-    } == {second_source.id}
+    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {
+        second_source.id
+    }
     assert links == []
 
 
@@ -1146,23 +1120,14 @@ def test_compiler_recompile_removes_stale_citation_when_other_source_owns_metada
         source_id=first_source.id,
         span_ids=[first_spans[0].id],
         model=lambda request: json.dumps(
-            {
-                "concepts": [
-                    _concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])
-                ]
-            }
+            {"concepts": [_concept_payload("claim", "shared-claim", "Shared", [first_spans[0].id])]}
         ),
     )
-    second_source = register_source(
+    second_source = _compiler_source(
         runtime_db,
-        SourceIdentity(
-            user_id=1,
-            kind="markdown",
-            source_uri="file://second.md",
-            content_hash=_sha("second source"),
-            title="Second",
-            media_type="text/markdown",
-        ),
+        name="second.md",
+        content="Second source evidence.",
+        title="Second",
     )
     _, second_spans = replace_source_artifacts_and_spans(
         runtime_db,
@@ -1313,16 +1278,11 @@ def test_lint_concept_scope_does_not_mark_other_sources_orphaned(runtime_db) -> 
     from anima_server.services.ingestion.lint import lint_knowledge_bundle
 
     first_source, first_spans = _source_with_spans(runtime_db)
-    second_source = register_source(
+    second_source = _compiler_source(
         runtime_db,
-        SourceIdentity(
-            user_id=1,
-            kind="markdown",
-            source_uri="file://second.md",
-            content_hash=_sha("second source"),
-            title="Second",
-            media_type="text/markdown",
-        ),
+        name="second.md",
+        content="Second source evidence.",
+        title="Second",
     )
     _, second_spans = replace_source_artifacts_and_spans(
         runtime_db,

@@ -1,7 +1,7 @@
 """Quick CLI to query the encrypted SQLCipher database.
 
 Usage:
-    python -m anima_server.cli.db "SELECT * FROM users"
+    python -m anima_server.cli.db "SELECT * FROM soul_owners"
     python -m anima_server.cli.db tables
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import sys
 
-from anima_server.db.session import engine
+from anima_server.db.session import SessionLocal
 
 
 def main() -> None:
@@ -22,7 +22,8 @@ def main() -> None:
     if query.strip().lower() == "tables":
         query = "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
 
-    with engine.connect() as conn:
+    with SessionLocal() as soul:
+        conn = soul.connection()
         result = conn.exec_driver_sql(query)
         cols = list(result.keys())
         rows = result.fetchall()

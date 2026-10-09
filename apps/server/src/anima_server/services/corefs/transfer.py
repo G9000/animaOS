@@ -1294,7 +1294,8 @@ def _filesystem_name(destination: Path) -> str | None:
 
 
 def _sync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows FlushFileBuffers requires a descriptor opened with write access.
+    with path.open("rb+" if os.name == "nt" else "rb") as handle:
         os.fsync(handle.fileno())
 
 

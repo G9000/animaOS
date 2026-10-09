@@ -28,8 +28,7 @@ _SECTION_PATH_SEPARATOR = " > "
 _READ_NOTICE_RESERVE_CHARS = 160
 
 _BUDGET_EXHAUSTED_NOTICE = (
-    "Per-turn document text budget is used up. Answer from the evidence "
-    "already gathered this turn."
+    "Per-turn document text budget is used up. Answer from the evidence already gathered this turn."
 )
 
 
@@ -42,7 +41,6 @@ def search_documents(
 ) -> str:
     """Search the user's indexed documents (hybrid keyword + semantic). Returns chunk excerpts with document ids, pages, and section paths. Defaults to the documents active in this conversation; pass scope="all" to search the whole library, or document_ids as comma-separated ids. Follow up with get_document_outline / read_document_section for depth."""
     from anima_server.services.agent.tool_context import get_tool_context
-    from anima_server.services.documents import rag as documents_rag
 
     query_stripped = query.strip()
     if not query_stripped:
@@ -74,53 +72,25 @@ def search_documents(
 
     max_results = _parse_bounded_int(limit, default=8, low=1, high=_MAX_SEARCH_LIMIT)
     corefs_index = _active_document_index(ctx)
-    if corefs_index is not None:
-        matches = corefs_index.search_document_projections(
-            query_stripped,
-            document_ids=frozenset(allowed_ids) if allowed_ids is not None else None,
-            limit=max_results,
-        )
-        if not matches:
-            return f"No document matches for: {query_stripped}"
-        lines = [f"Found {len(matches)} document chunk matches for: {query_stripped}"]
-        for document, chunk, score in matches:
-            _record_citation(ctx, document.document_id, document.filename)
-            location = _format_pages(chunk.page_start, chunk.page_end)
-            section = f' section "{chunk.section_title}"' if chunk.section_title else ""
-            excerpt = _clean_excerpt(chunk.content_text, _SEARCH_EXCERPT_CHARS)
-            lines.append(
-                f"- doc:{document.document_id} {document.filename} "
-                f"chunk:{chunk.chunk_index}{location}{section} "
-                f"(score={score:.2f}): {excerpt}"
-            )
-        lines.append(
-            "Use read_document_section(document_id, section_path=...) to read a full section."
-        )
-        return _emit_within_budget(ctx, "\n".join(lines))
-
-    results = documents_rag.search_document_chunks(
-        ctx.runtime_db,
-        ctx.user_id,
+    matches = corefs_index.search_document_projections(
         query_stripped,
-        document_ids=allowed_ids,
+        document_ids=frozenset(allowed_ids) if allowed_ids is not None else None,
         limit=max_results,
     )
-    if not results:
+    if not matches:
         return f"No document matches for: {query_stripped}"
-
-    lines = [f"Found {len(results)} document chunk matches for: {query_stripped}"]
-    for result in results:
-        _record_citation(ctx, result.document_id, result.filename)
-        location = _format_pages(result.page_start, result.page_end)
-        section = f' section "{result.section_title}"' if result.section_title else ""
-        excerpt = _clean_excerpt(result.content, _SEARCH_EXCERPT_CHARS)
+    lines = [f"Found {len(matches)} document chunk matches for: {query_stripped}"]
+    for document, chunk, score in matches:
+        _record_citation(ctx, document.document_id, document.filename)
+        location = _format_pages(chunk.page_start, chunk.page_end)
+        section = f' section "{chunk.section_title}"' if chunk.section_title else ""
+        excerpt = _clean_excerpt(chunk.content_text, _SEARCH_EXCERPT_CHARS)
         lines.append(
-            f"- doc:{result.document_id} {result.filename} chunk:{result.chunk_id}"
-            f"{location}{section} (score={result.similarity:.2f}): {excerpt}"
+            f"- doc:{document.document_id} {document.filename} "
+            f"chunk:{chunk.chunk_index}{location}{section} "
+            f"(score={score:.2f}): {excerpt}"
         )
-    lines.append(
-        "Use read_document_section(document_id, section_path=...) to read a full section."
-    )
+    lines.append("Use read_document_section(document_id, section_path=...) to read a full section.")
     return _emit_within_budget(ctx, "\n".join(lines))
 
 
@@ -151,9 +121,7 @@ def get_document_outline(document_id: str) -> str:
     else:
         for chunk in chunks[:_OUTLINE_MAX_LINES]:
             pages = _format_pages(chunk.page_start, chunk.page_end)
-            lines.append(
-                f"- chunk {chunk.chunk_index}{pages} (~{len(chunk.content_text)} chars)"
-            )
+            lines.append(f"- chunk {chunk.chunk_index}{pages} (~{len(chunk.content_text)} chars)")
         if len(chunks) > _OUTLINE_MAX_LINES:
             lines.append(f"... {len(chunks) - _OUTLINE_MAX_LINES} more chunks.")
         lines.append(
@@ -270,9 +238,7 @@ def read_document_section(
             )
         else:
             lines.append("")
-            lines.append(
-                f"[Truncated at {call_cap} chars. Continue with {continuation}.]"
-            )
+            lines.append(f"[Truncated at {call_cap} chars. Continue with {continuation}.]")
     return _emit_within_budget(ctx, "\n".join(lines))
 
 
@@ -283,9 +249,7 @@ def get_document_tools() -> list[Any]:
 def _budget_remaining(ctx: Any) -> int:
     from anima_server.config import settings
 
-    return max(
-        0, settings.document_tool_turn_char_budget - ctx.document_tool_chars_used
-    )
+    return max(0, settings.document_tool_turn_char_budget - ctx.document_tool_chars_used)
 
 
 def _emit_within_budget(ctx: Any, output: str) -> str:
@@ -310,24 +274,13 @@ def _record_citation(ctx: Any, document_id: int, filename: str) -> None:
 
 
 def _owned_documents(ctx: Any, document_ids: Sequence[int]) -> list[Any]:
-    from anima_server.services.documents.store import get_document_for_user
 
     corefs_index = _active_document_index(ctx)
-    if corefs_index is not None:
-        return [
-            projection
-            for document_id in document_ids
-            if (projection := corefs_index.document_projection(document_id)) is not None
-        ]
-
-    owned = []
-    for document_id in document_ids:
-        document = get_document_for_user(
-            ctx.runtime_db, user_id=ctx.user_id, document_id=document_id
-        )
-        if document is not None:
-            owned.append(document)
-    return owned
+    return [
+        projection
+        for document_id in document_ids
+        if (projection := corefs_index.document_projection(document_id)) is not None
+    ]
 
 
 def _active_thread_document_ids(ctx: Any) -> list[int]:
@@ -352,38 +305,28 @@ def _active_thread_document_ids(ctx: Any) -> list[int]:
 def _load_owned_document_chunks(
     ctx: Any, document_id: str
 ) -> tuple[Any | None, list[Any], str | None]:
-    from anima_server.services.documents.store import (
-        get_document_for_user,
-        list_document_chunks,
-    )
 
     parsed_id = _parse_optional_int(document_id)
     if parsed_id is None or parsed_id <= 0:
         return None, [], "Please provide a valid document_id."
     corefs_index = _active_document_index(ctx)
-    if corefs_index is not None:
-        projection = corefs_index.document_projection(parsed_id)
-        if projection is None:
-            return None, [], f"Document {parsed_id} does not exist in your library."
-        return projection, list(projection.chunks), None
-    document = get_document_for_user(
-        ctx.runtime_db, user_id=ctx.user_id, document_id=parsed_id
-    )
-    if document is None:
+    projection = corefs_index.document_projection(parsed_id)
+    if projection is None:
         return None, [], f"Document {parsed_id} does not exist in your library."
-    chunks = list_document_chunks(ctx.runtime_db, document_id=document.id)
-    if not chunks:
-        return None, [], f"doc:{document.id} {document.filename} has no indexed content."
-    return document, chunks, None
+    return projection, list(projection.chunks), None
 
 
-def _active_document_index(ctx: Any) -> Any | None:
+def _active_document_index(ctx: Any) -> Any:
     from anima_server.services.corefs.asset_authority import (
-        canonical_asset_session_or_legacy,
+        require_canonical_asset_session,
     )
 
-    session = canonical_asset_session_or_legacy(ctx.user_id)
-    index = getattr(session, "runtime_index", None) if session is not None else None
+    session = require_canonical_asset_session(ctx.user_id)
+    index = getattr(session, "runtime_index", None)
+    if index is None:
+        from anima_server.services.corefs.asset_authority import CoreFsAssetAuthorityLocked
+
+        raise CoreFsAssetAuthorityLocked("Canonical document index is unavailable.")
     return index
 
 
@@ -413,15 +356,9 @@ def _section_summaries(
                 stats[title] = [chunk.page_start, chunk.page_end, 0, 0]
             entry = stats[title]
             if chunk.page_start is not None:
-                entry[0] = (
-                    chunk.page_start
-                    if entry[0] is None
-                    else min(entry[0], chunk.page_start)
-                )
+                entry[0] = chunk.page_start if entry[0] is None else min(entry[0], chunk.page_start)
             if chunk.page_end is not None:
-                entry[1] = (
-                    chunk.page_end if entry[1] is None else max(entry[1], chunk.page_end)
-                )
+                entry[1] = chunk.page_end if entry[1] is None else max(entry[1], chunk.page_end)
             entry[2] += 1
             entry[3] += len(chunk.content_text)
     return [

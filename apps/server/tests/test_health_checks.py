@@ -2,11 +2,27 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def isolated_memory_derived_state(monkeypatch):
+    from anima_server.config import settings
+    from anima_server.services.agent import derived_soul_state, embeddings
+
+    async def unavailable(_text):
+        return None
+
+    monkeypatch.setattr(settings, "core_require_encryption", False)
+    monkeypatch.setattr(embeddings, "generate_embedding", unavailable)
+    derived_soul_state.clear_derived_soul_state()
+    yield
+    derived_soul_state.clear_derived_soul_state()
 
 
 @pytest.fixture
@@ -54,8 +70,7 @@ async def test_db_integrity_pg_unreachable():
         runtime_db_factory=bad_factory,
     )
     assert result.status == "unhealthy"
-    assert "runtime" in result.message.lower(
-    ) or "unreachable" in result.message.lower()
+    assert "runtime" in result.message.lower() or "unreachable" in result.message.lower()
 
 
 # -- llm_connectivity ----------------------------------------------------
@@ -130,13 +145,15 @@ async def test_background_tasks_healthy():
 
     factory = get_runtime_session_factory()
     with factory() as db:
-        db.add(RuntimeBackgroundTaskRun(
-            user_id=1,
-            task_type="consolidation",
-            status="completed",
-            started_at=datetime.now(UTC) - timedelta(minutes=10),
-            completed_at=datetime.now(UTC) - timedelta(minutes=5),
-        ))
+        db.add(
+            RuntimeBackgroundTaskRun(
+                user_id=1,
+                task_type="consolidation",
+                status="completed",
+                started_at=datetime.now(UTC) - timedelta(minutes=10),
+                completed_at=datetime.now(UTC) - timedelta(minutes=5),
+            )
+        )
         db.commit()
 
     result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
@@ -153,14 +170,15 @@ async def test_background_tasks_healthy_multiple_consolidations():
     factory = get_runtime_session_factory()
     with factory() as db:
         for i in range(5):
-            db.add(RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="completed",
-                started_at=datetime.now(UTC) - timedelta(minutes=60 - i * 10),
-                completed_at=datetime.now(
-                    UTC) - timedelta(minutes=55 - i * 10),
-            ))
+            db.add(
+                RuntimeBackgroundTaskRun(
+                    user_id=1,
+                    task_type="consolidation",
+                    status="completed",
+                    started_at=datetime.now(UTC) - timedelta(minutes=60 - i * 10),
+                    completed_at=datetime.now(UTC) - timedelta(minutes=55 - i * 10),
+                )
+            )
         db.commit()
 
     result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
@@ -180,14 +198,16 @@ async def test_background_tasks_degraded_failures():
     factory = get_runtime_session_factory()
     with factory() as db:
         for _i in range(3):
-            db.add(RuntimeBackgroundTaskRun(
-                user_id=1,
-                task_type="consolidation",
-                status="failed",
-                started_at=datetime.now(UTC) - timedelta(minutes=30),
-                completed_at=datetime.now(UTC) - timedelta(minutes=20),
-                error_message="test failure",
-            ))
+            db.add(
+                RuntimeBackgroundTaskRun(
+                    user_id=1,
+                    task_type="consolidation",
+                    status="failed",
+                    started_at=datetime.now(UTC) - timedelta(minutes=30),
+                    completed_at=datetime.now(UTC) - timedelta(minutes=20),
+                    error_message="test failure",
+                )
+            )
         db.commit()
 
     result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
@@ -203,12 +223,14 @@ async def test_background_tasks_unhealthy_stuck():
 
     factory = get_runtime_session_factory()
     with factory() as db:
-        db.add(RuntimeBackgroundTaskRun(
-            user_id=1,
-            task_type="consolidation",
-            status="running",
-            started_at=datetime.now(UTC) - timedelta(hours=1),
-        ))
+        db.add(
+            RuntimeBackgroundTaskRun(
+                user_id=1,
+                task_type="consolidation",
+                status="running",
+                started_at=datetime.now(UTC) - timedelta(hours=1),
+            )
+        )
         db.commit()
 
     result = await check_background_tasks(user_id=1, runtime_db_factory=factory)
@@ -225,29 +247,35 @@ async def test_background_tasks_filtered_by_user_id():
     factory = get_runtime_session_factory()
     with factory() as db:
         # User 2 has a stuck task and failed tasks
-        db.add(RuntimeBackgroundTaskRun(
-            user_id=2,
-            task_type="consolidation",
-            status="running",
-            started_at=datetime.now(UTC) - timedelta(hours=2),
-        ))
-        for _ in range(3):
-            db.add(RuntimeBackgroundTaskRun(
+        db.add(
+            RuntimeBackgroundTaskRun(
                 user_id=2,
                 task_type="consolidation",
-                status="failed",
-                started_at=datetime.now(UTC) - timedelta(minutes=30),
-                completed_at=datetime.now(UTC) - timedelta(minutes=20),
-                error_message="test failure",
-            ))
+                status="running",
+                started_at=datetime.now(UTC) - timedelta(hours=2),
+            )
+        )
+        for _ in range(3):
+            db.add(
+                RuntimeBackgroundTaskRun(
+                    user_id=2,
+                    task_type="consolidation",
+                    status="failed",
+                    started_at=datetime.now(UTC) - timedelta(minutes=30),
+                    completed_at=datetime.now(UTC) - timedelta(minutes=20),
+                    error_message="test failure",
+                )
+            )
         # User 1 has a healthy completed task
-        db.add(RuntimeBackgroundTaskRun(
-            user_id=1,
-            task_type="consolidation",
-            status="completed",
-            started_at=datetime.now(UTC) - timedelta(minutes=10),
-            completed_at=datetime.now(UTC) - timedelta(minutes=5),
-        ))
+        db.add(
+            RuntimeBackgroundTaskRun(
+                user_id=1,
+                task_type="consolidation",
+                status="completed",
+                started_at=datetime.now(UTC) - timedelta(minutes=10),
+                completed_at=datetime.now(UTC) - timedelta(minutes=5),
+            )
+        )
         db.commit()
 
     # User 1 should be healthy despite user 2's issues
@@ -267,7 +295,7 @@ async def test_background_tasks_filtered_by_user_id():
 
 def _make_soul_factory_with_memory_items(*, missing_embedding: bool = False):
     from anima_server.db.base import Base
-    from anima_server.models import MemoryItem, User
+    from anima_server.models import MemoryItem, SoulOwner
     from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 
     engine = create_engine("sqlite://", poolclass=StaticPool)
@@ -276,7 +304,7 @@ def _make_soul_factory_with_memory_items(*, missing_embedding: bool = False):
 
     embedding = [0.1, 0.2, 0.3]
     with factory() as db:
-        user = User(username="health_memory", display_name="Health", password_hash="x")
+        user = SoulOwner(id=1, core_owner_id=str(uuid4()))
         db.add(user)
         db.flush()
         db.add(

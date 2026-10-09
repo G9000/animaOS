@@ -7,16 +7,16 @@ from anima_server.db.runtime import get_runtime_session_factory
 from anima_server.models.runtime import RuntimeDocument
 from anima_server.services.agent import pgvec_store as pgvec_module
 from anima_server.services.agent.vector_store import VectorSearchResult
-from anima_server.services.corefs.diary_migration import (
-    read_prepared_writing_body,
-    read_prepared_writing_snapshot,
-)
 from anima_server.services.documents import ExtractedDocumentChunk, pdf_workflow
 from anima_server.services.documents.parsing import ExtractionOutcome
 from anima_server.services.documents.parsing_pack import ParsingPackStatus
 from anima_server.services.documents.pdf_text import PageText
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
+from corefs_catalog_test_support import (
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 

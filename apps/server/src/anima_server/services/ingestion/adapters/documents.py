@@ -43,15 +43,10 @@ def sync_document_source(
     )
     joined_text = "\n\n".join(chunk.content_text for chunk in chunks)
     artifact_hash = _content_hash(joined_text or document.sha256)
-    from anima_server.services.corefs.asset_authority import CoreFsByteSource
     from anima_server.services.documents.store import resolve_document_byte_source
 
     byte_source = resolve_document_byte_source(document, user_id=document.user_id)
-    source_uri = (
-        f"corefs://object/{byte_source.stable_id}"
-        if isinstance(byte_source, CoreFsByteSource)
-        else f"runtime-document://{document.id}"
-    )
+    source_uri = f"corefs://object/{byte_source.stable_id}"
     source = register_source(
         db,
         SourceIdentity(

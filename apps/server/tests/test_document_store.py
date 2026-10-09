@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 
+import pytest
 from anima_server.db.runtime_base import RuntimeBase
 from anima_server.models.runtime import RuntimeDocument, RuntimeDocumentChunk
 from anima_server.models.runtime_embedding import RuntimeEmbedding
@@ -17,9 +18,19 @@ from anima_server.services.documents.store import (
     replace_document_chunks,
     set_document_status,
 )
+from corefs_document_test_support import CanonicalDocumentOriginals, canonical_document_uri
 from sqlalchemy import ForeignKeyConstraint, func, inspect, select
 
 pytest_plugins = ("conftest_runtime",)
+
+
+@pytest.fixture(autouse=True)
+def canonical_original_boundary(monkeypatch):
+    originals = CanonicalDocumentOriginals()
+    originals.install(monkeypatch)
+    monkeypatch.setattr(f"{__name__}.register_document", originals.register)
+    return originals
+
 
 # Derived from the actual bound column rather than hardcoded: the pgvector
 # column dimension is fixed once per process (baked in at first import of
@@ -58,7 +69,7 @@ def _registration(
         user_id=user_id,
         filename=filename,
         mime_type="application/pdf",
-        storage_path=f".anima/documents/{user_id}/{filename}",
+        storage_path=canonical_document_uri(user_id, sha256),
         sha256=sha256,
         size_bytes=1024,
         metadata_json=metadata_json,
@@ -132,7 +143,7 @@ def test_register_document_creates_document(runtime_db) -> None:
     assert document.user_id == 1
     assert document.filename == "notes.pdf"
     assert document.mime_type == "application/pdf"
-    assert document.storage_path == ".anima/documents/1/notes.pdf"
+    assert document.storage_path == canonical_document_uri(1, "a" * 64)
     assert document.sha256 == "a" * 64
     assert document.size_bytes == 1024
     assert document.status == "registered"
@@ -394,7 +405,7 @@ def test_replace_document_chunks_bounds_section_title_to_column_length(
             user_id=1,
             filename="deep.pdf",
             mime_type="application/pdf",
-            storage_path=".anima/documents/1/deep.pdf",
+            storage_path=canonical_document_uri(1, "f" * 64),
             sha256="f" * 64,
             size_bytes=100,
         ),

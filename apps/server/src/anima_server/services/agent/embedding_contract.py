@@ -1,6 +1,6 @@
 """Persisted (model, dimension) embedding contract.
 
-The derived embedding stores — soul-side ``embedding_json``, the pgvector
+The derived embedding stores — unlock-scoped vectors, the pgvector
 ``runtime_embeddings`` table, and the rust index — are only meaningful
 for the model/dimension they were built with.  This module records the
 active pair, detects mismatches loudly (instead of the old behaviour:
@@ -14,7 +14,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, null, select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 
 logger = logging.getLogger(__name__)
@@ -390,31 +390,17 @@ def reset_derived_embedding_stores(
 ) -> int:
     """Clear derived embeddings so the backfill regenerates everything.
 
-    Embeddings are derived data: soul-side ``embedding_json`` is nulled,
+    Embeddings are derived data: unlock-scoped vectors are dropped,
     the user's pgvector rows are deleted (the JSON-typed sqlite variant
     and empty pgvector column tolerate any dimension afterwards), and the
     retrieval indexes are invalidated.  Returns the number of soul items
     marked for re-embedding.
     """
     from anima_server.models import MemoryItem
+    from anima_server.services.agent.derived_soul_state import clear_derived_soul_state
 
-    items = list(
-        soul_db.scalars(
-            select(MemoryItem).where(
-                MemoryItem.user_id == user_id,
-                MemoryItem.embedding_json.isnot(None),
-            )
-        ).all()
-    )
-    for item in items:
-        # Assign a SQL NULL, not Python None: this JSON column is not
-        # none_as_null, so `item.embedding_json = None` would persist the JSON
-        # value 'null' — which `embedding_json IS NULL` (used by the backfill
-        # selector and the remaining-count check) does NOT match, leaving reset
-        # items un-re-embedded and the contract falsely "complete".
-        item.embedding_json = null()
-        item.embedding_checksum = None
-    soul_db.flush()
+    items = list(soul_db.scalars(select(MemoryItem).where(MemoryItem.user_id == user_id)).all())
+    clear_derived_soul_state(owner_id=user_id)
 
     factory = _runtime_factory(runtime_db_factory)
     if factory is not None:

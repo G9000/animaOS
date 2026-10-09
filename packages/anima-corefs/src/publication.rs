@@ -328,7 +328,7 @@ fn durable_create_directory_platform(dir: &Dir, target: &OsStr) -> io::Result<()
 }
 
 #[cfg(windows)]
-fn rename_file_by_handle(
+pub(crate) fn rename_file_by_handle(
     source: &File,
     target_dir: &Dir,
     target: &OsStr,

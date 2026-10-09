@@ -16,7 +16,6 @@ from anima_server.models.runtime import (
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.documents.models import DocumentRegistration, ExtractedDocumentChunk
 from anima_server.services.documents.store import register_document, replace_document_chunks
-from anima_server.services.images.store import register_image_asset
 from anima_server.services.ingestion.adapters.base import IngestionAdapter
 from anima_server.services.ingestion.artifacts import replace_source_artifacts_and_spans
 from anima_server.services.ingestion.models import (
@@ -27,15 +26,26 @@ from anima_server.services.ingestion.models import (
 )
 from anima_server.services.ingestion.sources import ingest_with_adapter, register_source
 from sqlalchemy import func, select, text
+from test_image_indexing import _mock_authoritative_projections, _runtime_image_projection
 
 pytest_plugins = ("conftest_runtime",)
+
+
+@pytest.fixture(autouse=True)
+def _authoritative_byte_source_boundary(monkeypatch, request):
+    if request.node.name == "test_native_adapters_register_authenticated_original_uris":
+        yield
+        return
+    cleanup = _mock_authoritative_projections(monkeypatch)
+    yield
+    cleanup()
+
 
 # Dim derived from the actual bound column rather than hardcoded: the pgvector
 # column dimension is fixed once per process (baked in at first import of
 # RuntimeEmbedding from the then-current default embedding provider), so a
 # literal here would drift out of sync whenever that default changes.
 _EMBED_DIM = RuntimeEmbedding.__table__.c.embedding.type.dim
-
 
 
 @pytest.fixture(autouse=True)
@@ -288,13 +298,9 @@ def test_artifact_replacement_can_compile_any_source_to_knowledge(runtime_db) ->
     )
 
     assert {concept.concept_type for concept in concepts} >= {"source_summary", "topic"}
-    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {
-        source.id
-    }
+    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {source.id}
     assert any("Inspect relay timing" in concept.body_markdown for concept in concepts)
-    assert {citation.span_id for citation in citations} == {
-        span.id for span in stored_spans
-    }
+    assert {citation.span_id for citation in citations} == {span.id for span in stored_spans}
     assert compile_run is not None
     assert compile_run.source_id == source.id
     assert compile_run.status == "completed"
@@ -595,7 +601,7 @@ def test_sync_document_source_preserves_chunks_and_writes_page_spans(runtime_db)
             user_id=1,
             filename="field-guide.pdf",
             mime_type="application/pdf",
-            storage_path=".anima/documents/1/field-guide.pdf",
+            storage_path="corefs://object/01J00000000000000000000001",
             sha256=_sha("pdf bytes"),
             size_bytes=2048,
             metadata_json={"origin": "upload"},
@@ -628,7 +634,7 @@ def test_sync_document_source_preserves_chunks_and_writes_page_spans(runtime_db)
     source, artifacts, spans = sync_document_source(runtime_db, document=document)
 
     assert source.kind == "document"
-    assert source.source_uri == f"runtime-document://{document.id}"
+    assert source.source_uri == document.storage_path
     assert source.content_hash == document.sha256
     assert source.metadata_json["runtime_document_id"] == document.id
     assert artifacts[0].artifact_kind == "document_text"
@@ -655,7 +661,7 @@ def test_sync_document_source_with_compile_knowledge_false_skips_concepts(
             user_id=1,
             filename="preview-guide.pdf",
             mime_type="application/pdf",
-            storage_path=".anima/documents/1/preview-guide.pdf",
+            storage_path="corefs://object/01J00000000000000000000002",
             sha256=_sha("preview pdf bytes"),
             size_bytes=2048,
             metadata_json={"origin": "upload"},
@@ -699,7 +705,7 @@ def test_sync_image_source_preserves_annotations_and_writes_image_locators(
     from anima_server.services.ingestion.adapters.images import sync_image_source
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    asset = register_image_asset(
+    asset = _runtime_image_projection(
         runtime_db,
         user_id=7,
         data=(
@@ -729,7 +735,7 @@ def test_sync_image_source_preserves_annotations_and_writes_image_locators(
     source, artifacts, spans = sync_image_source(runtime_db, asset=asset)
 
     assert source.kind == "image"
-    assert source.source_uri == f"runtime-image://{asset.id}"
+    assert source.source_uri == asset.storage_path
     assert source.content_hash == asset.sha256
     assert source.metadata_json["runtime_image_asset_id"] == asset.id
     assert artifacts[0].artifact_kind == "image_annotations"
@@ -744,9 +750,9 @@ def test_sync_image_source_preserves_annotations_and_writes_image_locators(
 
 
 def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
-    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+    from corefs_ingestion_test_support import seed_captured_markdown_projection
 
-    source, artifacts, spans = ingest_markdown_content(
+    source, artifacts, spans = seed_captured_markdown_projection(
         runtime_db,
         user_id=3,
         content="# Architecture\n\nPortable core details.\n\n## Notes\n\nSpan evidence.",
@@ -756,7 +762,8 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
     )
 
     assert source.kind == "markdown"
-    assert source.source_uri == "markdown://Architecture Notes.md"
+    assert source.source_uri.startswith("corefs://object/")
+    assert source.metadata_json["filename"] == "Architecture Notes.md"
     assert artifacts[0].artifact_kind == "markdown"
     assert [artifact.artifact_kind for artifact in artifacts] == [
         "markdown",
@@ -780,10 +787,7 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
         "Architecture > Notes",
     ]
     # Paragraph spans link to their parent section via section_index.
-    assert (
-        spans[3].metadata_json["section_index"]
-        == section_spans[1].locator_json["section_index"]
-    )
+    assert spans[3].metadata_json["section_index"] == section_spans[1].locator_json["section_index"]
     outline = artifacts[1].metadata_json["outline"]
     assert [entry["section_path"] for entry in outline] == [
         "Architecture",
@@ -791,9 +795,7 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
     ]
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) >= 2
     embedded_span_count = runtime_db.scalar(
-        select(func.count(RuntimeEmbedding.id)).where(
-            RuntimeEmbedding.source_type == "source_span"
-        )
+        select(func.count(RuntimeEmbedding.id)).where(RuntimeEmbedding.source_type == "source_span")
     )
     # Section spans are parent read units and are not embedded.
     assert embedded_span_count == len(spans) - len(section_spans)
@@ -808,9 +810,9 @@ def test_markdown_adapter_splits_headings_and_paragraphs(runtime_db) -> None:
 
 
 def test_markdown_adapter_compiles_unique_topic_for_each_span(runtime_db) -> None:
-    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+    from corefs_ingestion_test_support import seed_captured_markdown_projection
 
-    _source, _artifacts, spans = ingest_markdown_content(
+    _source, _artifacts, spans = seed_captured_markdown_projection(
         runtime_db,
         user_id=3,
         content="# Alpha\n\nFirst paragraph.\n\n## Beta\n\nSecond paragraph.",
@@ -819,9 +821,7 @@ def test_markdown_adapter_compiles_unique_topic_for_each_span(runtime_db) -> Non
     )
 
     concepts = list(runtime_db.scalars(select(RuntimeKnowledgeConcept)).all())
-    topic_concepts = [
-        concept for concept in concepts if concept.concept_type == "topic"
-    ]
+    topic_concepts = [concept for concept in concepts if concept.concept_type == "topic"]
     topic_concept_ids = {concept.id for concept in topic_concepts}
     topic_citations = list(
         runtime_db.scalars(
@@ -840,11 +840,11 @@ def test_markdown_adapter_compiles_unique_topic_for_each_span(runtime_db) -> Non
 
 
 def test_markdown_adapter_caps_generated_concept_slugs(runtime_db) -> None:
-    from anima_server.services.ingestion.adapters.text import ingest_markdown_content
+    from corefs_ingestion_test_support import seed_captured_markdown_projection
 
     long_title = "Long Safety Manual " * 32
 
-    ingest_markdown_content(
+    seed_captured_markdown_projection(
         runtime_db,
         user_id=3,
         content="# Overview\n\nCalibrate the pump relay before startup.",
@@ -859,10 +859,10 @@ def test_markdown_adapter_caps_generated_concept_slugs(runtime_db) -> None:
 
 
 def test_text_adapter_rejects_empty_content(runtime_db) -> None:
-    from anima_server.services.ingestion.adapters.text import ingest_text_content
+    from corefs_ingestion_test_support import seed_captured_text_projection
 
     with pytest.raises(ValueError, match="content must not be empty"):
-        ingest_text_content(
+        seed_captured_text_projection(
             runtime_db,
             user_id=3,
             content=" \n\t",
@@ -871,9 +871,9 @@ def test_text_adapter_rejects_empty_content(runtime_db) -> None:
 
 
 def test_web_capture_adapter_preserves_url_metadata(runtime_db) -> None:
-    from anima_server.services.ingestion.adapters.web import ingest_web_capture
+    from corefs_ingestion_test_support import seed_captured_web_projection
 
-    source, artifacts, spans = ingest_web_capture(
+    source, artifacts, spans = seed_captured_web_projection(
         runtime_db,
         user_id=3,
         url=" https://example.com/path?q=1 ",
@@ -883,7 +883,8 @@ def test_web_capture_adapter_preserves_url_metadata(runtime_db) -> None:
     )
 
     assert source.kind == "web_capture"
-    assert source.source_uri == "https://example.com/path?q=1"
+    assert source.source_uri.startswith("corefs://object/")
+    assert source.metadata_json["url"] == "https://example.com/path?q=1"
     assert source.title == "Example Page"
     assert source.metadata_json["canonical_url"] == "https://example.com/path"
     assert artifacts[0].artifact_kind == "readable_text"
@@ -891,11 +892,11 @@ def test_web_capture_adapter_preserves_url_metadata(runtime_db) -> None:
 
 
 def test_web_capture_adapter_caps_generated_concept_titles(runtime_db) -> None:
-    from anima_server.services.ingestion.adapters.web import ingest_web_capture
+    from corefs_ingestion_test_support import seed_captured_web_projection
 
     long_url = f"https://example.com/{'a' * 900}"
 
-    ingest_web_capture(
+    seed_captured_web_projection(
         runtime_db,
         user_id=3,
         url=long_url,
@@ -906,3 +907,100 @@ def test_web_capture_adapter_caps_generated_concept_titles(runtime_db) -> None:
 
     assert titles
     assert all(len(title) <= 512 for title in titles)
+
+
+def test_native_adapters_register_authenticated_original_uris():
+    from anima_server.db.runtime import get_runtime_session_factory
+    from anima_server.models.runtime import RuntimeImageAsset
+    from anima_server.services.corefs.asset_mutations import upsert_canonical_binary_asset
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
+    from anima_server.services.corefs.sealed_runtime import seal_runtime_fields
+    from anima_server.services.ingestion.adapters.documents import sync_document_source
+    from anima_server.services.ingestion.adapters.images import sync_image_source
+    from anima_server.services.sessions import unlock_session_store
+    from conftest import managed_test_client
+
+    with managed_test_client("native-adapter-sources-") as client:
+        registered = client.post(
+            "/api/auth/register",
+            json={
+                "username": "native-source",
+                "password": "pw123456",
+                "name": "Native Source",
+            },
+        )
+        assert registered.status_code == 201, registered.text
+        account = registered.json()
+        owner_id = int(account["id"])
+        session = unlock_session_store.resolve(account["unlockToken"])
+        assert session is not None
+        image_id = 987
+        image_stable_id = stable_opaque_id("image-asset", str(image_id))
+        image_bytes = b"\x89PNG\r\n\x1a\nnative-original"
+        pdf_stable_id = stable_opaque_id("native-pdf-source", "one")
+        pdf_bytes = b"%PDF-1.7\nnative original\n%%EOF"
+        for stable_id, filename, mime, kind, body in (
+            (image_stable_id, "photo.png", "image/png", "gallery-asset", image_bytes),
+            (pdf_stable_id, "guide.pdf", "application/pdf", "attachment", pdf_bytes),
+        ):
+            upsert_canonical_binary_asset(
+                session=session,
+                stable_id=stable_id,
+                name=filename,
+                object_kind=kind,
+                content_type=mime,
+                data=body,
+            )
+        with get_runtime_session_factory()() as runtime_db:
+            image_uri = f"corefs://object/{image_stable_id}"
+            image = RuntimeImageAsset(
+                id=image_id,
+                user_id=owner_id,
+                filename=None,
+                mime_type="",
+                storage_path="",
+                sha256=hashlib.sha256(image_bytes).hexdigest(),
+                size_bytes=len(image_bytes),
+                status="registered",
+                retention_state="transient",
+            )
+            seal_runtime_fields(
+                runtime_db,
+                row=image,
+                row_type="runtime_image_asset",
+                owner_id=owner_id,
+                payload={
+                    "filename": "photo.png",
+                    "mime_type": "image/png",
+                    "storage_path": image_uri,
+                    "metadata_json": None,
+                },
+                placeholders={
+                    "filename": None,
+                    "mime_type": "",
+                    "storage_path": "",
+                    "metadata_json": None,
+                },
+            )
+            image_source, _, _ = sync_image_source(runtime_db, asset=image)
+            assert image_source.content_hash == image.sha256
+            assert image_source.metadata_json["runtime_image_asset_id"] == image_id
+            document_uri = f"corefs://object/{pdf_stable_id}"
+            document = register_document(
+                runtime_db,
+                DocumentRegistration(
+                    user_id=owner_id,
+                    filename="guide.pdf",
+                    mime_type="application/pdf",
+                    storage_path=document_uri,
+                    sha256=hashlib.sha256(pdf_bytes).hexdigest(),
+                    size_bytes=len(pdf_bytes),
+                ),
+            )
+            document_source, _, _ = sync_document_source(
+                runtime_db, document=document, compile_knowledge=False
+            )
+            assert document_source.content_hash == document.sha256
+            assert document_source.metadata_json["runtime_document_id"] == document.id
+            assert image_source.source_uri == image_uri
+            assert document_source.source_uri == document_uri

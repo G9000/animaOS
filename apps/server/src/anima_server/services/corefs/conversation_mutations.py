@@ -10,6 +10,7 @@ from threading import RLock
 from typing import Any
 
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.catalog_reader import stable_opaque_id
 from anima_server.services.corefs.content_authority import (
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
@@ -20,7 +21,6 @@ from anima_server.services.corefs.conversation_authority import (
     CanonicalThreadView,
     read_canonical_conversation_catalog,
 )
-from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.messages import (
     MESSAGE_SEGMENT_CONTENT_TYPE,
     THREAD_CONTENT_TYPE,
@@ -53,6 +53,7 @@ def append_canonical_message(
     attachment_uris: tuple[str, ...] = (),
     legacy_message_id: int | str | None = None,
     created_at: str | None = None,
+    display_metadata: dict[str, object] | None = None,
 ) -> ReducedMessage:
     timestamp = created_at or _timestamp()
     allocated_legacy_id = legacy_message_id
@@ -69,12 +70,12 @@ def append_canonical_message(
         elif allocated_legacy_id in existing_ids:
             raise ConversationMutationError("Canonical message identity already exists.")
         next_sequence = max((event.sequence for event in snapshot.events), default=0) + 1
-        message_id = migration_opaque_id(
+        message_id = stable_opaque_id(
             "conversation-message",
             f"{snapshot.thread_id}:{allocated_legacy_id}",
         )
         return MessageEvent(
-            event_id=migration_opaque_id(
+            event_id=stable_opaque_id(
                 "conversation-event",
                 f"{message_id}:created:1",
             ),
@@ -90,6 +91,7 @@ def append_canonical_message(
             content=content,
             attachment_uris=attachment_uris,
             created_at=timestamp,
+            display_metadata=display_metadata,
         )
 
     with _conversation_lock(int(session.user_id)):
@@ -105,7 +107,11 @@ def append_canonical_message(
         if refreshed is None:
             raise ConversationMutationError("Canonical message append did not verify.")
         created = next(
-            (message for message in refreshed.messages if message.message_id == plan.event.message_id),
+            (
+                message
+                for message in refreshed.messages
+                if message.message_id == plan.event.message_id
+            ),
             None,
         )
         if created is None:
@@ -135,7 +141,7 @@ def edit_canonical_message(
         )
         version = current.version + 1
         return MessageEvent(
-            event_id=migration_opaque_id(
+            event_id=stable_opaque_id(
                 "conversation-event",
                 f"{current.message_id}:edited:{version}",
             ),
@@ -153,6 +159,7 @@ def edit_canonical_message(
                 current.attachment_uris if attachment_uris is None else attachment_uris
             ),
             created_at=timestamp,
+            display_metadata=current.display_metadata,
         )
 
     with _conversation_lock(int(session.user_id)):
@@ -168,7 +175,11 @@ def edit_canonical_message(
         if refreshed is None:
             raise ConversationMutationError("Canonical message edit did not verify.")
         edited = next(
-            (message for message in refreshed.messages if message.message_id == plan.event.message_id),
+            (
+                message
+                for message in refreshed.messages
+                if message.message_id == plan.event.message_id
+            ),
             None,
         )
         if edited is None or edited.current_event_id != plan.event.event_id:
@@ -196,7 +207,7 @@ def delete_canonical_message(
         )
         version = current.version + 1
         return MessageEvent(
-            event_id=migration_opaque_id(
+            event_id=stable_opaque_id(
                 "conversation-event",
                 f"{current.message_id}:deleted:{version}",
             ),
@@ -243,7 +254,7 @@ def create_canonical_thread(*, session: Any, force_new: bool = False) -> Canonic
             if active is not None and not force_new and not active.messages:
                 return active
             legacy_id = _new_legacy_id(catalog)
-            stable_id = migration_opaque_id("conversation-thread", str(legacy_id))
+            stable_id = stable_opaque_id("conversation-thread", str(legacy_id))
             now = _timestamp()
             document = ThreadDocument(
                 thread_id=stable_id,
@@ -475,9 +486,7 @@ def _append_canonical_event(
         _require_complete_thread(current)
         return ConversationTailSnapshot(
             thread_id=current.document.thread_id,
-            events=tuple(
-                event for segment in current.segments for event in segment.segment.events
-            ),
+            events=tuple(event for segment in current.segments for event in segment.segment.events),
             tail=current.segments[-1].segment if current.segments else None,
         )
 
@@ -490,10 +499,7 @@ def _append_canonical_event(
         tail_record = current.segments[-1] if current.segments else None
         actual_tail_id = tail_record.segment.segment_id if tail_record is not None else None
         actual_tail_hash = tail_record.segment.sha256 if tail_record is not None else None
-        if (
-            actual_tail_id != plan.expected_tail_id
-            or actual_tail_hash != plan.expected_tail_sha256
-        ):
+        if actual_tail_id != plan.expected_tail_id or actual_tail_hash != plan.expected_tail_sha256:
             raise ConversationTailConflict("canonical thread tail changed")
         _commit_message_append(
             session=session,
@@ -537,10 +543,7 @@ def _require_message_precondition(
         or expected_version < 1
     ):
         raise ConversationMutationError("Canonical message precondition is invalid.")
-    if (
-        message.current_event_id != expected_event_id
-        or message.version != expected_version
-    ):
+    if message.current_event_id != expected_event_id or message.version != expected_version:
         raise ConversationMutationError("Canonical message precondition is stale.")
 
 

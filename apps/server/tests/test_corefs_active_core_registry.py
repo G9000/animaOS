@@ -29,6 +29,15 @@ from anima_server.services.corefs.transfer import (
 from anima_server.services.credentials import CredentialStore, MemoryCredentialBackend
 
 
+def test_activation_flushes_staged_files_without_changing_contents(managed_tmp_path: Path) -> None:
+    from anima_server.services.corefs.transfer import _sync_file
+
+    staged = managed_tmp_path / "authenticated-staged.acore"
+    staged.write_bytes(b"authenticated staged contents")
+    _sync_file(staged)
+    assert staged.read_bytes() == b"authenticated staged contents"
+
+
 def _manifest_core(
     path: Path,
     core_id: str,
@@ -217,9 +226,7 @@ def test_whole_core_account_deletion_resumes_at_every_crash_boundary(
     assert not scheduled.request_path.exists()
     assert not startup.registry_path.with_name("active-core.json.delete-journal").exists()
     instance_registry = json.loads(
-        (
-            managed_tmp_path / "app-data" / "core-instance-registry.json"
-        ).read_text(encoding="utf-8")
+        (managed_tmp_path / "app-data" / "core-instance-registry.json").read_text(encoding="utf-8")
     )
     assert instance_registry["instances"] == []
 

@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import KGRelation, User
+from anima_server.models import KGRelation, SoulOwner
 from anima_server.models.runtime import RuntimeBackgroundTaskRun, RuntimeMessage, RuntimeThread
 from anima_server.models.runtime_memory import MemoryCandidate, MemoryExtractionFailure
 from anima_server.services.agent import knowledge_graph as knowledge_graph_module
@@ -25,7 +25,7 @@ from anima_server.services.agent.sleep_agent import (
     should_run_sleeptime,
     update_last_processed_message_id,
 )
-from sqlalchemy import create_engine, event, func, select
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -137,9 +137,7 @@ class TestIssueBackgroundTask:
             "_active_runtime_index",
             lambda _user_id: index,
         )
-        private_result = {
-            "errors": ["Provider leaked /private/logical/deep-monologue.pdf"]
-        }
+        private_result = {"errors": ["Provider leaked /private/logical/deep-monologue.pdf"]}
 
         with rt_factory() as db:
             db.add(
@@ -249,9 +247,7 @@ class TestIssueBackgroundTask:
                 select(
                     RuntimeBackgroundTaskRun.__table__.c.result_json,
                     RuntimeBackgroundTaskRun.__table__.c.error_message,
-                ).where(
-                    RuntimeBackgroundTaskRun.__table__.c.id == task_id
-                )
+                ).where(RuntimeBackgroundTaskRun.__table__.c.id == task_id)
             ).one()
             db.expunge_all()
             run = db.get(RuntimeBackgroundTaskRun, task_id)
@@ -381,8 +377,7 @@ class TestTaskFailureIsolation:
         assert len(call_log) == 3
 
         # Good tasks completed, bad task failed
-        good_ids = [r for r in results if isinstance(
-            r, str) and r.startswith("good")]
+        good_ids = [r for r in results if isinstance(r, str) and r.startswith("good")]
         assert len(good_ids) == 2
 
         with rt_factory() as db:
@@ -401,13 +396,14 @@ class TestEpisodeGenerationRetry:
                 "anima_server.services.agent.episodes.maybe_generate_episode",
                 new=AsyncMock(
                     side_effect=[
-                        OperationalError(
-                            "insert", {}, Exception("database is locked")),
+                        OperationalError("insert", {}, Exception("database is locked")),
                         object(),
                     ]
                 ),
             ) as maybe_generate_episode,
-            patch("anima_server.services.agent.sleep_agent.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+            patch(
+                "anima_server.services.agent.sleep_agent.asyncio.sleep", new=AsyncMock()
+            ) as sleep_mock,
         ):
             result = await _task_episode_gen(user_id=1, db_factory=db_factory)
 
@@ -417,16 +413,16 @@ class TestEpisodeGenerationRetry:
 
     @pytest.mark.asyncio()
     async def test_skips_when_database_remains_locked(self, db_factory):
-        locked_error = OperationalError(
-            "insert", {}, Exception("database is locked"))
+        locked_error = OperationalError("insert", {}, Exception("database is locked"))
 
         with (
             patch(
                 "anima_server.services.agent.episodes.maybe_generate_episode",
-                new=AsyncMock(
-                    side_effect=[locked_error, locked_error, locked_error]),
+                new=AsyncMock(side_effect=[locked_error, locked_error, locked_error]),
             ) as maybe_generate_episode,
-            patch("anima_server.services.agent.sleep_agent.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+            patch(
+                "anima_server.services.agent.sleep_agent.asyncio.sleep", new=AsyncMock()
+            ) as sleep_mock,
         ):
             result = await _task_episode_gen(user_id=1, db_factory=db_factory)
 
@@ -449,7 +445,7 @@ class TestForceMode:
         from anima_server.models import MemoryEpisode, MemoryItem
 
         with db_factory() as db:
-            user = User(username="force-mode", password_hash="x", display_name="F")
+            user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
             db.add(user)
             db.flush()
             db.add(
@@ -627,9 +623,7 @@ async def test_run_sleeptime_agents_invalidates_companion_cache(
     from anima_server.services.agent import sleep_agent
 
     with db_factory() as db:
-        user = User(
-            username="sleep-invalidate", password_hash="x", display_name="S"
-        )
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.commit()
         user_id = user.id
@@ -691,9 +685,7 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
 
     monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
     monkeypatch.setattr(embedding_contract, "reset_derived_embedding_stores", _reset_spy)
-    monkeypatch.setattr(
-        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: True
-    )
+    monkeypatch.setattr(embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: True)
     monkeypatch.setattr(
         embedding_contract,
         "has_reset_done",
@@ -704,24 +696,24 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
         "mark_reset_done",
         lambda uid, *a, **k: reset_marker.add(uid),
     )
-    monkeypatch.setattr(
-        embedding_contract, "mark_user_reembed_complete", lambda *a, **k: None
-    )
-    monkeypatch.setattr(
-        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
-    )
+    monkeypatch.setattr(embedding_contract, "mark_user_reembed_complete", lambda *a, **k: None)
+    monkeypatch.setattr(embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0)
     monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _noop_backfill)
     monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
 
     with db_factory() as db:
-        user_a = User(username="reembed-a", password_hash="x", display_name="A")
+        user_a = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user_a)
         db.commit()
         uid_a = user_a.id
         db.add(
             MemoryItem(
-                user_id=uid_a, content="x", category="fact", importance=3,
-                source="e", embedding_json=[0.1] * 8,
+                user_id=uid_a,
+                content="x",
+                category="fact",
+                importance=3,
+                source="e",
+                embedding_json=[0.1] * 8,
             )
         )
         db.commit()
@@ -734,9 +726,7 @@ async def test_reembed_reset_runs_once_per_cycle(db_factory, monkeypatch):
 
 
 @pytest.mark.asyncio()
-async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
-    db_factory, monkeypatch
-):
+async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(db_factory, monkeypatch):
     """If the pgvector ALTER fails (PG unavailable/locked), the reset must NOT
     be marked done — otherwise the column stays at the old vector(N) type with
     every upsert failing and no later pass retrying the ALTER."""
@@ -754,13 +744,9 @@ async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
         return 0
 
     monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
-    monkeypatch.setattr(
-        embedding_contract, "reset_derived_embedding_stores", lambda *a, **k: 0
-    )
+    monkeypatch.setattr(embedding_contract, "reset_derived_embedding_stores", lambda *a, **k: 0)
     # Alignment keeps failing.
-    monkeypatch.setattr(
-        embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: False
-    )
+    monkeypatch.setattr(embedding_contract, "ensure_pgvector_dimension", lambda *a, **k: False)
     monkeypatch.setattr(
         embedding_contract,
         "has_reset_done",
@@ -776,14 +762,12 @@ async def test_reembed_reset_not_marked_when_pgvector_alignment_fails(
         "mark_user_reembed_complete",
         lambda uid, *a, **k: complete_calls.append(uid),
     )
-    monkeypatch.setattr(
-        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
-    )
+    monkeypatch.setattr(embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0)
     monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _noop_backfill)
     monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
 
     with db_factory() as db:
-        user = User(username="reembed-fail", password_hash="x", display_name="F")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.commit()
         uid = user.id
@@ -812,9 +796,7 @@ async def test_embedding_backfill_task_reports_counts(db_factory, monkeypatch):
         return 5
 
     monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: False)
-    monkeypatch.setattr(
-        embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0
-    )
+    monkeypatch.setattr(embedding_contract, "sweep_orphaned_runtime_embeddings", lambda *a, **k: 0)
     monkeypatch.setattr(consolidation, "_backfill_user_embeddings", _backfill_five)
     monkeypatch.setattr(vector_store, "consume_vector_store_dirty", lambda uid: False)
 
@@ -822,10 +804,8 @@ async def test_embedding_backfill_task_reports_counts(db_factory, monkeypatch):
     assert result == {"backfilled": 5, "resynced": 0}
 
 
-def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:
-    """reset must persist SQL NULL, not JSON 'null' — otherwise the backfill
-    selector (embedding_json IS NULL) never finds reset items and re-embed
-    silently 'completes' without regenerating anything."""
+def test_reset_derived_embedding_stores_leaves_vectors_eligible_for_backfill() -> None:
+    """Reset drops disposable vectors while retaining text for backfill."""
     from anima_server.models import MemoryItem
     from anima_server.services.agent.embedding_contract import (
         reset_derived_embedding_stores,
@@ -838,23 +818,26 @@ def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     try:
         with factory() as db:
-            db.add(User(username="reset-null", password_hash="x", display_name="R"))
+            db.add(SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001"))
             db.commit()
             db.add(
                 MemoryItem(
-                    user_id=1, content="z", category="fact", importance=3,
-                    source="e", embedding_json=[0.1] * 8,
+                    user_id=1,
+                    content="z",
+                    category="fact",
+                    importance=3,
+                    source="e",
+                    embedding_json=[0.1] * 8,
                 )
             )
             db.commit()
             reset_derived_embedding_stores(db, user_id=1)
             db.commit()
-            pending = db.scalar(
-                select(func.count())
-                .select_from(MemoryItem)
-                .where(MemoryItem.embedding_json.is_(None))
-            )
-        assert pending == 1  # reset item is matched by IS NULL
+            from anima_server.services.agent.derived_soul_state import _entry
+
+            rows = db.scalars(select(MemoryItem)).all()
+            assert [row.content for row in rows] == ["z"]
+            assert _entry(rows[0], rebuild=False) is None
     finally:
         engine.dispose()
 
@@ -864,8 +847,7 @@ def test_reset_derived_embedding_stores_nulls_via_sql_null() -> None:
 
 class TestRestartCursor:
     def test_no_runs_returns_none(self, rt_factory):
-        assert get_last_processed_message_id(
-            1, runtime_db_factory=rt_factory) is None
+        assert get_last_processed_message_id(1, runtime_db_factory=rt_factory) is None
 
     def test_round_trip(self, rt_factory):
         update_last_processed_message_id(
@@ -875,8 +857,7 @@ class TestRestartCursor:
             messages_processed=5,
             runtime_db_factory=rt_factory,
         )
-        msg_id = get_last_processed_message_id(
-            1, thread_id=10, runtime_db_factory=rt_factory)
+        msg_id = get_last_processed_message_id(1, thread_id=10, runtime_db_factory=rt_factory)
         assert msg_id == 42
 
     def test_thread_scope_isolation(self, rt_factory):
@@ -889,13 +870,12 @@ class TestRestartCursor:
             runtime_db_factory=rt_factory,
         )
         # Thread 20 and the None (global) scope have no cursor.
-        assert get_last_processed_message_id(
-            1, thread_id=20, runtime_db_factory=rt_factory) is None
-        assert get_last_processed_message_id(
-            1, thread_id=None, runtime_db_factory=rt_factory) is None
+        assert get_last_processed_message_id(1, thread_id=20, runtime_db_factory=rt_factory) is None
+        assert (
+            get_last_processed_message_id(1, thread_id=None, runtime_db_factory=rt_factory) is None
+        )
         # Thread 10 has the cursor.
-        assert get_last_processed_message_id(
-            1, thread_id=10, runtime_db_factory=rt_factory) == 42
+        assert get_last_processed_message_id(1, thread_id=10, runtime_db_factory=rt_factory) == 42
 
     def test_update_cursor_upserts_single_row(self, rt_factory):
         update_last_processed_message_id(
@@ -915,8 +895,7 @@ class TestRestartCursor:
             messages_processed=7,
             runtime_db_factory=rt_factory,
         )
-        assert get_last_processed_message_id(
-            1, thread_id=None, runtime_db_factory=rt_factory) == 50
+        assert get_last_processed_message_id(1, thread_id=None, runtime_db_factory=rt_factory) == 50
 
         from anima_server.models.runtime import RuntimeConsolidationCursor
 
@@ -947,8 +926,7 @@ class TestRestartCursor:
             messages_processed=2,
             runtime_db_factory=rt_factory,
         )
-        assert get_last_processed_message_id(
-            1, thread_id=7, runtime_db_factory=rt_factory) == 100
+        assert get_last_processed_message_id(1, thread_id=7, runtime_db_factory=rt_factory) == 100
 
     @pytest.mark.asyncio()
     async def test_cursor_survives_task_run_pruning(self, rt_factory):
@@ -986,8 +964,7 @@ class TestRestartCursor:
             remaining = db.scalars(select(RuntimeBackgroundTaskRun)).all()
         assert remaining == []
         # Cursor is intact despite the task-run rows being gone.
-        assert get_last_processed_message_id(
-            1, thread_id=10, runtime_db_factory=rt_factory) == 99
+        assert get_last_processed_message_id(1, thread_id=10, runtime_db_factory=rt_factory) == 99
 
     @pytest.mark.asyncio()
     async def test_consolidation_task_records_latest_runtime_message_cursor(self, rt_factory):
@@ -1245,11 +1222,7 @@ class TestGraphIngestionTask:
         )
 
         with db_factory() as db:
-            user = User(
-                username="sleep-kg",
-                password_hash="not-used",
-                display_name="Sleep KG",
-            )
+            user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
             db.add(user)
             db.commit()
             user_id = user.id
@@ -1277,9 +1250,7 @@ class TestGraphIngestionTask:
         useless billable call that could persist hallucinated entities)."""
 
         async def _boom(*args, **kwargs):
-            raise AssertionError(
-                "ingest_conversation_graph should not run on blank turn text"
-            )
+            raise AssertionError("ingest_conversation_graph should not run on blank turn text")
 
         monkeypatch.setattr(
             "anima_server.services.agent.knowledge_graph.ingest_conversation_graph",
@@ -1310,11 +1281,10 @@ class TestReparsePendingDocumentsTask:
         from anima_server.config import settings
 
         monkeypatch.setattr(settings, "document_auto_reparse", "off")
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready"
-        ) as pack_ready, patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates"
-        ) as candidates:
+        with (
+            patch("anima_server.services.agent.sleep_agent.parsing_pack_ready") as pack_ready,
+            patch("anima_server.services.agent.sleep_agent.list_reparse_candidates") as candidates,
+        ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
                 runtime_db_factory=rt_factory,
@@ -1330,14 +1300,14 @@ class TestReparsePendingDocumentsTask:
         from anima_server.config import settings
 
         monkeypatch.setattr(settings, "document_auto_reparse", "on")
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=False,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates"
-        ) as candidates, patch(
-            "anima_server.services.agent.sleep_agent.reparse_document"
-        ) as reparse_fn:
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=False,
+            ),
+            patch("anima_server.services.agent.sleep_agent.list_reparse_candidates") as candidates,
+            patch("anima_server.services.agent.sleep_agent.reparse_document") as reparse_fn,
+        ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
                 runtime_db_factory=rt_factory,
@@ -1362,15 +1332,19 @@ class TestReparsePendingDocumentsTask:
             calls.append(document_id)
             return ReparseResult(status="upgraded", chunk_count=3)
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2, 3],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2, 3],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
@@ -1394,15 +1368,19 @@ class TestReparsePendingDocumentsTask:
             calls.append(document_id)
             return ReparseResult(status="parser_unavailable", detail="not installed")
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2, 3],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2, 3],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
@@ -1416,9 +1394,7 @@ class TestReparsePendingDocumentsTask:
         assert "pending" in result
 
     @pytest.mark.asyncio()
-    async def test_upgraded_unembedded_rolls_back_and_aborts(
-        self, rt_factory, monkeypatch
-    ):
+    async def test_upgraded_unembedded_rolls_back_and_aborts(self, rt_factory, monkeypatch):
         """FINDING A: reparse_document() calls replace_document_chunks()
         (resets the document to non-indexed and deletes old chunk vectors)
         *before* embedding. If the embedding backend is down, the document
@@ -1463,15 +1439,19 @@ class TestReparsePendingDocumentsTask:
             session.commit = _spy_commit
             return session
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2, 3],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2, 3],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
@@ -1509,15 +1489,19 @@ class TestReparsePendingDocumentsTask:
                 return ReparseResult(status="parse_degraded", detail="docling crashed")
             return ReparseResult(status="upgraded", chunk_count=3)
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2, 3],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2, 3],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
@@ -1531,9 +1515,7 @@ class TestReparsePendingDocumentsTask:
         assert "could not be parsed" in result
 
     @pytest.mark.asyncio()
-    async def test_reparse_document_raising_does_not_crash_cycle(
-        self, rt_factory, monkeypatch
-    ):
+    async def test_reparse_document_raising_does_not_crash_cycle(self, rt_factory, monkeypatch):
         """reparse_document can RAISE (bad stored path / unreadable PDF) rather
         than return a status. That must be handled like a per-document failure
         — skip + record + continue — not crash the cycle or (since candidates
@@ -1552,15 +1534,19 @@ class TestReparsePendingDocumentsTask:
                 raise RuntimeError("Failed to read PDF file: no such file")
             return ReparseResult(status="upgraded", chunk_count=2)
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2, 3],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2, 3],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
@@ -1589,15 +1575,19 @@ class TestReparsePendingDocumentsTask:
             calls.append(document_id)
             return ReparseResult(status="upgraded", chunk_count=1)
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2, 3, 4, 5],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2, 3, 4, 5],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             await _task_reparse_pending_documents(
                 user_id=1,
@@ -1641,15 +1631,19 @@ class TestReparsePendingDocumentsTask:
             session.commit = _spy_commit
             return session
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
@@ -1661,9 +1655,7 @@ class TestReparsePendingDocumentsTask:
         assert result == "reparsed 2 documents"
 
     @pytest.mark.asyncio()
-    async def test_session_lifecycle_stays_on_worker_thread(
-        self, rt_factory, monkeypatch
-    ):
+    async def test_session_lifecycle_stays_on_worker_thread(self, rt_factory, monkeypatch):
         """The runtime session must be opened, used, and committed entirely
         inside the asyncio.to_thread worker (matching soul_writer's
         convention) — never opened on the event loop and handed across
@@ -1688,15 +1680,19 @@ class TestReparsePendingDocumentsTask:
             reparse_threads.append(threading.get_ident())
             return ReparseResult(status="upgraded", chunk_count=1)
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,
@@ -1711,9 +1707,7 @@ class TestReparsePendingDocumentsTask:
         assert factory_threads[0] == reparse_threads[0]
 
     @pytest.mark.asyncio()
-    async def test_not_found_excluded_from_pending_count(
-        self, rt_factory, monkeypatch
-    ):
+    async def test_not_found_excluded_from_pending_count(self, rt_factory, monkeypatch):
         """A concurrently-deleted document (not_found) is gone, not pending —
         it must not inflate the '(M pending)' arithmetic in the summary."""
         from anima_server.config import settings
@@ -1727,15 +1721,19 @@ class TestReparsePendingDocumentsTask:
         def fake_reparse_document(runtime_db, *, user_id, document_id):
             return ReparseResult(status=statuses[document_id])
 
-        with patch(
-            "anima_server.services.agent.sleep_agent.parsing_pack_ready",
-            return_value=True,
-        ), patch(
-            "anima_server.services.agent.sleep_agent.list_reparse_candidates",
-            return_value=[1, 2, 3],
-        ), patch(
-            "anima_server.services.agent.sleep_agent.reparse_document",
-            side_effect=fake_reparse_document,
+        with (
+            patch(
+                "anima_server.services.agent.sleep_agent.parsing_pack_ready",
+                return_value=True,
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.list_reparse_candidates",
+                return_value=[1, 2, 3],
+            ),
+            patch(
+                "anima_server.services.agent.sleep_agent.reparse_document",
+                side_effect=fake_reparse_document,
+            ),
         ):
             result = await _task_reparse_pending_documents(
                 user_id=1,

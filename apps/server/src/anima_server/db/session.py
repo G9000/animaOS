@@ -8,7 +8,7 @@ from threading import RLock
 
 from fastapi import HTTPException, Request, status
 from sqlalchemy import create_engine, event
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.engine import Engine
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -27,280 +27,6 @@ _migrated_databases: set[str] = set()
 _ALEMBIC_INI = Path(__file__).resolve().parents[3] / "alembic_core.ini"
 
 
-def _sqlite_column_names(connection: Connection, table_name: str) -> set[str]:
-    rows = connection.exec_driver_sql(f"PRAGMA table_info({table_name})").fetchall()
-    return {str(row[1]) for row in rows}
-
-
-def _repair_legacy_kg_schema(connection: Connection) -> None:
-    """Add current KG columns to legacy SQLite tables stamped past migrations."""
-    if connection.dialect.name != "sqlite":
-        return
-
-    entity_columns = _sqlite_column_names(connection, "kg_entities")
-    if entity_columns:
-        for column_name, ddl in (
-            ("aliases_json", "ALTER TABLE kg_entities ADD COLUMN aliases_json JSON"),
-            ("embedding_json", "ALTER TABLE kg_entities ADD COLUMN embedding_json JSON"),
-            (
-                "embedding_checksum",
-                "ALTER TABLE kg_entities ADD COLUMN embedding_checksum VARCHAR(64)",
-            ),
-        ):
-            if column_name not in entity_columns:
-                connection.exec_driver_sql(ddl)
-                entity_columns.add(column_name)
-        connection.exec_driver_sql(
-            "CREATE INDEX IF NOT EXISTS ix_kg_entities_user_type "
-            "ON kg_entities (user_id, entity_type)"
-        )
-
-    relation_columns = _sqlite_column_names(connection, "kg_relations")
-    if not relation_columns:
-        return
-
-    for column_name, ddl in (
-        ("source_memory_id", "ALTER TABLE kg_relations ADD COLUMN source_memory_id INTEGER"),
-        ("evidence_id", "ALTER TABLE kg_relations ADD COLUMN evidence_id INTEGER"),
-        ("observed_at", "ALTER TABLE kg_relations ADD COLUMN observed_at DATETIME"),
-        ("valid_from", "ALTER TABLE kg_relations ADD COLUMN valid_from DATETIME"),
-        ("valid_to", "ALTER TABLE kg_relations ADD COLUMN valid_to DATETIME"),
-        (
-            "confidence",
-            "ALTER TABLE kg_relations ADD COLUMN confidence FLOAT NOT NULL DEFAULT 1.0",
-        ),
-        (
-            "status",
-            "ALTER TABLE kg_relations ADD COLUMN status VARCHAR(24) NOT NULL DEFAULT 'active'",
-        ),
-        (
-            "supersedes_relation_id",
-            "ALTER TABLE kg_relations ADD COLUMN supersedes_relation_id INTEGER",
-        ),
-        (
-            "evolves_from_relation_id",
-            "ALTER TABLE kg_relations ADD COLUMN evolves_from_relation_id INTEGER",
-        ),
-    ):
-        if column_name not in relation_columns:
-            connection.exec_driver_sql(ddl)
-            relation_columns.add(column_name)
-
-    connection.exec_driver_sql(
-        """
-        UPDATE kg_relations
-        SET
-            observed_at = COALESCE(observed_at, created_at),
-            valid_from = COALESCE(valid_from, created_at),
-            confidence = COALESCE(confidence, 1.0),
-            status = COALESCE(status, 'active')
-        """
-    )
-    for index_name, columns in (
-        ("ix_kg_relations_source", "source_id"),
-        ("ix_kg_relations_dest", "destination_id"),
-        ("ix_kg_relations_user_status", "user_id, status"),
-        ("ix_kg_relations_user_source_type", "user_id, source_id, relation_type"),
-        ("ix_kg_relations_user_observed", "user_id, observed_at"),
-        ("ix_kg_relations_evidence", "evidence_id"),
-        ("ix_kg_relations_supersedes", "supersedes_relation_id"),
-        ("ix_kg_relations_evolves_from", "evolves_from_relation_id"),
-    ):
-        connection.exec_driver_sql(
-            f"CREATE INDEX IF NOT EXISTS {index_name} ON kg_relations ({columns})"
-        )
-
-
-def _repair_legacy_memory_schema(connection: Connection) -> None:
-    """Add current memory columns to legacy SQLite tables stamped past migrations."""
-    if connection.dialect.name != "sqlite":
-        return
-
-    memory_columns = _sqlite_column_names(connection, "memory_items")
-    if not memory_columns:
-        return
-
-    for column_name, ddl in (
-        (
-            "memory_class",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN memory_class VARCHAR(32) NOT NULL DEFAULT 'casual'",
-        ),
-        (
-            "emotional_salience",
-            "ALTER TABLE memory_items ADD COLUMN emotional_salience FLOAT NOT NULL DEFAULT 0.0",
-        ),
-        (
-            "stability_class",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN stability_class VARCHAR(32) NOT NULL DEFAULT 'stable'",
-        ),
-        (
-            "decay_class",
-            "ALTER TABLE memory_items "
-            "ADD COLUMN decay_class VARCHAR(32) NOT NULL DEFAULT 'standard'",
-        ),
-        (
-            "relationship_proximity",
-            "ALTER TABLE memory_items ADD COLUMN relationship_proximity FLOAT NOT NULL DEFAULT 0.0",
-        ),
-        (
-            "evidence_strength",
-            "ALTER TABLE memory_items ADD COLUMN evidence_strength FLOAT NOT NULL DEFAULT 0.8",
-        ),
-        (
-            "evolves_from_item_id",
-            "ALTER TABLE memory_items ADD COLUMN evolves_from_item_id INTEGER",
-        ),
-        (
-            "evolution_kind",
-            "ALTER TABLE memory_items ADD COLUMN evolution_kind VARCHAR(32)",
-        ),
-        (
-            # IL5: legacy DBs stamped past migrations still need this column,
-            # since IL5 queries filter on it (a missing column would raise
-            # "no such column: memory_items.distilled_at" on every retrieval).
-            "distilled_at",
-            "ALTER TABLE memory_items ADD COLUMN distilled_at DATETIME",
-        ),
-        (
-            # IL6: same "legacy DB stamped past migrations" gap IL5 hit (P2
-            # review finding) — handled up front here instead of after the
-            # fact. reconsolidation.py reads/writes this column on every
-            # reconsolidation, so a missing column would raise "no such
-            # column: memory_items.reconsolidation_drift" on first recall.
-            "reconsolidation_drift",
-            "ALTER TABLE memory_items ADD COLUMN reconsolidation_drift FLOAT NOT NULL DEFAULT 0.0",
-        ),
-    ):
-        if column_name not in memory_columns:
-            connection.exec_driver_sql(ddl)
-            memory_columns.add(column_name)
-
-    connection.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_memory_items_user_decay_class "
-        "ON memory_items (user_id, decay_class)"
-    )
-    connection.exec_driver_sql(
-        "CREATE INDEX IF NOT EXISTS ix_memory_items_user_evolves_from "
-        "ON memory_items (user_id, evolves_from_item_id)"
-    )
-
-
-def _repair_legacy_diary_schema(connection: Connection) -> None:
-    """Add current diary columns to legacy SQLite tables stamped past migrations."""
-    if connection.dialect.name != "sqlite":
-        return
-
-    diary_columns = _sqlite_column_names(connection, "diary_entries")
-    if not diary_columns:
-        return
-
-    for column_name, ddl in (
-        (
-            "cover_attachment_id",
-            "ALTER TABLE diary_entries ADD COLUMN cover_attachment_id INTEGER",
-        ),
-        ("folder_id", "ALTER TABLE diary_entries ADD COLUMN folder_id INTEGER"),
-    ):
-        if column_name not in diary_columns:
-            connection.exec_driver_sql(ddl)
-            diary_columns.add(column_name)
-
-
-def _corefs_writing_source_bump_sql(user_expression: str) -> str:
-    return (
-        "INSERT INTO corefs_writing_source_state (user_id, generation) "
-        f"VALUES ({user_expression}, 1) "
-        "ON CONFLICT(user_id) DO UPDATE SET generation = "
-        "corefs_writing_source_state.generation + 1;"
-    )
-
-
-def _repair_legacy_corefs_writing_source_schema(connection: Connection) -> None:
-    """Install Task 7's trigger fence on legacy create-all databases.
-
-    Databases without an Alembic version are stamped at head after additive
-    repair. Because stamping does not execute the head migration, create-all
-    supplies the typed state table and this helper supplies the authoritative
-    SQLite triggers that model metadata cannot represent.
-    """
-    if connection.dialect.name != "sqlite":
-        return
-
-    writing_tables = ("diary_folders", "diary_entries", "diary_attachments")
-    if any(not _sqlite_column_names(connection, table_name) for table_name in writing_tables):
-        return
-
-    connection.exec_driver_sql(
-        """
-        CREATE TABLE IF NOT EXISTS corefs_writing_source_state (
-            user_id INTEGER NOT NULL PRIMARY KEY,
-            generation INTEGER NOT NULL,
-            CONSTRAINT ck_corefs_writing_source_state_generation_positive
-                CHECK (generation >= 1)
-        )
-        """
-    )
-    for table_name in writing_tables:
-        for operation, row in (("insert", "NEW"), ("update", "NEW"), ("delete", "OLD")):
-            connection.exec_driver_sql(
-                f"""
-                CREATE TRIGGER IF NOT EXISTS
-                    trg_corefs_writing_source_{table_name}_{operation}
-                AFTER {operation.upper()} ON {table_name}
-                BEGIN
-                    {_corefs_writing_source_bump_sql(f"{row}.user_id")}
-                END
-                """
-            )
-        connection.exec_driver_sql(
-            f"""
-            CREATE TRIGGER IF NOT EXISTS
-                trg_corefs_writing_source_{table_name}_update_old_user
-            AFTER UPDATE OF user_id ON {table_name}
-            WHEN OLD.user_id <> NEW.user_id
-            BEGIN
-                {_corefs_writing_source_bump_sql("OLD.user_id")}
-            END
-            """
-        )
-
-
-def _repair_legacy_presence_schema(connection: Connection) -> None:
-    """Add current presence_configs columns to legacy SQLite tables stamped
-    past migrations (IL3: initiative_enabled/quiet_hours_*; IL7: dream_sharing)."""
-    if connection.dialect.name != "sqlite":
-        return
-
-    presence_columns = _sqlite_column_names(connection, "presence_configs")
-    if not presence_columns:
-        return
-
-    for column_name, ddl in (
-        (
-            "initiative_enabled",
-            "ALTER TABLE presence_configs ADD COLUMN initiative_enabled BOOLEAN NOT NULL DEFAULT 0",
-        ),
-        (
-            "quiet_hours_start",
-            "ALTER TABLE presence_configs ADD COLUMN quiet_hours_start INTEGER",
-        ),
-        (
-            "quiet_hours_end",
-            "ALTER TABLE presence_configs ADD COLUMN quiet_hours_end INTEGER",
-        ),
-        (
-            "dream_sharing",
-            "ALTER TABLE presence_configs "
-            "ADD COLUMN dream_sharing VARCHAR(16) NOT NULL DEFAULT 'on_ask'",
-        ),
-    ):
-        if column_name not in presence_columns:
-            connection.exec_driver_sql(ddl)
-            presence_columns.add(column_name)
-
-
 def _make_engine(database_url: str | None = None) -> Engine:
     url = database_url or settings.database_url
     ensure_database_directory(url)
@@ -313,72 +39,20 @@ def _make_engine(database_url: str | None = None) -> Engine:
             pool_pre_ping=True,
         )
 
-    passphrase = settings.core_passphrase.strip()
     require_encryption = settings.core_require_encryption
-
-    # Determine the SQLCipher raw key from one of three sources:
-    #   1. ANIMA_CORE_PASSPHRASE env var → Argon2id + HKDF derivation
-    #   2. Cached key from unified passphrase model (set after user login)
-    #   3. None → plain SQLite (dev mode)
-    raw_key: bytes | None = None
-
-    if passphrase:
-        try:
-            import sqlcipher3
-        except ImportError:
-            if require_encryption:
-                raise RuntimeError(
-                    "ANIMA_CORE_REQUIRE_ENCRYPTION is enabled but sqlcipher3 is not installed. "
-                    "Install sqlcipher3 to enable database encryption: pip install sqlcipher3"
-                ) from None
-            logger.warning(
-                "sqlcipher3 not installed - falling back to unencrypted SQLite. "
-                "Install sqlcipher3 to enable database encryption."
-            )
-            eng = create_engine(
-                url,
-                echo=settings.database_echo,
-                future=True,
-                connect_args={"check_same_thread": False},
-            )
-
-            @event.listens_for(eng, "connect")
-            # type: ignore[no-untyped-def]
-            def _set_sqlite_pragmas_fallback(dbapi_connection, connection_record) -> None:
-                del connection_record
-                cursor = dbapi_connection.cursor()
-                cursor.execute("PRAGMA journal_mode = WAL")
-                cursor.execute("PRAGMA busy_timeout = 30000")
-                # MIH-001: SQLite leaves FK constraints unenforced unless this
-                # is issued per connection — without it every ondelete=CASCADE
-                # in the schema is decorative (orphaned evidence/contributions,
-                # see PR #112's findings).
-                cursor.execute("PRAGMA foreign_keys = ON")
-                cursor.close()
-
-            return eng
-
-        from anima_server.services.core import get_sqlcipher_kdf_salt
-        from anima_server.services.crypto import derive_sqlcipher_key
-
-        sqlcipher_salt = get_sqlcipher_kdf_salt()
-        raw_key = derive_sqlcipher_key(passphrase, sqlcipher_salt)
-    else:
-        # Unified passphrase mode: check if a pre-derived key was cached
-        # after user authentication (see db/user_store.py)
-        raw_key = get_sqlcipher_key()
+    if settings.core_passphrase.strip():
+        raise RuntimeError(
+            "Unsupported pre-release environment passphrase; unlock a supported encrypted Core"
+        )
+    raw_key = get_sqlcipher_key()
 
     if raw_key is not None:
         try:
             import sqlcipher3
         except ImportError:
-            if require_encryption:
-                raise RuntimeError(
-                    "ANIMA_CORE_REQUIRE_ENCRYPTION is enabled but sqlcipher3 is not installed. "
-                    "Install sqlcipher3 to enable database encryption: pip install sqlcipher3"
-                ) from None
-            logger.warning("sqlcipher3 not installed - falling back to unencrypted SQLite.")
-            raw_key = None
+            raise RuntimeError(
+                "SQLCipher is required to open authenticated encrypted Soul data"
+            ) from None
 
     if raw_key is not None:
         hex_key = raw_key.hex()
@@ -417,20 +91,8 @@ def _make_engine(database_url: str | None = None) -> Engine:
         logger.info("Database encryption enabled (SQLCipher).")
         return eng
 
-    # No SQLCipher key available — check if encryption is required
-    from anima_server.services.core import has_wrapped_sqlcipher_key
-
-    if require_encryption and not has_wrapped_sqlcipher_key():
-        raise RuntimeError(
-            "Encryption is required by default but no passphrase is configured.\n"
-            "\n"
-            "  Option 1: Set ANIMA_CORE_PASSPHRASE=<your-passphrase> to enable encryption.\n"
-            "  Option 2: Set ANIMA_CORE_REQUIRE_ENCRYPTION=false to run without encryption\n"
-            "            (development only — data will be stored in plaintext).\n"
-            "\n"
-            "The Core stores all memories, conversations, and identity data. Encryption\n"
-            "protects this data at rest — it is strongly recommended for any non-dev use."
-        )
+    if require_encryption:
+        raise RuntimeError("Unlock the supported encrypted Core before opening its Soul database")
 
     logger.info("Database encryption not configured - using plain SQLite.")
     eng = create_engine(
@@ -536,7 +198,7 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
 
     insp = sa_inspect(engine_instance)
     has_alembic = insp.has_table("alembic_version")
-    has_app_tables = insp.has_table("users")
+    has_app_tables = bool(set(insp.get_table_names()) - {"alembic_version"})
 
     with engine_instance.connect() as connection:
         # MIH-001: FK enforcement must be OFF for the migration transaction.
@@ -561,41 +223,32 @@ def _run_alembic_upgrade(engine_instance: Engine) -> None:
             cursor.execute("PRAGMA foreign_keys = ON")
             cursor.close()
 
+    from anima_server.services.corefs.soul_store import finish_supported_schema_vacuum
+
+    finish_supported_schema_vacuum(engine_instance)
+
 
 def _run_alembic_upgrade_on(connection, cfg, has_alembic: bool, has_app_tables: bool) -> None:
     from alembic import command
 
     with connection.begin():
+        if connection.dialect.name == "sqlite":
+            driver = connection.connection.driver_connection
+            if not driver.in_transaction:
+                # pysqlite/SQLCipher otherwise autocommit initial DDL even
+                # inside SQLAlchemy.begin(), leaving a partial schema on crash.
+                driver.execute("BEGIN IMMEDIATE")
         cfg.attributes["connection"] = connection
 
         if has_app_tables and not has_alembic:
-            # Legacy DB created by create_all — stamp at head so Alembic
-            # considers it up-to-date (columns were already added manually).
-            _repair_legacy_memory_schema(connection)
-            _repair_legacy_kg_schema(connection)
-            _repair_legacy_diary_schema(connection)
-            _repair_legacy_presence_schema(connection)
-            command.stamp(cfg, "head")
-            logger.info("Stamped legacy database at Alembic head.")
-        else:
-            # Fresh DB: creates all tables via migration chain.
-            # Existing tracked DB: applies only pending migrations.
-            command.upgrade(cfg, "head")
-            logger.info("Alembic upgrade complete.")
-
-        if has_app_tables:
-            # Repair legacy or previously mis-stamped DBs that are missing
-            # tables added after their initial create_all bootstrap. This is
-            # additive only; existing tables and columns are left untouched.
-            from anima_server.models import Base
-
-            Base.metadata.create_all(bind=connection)
-            _repair_legacy_memory_schema(connection)
-            _repair_legacy_kg_schema(connection)
-            _repair_legacy_diary_schema(connection)
-            _repair_legacy_presence_schema(connection)
-            _repair_legacy_corefs_writing_source_schema(connection)
-            logger.info("Ensured metadata tables exist.")
+            raise ValueError(
+                "Unsupported untracked Soul schema; restore a supported encrypted Core."
+            )
+        command.upgrade(cfg, "head")
+        violations = connection.exec_driver_sql("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise ValueError("Soul migration left foreign-key violations")
+        logger.info("Alembic upgrade complete.")
 
 
 def get_user_session_factory(user_id: int) -> sessionmaker[Session]:
@@ -643,8 +296,14 @@ def dispose_all_user_engines() -> None:
         engine_instance.dispose()
 
 
-engine = get_engine(settings.database_url)
-SessionLocal = get_session_factory(settings.database_url)
+def SessionLocal() -> Session:
+    """Open the current owner's Soul lazily after unlock, never a shared database."""
+    from anima_server.services.core import get_owner_user_id
+
+    owner_id = get_owner_user_id()
+    if owner_id is None:
+        raise RuntimeError("The current Core owner is unavailable")
+    return get_user_session_factory(owner_id)()
 
 
 def get_db(request: Request) -> Generator[Session, None, None]:

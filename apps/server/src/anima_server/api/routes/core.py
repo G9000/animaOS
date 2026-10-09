@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from anima_server.api.deps.unlock import require_unlocked_session
-from anima_server.config import settings
 from anima_server.db import get_db
 from anima_server.schemas.core import CoreStatusResponse
 from anima_server.services.core import get_manifest_path
@@ -41,18 +40,17 @@ def get_core_status(
     db: Session = Depends(get_db),
 ) -> dict[str, object]:
     require_unlocked_session(request)
-    has_passphrase = bool(settings.core_passphrase)
     sqlcipher_installed = _sqlcipher_available()
 
     # Unified mode: encryption is active if there's a wrapped SQLCipher key
-    from anima_server.services.core import has_wrapped_sqlcipher_key
+    from anima_server.services.core import has_supported_soul_keyslots
 
-    unified_mode = has_wrapped_sqlcipher_key()
-    encryption_active = (has_passphrase or unified_mode) and sqlcipher_installed
+    unified_mode = has_supported_soul_keyslots()
+    encryption_active = unified_mode and sqlcipher_installed
 
     return {
         "encryption_active": encryption_active,
         "sqlcipher_available": sqlcipher_installed,
-        "passphrase_set": has_passphrase or unified_mode,
+        "passphrase_set": unified_mode,
         "encryption_mode": _read_encryption_mode(),
     }

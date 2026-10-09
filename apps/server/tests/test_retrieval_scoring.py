@@ -22,10 +22,11 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.services.agent import adaptive_retrieval, embeddings
 from anima_server.services.agent.adaptive_retrieval import (
     AdaptiveRetrievalConfig,
@@ -52,7 +53,7 @@ def soul_factory():
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with factory() as db:
-        db.add(User(username="scoring", password_hash="x", display_name="S"))
+        db.add(SoulOwner(core_owner_id=str(uuid4())))
         db.commit()
     yield factory
     engine.dispose()
@@ -73,9 +74,7 @@ def _python_cutoff_path(monkeypatch: pytest.MonkeyPatch):
 def test_absolute_min_rejects_low_confidence_top_score(_python_cutoff_path) -> None:
     # Best match is a barely-related cosine 0.26; the whole set is junk.
     scores = [0.26, 0.24, 0.22, 0.21, 0.2]
-    config = AdaptiveRetrievalConfig.combined(
-        max_results=12, min_results=3, absolute_min=0.3
-    )
+    config = AdaptiveRetrievalConfig.combined(max_results=12, min_results=3, absolute_min=0.3)
 
     cutoff, trigger, _normalized = find_adaptive_cutoff(scores, config=config)
 
@@ -92,9 +91,7 @@ def test_absolute_min_keeps_confident_top_score(_python_cutoff_path) -> None:
     # A genuinely-similar top hit clears the floor; the normalized shape
     # strategies then decide the tail.
     scores = [0.82, 0.80, 0.78, 0.29, 0.10]
-    config = AdaptiveRetrievalConfig.combined(
-        max_results=12, min_results=3, absolute_min=0.3
-    )
+    config = AdaptiveRetrievalConfig.combined(max_results=12, min_results=3, absolute_min=0.3)
 
     cutoff, trigger, _normalized = find_adaptive_cutoff(scores, config=config)
 
@@ -124,23 +121,17 @@ def test_confidence_score_gates_fused_ranking_scores(_python_cutoff_path) -> Non
     must drive the gate instead."""
     # Fused ranking scores: top is 1.0 regardless of true relevance.
     fused = [1.0, 0.7, 0.55, 0.4, 0.2]
-    config = AdaptiveRetrievalConfig.combined(
-        max_results=12, min_results=3, absolute_min=0.3
-    )
+    config = AdaptiveRetrievalConfig.combined(max_results=12, min_results=3, absolute_min=0.3)
 
     # Best match is genuine junk (cosine 0.26 < 0.3) → reject the whole set,
     # even though the ranking top (1.0) would otherwise clear the floor.
-    cutoff, trigger, _ = find_adaptive_cutoff(
-        fused, config=config, confidence_score=0.26
-    )
+    cutoff, trigger, _ = find_adaptive_cutoff(fused, config=config, confidence_score=0.26)
     assert cutoff == 0
     assert trigger == "below_absolute_min"
 
     # A confident best match (cosine 0.82) keeps the set; the shape strategies
     # decide the tail from the fused scores.
-    cutoff, trigger, _ = find_adaptive_cutoff(
-        fused, config=config, confidence_score=0.82
-    )
+    cutoff, trigger, _ = find_adaptive_cutoff(fused, config=config, confidence_score=0.82)
     assert cutoff >= 3
     assert trigger != "below_absolute_min"
 
@@ -185,16 +176,28 @@ async def test_decayed_item_filtered_but_unscored_item_visible(
 ) -> None:
     with soul_factory() as db:
         hot = MemoryItem(
-            user_id=1, content="hot fact", category="fact", importance=3,
-            source="extraction", heat=0.5,
+            user_id=1,
+            content="hot fact",
+            category="fact",
+            importance=3,
+            source="extraction",
+            heat=0.5,
         )
         decayed = MemoryItem(
-            user_id=1, content="forgotten fact", category="fact", importance=3,
-            source="extraction", heat=HEAT_SCORED_EPSILON,  # scored, decayed
+            user_id=1,
+            content="forgotten fact",
+            category="fact",
+            importance=3,
+            source="extraction",
+            heat=HEAT_SCORED_EPSILON,  # scored, decayed
         )
         unscored = MemoryItem(
-            user_id=1, content="new fact", category="fact", importance=3,
-            source="extraction", heat=0.0,  # never scored
+            user_id=1,
+            content="new fact",
+            category="fact",
+            importance=3,
+            source="extraction",
+            heat=0.0,  # never scored
         )
         db.add_all([hot, decayed, unscored])
         db.commit()
@@ -215,9 +218,7 @@ async def test_decayed_item_filtered_but_unscored_item_visible(
     )
 
     with soul_factory() as db:
-        results = await embeddings.semantic_search(
-            db, user_id=1, query="fact", limit=10
-        )
+        results = await embeddings.semantic_search(db, user_id=1, query="fact", limit=10)
 
     surfaced = {item.id for item, _score in results}
     assert ids["hot"] in surfaced
@@ -365,9 +366,7 @@ def test_combined_strategy_bypasses_rust_for_raw_absolute_cutoff(
     config = ar.AdaptiveRetrievalConfig.combined(
         max_results=12, min_results=3, absolute_min=0.3, relative_threshold=0.0
     )
-    cutoff, trigger, _norm = ar.find_adaptive_cutoff(
-        [0.9, 0.85, 0.8, 0.29, 0.0], config=config
-    )
+    cutoff, trigger, _norm = ar.find_adaptive_cutoff([0.9, 0.85, 0.8, 0.29, 0.0], config=config)
 
     assert cutoff == 3
     assert trigger == "absolute_min"

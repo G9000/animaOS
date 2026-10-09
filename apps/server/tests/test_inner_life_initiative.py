@@ -59,8 +59,7 @@ from anima_server.services.agent.inner_life.initiative import (
     should_fire,
     tick_initiative_for_user,
 )
-from anima_server.services.presence_config import get_or_create_presence_config
-from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
+from anima_server.services.presence_config import PresenceConfigValues
 from sqlalchemy import create_engine, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -69,6 +68,53 @@ from sqlalchemy.pool import StaticPool
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
+
+
+_presence_values: dict[int, object] = {}
+
+
+def _presence_preferences(_db, user_id):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    return _presence_values.setdefault(
+        user_id, SimpleNamespace(**asdict(PresenceConfigValues(user_id=user_id)))
+    )
+
+
+def _update_presence_preferences(db, user_id, updates):
+    from dataclasses import asdict
+
+    from anima_server.services.presence_config import apply_presence_config_updates
+
+    current = _presence_preferences(db, user_id)
+    changed = apply_presence_config_updates(PresenceConfigValues(**vars(current)), updates)
+    current.__dict__.update(asdict(changed))
+    return changed
+
+
+@pytest.fixture(autouse=True)
+def _canonical_presence_boundary(monkeypatch):
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import preferences
+
+    _presence_values.clear()
+    real_session = preferences.active_preference_authority_session
+    real_read = preferences.read_canonical_presence_values
+
+    def session(user_id):
+        return real_session(user_id) or SimpleNamespace(user_id=user_id, fixture_presence=True)
+
+    def read(*, session):
+        if getattr(session, "fixture_presence", False):
+            return PresenceConfigValues(**vars(_presence_preferences(None, session.user_id)))
+        return real_read(session=session)
+
+    monkeypatch.setattr(preferences, "active_preference_authority_session", session)
+    monkeypatch.setattr(preferences, "read_canonical_presence_values", read)
+    yield
+    _presence_values.clear()
 
 
 @pytest.fixture()
@@ -182,9 +228,7 @@ def test_reset_signal_hard_zeroes_regardless_of_growth() -> None:
     state = DriveState(unresolved_thread=0.9, relational=0.9)
     updated = advance_drives(
         state,
-        DriveSignals(
-            unresolved_thread_open=True, relational_overdue=True, user_turn_occurred=True
-        ),
+        DriveSignals(unresolved_thread_open=True, relational_overdue=True, user_turn_occurred=True),
         10.0,
     )
     assert updated.unresolved_thread == 0.0
@@ -226,7 +270,9 @@ def test_negative_delta_hours_is_clamped_to_zero() -> None:
 
 
 def test_as_dict_returns_all_five_drives() -> None:
-    state = DriveState(unresolved_thread=0.1, pattern_insight=0.2, relational=0.3, novelty=0.4, dream_residue=0.5)
+    state = DriveState(
+        unresolved_thread=0.1, pattern_insight=0.2, relational=0.3, novelty=0.4, dream_residue=0.5
+    )
     snapshot = state.as_dict()
     assert snapshot == {
         "unresolved_thread": 0.1,
@@ -305,8 +351,12 @@ def test_gate_states_no_quiet_hours_configured_always_passes() -> None:
     config = _default_gate_config(quiet_hours_start=None, quiet_hours_end=None)
     record = DriveRecord(pressures=DriveState())
     gates = compute_gate_states(
-        record, config, datetime(2026, 1, 1, 3, 0, tzinfo=UTC),
-        closeness=0.0, fires_today=0, fires_this_week=0,
+        record,
+        config,
+        datetime(2026, 1, 1, 3, 0, tzinfo=UTC),
+        closeness=0.0,
+        fires_today=0,
+        fires_this_week=0,
     )
     assert gates.outside_quiet_hours is True
 
@@ -378,7 +428,12 @@ def test_disabled_never_fires_even_at_maximum_pressure_pure_level() -> None:
     config = _default_gate_config(enabled=False)
     record = DriveRecord(pressures=DriveState(*(1.0,) * 5))
     decision = should_fire(
-        record, config, datetime(2026, 1, 1, 12, 0, tzinfo=UTC), 1.0, fires_today=0, fires_this_week=0
+        record,
+        config,
+        datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+        1.0,
+        fires_today=0,
+        fires_this_week=0,
     )
     assert decision is None
 
@@ -386,23 +441,28 @@ def test_disabled_never_fires_even_at_maximum_pressure_pure_level() -> None:
 def test_disabled_never_fires_regardless_of_every_other_gate_passing() -> None:
     # Every other gate wide open (no quiet hours, cooldown long elapsed, well
     # under rate caps) — only `enabled=False` should block it.
-    config = _default_gate_config(
-        enabled=False, quiet_hours_start=None, quiet_hours_end=None
-    )
+    config = _default_gate_config(enabled=False, quiet_hours_start=None, quiet_hours_end=None)
     record = DriveRecord(
         pressures=DriveState(unresolved_thread=1.0),
         last_fired_at=datetime(2020, 1, 1, tzinfo=UTC),
     )
     gates = compute_gate_states(
-        record, config, datetime(2026, 1, 1, tzinfo=UTC),
-        closeness=1.0, fires_today=0, fires_this_week=0,
+        record,
+        config,
+        datetime(2026, 1, 1, tzinfo=UTC),
+        closeness=1.0,
+        fires_today=0,
+        fires_this_week=0,
     )
     assert gates.outside_quiet_hours and gates.cooldown_elapsed
     assert gates.under_daily_cap and gates.under_weekly_cap
     assert gates.all_pass is False  # enabled=False alone sinks it
-    assert should_fire(
-        record, config, datetime(2026, 1, 1, tzinfo=UTC), 1.0, fires_today=0, fires_this_week=0
-    ) is None
+    assert (
+        should_fire(
+            record, config, datetime(2026, 1, 1, tzinfo=UTC), 1.0, fires_today=0, fires_this_week=0
+        )
+        is None
+    )
 
 
 def test_disabled_edge_level_never_creates_initiative_or_pending_row() -> None:
@@ -430,7 +490,7 @@ def test_disabled_edge_level_never_creates_initiative_or_pending_row() -> None:
         db_.commit()
 
     with soul_factory() as db_:
-        get_or_create_presence_config(db_, 1)  # initiative_enabled defaults False
+        _presence_preferences(db_, 1)  # initiative_enabled defaults False
         db_.commit()
 
     ok = tick_initiative_for_user(
@@ -460,20 +520,23 @@ def test_master_presence_pause_blocks_fire_even_with_initiative_enabled() -> Non
     with runtime_factory() as db_:
         db_.add(
             DriveStateRow(
-                user_id=1, relational=1.0,
+                user_id=1,
+                relational=1.0,
                 updated_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         )
         db_.commit()
 
     with soul_factory() as db_:
-        cfg = get_or_create_presence_config(db_, 1)
+        cfg = _presence_preferences(db_, 1)
         cfg.enabled = False  # master Presence paused
         cfg.initiative_enabled = True  # but initiative left on
         db_.commit()
 
     ok = tick_initiative_for_user(
-        soul_factory, runtime_factory, user_id=1,
+        soul_factory,
+        runtime_factory,
+        user_id=1,
         local_now=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
     )
     assert ok is True
@@ -503,7 +566,8 @@ def test_material_backed_drive_with_no_material_does_not_fire_or_call_llm(
     runtime_factory = _make_factory(runtime_engine)
 
     _seed_enabled_user(
-        soul_factory, runtime_factory,
+        soul_factory,
+        runtime_factory,
         pressures={"pattern_insight": 0.99},
         updated_at=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
     )
@@ -512,7 +576,9 @@ def test_material_backed_drive_with_no_material_does_not_fire_or_call_llm(
     with soul_factory() as db_:
         db_.add(
             MemoryItem(
-                user_id=1, category="pattern", content="a pattern once shareable",
+                user_id=1,
+                category="pattern",
+                content="a pattern once shareable",
                 distilled_at=datetime(2026, 1, 1, tzinfo=UTC),
             )
         )
@@ -524,7 +590,9 @@ def test_material_backed_drive_with_no_material_does_not_fire_or_call_llm(
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
     ok = tick_initiative_for_user(
-        soul_factory, runtime_factory, user_id=1,
+        soul_factory,
+        runtime_factory,
+        user_id=1,
         local_now=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
     )
     assert ok is True  # tick succeeded, it simply didn't fire
@@ -562,7 +630,8 @@ def test_material_less_dominant_drive_does_not_block_a_lower_valid_drive(
     # pattern_insight is highest but has NO pattern item; unresolved_thread is
     # lower but backed by a real, open, in-horizon foresight.
     _seed_enabled_user(
-        soul_factory, runtime_factory,
+        soul_factory,
+        runtime_factory,
         pressures={"pattern_insight": 0.99, "unresolved_thread": 0.8},
         updated_at=now - timedelta(hours=1),
     )
@@ -570,9 +639,13 @@ def test_material_less_dominant_drive_does_not_block_a_lower_valid_drive(
         db_.add(
             ForesightSignal(
                 user_id=1,
-                content=ef(1, "the trip you have coming up", table="foresight_signals", field="content"),
-                evidence="mentioned it", status="active",
-                start_date=date(2026, 1, 11), confidence=0.9,
+                content=ef(
+                    1, "the trip you have coming up", table="foresight_signals", field="content"
+                ),
+                evidence="mentioned it",
+                status="active",
+                start_date=date(2026, 1, 11),
+                confidence=0.9,
             )
         )
         db_.commit()
@@ -666,8 +739,10 @@ def test_failed_delivery_frees_quota_but_starts_cooldown_and_keeps_pressure(
 
     now = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
     _seed_enabled_user(
-        soul_factory, runtime_factory,
-        pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+        soul_factory,
+        runtime_factory,
+        pressures={"relational": 0.99},
+        updated_at=now - timedelta(hours=1),
     )
 
     calls = {"n": 0}
@@ -701,8 +776,11 @@ def test_failed_delivery_frees_quota_but_starts_cooldown_and_keeps_pressure(
     # Second tick within the cooldown window must NOT re-generate, even though
     # the quota is free — the cooldown is what bounds LLM spam here.
     ok2 = tick_initiative_for_user(
-        soul_factory, runtime_factory, user_id=1,
-        local_now=now + timedelta(hours=1), delivery=failing,
+        soul_factory,
+        runtime_factory,
+        user_id=1,
+        local_now=now + timedelta(hours=1),
+        delivery=failing,
     )
     assert ok2 is True
     assert calls["n"] == 1  # still 1 — cooldown blocked re-generation
@@ -717,9 +795,7 @@ def test_generate_initiative_message_returns_none_on_empty_output(
     async def empty_call(system: str, prompt: str, *, client=None) -> str:
         return "   "
 
-    monkeypatch.setattr(
-        "anima_server.services.agent.llm_json.call_llm_for_text", empty_call
-    )
+    monkeypatch.setattr("anima_server.services.agent.llm_json.call_llm_for_text", empty_call)
     decision = DriveDecision(
         drive=DRIVE_RELATIONAL, pressure=0.9, pressure_snapshot={}, gate_states={}
     )
@@ -739,9 +815,7 @@ def test_generate_initiative_message_returns_none_on_llm_exception(
     async def raising_call(system: str, prompt: str, *, client=None) -> str:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(
-        "anima_server.services.agent.llm_json.call_llm_for_text", raising_call
-    )
+    monkeypatch.setattr("anima_server.services.agent.llm_json.call_llm_for_text", raising_call)
     decision = DriveDecision(
         drive=DRIVE_RELATIONAL, pressure=0.9, pressure_snapshot={}, gate_states={}
     )
@@ -787,7 +861,7 @@ def _seed_enabled_user(
 ) -> None:
     pressures = pressures or {"relational": 0.9}
     with soul_factory() as db_:
-        cfg = get_or_create_presence_config(db_, user_id)
+        cfg = _presence_preferences(db_, user_id)
         cfg.initiative_enabled = True
         db_.commit()
     with runtime_factory() as db_:
@@ -892,9 +966,7 @@ def test_fully_passing_state_fires_exactly_the_dominant_drive(
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
     now = datetime(2026, 1, 2, 12, 0, tzinfo=UTC)
-    ok = tick_initiative_for_user(
-        soul_factory, runtime_factory, user_id=1, local_now=now
-    )
+    ok = tick_initiative_for_user(soul_factory, runtime_factory, user_id=1, local_now=now)
     assert ok is True
 
     with soul_factory() as db_:
@@ -1120,28 +1192,53 @@ def test_count_recent_fires_only_counts_delivered_messages(db: Session) -> None:
     db.add_all(
         [
             InitiativeLog(
-                user_id=1, fired_at=now - timedelta(hours=1), drive=DRIVE_RELATIONAL,
-                pressure_snapshot={}, gate_states={}, generated_text="hi", delivered=True,
+                user_id=1,
+                fired_at=now - timedelta(hours=1),
+                drive=DRIVE_RELATIONAL,
+                pressure_snapshot={},
+                gate_states={},
+                generated_text="hi",
+                delivered=True,
             ),
             # Failed generation (no text) — never counts.
             InitiativeLog(
-                user_id=1, fired_at=now - timedelta(hours=2), drive=DRIVE_RELATIONAL,
-                pressure_snapshot={}, gate_states={}, generated_text=None, delivered=False,
+                user_id=1,
+                fired_at=now - timedelta(hours=2),
+                drive=DRIVE_RELATIONAL,
+                pressure_snapshot={},
+                gate_states={},
+                generated_text=None,
+                delivered=False,
             ),
             # Generated but NOT delivered (delivery adapter returned False /
             # raised) — the user never received it, so it must NOT consume the
             # rate-cap quota (PR review, P2).
             InitiativeLog(
-                user_id=1, fired_at=now - timedelta(minutes=30), drive=DRIVE_RELATIONAL,
-                pressure_snapshot={}, gate_states={}, generated_text="undelivered", delivered=False,
+                user_id=1,
+                fired_at=now - timedelta(minutes=30),
+                drive=DRIVE_RELATIONAL,
+                pressure_snapshot={},
+                gate_states={},
+                generated_text="undelivered",
+                delivered=False,
             ),
             InitiativeLog(
-                user_id=1, fired_at=now - timedelta(days=3), drive=DRIVE_NOVELTY,
-                pressure_snapshot={}, gate_states={}, generated_text="hey", delivered=True,
+                user_id=1,
+                fired_at=now - timedelta(days=3),
+                drive=DRIVE_NOVELTY,
+                pressure_snapshot={},
+                gate_states={},
+                generated_text="hey",
+                delivered=True,
             ),
             InitiativeLog(
-                user_id=1, fired_at=now - timedelta(days=10), drive=DRIVE_NOVELTY,
-                pressure_snapshot={}, gate_states={}, generated_text="old", delivered=True,
+                user_id=1,
+                fired_at=now - timedelta(days=10),
+                drive=DRIVE_NOVELTY,
+                pressure_snapshot={},
+                gate_states={},
+                generated_text="old",
+                delivered=True,
             ),
         ]
     )
@@ -1229,12 +1326,24 @@ def test_count_unanswered_initiatives(db: Session) -> None:
     db.add_all(
         [
             InitiativeLog(
-                user_id=1, fired_at=datetime(2026, 1, 1, tzinfo=UTC), drive=DRIVE_RELATIONAL,
-                pressure_snapshot={}, gate_states={}, generated_text="a", delivered=True, answered=False,
+                user_id=1,
+                fired_at=datetime(2026, 1, 1, tzinfo=UTC),
+                drive=DRIVE_RELATIONAL,
+                pressure_snapshot={},
+                gate_states={},
+                generated_text="a",
+                delivered=True,
+                answered=False,
             ),
             InitiativeLog(
-                user_id=1, fired_at=datetime(2026, 1, 2, tzinfo=UTC), drive=DRIVE_RELATIONAL,
-                pressure_snapshot={}, gate_states={}, generated_text="b", delivered=True, answered=True,
+                user_id=1,
+                fired_at=datetime(2026, 1, 2, tzinfo=UTC),
+                drive=DRIVE_RELATIONAL,
+                pressure_snapshot={},
+                gate_states={},
+                generated_text="b",
+                delivered=True,
+                answered=True,
             ),
         ]
     )
@@ -1280,8 +1389,14 @@ def test_fetch_marks_delivered_and_ack_clears_it(db: Session) -> None:
     runtime_factory = _make_factory(runtime_engine)
 
     log_row = InitiativeLog(
-        user_id=1, fired_at=datetime(2026, 1, 1, tzinfo=UTC), drive=DRIVE_RELATIONAL,
-        pressure_snapshot={}, gate_states={}, generated_text="hi", delivered=True, answered=False,
+        user_id=1,
+        fired_at=datetime(2026, 1, 1, tzinfo=UTC),
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=True,
+        answered=False,
     )
     db.add(log_row)
     db.commit()
@@ -1300,9 +1415,7 @@ def test_fetch_marks_delivered_and_ack_clears_it(db: Session) -> None:
         assert fetched[0].delivered is True
         assert fetched[0].acknowledged is False
 
-        acked = acknowledge_pending_initiative(
-            rdb, soul_db=db, user_id=1, pending_id=fetched[0].id
-        )
+        acked = acknowledge_pending_initiative(rdb, soul_db=db, user_id=1, pending_id=fetched[0].id)
         rdb.commit()
         db.commit()
         assert acked is not None
@@ -1331,9 +1444,14 @@ def test_ack_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
     # Under-claim: the soul log says NOT delivered, yet the pending row IS
     # durable (the exact state a failed delivered-flip commit leaves behind).
     log_row = InitiativeLog(
-        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
-        pressure_snapshot={}, gate_states={}, generated_text="hi",
-        delivered=False, answered=False,
+        user_id=1,
+        fired_at=now,
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=False,
+        answered=False,
     )
     db.add(log_row)
     db.commit()
@@ -1370,16 +1488,20 @@ def test_poll_reconciles_delivered_flag_on_the_soul_log(db: Session) -> None:
     runtime_factory = _make_factory(runtime_engine)
 
     log_row = InitiativeLog(
-        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
-        pressure_snapshot={}, gate_states={}, generated_text="hi",
-        delivered=False, answered=False,
+        user_id=1,
+        fired_at=now,
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=False,
+        answered=False,
     )
     db.add(log_row)
     db.commit()
     # The poll path is consent-gated when soul_db is supplied; opt in first.
-    from anima_server.services.presence_config import update_presence_config
 
-    update_presence_config(db, 1, {"initiativeEnabled": True})
+    _update_presence_preferences(db, 1, {"initiativeEnabled": True})
     db.commit()
 
     with runtime_factory() as rdb:
@@ -1409,16 +1531,20 @@ def test_poll_without_opt_in_lists_nothing_and_marks_nothing(db: Session) -> Non
     and leaves rows undelivered — a client racing its own config check can
     no longer get rows displayed/marked delivered after consent was
     withdrawn."""
-    from anima_server.services.presence_config import update_presence_config
 
     now = datetime(2026, 1, 5, tzinfo=UTC)
     runtime_engine = _create_runtime_engine()
     runtime_factory = _make_factory(runtime_engine)
 
     log_row = InitiativeLog(
-        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
-        pressure_snapshot={}, gate_states={}, generated_text="hi",
-        delivered=False, answered=False,
+        user_id=1,
+        fired_at=now,
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=False,
+        answered=False,
     )
     db.add(log_row)
     db.commit()
@@ -1439,7 +1565,7 @@ def test_poll_without_opt_in_lists_nothing_and_marks_nothing(db: Session) -> Non
         assert row.delivered is False  # nothing marked delivered while gated
 
         # Initiative opted in but the presence master switch is off -> still gated.
-        update_presence_config(db, 1, {"initiativeEnabled": True, "enabled": False})
+        _update_presence_preferences(db, 1, {"initiativeEnabled": True, "enabled": False})
         db.commit()
         fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
         rdb.commit()
@@ -1448,7 +1574,7 @@ def test_poll_without_opt_in_lists_nothing_and_marks_nothing(db: Session) -> Non
         assert row.delivered is False
 
         # Full opt-in -> served and marked delivered.
-        update_presence_config(db, 1, {"enabled": True})
+        _update_presence_preferences(db, 1, {"enabled": True})
         db.commit()
         fetched = list_and_mark_delivered(rdb, user_id=1, soul_db=db)
         rdb.commit()
@@ -1474,19 +1600,23 @@ def test_opt_out_committed_mid_poll_serves_and_marks_nothing(
     (via a side-effecting config read) and asserts the poll serves nothing
     and marks nothing."""
     from anima_server.services import presence_config as presence_config_module
-    from anima_server.services.presence_config import update_presence_config
 
     now = datetime(2026, 1, 5, tzinfo=UTC)
     runtime_engine = _create_runtime_engine()
     runtime_factory = _make_factory(runtime_engine)
 
     log_row = InitiativeLog(
-        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
-        pressure_snapshot={}, gate_states={}, generated_text="hi",
-        delivered=False, answered=False,
+        user_id=1,
+        fired_at=now,
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=False,
+        answered=False,
     )
     db.add(log_row)
-    update_presence_config(db, 1, {"enabled": True, "initiativeEnabled": True})
+    _update_presence_preferences(db, 1, {"enabled": True, "initiativeEnabled": True})
     db.commit()
 
     real_get_values = presence_config_module.get_presence_config_values
@@ -1498,7 +1628,7 @@ def test_opt_out_committed_mid_poll_serves_and_marks_nothing(
         if calls["n"] == 1:
             # Simulate another session committing the opt-out right after the
             # first (passing) consent check — i.e. inside the race window.
-            update_presence_config(db, 1, {"initiativeEnabled": False})
+            _update_presence_preferences(db, 1, {"initiativeEnabled": False})
             db.commit()
         return values
 
@@ -1544,7 +1674,6 @@ def test_consent_lock_serializes_delivery_against_config_updates(
     from anima_server.services.agent.inner_life import delivery as delivery_module
     from anima_server.services.presence_config import (
         presence_consent_lock,
-        update_presence_config,
     )
 
     # Same-object guarantee: route and delivery serialize on one lock.
@@ -1555,12 +1684,17 @@ def test_consent_lock_serializes_delivery_against_config_updates(
     runtime_factory = _make_factory(runtime_engine)
 
     log_row = InitiativeLog(
-        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
-        pressure_snapshot={}, gate_states={}, generated_text="hi",
-        delivered=False, answered=False,
+        user_id=1,
+        fired_at=now,
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=False,
+        answered=False,
     )
     db.add(log_row)
-    update_presence_config(db, 1, {"enabled": True, "initiativeEnabled": True})
+    _update_presence_preferences(db, 1, {"enabled": True, "initiativeEnabled": True})
     db.commit()
 
     in_critical = threading.Event()
@@ -1580,8 +1714,10 @@ def test_consent_lock_serializes_delivery_against_config_updates(
         with runtime_factory() as rdb:
             rdb.add(
                 PendingInitiative(
-                    user_id=1, initiative_log_id=log_row.id,
-                    drive=DRIVE_RELATIONAL, text="hi",
+                    user_id=1,
+                    initiative_log_id=log_row.id,
+                    drive=DRIVE_RELATIONAL,
+                    text="hi",
                 )
             )
             rdb.commit()
@@ -1613,19 +1749,23 @@ def test_poll_during_quiet_hours_lists_nothing_and_marks_nothing(db: Session) ->
     the window would otherwise be served inside it, breaking the Presence UI
     promise. Inside the window the poll returns [] and marks nothing
     delivered; after the window the row is served normally."""
-    from anima_server.services.presence_config import update_presence_config
 
     runtime_engine = _create_runtime_engine()
     runtime_factory = _make_factory(runtime_engine)
 
     log_row = InitiativeLog(
-        user_id=1, fired_at=datetime(2026, 1, 5, 21, 55, tzinfo=UTC),
-        drive=DRIVE_RELATIONAL, pressure_snapshot={}, gate_states={},
-        generated_text="hi", delivered=False, answered=False,
+        user_id=1,
+        fired_at=datetime(2026, 1, 5, 21, 55, tzinfo=UTC),
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=False,
+        answered=False,
     )
     db.add(log_row)
     db.commit()
-    update_presence_config(
+    _update_presence_preferences(
         db, 1, {"initiativeEnabled": True, "quietHoursStart": 22, "quietHoursEnd": 7}
     )
     db.commit()
@@ -1679,8 +1819,13 @@ def test_ack_soul_failure_is_isolated_and_keeps_session_usable(
     runtime_factory = _make_factory(runtime_engine)
 
     log_row = InitiativeLog(
-        user_id=1, fired_at=now, drive=DRIVE_RELATIONAL,
-        pressure_snapshot={}, gate_states={}, generated_text="hi", delivered=False,
+        user_id=1,
+        fired_at=now,
+        drive=DRIVE_RELATIONAL,
+        pressure_snapshot={},
+        gate_states={},
+        generated_text="hi",
+        delivered=False,
     )
     db.add(log_row)
     db.commit()
@@ -1736,9 +1881,7 @@ def test_acknowledge_unknown_pending_id_returns_none() -> None:
     engine = _create_runtime_engine()
     factory = _make_factory(engine)
     with factory() as db_:
-        result = acknowledge_pending_initiative(
-            db_, soul_db=None, user_id=1, pending_id=99999
-        )
+        result = acknowledge_pending_initiative(db_, soul_db=None, user_id=1, pending_id=99999)
         assert result is None
     engine.dispose()
 
@@ -1783,8 +1926,11 @@ def test_fetch_ack_route_end_to_end() -> None:
         runtime_factory = get_runtime_session_factory()
         with runtime_factory() as runtime_db:
             result = PendingInitiativeDelivery().deliver(
-                runtime_db, user_id=user_id, drive=DRIVE_RELATIONAL,
-                text="I've been thinking about you.", initiative_log_id=1,
+                runtime_db,
+                user_id=user_id,
+                drive=DRIVE_RELATIONAL,
+                text="I've been thinking about you.",
+                initiative_log_id=1,
             )
             runtime_db.commit()
         pending_id = result.pending_initiative_id
@@ -1799,9 +1945,7 @@ def test_fetch_ack_route_end_to_end() -> None:
         assert body["initiatives"][0]["delivered"] is True
         assert body["initiatives"][0]["acknowledged"] is False
 
-        resp = client.post(
-            f"/api/presence/{user_id}/initiatives/{pending_id}/ack", headers=headers
-        )
+        resp = client.post(f"/api/presence/{user_id}/initiatives/{pending_id}/ack", headers=headers)
         assert resp.status_code == 200
         assert resp.json()["acknowledged"] is True
 
@@ -1810,9 +1954,7 @@ def test_fetch_ack_route_end_to_end() -> None:
         assert resp.json() == {"userId": user_id, "initiatives": []}
 
         # Acking an unknown id 404s.
-        resp = client.post(
-            f"/api/presence/{user_id}/initiatives/999999/ack", headers=headers
-        )
+        resp = client.post(f"/api/presence/{user_id}/initiatives/999999/ack", headers=headers)
         assert resp.status_code == 404
 
 
@@ -1828,17 +1970,24 @@ def test_resolve_signals_detects_approaching_foresight_horizon(db: Session) -> N
 
     db.add(
         ForesightSignal(
-            user_id=1, content="dentist appointment", evidence="mentioned it",
-            status="active", start_date=today + timedelta(days=1), confidence=0.9,
+            user_id=1,
+            content="dentist appointment",
+            evidence="mentioned it",
+            status="active",
+            start_date=today + timedelta(days=1),
+            confidence=0.9,
         )
     )
     db.commit()
 
     with runtime_factory() as rdb:
         signals, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
-            last_user_turn_at=None, pattern_marker=None,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
     assert signals.unresolved_thread_open is True
     runtime_engine.dispose()
@@ -1851,17 +2000,24 @@ def test_resolve_signals_ignores_resolved_foresight_signal(db: Session) -> None:
 
     db.add(
         ForesightSignal(
-            user_id=1, content="dentist appointment", evidence="mentioned it",
-            status="resolved", start_date=today + timedelta(days=1), confidence=0.9,
+            user_id=1,
+            content="dentist appointment",
+            evidence="mentioned it",
+            status="resolved",
+            start_date=today + timedelta(days=1),
+            confidence=0.9,
         )
     )
     db.commit()
 
     with runtime_factory() as rdb:
         signals, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
-            last_user_turn_at=None, pattern_marker=None,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
     assert signals.unresolved_thread_open is False
     runtime_engine.dispose()
@@ -1887,22 +2043,30 @@ def test_resolve_signals_due_and_occurred_foresight_still_count_as_open(
             ForesightSignal(
                 user_id=1,
                 content=ef(1, f"{status} thread", table="foresight_signals", field="content"),
-                evidence="mentioned it", status=status, start_date=start, confidence=0.9,
+                evidence="mentioned it",
+                status=status,
+                start_date=start,
+                confidence=0.9,
             )
         )
     db.commit()
 
     with runtime_factory() as rdb:
         signals, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
-            last_user_turn_at=None, pattern_marker=None,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
     assert signals.unresolved_thread_open is True
     assert signals.unresolved_thread_resolved is False
     # The material lookup agrees with the grow signal (open set, not active-only).
     material = initiative.gather_drive_material(
-        db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD,
+        db,
+        user_id=1,
+        drive=DRIVE_UNRESOLVED_THREAD,
         now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
     )
     assert "thread" in material
@@ -1934,19 +2098,29 @@ def test_foresight_horizon_uses_local_tick_date_not_utc(db: Session) -> None:
         ForesightSignal(
             user_id=1,
             content=ef(1, "horizon-edge thread", table="foresight_signals", field="content"),
-            evidence="mentioned it", status="active", start_date=edge_start, confidence=0.9,
+            evidence="mentioned it",
+            status="active",
+            start_date=edge_start,
+            confidence=0.9,
         )
     )
     db.commit()
 
     with runtime_factory() as rdb:
         signals, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1, now=local_now,
-            last_user_turn_at=None, pattern_marker=None,
+            db,
+            rdb,
+            user_id=1,
+            now=local_now,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
     assert signals.unresolved_thread_open is True  # in-window on the LOCAL date
     material = initiative.gather_drive_material(
-        db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD, now=local_now,
+        db,
+        user_id=1,
+        drive=DRIVE_UNRESOLVED_THREAD,
+        now=local_now,
     )
     assert material == "horizon-edge thread"
     runtime_engine.dispose()
@@ -1972,7 +2146,10 @@ def test_material_matches_the_in_horizon_item_not_an_unrelated_open_row(
         ForesightSignal(
             user_id=1,
             content=ef(1, "no-date thread", table="foresight_signals", field="content"),
-            evidence="x", status="active", start_date=None, confidence=0.9,
+            evidence="x",
+            status="active",
+            start_date=None,
+            confidence=0.9,
         )
     )
     # (b) an open row far beyond the horizon.
@@ -1980,8 +2157,10 @@ def test_material_matches_the_in_horizon_item_not_an_unrelated_open_row(
         ForesightSignal(
             user_id=1,
             content=ef(1, "far-future thread", table="foresight_signals", field="content"),
-            evidence="x", status="active",
-            start_date=today + timedelta(days=horizon + 30), confidence=0.9,
+            evidence="x",
+            status="active",
+            start_date=today + timedelta(days=horizon + 30),
+            confidence=0.9,
         )
     )
     # (c) the real in-horizon item that accumulated the drive.
@@ -1989,13 +2168,18 @@ def test_material_matches_the_in_horizon_item_not_an_unrelated_open_row(
         ForesightSignal(
             user_id=1,
             content=ef(1, "in-horizon thread", table="foresight_signals", field="content"),
-            evidence="x", status="active", start_date=today + timedelta(days=1), confidence=0.9,
+            evidence="x",
+            status="active",
+            start_date=today + timedelta(days=1),
+            confidence=0.9,
         )
     )
     db.commit()
 
     material = initiative.gather_drive_material(
-        db, user_id=1, drive=DRIVE_UNRESOLVED_THREAD,
+        db,
+        user_id=1,
+        drive=DRIVE_UNRESOLVED_THREAD,
         now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
     )
     assert material == "in-horizon thread"
@@ -2012,17 +2196,24 @@ def test_resolve_signals_closed_source_marks_thread_resolved(db: Session) -> Non
 
     db.add(
         ForesightSignal(
-            user_id=1, content="cancelled plan", evidence="mentioned it",
-            status="cancelled", start_date=today + timedelta(days=1), confidence=0.9,
+            user_id=1,
+            content="cancelled plan",
+            evidence="mentioned it",
+            status="cancelled",
+            start_date=today + timedelta(days=1),
+            confidence=0.9,
         )
     )
     db.commit()
 
     with runtime_factory() as rdb:
         signals, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
-            last_user_turn_at=None, pattern_marker=None,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
     assert signals.unresolved_thread_open is False
     assert signals.unresolved_thread_resolved is True
@@ -2045,15 +2236,20 @@ def test_closed_foresight_source_resets_pressure_and_blocks_fire(
     # Pressure is already above threshold, but the only foresight source is
     # cancelled — the classic "fired the drive, then the plan fell through".
     _seed_enabled_user(
-        soul_factory, runtime_factory,
+        soul_factory,
+        runtime_factory,
         pressures={"unresolved_thread": 0.99},
         updated_at=datetime(2026, 1, 9, 12, 0, tzinfo=UTC),
     )
     with soul_factory() as db_:
         db_.add(
             ForesightSignal(
-                user_id=1, content="cancelled plan", evidence="mentioned it",
-                status="cancelled", start_date=date(2026, 1, 11), confidence=0.9,
+                user_id=1,
+                content="cancelled plan",
+                evidence="mentioned it",
+                status="cancelled",
+                start_date=date(2026, 1, 11),
+                confidence=0.9,
             )
         )
         db_.commit()
@@ -2064,7 +2260,9 @@ def test_closed_foresight_source_resets_pressure_and_blocks_fire(
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
     ok = tick_initiative_for_user(
-        soul_factory, runtime_factory, user_id=1,
+        soul_factory,
+        runtime_factory,
+        user_id=1,
         local_now=datetime(2026, 1, 10, 12, 0, tzinfo=UTC),
     )
     assert ok is True  # tick succeeded (it just didn't fire)
@@ -2084,8 +2282,11 @@ def test_resolve_signals_pattern_shareable_respects_surfaced_marker(db: Session)
     runtime_factory = _make_factory(runtime_engine)
 
     item = MemoryItem(
-        user_id=1, content="tends to avoid conflict", category="pattern",
-        importance=3, source="pattern_synthesis",
+        user_id=1,
+        content="tends to avoid conflict",
+        category="pattern",
+        importance=3,
+        source="pattern_synthesis",
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
     db.add(item)
@@ -2093,16 +2294,21 @@ def test_resolve_signals_pattern_shareable_respects_surfaced_marker(db: Session)
 
     with runtime_factory() as rdb:
         signals_before, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=datetime(2026, 1, 2, tzinfo=UTC),
-            last_user_turn_at=None, pattern_marker=None,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
         assert signals_before.pattern_shareable is True
 
         # A surfaced marker AFTER the item's creation means it's already
         # been shared — no longer shareable.
         signals_after, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=datetime(2026, 1, 3, tzinfo=UTC),
             last_user_turn_at=None,
             pattern_marker=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
@@ -2120,13 +2326,19 @@ def test_gather_pattern_material_voices_oldest_unsurfaced_item_first(db: Session
     db.add_all(
         [
             MemoryItem(
-                user_id=1, content="oldest finding", category="pattern",
-                importance=3, source="pattern_synthesis",
+                user_id=1,
+                content="oldest finding",
+                category="pattern",
+                importance=3,
+                source="pattern_synthesis",
                 created_at=datetime(2026, 1, 1, tzinfo=UTC),
             ),
             MemoryItem(
-                user_id=1, content="newest finding", category="pattern",
-                importance=3, source="pattern_synthesis",
+                user_id=1,
+                content="newest finding",
+                category="pattern",
+                importance=3,
+                source="pattern_synthesis",
                 created_at=datetime(2026, 1, 3, tzinfo=UTC),
             ),
         ]
@@ -2134,8 +2346,11 @@ def test_gather_pattern_material_voices_oldest_unsurfaced_item_first(db: Session
     db.commit()
 
     material = initiative.gather_drive_material(
-        db, user_id=1, drive=DRIVE_PATTERN_INSIGHT,
-        now=datetime(2026, 1, 4, tzinfo=UTC), pattern_marker=None,
+        db,
+        user_id=1,
+        drive=DRIVE_PATTERN_INSIGHT,
+        now=datetime(2026, 1, 4, tzinfo=UTC),
+        pattern_marker=None,
     )
     assert material == "oldest finding"
 
@@ -2158,13 +2373,19 @@ def test_multiple_unsurfaced_patterns_each_get_their_own_turn_across_fires(
         db_.add_all(
             [
                 MemoryItem(
-                    user_id=1, content="oldest finding", category="pattern",
-                    importance=3, source="pattern_synthesis",
+                    user_id=1,
+                    content="oldest finding",
+                    category="pattern",
+                    importance=3,
+                    source="pattern_synthesis",
                     created_at=datetime(2026, 1, 1, tzinfo=UTC),
                 ),
                 MemoryItem(
-                    user_id=1, content="newest finding", category="pattern",
-                    importance=3, source="pattern_synthesis",
+                    user_id=1,
+                    content="newest finding",
+                    category="pattern",
+                    importance=3,
+                    source="pattern_synthesis",
                     created_at=datetime(2026, 1, 2, tzinfo=UTC),
                 ),
             ]
@@ -2186,7 +2407,9 @@ def test_multiple_unsurfaced_patterns_each_get_their_own_turn_across_fires(
 
     with runtime_factory() as db_:
         row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
-        assert row.pattern_insight_surfaced_at.replace(tzinfo=UTC) == datetime(2026, 1, 1, tzinfo=UTC)
+        assert row.pattern_insight_surfaced_at.replace(tzinfo=UTC) == datetime(
+            2026, 1, 1, tzinfo=UTC
+        )
         assert row.pattern_insight == 0.0  # reset after firing
 
         # Re-grow pattern_insight above threshold for a second fire, past
@@ -2210,16 +2433,16 @@ def test_multiple_unsurfaced_patterns_each_get_their_own_turn_across_fires(
     assert voiced_material == ["oldest finding", "newest finding"]
 
     with soul_factory() as db_:
-        logs = db_.scalars(
-            select(InitiativeLog).order_by(InitiativeLog.fired_at.asc())
-        ).all()
+        logs = db_.scalars(select(InitiativeLog).order_by(InitiativeLog.fired_at.asc())).all()
         assert len(logs) == 2
         assert logs[0].generated_text == "about: oldest finding"
         assert logs[1].generated_text == "about: newest finding"
 
     with runtime_factory() as db_:
         row = db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).one()
-        assert row.pattern_insight_surfaced_at.replace(tzinfo=UTC) == datetime(2026, 1, 2, tzinfo=UTC)
+        assert row.pattern_insight_surfaced_at.replace(tzinfo=UTC) == datetime(
+            2026, 1, 2, tzinfo=UTC
+        )
 
     soul_engine.dispose()
     runtime_engine.dispose()
@@ -2234,12 +2457,20 @@ def test_same_timestamp_pattern_sibling_still_counts_as_unsurfaced(db: Session) 
     still counts as unsurfaced."""
     same_instant = datetime(2026, 1, 1, tzinfo=UTC)
     older = MemoryItem(
-        user_id=1, content="first finding", category="pattern",
-        importance=3, source="pattern_synthesis", created_at=same_instant,
+        user_id=1,
+        content="first finding",
+        category="pattern",
+        importance=3,
+        source="pattern_synthesis",
+        created_at=same_instant,
     )
     newer = MemoryItem(
-        user_id=1, content="second finding", category="pattern",
-        importance=3, source="pattern_synthesis", created_at=same_instant,
+        user_id=1,
+        content="second finding",
+        category="pattern",
+        importance=3,
+        source="pattern_synthesis",
+        created_at=same_instant,
     )
     db.add_all([older, newer])
     db.commit()
@@ -2247,7 +2478,10 @@ def test_same_timestamp_pattern_sibling_still_counts_as_unsurfaced(db: Session) 
 
     # Surfacing `older` advances the marker to (same_instant, older.id).
     marker_at, marker_id = initiative._next_pattern_marker(
-        db, user_id=1, pattern_marker=None, pattern_marker_id=None,
+        db,
+        user_id=1,
+        pattern_marker=None,
+        pattern_marker_id=None,
         fallback=same_instant,
     )
     assert marker_at == same_instant
@@ -2257,8 +2491,12 @@ def test_same_timestamp_pattern_sibling_still_counts_as_unsurfaced(db: Session) 
     # never silently dropped just because its created_at doesn't exceed the
     # marker.
     material = initiative.gather_drive_material(
-        db, user_id=1, drive=DRIVE_PATTERN_INSIGHT, now=datetime(2026, 1, 2, tzinfo=UTC),
-        pattern_marker=marker_at, pattern_marker_id=marker_id,
+        db,
+        user_id=1,
+        drive=DRIVE_PATTERN_INSIGHT,
+        now=datetime(2026, 1, 2, tzinfo=UTC),
+        pattern_marker=marker_at,
+        pattern_marker_id=marker_id,
     )
     assert material == "second finding"
 
@@ -2280,12 +2518,20 @@ def test_pattern_siblings_at_the_same_timestamp_each_fire_in_turn(
         db_.add_all(
             [
                 MemoryItem(
-                    user_id=1, content="tied finding A", category="pattern",
-                    importance=3, source="pattern_synthesis", created_at=same_instant,
+                    user_id=1,
+                    content="tied finding A",
+                    category="pattern",
+                    importance=3,
+                    source="pattern_synthesis",
+                    created_at=same_instant,
                 ),
                 MemoryItem(
-                    user_id=1, content="tied finding B", category="pattern",
-                    importance=3, source="pattern_synthesis", created_at=same_instant,
+                    user_id=1,
+                    content="tied finding B",
+                    category="pattern",
+                    importance=3,
+                    source="pattern_synthesis",
+                    created_at=same_instant,
                 ),
             ]
         )
@@ -2338,9 +2584,12 @@ def test_resolve_signals_relational_overdue_and_user_turn_detection(db: Session)
         rdb.commit()
 
         signals, latest = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=last_contact + timedelta(days=10),
-            last_user_turn_at=None, pattern_marker=None,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
         assert signals.relational_overdue is True
         assert signals.user_turn_occurred is True  # newer than the (None) marker
@@ -2349,9 +2598,12 @@ def test_resolve_signals_relational_overdue_and_user_turn_detection(db: Session)
         # Once the marker catches up to the latest message, it's no longer
         # a NEW turn.
         signals2, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1,
+            db,
+            rdb,
+            user_id=1,
             now=last_contact + timedelta(days=10),
-            last_user_turn_at=last_contact, pattern_marker=None,
+            last_user_turn_at=last_contact,
+            pattern_marker=None,
         )
         assert signals2.user_turn_occurred is False
     runtime_engine.dispose()
@@ -2364,9 +2616,12 @@ def test_resolve_closeness_signal_saturates_with_relationship_age() -> None:
 
     with factory() as rdb:
         # No RuntimeThread at all yet -> no signal, closeness 0.
-        assert initiative.resolve_closeness_signal(
-            rdb, user_id=1, now=datetime(2026, 1, 1, tzinfo=UTC)
-        ) == 0.0
+        assert (
+            initiative.resolve_closeness_signal(
+                rdb, user_id=1, now=datetime(2026, 1, 1, tzinfo=UTC)
+            )
+            == 0.0
+        )
 
         first_contact = datetime(2026, 1, 1, tzinfo=UTC)
         rdb.add(RuntimeThread(user_id=1, status="closed", created_at=first_contact))
@@ -2400,8 +2655,10 @@ def test_resolve_signals_novelty_repetitive_requires_high_energy(db: Session) ->
     for idx in range(4):
         db.add(
             MemoryEpisode(
-                user_id=1, date="2026-01-0" + str(idx + 1),
-                topics_json=["work stress"], summary="talked about work again",
+                user_id=1,
+                date="2026-01-0" + str(idx + 1),
+                topics_json=["work stress"],
+                summary="talked about work again",
             )
         )
     db.commit()
@@ -2409,24 +2666,36 @@ def test_resolve_signals_novelty_repetitive_requires_high_energy(db: Session) ->
 
     with runtime_factory() as rdb:
         save_affect_state(
-            rdb, user_id=1,
+            rdb,
+            user_id=1,
             state=AffectState(valence=0.0, arousal=0.5, energy=0.2, updated_at=now),
         )
         rdb.commit()
 
         signals_low_energy, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1, now=now, last_user_turn_at=None, pattern_marker=None,
+            db,
+            rdb,
+            user_id=1,
+            now=now,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
         assert signals_low_energy.novelty_repetitive is False
 
         save_affect_state(
-            rdb, user_id=1,
+            rdb,
+            user_id=1,
             state=AffectState(valence=0.0, arousal=0.5, energy=0.9, updated_at=now),
         )
         rdb.commit()
 
         signals_high_energy, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1, now=now, last_user_turn_at=None, pattern_marker=None,
+            db,
+            rdb,
+            user_id=1,
+            now=now,
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
         assert signals_high_energy.novelty_repetitive is True
     runtime_engine.dispose()
@@ -2442,8 +2711,12 @@ def test_resolve_signals_novel_topic_discovered_resets_novelty(db: Session) -> N
 
     with runtime_factory() as rdb:
         signals, _ = initiative.resolve_drive_signals(
-            db, rdb, user_id=1, now=datetime(2026, 1, 3, tzinfo=UTC),
-            last_user_turn_at=None, pattern_marker=None,
+            db,
+            rdb,
+            user_id=1,
+            now=datetime(2026, 1, 3, tzinfo=UTC),
+            last_user_turn_at=None,
+            pattern_marker=None,
         )
         # Newest episode's topic ("cooking" — highest id, since ordered
         # desc) doesn't appear in any older episode -> a genuinely new topic.
@@ -2468,18 +2741,22 @@ def test_active_user_never_fires_via_presence_tick(monkeypatch: pytest.MonkeyPat
 
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     _seed_enabled_user(
-        soul_factory, runtime_factory, pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1)
+        soul_factory,
+        runtime_factory,
+        pressures={"relational": 0.99},
+        updated_at=now - timedelta(hours=1),
     )
 
     with runtime_factory() as db_:
         save_affect_state(
-            db_, user_id=1,
-            state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+            db_,
+            user_id=1,
+            state=AffectState(
+                valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)
+            ),
         )
         db_.add(
-            RuntimeThread(
-                user_id=1, status="active", last_message_at=now - timedelta(seconds=10)
-            )
+            RuntimeThread(user_id=1, status="active", last_message_at=now - timedelta(seconds=10))
         )
         db_.commit()
 
@@ -2488,7 +2765,9 @@ def test_active_user_never_fires_via_presence_tick(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
+    result = run_presence_tick(
+        runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory
+    )
     assert result.users_skipped_active == 1
     assert result.users_ticked == 0
 
@@ -2515,12 +2794,18 @@ def test_idle_user_fires_via_presence_tick(monkeypatch: pytest.MonkeyPatch) -> N
 
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     _seed_enabled_user(
-        soul_factory, runtime_factory, pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1)
+        soul_factory,
+        runtime_factory,
+        pressures={"relational": 0.99},
+        updated_at=now - timedelta(hours=1),
     )
     with runtime_factory() as db_:
         save_affect_state(
-            db_, user_id=1,
-            state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+            db_,
+            user_id=1,
+            state=AffectState(
+                valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)
+            ),
         )
         db_.commit()
 
@@ -2529,7 +2814,9 @@ def test_idle_user_fires_via_presence_tick(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
+    result = run_presence_tick(
+        runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory
+    )
     assert result.users_ticked == 1
     assert result.users_skipped_active == 0
 
@@ -2567,13 +2854,19 @@ def test_presence_tick_resolves_soul_factory_per_user(
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     for user_id, soul_factory in soul_factories.items():
         _seed_enabled_user(
-            soul_factory, runtime_factory, user_id=user_id,
-            pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+            soul_factory,
+            runtime_factory,
+            user_id=user_id,
+            pressures={"relational": 0.99},
+            updated_at=now - timedelta(hours=1),
         )
         with runtime_factory() as db_:
             save_affect_state(
-                db_, user_id=user_id,
-                state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+                db_,
+                user_id=user_id,
+                state=AffectState(
+                    valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)
+                ),
             )
             db_.commit()
 
@@ -2623,8 +2916,11 @@ def test_run_presence_tick_without_soul_factory_is_unchanged() -> None:
 
     with runtime_factory() as db_:
         save_affect_state(
-            db_, user_id=1,
-            state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+            db_,
+            user_id=1,
+            state=AffectState(
+                valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)
+            ),
         )
         db_.commit()
 
@@ -2652,13 +2948,19 @@ def test_per_user_initiative_failure_does_not_abort_the_sweep(
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     for user_id in (1, 2):
         _seed_enabled_user(
-            soul_factory, runtime_factory, user_id=user_id,
-            pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+            soul_factory,
+            runtime_factory,
+            user_id=user_id,
+            pressures={"relational": 0.99},
+            updated_at=now - timedelta(hours=1),
         )
         with runtime_factory() as db_:
             save_affect_state(
-                db_, user_id=user_id,
-                state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+                db_,
+                user_id=user_id,
+                state=AffectState(
+                    valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)
+                ),
             )
             db_.commit()
 
@@ -2669,7 +2971,9 @@ def test_per_user_initiative_failure_does_not_abort_the_sweep(
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
+    result = run_presence_tick(
+        runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory
+    )
     # The affect tick itself never touches the soul store, so both users
     # still tick fine there regardless of IL3's failure.
     assert result.users_ticked == 2
@@ -2708,13 +3012,19 @@ def test_hard_crash_before_fire_is_isolated_to_one_user(
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     for user_id in (1, 2):
         _seed_enabled_user(
-            soul_factory, runtime_factory, user_id=user_id,
-            pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+            soul_factory,
+            runtime_factory,
+            user_id=user_id,
+            pressures={"relational": 0.99},
+            updated_at=now - timedelta(hours=1),
         )
         with runtime_factory() as db_:
             save_affect_state(
-                db_, user_id=user_id,
-                state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+                db_,
+                user_id=user_id,
+                state=AffectState(
+                    valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)
+                ),
             )
             db_.commit()
 
@@ -2732,7 +3042,9 @@ def test_hard_crash_before_fire_is_isolated_to_one_user(
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
 
-    result = run_presence_tick(runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory)
+    result = run_presence_tick(
+        runtime_factory, now=now, soul_db_factory_for=lambda _uid: soul_factory
+    )
     assert result.users_ticked == 2  # affect tick unaffected either way
 
     with soul_factory() as db_:
@@ -2765,13 +3077,19 @@ def test_per_user_soul_resolver_failure_does_not_abort_the_sweep(
     now = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     for user_id in (1, 2):
         _seed_enabled_user(
-            soul_factory, runtime_factory, user_id=user_id,
-            pressures={"relational": 0.99}, updated_at=now - timedelta(hours=1),
+            soul_factory,
+            runtime_factory,
+            user_id=user_id,
+            pressures={"relational": 0.99},
+            updated_at=now - timedelta(hours=1),
         )
         with runtime_factory() as db_:
             save_affect_state(
-                db_, user_id=user_id,
-                state=AffectState(valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)),
+                db_,
+                user_id=user_id,
+                state=AffectState(
+                    valence=0.0, arousal=0.5, energy=0.5, updated_at=now - timedelta(hours=1)
+                ),
             )
             db_.commit()
 
@@ -2805,134 +3123,18 @@ def test_per_user_soul_resolver_failure_does_not_abort_the_sweep(
 # ---------------------------------------------------------------------------
 
 
-def test_vault_round_trip_preserves_initiative_log_full_scope(db: Session) -> None:
-    log_row = InitiativeLog(
-        user_id=1, fired_at=datetime(2026, 1, 1, tzinfo=UTC), drive=DRIVE_RELATIONAL,
-        pressure_snapshot={"relational": 0.9}, gate_states={"enabled": True},
-        generated_text="I have been thinking about you.", delivered=True, answered=False,
-    )
-    db.add(log_row)
-    db.commit()
-
-    snapshot = export_database_snapshot(db, user_id=1)
-    assert len(snapshot["initiativeLog"]) == 1
-    assert snapshot["initiativeLog"][0]["generated_text"] == "I have been thinking about you."
-
-    db.execute(InitiativeLog.__table__.delete())
-    db.expunge_all()  # drop the stale identity-mapped row the raw DELETE bypassed
-    db.commit()
-
-    restore_database_snapshot(db, snapshot, scope="full")
-    db.commit()
-
-    restored = db.scalars(select(InitiativeLog)).all()
-    assert len(restored) == 1
-    assert restored[0].drive == DRIVE_RELATIONAL
-    assert restored[0].generated_text == "I have been thinking about you."
-    assert restored[0].pressure_snapshot == {"relational": 0.9}
-
-
-def test_vault_memories_scope_export_includes_initiative_log(db: Session) -> None:
-    from anima_server.services.vault import _build_vault_payload
-
-    log_row = InitiativeLog(
-        user_id=1, fired_at=datetime(2026, 1, 1, tzinfo=UTC), drive=DRIVE_NOVELTY,
-        pressure_snapshot={"novelty": 0.9}, gate_states={}, generated_text="hey",
-        delivered=True,
-    )
-    db.add(log_row)
-    db.commit()
-
-    scoped = _build_vault_payload(db, scope="memories")
-    assert "initiativeLog" in scoped["database"]
-    assert len(scoped["database"]["initiativeLog"]) == 1
-
-    db.execute(InitiativeLog.__table__.delete())
-    db.expunge_all()
-    db.commit()
-
-    restore_database_snapshot(db, scoped["database"], scope="memories")
-    db.commit()
-
-    assert len(db.scalars(select(InitiativeLog)).all()) == 1
-
-
-def test_full_scope_restore_clears_preexisting_initiative_log_rows(db: Session) -> None:
-    """Regression (PR review, P1): restoring a FULL-scope vault must clear
-    existing `initiative_log` rows first, exactly like its sibling
-    provenance ledgers (`ReconsolidationLog`/`TendencyContribution`) already
-    do — otherwise importing into a database that already has initiatives
-    fired either collides on a reused id (`UNIQUE constraint failed:
-    initiative_log.id`) or leaves stale rows behind (no FK to scrub via
-    cascade, since InitiativeLog has none)."""
-    # An initiative that already fired in THIS database before the import.
-    db.add(
-        InitiativeLog(
-            id=1, user_id=1, fired_at=datetime(2026, 1, 1, tzinfo=UTC),
-            drive=DRIVE_RELATIONAL, pressure_snapshot={}, gate_states={},
-            generated_text="pre-existing local row", delivered=True,
-        )
-    )
-    db.commit()
-
-    snapshot = export_database_snapshot(db, user_id=1)
-    assert snapshot["initiativeLog"][0]["id"] == 1
-
-    # Simulate importing a vault whose row happens to reuse id=1 (e.g. an
-    # export taken from a different point in time or a different device) —
-    # exactly the "restoring into a DB that already has rows" scenario.
-    snapshot["initiativeLog"][0]["generated_text"] = "restored from vault"
-
-    restore_database_snapshot(db, snapshot, scope="full")  # must not raise
-    db.commit()
-
-    rows = db.scalars(select(InitiativeLog)).all()
-    assert len(rows) == 1  # the stale local row was cleared, not duplicated
-    assert rows[0].generated_text == "restored from vault"
-
-
-def test_import_clears_runtime_proactive_state_for_the_user() -> None:
-    """Regression (PR review, P2): a vault import replaces the soul-store
-    InitiativeLog but the vault never carries runtime-tier proactive state, so
-    pre-import PendingInitiative / DriveStateRow rows would otherwise survive
-    and let /initiatives serve a stale message whose provenance was replaced.
-    _clear_runtime_proactive_state must delete that runtime state for the
-    imported user only, leaving other users untouched."""
-    from anima_server.services.vault import _clear_runtime_proactive_state
-
-    runtime_engine = _create_runtime_engine()
-    runtime_factory = _make_factory(runtime_engine)
-
-    with runtime_factory() as db_:
-        for uid in (1, 2):
-            db_.add(DriveStateRow(user_id=uid, relational=0.9, updated_at=datetime(2026, 1, 1, tzinfo=UTC)))
-            db_.add(
-                PendingInitiative(
-                    user_id=uid, drive=DRIVE_RELATIONAL, text="stale pending message",
-                    initiative_log_id=999, created_at=datetime(2026, 1, 1, tzinfo=UTC),
-                )
-            )
-        db_.commit()
-
-    _clear_runtime_proactive_state(1, runtime_factory=runtime_factory)
-
-    with runtime_factory() as db_:
-        # User 1's runtime proactive state is gone; user 2 is untouched.
-        assert db_.scalars(select(PendingInitiative).where(PendingInitiative.user_id == 1)).all() == []
-        assert db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 1)).all() == []
-        assert len(db_.scalars(select(PendingInitiative).where(PendingInitiative.user_id == 2)).all()) == 1
-        assert len(db_.scalars(select(DriveStateRow).where(DriveStateRow.user_id == 2)).all()) == 1
-
-    runtime_engine.dispose()
-
-
 def test_eval_reset_clears_initiative_log(db: Session) -> None:
     from anima_server.services.eval_reset import _reset_soul_state
 
     db.add(
         InitiativeLog(
-            user_id=1, fired_at=datetime(2026, 1, 1, tzinfo=UTC), drive=DRIVE_RELATIONAL,
-            pressure_snapshot={}, gate_states={}, generated_text="hi", delivered=True,
+            user_id=1,
+            fired_at=datetime(2026, 1, 1, tzinfo=UTC),
+            drive=DRIVE_RELATIONAL,
+            pressure_snapshot={},
+            gate_states={},
+            generated_text="hi",
+            delivered=True,
         )
     )
     db.commit()
@@ -2954,9 +3156,7 @@ def test_eval_reset_clears_drive_state_and_pending_initiatives() -> None:
     with factory() as db_:
         db_.add(DriveStateRow(user_id=1, relational=0.5))
         db_.add(
-            PendingInitiative(
-                user_id=1, initiative_log_id=1, drive=DRIVE_RELATIONAL, text="hi"
-            )
+            PendingInitiative(user_id=1, initiative_log_id=1, drive=DRIVE_RELATIONAL, text="hi")
         )
         db_.commit()
 
@@ -2976,7 +3176,12 @@ def test_eval_reset_clears_drive_state_and_pending_initiatives() -> None:
 # ---------------------------------------------------------------------------
 
 
-_LLM_SEAMS = ("call_llm_for_json", "create_llm", "create_extraction_llm", "generate_initiative_message")
+_LLM_SEAMS = (
+    "call_llm_for_json",
+    "create_llm",
+    "create_extraction_llm",
+    "generate_initiative_message",
+)
 
 
 def test_drives_module_has_no_llm_references() -> None:
@@ -3215,16 +3420,17 @@ def test_material_less_hard_reset_clears_starvation_history(
     runtime_engine.dispose()
 
 
-
-
 def test_signal_reset_drives_is_the_single_reset_mapping() -> None:
     """The pure signal->reset mapping matches advance_drives exactly: every
     drive it names is hard-zeroed, every drive it omits survives."""
     from anima_server.services.agent.inner_life.drives import signal_reset_drives
 
     full = DriveState(
-        unresolved_thread=0.9, pattern_insight=0.9, relational=0.9,
-        novelty=0.9, dream_residue=0.9,
+        unresolved_thread=0.9,
+        pattern_insight=0.9,
+        relational=0.9,
+        novelty=0.9,
+        dream_residue=0.9,
     )
     cases = [
         DriveSignals(user_turn_occurred=True),
@@ -3261,7 +3467,7 @@ def test_signal_driven_reset_clears_starvation_losses_even_while_disabled(
 
     user_id = 1
     with soul_factory() as db_:
-        get_or_create_presence_config(db_, user_id)  # initiative stays OFF
+        _presence_preferences(db_, user_id)  # initiative stays OFF
         db_.commit()
     seeded_at = datetime(2026, 1, 2, 11, 0, tzinfo=UTC)
     with runtime_factory() as db_:
@@ -3355,20 +3561,28 @@ def test_initiative_surfaces_the_dream_it_voiced_not_the_next_one(
         db_.add_all(
             [
                 DreamJournal(
-                    user_id=1, narrative="the newer dream", share_worthy=True,
-                    surfaced=False, source_refs={}, affect_delta={},
+                    user_id=1,
+                    narrative="the newer dream",
+                    share_worthy=True,
+                    surfaced=False,
+                    source_refs={},
+                    affect_delta={},
                     dreamt_at=datetime(2026, 1, 2, tzinfo=UTC),
                 ),
                 DreamJournal(
-                    user_id=1, narrative="the older dream", share_worthy=True,
-                    surfaced=False, source_refs={}, affect_delta={},
+                    user_id=1,
+                    narrative="the older dream",
+                    share_worthy=True,
+                    surfaced=False,
+                    source_refs={},
+                    affect_delta={},
                     dreamt_at=datetime(2026, 1, 1, tzinfo=UTC),
                 ),
             ]
         )
         db_.commit()
     with soul_factory() as db_:
-        cfg = get_or_create_presence_config(db_, 1)
+        cfg = _presence_preferences(db_, 1)
         cfg.dream_sharing = "ambient"
         db_.commit()
 
@@ -3380,20 +3594,18 @@ def test_initiative_surfaces_the_dream_it_voiced_not_the_next_one(
         voiced.append(material)
         # Mid-generation, the ambient channel's late acknowledgement lands
         # for the very dream this initiative is voicing.
-        row = soul_db.scalars(
-            select(DreamJournal).where(DreamJournal.narrative == material)
-        ).one()
+        row = soul_db.scalars(select(DreamJournal).where(DreamJournal.narrative == material)).one()
         row.claimed_at = datetime(2026, 1, 3, 7, 59, tzinfo=UTC)
         soul_db.flush()
-        acknowledge_dream(
-            soul_db, user_id=1, dream_id=row.id, token=claim_token(row.claimed_at)
-        )
+        acknowledge_dream(soul_db, user_id=1, dream_id=row.id, token=claim_token(row.claimed_at))
         soul_db.commit()
         return f"about: {material}"
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
     tick_initiative_for_user(
-        soul_factory, runtime_factory, user_id=1,
+        soul_factory,
+        runtime_factory,
+        user_id=1,
         local_now=datetime(2026, 1, 3, 8, 0, tzinfo=UTC),
     )
 
@@ -3426,12 +3638,16 @@ def test_initiative_abandons_a_dream_a_greeting_claimed_mid_generation(
     with soul_factory() as db_:
         db_.add(
             DreamJournal(
-                user_id=1, narrative="the contested dream", share_worthy=True,
-                surfaced=False, source_refs={}, affect_delta={},
+                user_id=1,
+                narrative="the contested dream",
+                share_worthy=True,
+                surfaced=False,
+                source_refs={},
+                affect_delta={},
                 dreamt_at=datetime(2026, 1, 2, tzinfo=UTC),
             )
         )
-        cfg = get_or_create_presence_config(db_, 1)
+        cfg = _presence_preferences(db_, 1)
         cfg.dream_sharing = "ambient"
         db_.commit()
 
@@ -3449,7 +3665,9 @@ def test_initiative_abandons_a_dream_a_greeting_claimed_mid_generation(
 
     monkeypatch.setattr(initiative, "generate_initiative_message", fake_generate)
     tick_initiative_for_user(
-        soul_factory, runtime_factory, user_id=1,
+        soul_factory,
+        runtime_factory,
+        user_id=1,
         local_now=datetime(2026, 1, 3, 8, 0, tzinfo=UTC),
     )
 

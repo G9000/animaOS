@@ -93,7 +93,10 @@ def _seed_user(
         with runtime_factory() as db_:
             db_.add(
                 AffectStateRow(
-                    user_id=user_id, valence=0.1, arousal=0.4, energy=0.5,
+                    user_id=user_id,
+                    valence=0.1,
+                    arousal=0.4,
+                    energy=0.5,
                     updated_at=NIGHT - timedelta(hours=5),
                 )
             )
@@ -136,10 +139,16 @@ def test_per_night_cap_blocks_second_dream() -> None:
     sf, rf = _factory(se), _factory(re)
     _seed_user(sf, rf)
     with sf() as db_:  # a dream already recorded this night
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT - timedelta(minutes=30),
-            narrative="earlier", source_refs={}, affect_delta={}, share_worthy=False,
-        ))
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT - timedelta(minutes=30),
+                narrative="earlier",
+                source_refs={},
+                affect_delta={},
+                share_worthy=False,
+            )
+        )
         db_.commit()
     assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT) is False
     with sf() as db_:
@@ -201,9 +210,14 @@ def test_latent_topic_keys_are_encrypted_in_source_refs(monkeypatch: pytest.Monk
     sf, rf = _factory(se), _factory(re)
     _seed_user(sf, rf)
     with sf() as db_:  # a latent trace above the weight threshold to be included
-        db_.add(LatentTrace(
-            user_id=1, topic_key="user:profile:employer:acme-corp", kind="minor_observation", weight=0.9,
-        ))
+        db_.add(
+            LatentTrace(
+                user_id=1,
+                topic_key="user:profile:employer:acme-corp",
+                kind="minor_observation",
+                weight=0.9,
+            )
+        )
         db_.commit()
 
     # A spy ef that marks what it encrypted (overrides the autouse passthrough).
@@ -215,8 +229,9 @@ def test_latent_topic_keys_are_encrypted_in_source_refs(monkeypatch: pytest.Monk
         keys = d.source_refs["latent_topic_keys"]
         assert keys == ["ENC:user:profile:employer:acme-corp"]  # encrypted, not raw
         # The raw content slug never appears unencrypted in the JSON provenance.
-        assert "acme-corp" not in str({k: v for k, v in d.source_refs.items()
-                                       if k != "latent_topic_keys"})
+        assert "acme-corp" not in str(
+            {k: v for k, v in d.source_refs.items() if k != "latent_topic_keys"}
+        )
     se.dispose()
     re.dispose()
 
@@ -251,10 +266,16 @@ def test_rolling_cap_prunes_oldest() -> None:
     cfg = DreamConfig(journal_cap=3, max_dreams_per_night=99)  # small cap, allow many
     with sf() as db_:
         for i in range(3):  # 3 existing dreams, oldest first
-            db_.add(DreamJournal(
-                user_id=1, dreamt_at=NIGHT - timedelta(days=3 - i),
-                narrative=f"old {i}", source_refs={}, affect_delta={}, share_worthy=False,
-            ))
+            db_.add(
+                DreamJournal(
+                    user_id=1,
+                    dreamt_at=NIGHT - timedelta(days=3 - i),
+                    narrative=f"old {i}",
+                    source_refs={},
+                    affect_delta={},
+                    share_worthy=False,
+                )
+            )
         db_.commit()
     assert dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT, config=cfg) is True
     with sf() as db_:
@@ -327,20 +348,35 @@ def test_share_worthy_dream_raises_dream_residue_signal() -> None:
     se, re = _soul_engine(), _runtime_engine()
     sf, rf = _factory(se), _factory(re)
     with sf() as db_:
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="a shared-worthy dream",
-            source_refs={}, affect_delta={}, share_worthy=True, surfaced=False,
-        ))
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="a shared-worthy dream",
+                source_refs={},
+                affect_delta={},
+                share_worthy=True,
+                surfaced=False,
+            )
+        )
         db_.commit()
 
     with sf() as soul_db, rf() as runtime_db:
         signals, _ = initiative.resolve_drive_signals(
-            soul_db, runtime_db, user_id=1, now=NIGHT,
-            last_user_turn_at=None, pattern_marker=None, pattern_marker_id=None,
+            soul_db,
+            runtime_db,
+            user_id=1,
+            now=NIGHT,
+            last_user_turn_at=None,
+            pattern_marker=None,
+            pattern_marker_id=None,
         )
         assert signals.dream_residue_present is True
         material = initiative.gather_drive_material(
-            soul_db, user_id=1, drive=DRIVE_DREAM_RESIDUE, now=NIGHT,
+            soul_db,
+            user_id=1,
+            drive=DRIVE_DREAM_RESIDUE,
+            now=NIGHT,
         )
         assert "dream" in material  # the narrative (df passthrough at import time)
 
@@ -350,8 +386,13 @@ def test_share_worthy_dream_raises_dream_residue_signal() -> None:
         db_.commit()
     with sf() as soul_db, rf() as runtime_db:
         signals, _ = initiative.resolve_drive_signals(
-            soul_db, runtime_db, user_id=1, now=NIGHT,
-            last_user_turn_at=None, pattern_marker=None, pattern_marker_id=None,
+            soul_db,
+            runtime_db,
+            user_id=1,
+            now=NIGHT,
+            last_user_turn_at=None,
+            pattern_marker=None,
+            pattern_marker_id=None,
         )
         assert signals.dream_residue_present is False
     se.dispose()
@@ -370,28 +411,48 @@ def test_dream_sharing_off_suppresses_dream_residue() -> None:
     se, re = _soul_engine(), _runtime_engine()
     sf, rf = _factory(se), _factory(re)
     with sf() as db_:
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="a shareworthy dream",
-            source_refs={}, affect_delta={}, share_worthy=True, surfaced=False,
-        ))
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="a shareworthy dream",
+                source_refs={},
+                affect_delta={},
+                share_worthy=True,
+                surfaced=False,
+            )
+        )
         db_.commit()
 
     with sf() as soul_db, rf() as runtime_db:
         signals, _ = initiative.resolve_drive_signals(
-            soul_db, runtime_db, user_id=1, now=NIGHT,
-            last_user_turn_at=None, pattern_marker=None, pattern_marker_id=None,
+            soul_db,
+            runtime_db,
+            user_id=1,
+            now=NIGHT,
+            last_user_turn_at=None,
+            pattern_marker=None,
+            pattern_marker_id=None,
             dream_sharing="off",
         )
         assert signals.dream_residue_present is False  # opted out -> no grow
         material = initiative.gather_drive_material(
-            soul_db, user_id=1, drive=DRIVE_DREAM_RESIDUE, now=NIGHT,
+            soul_db,
+            user_id=1,
+            drive=DRIVE_DREAM_RESIDUE,
+            now=NIGHT,
             dream_sharing="off",
         )
         assert material == ""  # opted out -> no material -> material-less reset
         # Sanity: with sharing on, the same dream DOES raise the signal.
         signals_on, _ = initiative.resolve_drive_signals(
-            soul_db, runtime_db, user_id=1, now=NIGHT,
-            last_user_turn_at=None, pattern_marker=None, pattern_marker_id=None,
+            soul_db,
+            runtime_db,
+            user_id=1,
+            now=NIGHT,
+            last_user_turn_at=None,
+            pattern_marker=None,
+            pattern_marker_id=None,
             dream_sharing="on_ask",
         )
         assert signals_on.dream_residue_present is True
@@ -409,20 +470,30 @@ def test_forgetting_scrubs_dreams_built_on_the_forgotten_memory() -> None:
     se = _soul_engine()
     sf = _factory(se)
     with sf() as db_:
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="dream about item 5",
-            source_refs={"memory_item_ids": [5, 9]}, affect_delta={}, share_worthy=True,
-        ))
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="unrelated dream",
-            source_refs={"memory_item_ids": [42]}, affect_delta={}, share_worthy=False,
-        ))
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="dream about item 5",
+                source_refs={"memory_item_ids": [5, 9]},
+                affect_delta={},
+                share_worthy=True,
+            )
+        )
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="unrelated dream",
+                source_refs={"memory_item_ids": [42]},
+                affect_delta={},
+                share_worthy=False,
+            )
+        )
         db_.commit()
 
     with sf() as db_:
-        scrubbed = _scrub_dream_journal_for_forget(
-            db_, user_id=1, forgotten_memory_item_ids={5}
-        )
+        scrubbed = _scrub_dream_journal_for_forget(db_, user_id=1, forgotten_memory_item_ids={5})
         db_.commit()
         assert scrubbed == 1
 
@@ -441,16 +512,26 @@ def test_scrub_dreams_by_forgotten_latent_topic_keys() -> None:
     se = _soul_engine()
     sf = _factory(se)
     with sf() as db_:
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="dream on a recurring theme",
-            source_refs={"memory_item_ids": [], "latent_topic_keys": ["topic:commute-stress"]},
-            affect_delta={}, share_worthy=True,
-        ))
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="other-topic dream",
-            source_refs={"memory_item_ids": [], "latent_topic_keys": ["topic:gardening"]},
-            affect_delta={}, share_worthy=False,
-        ))
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="dream on a recurring theme",
+                source_refs={"memory_item_ids": [], "latent_topic_keys": ["topic:commute-stress"]},
+                affect_delta={},
+                share_worthy=True,
+            )
+        )
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="other-topic dream",
+                source_refs={"memory_item_ids": [], "latent_topic_keys": ["topic:gardening"]},
+                affect_delta={},
+                share_worthy=False,
+            )
+        )
         db_.commit()
 
     with sf() as db_:
@@ -460,7 +541,9 @@ def test_scrub_dreams_by_forgotten_latent_topic_keys() -> None:
         db_.commit()
         assert scrubbed == 1
     with sf() as db_:
-        assert [r.narrative for r in db_.scalars(select(DreamJournal)).all()] == ["other-topic dream"]
+        assert [r.narrative for r in db_.scalars(select(DreamJournal)).all()] == [
+            "other-topic dream"
+        ]
     se.dispose()
 
 
@@ -474,12 +557,19 @@ def test_topic_purge_scrubs_dreams_built_on_that_topic() -> None:
     se = _soul_engine()
     sf = _factory(se)
     with sf() as db_:
-        db_.add(LatentTrace(user_id=1, topic_key="commute_stress", kind="minor_observation", weight=0.6))
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="a dream about the commute",
-            source_refs={"memory_item_ids": [], "latent_topic_keys": ["commute_stress"]},
-            affect_delta={}, share_worthy=True,
-        ))
+        db_.add(
+            LatentTrace(user_id=1, topic_key="commute_stress", kind="minor_observation", weight=0.6)
+        )
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="a dream about the commute",
+                source_refs={"memory_item_ids": [], "latent_topic_keys": ["commute_stress"]},
+                affect_delta={},
+                share_worthy=True,
+            )
+        )
         db_.commit()
 
     with sf() as db_:
@@ -501,11 +591,16 @@ def test_topic_purge_scrubs_dream_whose_trace_already_gone() -> None:
     se = _soul_engine()
     sf = _factory(se)
     with sf() as db_:  # dream references the topic, but NO LatentTrace row exists
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="a dream about the commute",
-            source_refs={"memory_item_ids": [], "latent_topic_keys": ["commute_stress"]},
-            affect_delta={}, share_worthy=True,
-        ))
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="a dream about the commute",
+                source_refs={"memory_item_ids": [], "latent_topic_keys": ["commute_stress"]},
+                affect_delta={},
+                share_worthy=True,
+            )
+        )
         db_.commit()
 
     with sf() as db_:
@@ -531,7 +626,9 @@ def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
 
     calls = {"n": 0}
 
-    async def failing_generate(soul_db, *, user_id, material, latent_topics, affect_line, client=None):
+    async def failing_generate(
+        soul_db, *, user_id, material, latent_topics, affect_line, client=None
+    ):
         calls["n"] += 1
         return None  # model outage / empty output
 
@@ -546,9 +643,10 @@ def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
         assert db_.scalars(select(DreamJournal)).all() == []  # no row written
 
     # A second eligible tick the same night must NOT re-call the model.
-    assert dream_edge.run_dream_for_user(
-        sf, rf, user_id=1, local_now=NIGHT + timedelta(minutes=1)
-    ) is False
+    assert (
+        dream_edge.run_dream_for_user(sf, rf, user_id=1, local_now=NIGHT + timedelta(minutes=1))
+        is False
+    )
     assert calls["n"] == 1  # still 1 — attempt marker blocked the retry
     se.dispose()
     re.dispose()
@@ -557,10 +655,19 @@ def test_failed_generation_marks_attempt_and_blocks_retry_same_night(
 @pytest.mark.parametrize(
     "value,expected",
     [
-        (0.4, 0.4), (1, 1.0), ("1.5", 1.5), ("warm", 0.0), (None, 0.0), ({}, 0.0),
+        (0.4, 0.4),
+        (1, 1.0),
+        ("1.5", 1.5),
+        ("warm", 0.0),
+        (None, 0.0),
+        ({}, 0.0),
         # Non-finite must be rejected: float('nan') 'succeeds' but NaN survives
         # the clamp as the positive cap (a max positive nudge), so -> 0.0.
-        ("nan", 0.0), ("inf", 0.0), ("-inf", 0.0), (float("nan"), 0.0), (float("inf"), 0.0),
+        ("nan", 0.0),
+        ("inf", 0.0),
+        ("-inf", 0.0),
+        (float("nan"), 0.0),
+        (float("inf"), 0.0),
     ],
 )
 def test_coerce_delta(value: object, expected: float) -> None:
@@ -585,9 +692,12 @@ def test_reconsolidation_uses_configured_dream_eta(monkeypatch: pytest.MonkeyPat
 
     monkeypatch.setattr(dream_edge, "apply_reconsolidation", spy_reconsolidate)
 
-    assert dream_edge.run_dream_for_user(
-        sf, rf, user_id=1, local_now=NIGHT, config=DreamConfig(dream_eta=0.005)
-    ) is True
+    assert (
+        dream_edge.run_dream_for_user(
+            sf, rf, user_id=1, local_now=NIGHT, config=DreamConfig(dream_eta=0.005)
+        )
+        is True
+    )
     assert seen and all(e == 0.005 for e in seen)  # the configured eta, not 0.02
     se.dispose()
     re.dispose()
@@ -604,9 +714,12 @@ def test_zero_dream_eta_fully_skips_reconsolidation() -> None:
     sf, rf = _factory(se), _factory(re)
     _seed_user(sf, rf)
 
-    assert dream_edge.run_dream_for_user(
-        sf, rf, user_id=1, local_now=NIGHT, config=DreamConfig(dream_eta=0.0)
-    ) is True
+    assert (
+        dream_edge.run_dream_for_user(
+            sf, rf, user_id=1, local_now=NIGHT, config=DreamConfig(dream_eta=0.0)
+        )
+        is True
+    )
     with sf() as db_:
         assert db_.scalars(select(DreamJournal)).all()  # dream still recorded
         assert db_.scalars(select(ReconsolidationLog)).all() == []  # but no reconsolidation
@@ -628,7 +741,11 @@ def test_nonnumeric_delta_does_not_raise_and_yields_zero(
     monkeypatch.undo()
 
     async def fake_json(system, prompt, *, expect="object", client=None):
-        return {"narrative": "a warm blurred hallway", "valence_delta": "warm", "arousal_delta": None}
+        return {
+            "narrative": "a warm blurred hallway",
+            "valence_delta": "warm",
+            "arousal_delta": None,
+        }
 
     monkeypatch.setattr("anima_server.services.agent.llm_json.call_llm_for_json", fake_json)
 
@@ -637,8 +754,12 @@ def test_nonnumeric_delta_does_not_raise_and_yields_zero(
     with sf() as soul_db:
         out = asyncio.run(
             dream_edge.generate_dream_narrative(
-                soul_db, user_id=1, material=["m"], latent_topics=[],
-                affect_line="steady", client=object(),
+                soul_db,
+                user_id=1,
+                material=["m"],
+                latent_topics=[],
+                affect_line="steady",
+                client=object(),
             )
         )
     assert out is not None
@@ -653,41 +774,22 @@ def test_nonnumeric_delta_does_not_raise_and_yields_zero(
 # --------------------------------------------------------------------------
 
 
-def test_dream_journal_serialize_roundtrip() -> None:
-    from anima_server.services.vault import serialize_dream_journal_record
-
-    se = _soul_engine()
-    sf = _factory(se)
-    with sf() as db_:
-        db_.add(DreamJournal(
-            id=7, user_id=1, dreamt_at=NIGHT, narrative="ENC(a dream)",
-            source_refs={"memory_item_ids": [1, 2], "latent_topic_keys": ["ENC(topic:x)"]},
-            affect_delta={"valence": 0.03}, share_worthy=True, surfaced=False,
-        ))
-        db_.commit()
-        row = db_.scalars(select(DreamJournal)).one()
-        rec = serialize_dream_journal_record(row, deks=None)
-    assert rec["id"] == 7
-    assert rec["narrative"] == "ENC(a dream)"  # deks=None -> value passthrough
-    # source_refs is decrypted for export (deks=None -> passthrough here); the
-    # encrypted latent_topic_keys are carried through the decrypt path, not
-    # exported as opaque ciphertext that a re-import couldn't re-key.
-    assert rec["source_refs"]["memory_item_ids"] == [1, 2]
-    assert rec["source_refs"]["latent_topic_keys"] == ["ENC(topic:x)"]
-    assert rec["share_worthy"] is True
-    se.dispose()
-
-
 def test_eval_reset_clears_dream_journal() -> None:
     from anima_server.services.eval_reset import _reset_soul_state
 
     se = _soul_engine()
     sf = _factory(se)
     with sf() as db_:
-        db_.add(DreamJournal(
-            user_id=1, dreamt_at=NIGHT, narrative="x",
-            source_refs={}, affect_delta={}, share_worthy=False,
-        ))
+        db_.add(
+            DreamJournal(
+                user_id=1,
+                dreamt_at=NIGHT,
+                narrative="x",
+                source_refs={},
+                affect_delta={},
+                share_worthy=False,
+            )
+        )
         db_.commit()
     with sf() as db_:
         _reset_soul_state(db_, user_id=1, deleted={})

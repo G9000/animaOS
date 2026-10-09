@@ -1,16 +1,19 @@
+"""Authenticated Core catalog and object readers for the supported format."""
+
 from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
-import logging
 import re
-from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy.orm import Session
+_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+_MAX_PORTABLE_NAME_BYTES = 255
+
+from collections.abc import Callable, Iterable
 
 from anima_server.services.corefs.formats import (
     DIARY_CONTENT_TYPE,
@@ -20,11 +23,6 @@ from anima_server.services.corefs.formats import (
     encode_draft_document,
     encode_note_document,
 )
-
-_CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
-logger = logging.getLogger(__name__)
-
-_MAX_PORTABLE_NAME_BYTES = 255
 
 
 def _truncate_portable_name(value: str, suffix: str = "") -> str:
@@ -477,11 +475,16 @@ def build_inactive_diary_catalog(
                 if entry.folder_id is not None
                 else None
             ),
-            html=entry.body,
+            html=entry.body
+            if entry.body_is_html
+            else "".join(
+                f"<p>{html.escape(paragraph, quote=False)}</p>"
+                for paragraph in re.split(r"(?:\r?\n){2,}", entry.body)
+                if paragraph
+            ),
             cover_uri=cover_uri,
             attachment_uris=tuple(attachment_uris),
             media_reference_factory=reference_inline,
-            legacy_plain_text=not entry.body_is_html,
             legacy_id=entry.id,
             legacy_folder_id=entry.folder_id,
             source=entry.source,
@@ -793,17 +796,6 @@ class PreparedWritingSnapshot:
     objects: tuple[PreparedWritingObject, ...]
 
 
-@dataclass(frozen=True, slots=True)
-class DiaryMigrationResult:
-    generation: int
-    catalog_hash: str
-    published: bool
-    source_counts: dict[str, int]
-    source_hash: str
-    stable_id: str | None = None
-    revision: int | None = None
-
-
 def resolve_prepared_role(*, session: Any, role: str) -> dict[str, object]:
     """Resolve an inactive stable role only through an authorized unlock session."""
     if session.corefs_session is None or session.corefs_keys is None:
@@ -992,30 +984,6 @@ def read_prepared_writing_body(
     return content
 
 
-def prepare_diary_validation_catalog(
-    *,
-    session: Any,
-    db: Session,
-    staged_drafts: Iterable[LegacyDiaryDraft] = (),
-    staged_notes: Iterable[LegacyNote] = (),
-) -> DiaryMigrationResult:
-    """Stream legacy writing into resumable inactive CoreFS preparation."""
-    from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
-
-    try:
-        return prepare_writing_source_catalog(
-            session=session,
-            db=db,
-            staged_drafts=staged_drafts,
-            staged_notes=staged_notes,
-        )
-    except Exception as exc:
-        record_diary_migration_failure(user_id=session.user_id, error=exc)
-        if isinstance(exc, (DiaryMigrationError, ValueError)):
-            raise
-        raise DiaryMigrationError("CoreFS writing preparation failed safely.") from exc
-
-
 def _read_prepared_bytes(*, session: Any, selected: Any, path: str) -> bytes:
     from anima_server.services.corefs import logical
 
@@ -1055,68 +1023,3 @@ def _wire_result(raw: bytes, generation: int) -> dict[str, object]:
     if result.get("generation") not in {None, generation}:
         raise DiaryMigrationError("Prepared CoreFS generation changed during verification.")
     return result
-
-
-def _write_checkpoint(
-    *,
-    user_id: int,
-    generation: int,
-    catalog_hash: str,
-    source_counts: dict[str, int],
-    source_hash: str,
-    source_mutation_generation: int | None = None,
-    completion_token: dict[str, object] | None = None,
-) -> None:
-    from anima_server.services.core import update_core_manifest
-
-    def update(manifest: dict[str, object]) -> None:
-        checkpoints = manifest.setdefault("migration_checkpoints", {})
-        if not isinstance(checkpoints, dict):
-            raise DiaryMigrationError("Core migration checkpoint registry is invalid.")
-        checkpoint: dict[str, object] = {
-            "state": "verified-inactive",
-            "generation": generation,
-            "catalogHash": catalog_hash,
-            "sourceCounts": source_counts,
-            "sourceHash": source_hash,
-            "verifiedAt": _now_iso(),
-            "authoritative": False,
-        }
-        if source_mutation_generation is not None:
-            checkpoint["sourceMutationGeneration"] = source_mutation_generation
-        if completion_token is not None:
-            checkpoint["completionToken"] = completion_token
-        checkpoints[f"pcf004:{user_id}"] = checkpoint
-        if source_counts.get("conversationRoot") == 1:
-            checkpoints[f"pcf005:{user_id}"] = {
-                **checkpoint,
-                "sourceCounts": {
-                    "threads": source_counts.get("threads", 0),
-                    "messageSegments": source_counts.get("messageSegments", 0),
-                },
-            }
-
-    update_core_manifest(update)
-
-
-def record_diary_migration_failure(*, user_id: int, error: Exception) -> None:
-    """Journal a private-text-free failed lifecycle attempt for safe retry."""
-    from anima_server.services.core import update_core_manifest
-
-    def update(manifest: dict[str, object]) -> None:
-        checkpoints = manifest.setdefault("migration_checkpoints", {})
-        if not isinstance(checkpoints, dict):
-            return
-        checkpoints[f"pcf004:{user_id}"] = {
-            "state": "retry-required",
-            "errorCode": type(error).__name__,
-            "errorDigest": hashlib.sha256(str(error).encode()).hexdigest(),
-            "attemptedAt": _now_iso(),
-            "authoritative": False,
-        }
-
-    update_core_manifest(update)
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat().replace("+00:00", "Z")

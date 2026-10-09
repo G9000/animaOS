@@ -13,7 +13,7 @@ import logging
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.models.runtime_memory import EmbeddingConfig
 from anima_server.services.agent import embedding_contract
@@ -52,7 +52,7 @@ def soul_factory():
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     with factory() as db:
-        db.add(User(username="embed", password_hash="x", display_name="E"))
+        db.add(SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001"))
         db.commit()
     yield factory
     engine.dispose()
@@ -137,9 +137,7 @@ class TestContractCheck:
         embedding_contract.reset_contract_cache()
         assert embedding_contract.is_reembed_required(runtime_db_factory=rt_factory) is True
 
-    def test_second_switch_reopens_cycle_for_completed_users(
-        self, rt_factory
-    ) -> None:
+    def test_second_switch_reopens_cycle_for_completed_users(self, rt_factory) -> None:
         """A completion is only valid for the target it was recorded against.
         A second model switch (while the global flag is still set) must clear
         prior completions so a user who finished the first re-embed is re-gated
@@ -265,9 +263,7 @@ def test_semantic_leg_reports_degraded_instead_of_silent_empty(
 ) -> None:
     from anima_server.services.agent import embeddings
 
-    monkeypatch.setattr(
-        embedding_contract, "is_reembed_required", lambda *a, **k: True
-    )
+    monkeypatch.setattr(embedding_contract, "is_reembed_required", lambda *a, **k: True)
     ranked = embeddings._semantic_ranked_ids(
         db=None,
         user_id=1,
@@ -279,9 +275,7 @@ def test_semantic_leg_reports_degraded_instead_of_silent_empty(
 
 
 class TestDerivedStoreMaintenance:
-    def _add_item_with_embedding(
-        self, soul_factory, rt_factory, *, item_content: str
-    ) -> int:
+    def _add_item_with_embedding(self, soul_factory, rt_factory, *, item_content: str) -> int:
         with soul_factory() as db:
             item = MemoryItem(
                 user_id=1,
@@ -301,9 +295,7 @@ class TestDerivedStoreMaintenance:
                     source_type="memory_item",
                     source_id=item_id,
                     content_hash="h" * 64,
-                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(
-                        _embedding()
-                    ),
+                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(_embedding()),
                     embedding=_embedding(),
                     content_preview=item_content,
                 )
@@ -311,12 +303,8 @@ class TestDerivedStoreMaintenance:
             rt_db.commit()
         return item_id
 
-    def test_reset_clears_soul_and_runtime_stores(
-        self, soul_factory, rt_factory
-    ) -> None:
-        self._add_item_with_embedding(
-            soul_factory, rt_factory, item_content="Likes green tea"
-        )
+    def test_reset_clears_soul_and_runtime_stores(self, soul_factory, rt_factory) -> None:
+        self._add_item_with_embedding(soul_factory, rt_factory, item_content="Likes green tea")
         with soul_factory() as db:
             cleared = embedding_contract.reset_derived_embedding_stores(
                 db, user_id=1, runtime_db_factory=rt_factory
@@ -329,16 +317,12 @@ class TestDerivedStoreMaintenance:
         with rt_factory() as rt_db:
             assert rt_db.scalar(select(RuntimeEmbedding)) is None
 
-    def test_reset_preserves_non_memory_sources(
-        self, soul_factory, rt_factory
-    ) -> None:
+    def test_reset_preserves_non_memory_sources(self, soul_factory, rt_factory) -> None:
         """The reset clears only ``memory_item`` vectors (which the backfill
         rebuilds).  Non-memory sources have no rebuild path this cycle, so
         deleting them would drop those memories from recall entirely — they are
         left in place rather than lost."""
-        self._add_item_with_embedding(
-            soul_factory, rt_factory, item_content="Likes green tea"
-        )
+        self._add_item_with_embedding(soul_factory, rt_factory, item_content="Likes green tea")
         with rt_factory() as rt_db:
             rt_db.add(
                 RuntimeEmbedding(
@@ -346,9 +330,7 @@ class TestDerivedStoreMaintenance:
                     source_type="document_chunk",
                     source_id=4242,
                     content_hash="d" * 64,
-                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(
-                        _embedding()
-                    ),
+                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(_embedding()),
                     embedding=_embedding(),
                     content_preview="a document chunk",
                 )
@@ -366,9 +348,7 @@ class TestDerivedStoreMaintenance:
         # The memory_item vector is cleared; the document_chunk vector remains.
         assert [row.source_type for row in remaining] == ["document_chunk"]
 
-    def test_orphan_sweep_removes_rows_without_live_items(
-        self, soul_factory, rt_factory
-    ) -> None:
+    def test_orphan_sweep_removes_rows_without_live_items(self, soul_factory, rt_factory) -> None:
         live_id = self._add_item_with_embedding(
             soul_factory, rt_factory, item_content="Likes green tea"
         )
@@ -379,9 +359,7 @@ class TestDerivedStoreMaintenance:
                     source_type="memory_item",
                     source_id=live_id + 999,  # no such memory item
                     content_hash="o" * 64,
-                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(
-                        _embedding()
-                    ),
+                    embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(_embedding()),
                     embedding=_embedding(),
                     content_preview="orphan",
                 )

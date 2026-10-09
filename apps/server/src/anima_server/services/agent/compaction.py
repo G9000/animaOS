@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from math import ceil
 
-from sqlalchemy import case, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
@@ -93,6 +93,43 @@ def estimate_message_tokens(
     return max(1, ceil(len(combined_text) / 3))
 
 
+def _in_context_rows(db: Session, *, thread: RuntimeThread) -> list[RuntimeMessage]:
+    rows = db.scalars(
+        select(RuntimeMessage)
+        .where(
+            RuntimeMessage.thread_id == thread.id,
+            RuntimeMessage.user_id == thread.user_id,
+            RuntimeMessage.is_in_context.is_(True),
+            RuntimeMessage.role.in_(("summary", "user", "assistant", "tool")),
+        )
+        .order_by(
+            case((RuntimeMessage.role == "summary", 0), else_=1),
+            func.coalesce(RuntimeMessage.corefs_sequence_id, RuntimeMessage.sequence_id),
+        )
+    ).all()
+    from anima_server.services.corefs.conversation_authority import (
+        active_conversation_authority_session,
+    )
+
+    if active_conversation_authority_session(int(thread.user_id)) is None:
+        return list(rows)
+    from anima_server.services.agent.persistence import (
+        CanonicalRuntimeMessageProjection,
+        _hydrate_current_message_references,
+    )
+
+    # Current visible history is authenticated native content. Only verified
+    # native bindings and sealed operational summaries can feed compaction;
+    # leftover SQL conversation bodies cannot acquire authority via a summary.
+    authenticated = {
+        row.id
+        for row in _hydrate_current_message_references(rows)
+        if isinstance(row, CanonicalRuntimeMessageProjection)
+        and (row.corefs_message_id is not None or row.role == "summary")
+    }
+    return [row for row in rows if row.id in authenticated]
+
+
 def compact_thread_context(
     db: Session,
     *,
@@ -102,18 +139,7 @@ def compact_thread_context(
     keep_last_messages: int,
     reserved_prompt_tokens: int = 0,
 ) -> CompactionResult | None:
-    in_context_rows = db.scalars(
-        select(RuntimeMessage)
-        .where(
-            RuntimeMessage.thread_id == thread.id,
-            RuntimeMessage.is_in_context.is_(True),
-            RuntimeMessage.role.in_(("summary", "user", "assistant", "tool")),
-        )
-        .order_by(
-            case((RuntimeMessage.role == "summary", 0), else_=1),
-            RuntimeMessage.sequence_id,
-        )
-    ).all()
+    in_context_rows = _in_context_rows(db, thread=thread)
 
     if not in_context_rows:
         return None
@@ -161,15 +187,13 @@ def compact_thread_context(
         thread_id=thread.id,
         count=1,
     )
-    from anima_server.services.agent.persistence import append_message
+    from anima_server.services.agent.persistence import append_runtime_summary
 
-    summary_message = append_message(
+    summary_message = append_runtime_summary(
         db,
         thread=thread,
         run_id=run_id,
-        step_id=None,
         sequence_id=summary_sequence_id,
-        role="summary",
         content_text=summary_text,
         content_json={
             "compacted_message_count": len(compacted_rows),
@@ -206,6 +230,10 @@ def render_summary_text(
     *,
     user_id: int = 0,
 ) -> str:
+    from anima_server.services.agent.persistence import _hydrate_current_message_references
+
+    summary_rows = _hydrate_current_message_references(summary_rows)
+    compacted_rows = _hydrate_current_message_references(compacted_rows)
     lines: list[str] = ["Conversation summary:"]
 
     for summary_row in summary_rows:
@@ -257,6 +285,9 @@ def _trim_summary_text(text: str) -> str:
 
 def _build_transcript(rows: list[RuntimeMessage], *, clamp_tools: bool = False) -> str:
     """Build a plain-text transcript from message rows for LLM summarization."""
+    from anima_server.services.agent.persistence import _hydrate_current_message_references
+
+    rows = _hydrate_current_message_references(rows)
     lines: list[str] = []
     for row in rows:
         role_label = row.role.capitalize()
@@ -383,8 +414,7 @@ async def summarize_with_llm(
 
     final_target = targets[-1]
     degraded_logger.warning(
-        "LLM summarization failed for all targets (last=%s/%s: %s); "
-        "falling back to text summary",
+        "LLM summarization failed for all targets (last=%s/%s: %s); falling back to text summary",
         final_target.provider,
         final_target.model,
         type(last_error).__name__ if last_error is not None else "unknown",
@@ -413,18 +443,7 @@ async def compact_thread_context_with_llm(
     Falls back to the next level on any failure.
     """
     # Use the same initial logic as compact_thread_context to find rows
-    in_context_rows = db.scalars(
-        select(RuntimeMessage)
-        .where(
-            RuntimeMessage.thread_id == thread.id,
-            RuntimeMessage.is_in_context.is_(True),
-            RuntimeMessage.role.in_(("summary", "user", "assistant", "tool")),
-        )
-        .order_by(
-            case((RuntimeMessage.role == "summary", 0), else_=1),
-            RuntimeMessage.sequence_id,
-        )
-    ).all()
+    in_context_rows = _in_context_rows(db, thread=thread)
 
     if not in_context_rows:
         return None
@@ -514,15 +533,13 @@ async def compact_thread_context_with_llm(
         existing_summary_rows, compacted_rows, user_id=thread.user_id
     )
 
-    from anima_server.services.agent.persistence import append_message
+    from anima_server.services.agent.persistence import append_runtime_summary
 
-    summary_message = append_message(
+    summary_message = append_runtime_summary(
         db,
         thread=thread,
         run_id=run_id,
-        step_id=None,
         sequence_id=summary_sequence_id,
-        role="summary",
         content_text=summary_text,
         content_json={
             "compacted_message_count": len(compacted_rows),

@@ -96,20 +96,23 @@ def test_every_runtime_table_and_field_has_one_approved_destination() -> None:
     _assert_schema_is_exactly_classified("runtime-db", dict(RuntimeBase.metadata.tables))
 
 
-def test_required_mixed_rows_are_classified_field_by_field() -> None:
+def test_current_soul_schema_has_only_continuity_and_owner_bindings() -> None:
     agent_profile = _destinations("sqlcipher", "agent_profile")
     self_model = _destinations("sqlcipher", "self_model_blocks")
     episode = _destinations("sqlcipher", "memory_episodes")
-    user = _destinations("sqlcipher", "users")
+    owner = _destinations("sqlcipher", "soul_owners")
 
-    assert agent_profile["setup_complete"] == "account-profile"
+    assert agent_profile["setup_complete"] == "soul"
     assert agent_profile["agent_name"] == "soul"
     assert self_model["content"] == "soul"
-    assert self_model["needs_regeneration"] == "runtime-machine-local"
+    assert self_model["needs_regeneration"] == "soul"
     assert episode["summary"] == "soul"
-    assert episode["needs_regeneration"] == "runtime-machine-local"
-    assert user["username"] == "account-profile"
-    assert user["password_hash"] == "remove-legacy-auth"
+    assert episode["needs_regeneration"] == "soul"
+    assert owner["core_owner_id"] == "soul"
+    assert not _destinations("sqlcipher", "users")
+    assert not _destinations("sqlcipher", "user_keys")
+    assert episode["source_thread_uri"] == "soul"
+    assert episode["source_transcript_uri"] == "soul"
 
 
 def test_persisted_runtime_setting_whitelist_has_no_unclassified_field() -> None:

@@ -3,23 +3,53 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from anima_server.config import settings
 from anima_server.db.base import Base
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.models.runtime import RuntimeImageMessageLink, RuntimeMessage, RuntimeThread
 from anima_server.models.runtime_embedding import RuntimeEmbedding
 from anima_server.services.images.capabilities import ImageProcessingCapabilities
 from anima_server.services.images.indexing import index_image_asset
-from anima_server.services.images.store import register_image_asset
 from conftest_runtime import runtime_db_session
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+from test_image_indexing import _mock_authoritative_projections, _runtime_image_projection
 
 pytest_plugins = ("conftest_runtime",)
+
+
+@pytest.fixture(autouse=True)
+def _authoritative_byte_source_boundary(monkeypatch, request):
+    if request.node.name == "test_native_adapters_register_authenticated_original_uris":
+        yield
+        return
+    cleanup = _mock_authoritative_projections(monkeypatch)
+    from anima_server.services import presence_config
+    from anima_server.services.agent import proactive
+    from anima_server.services.presence_config import PresenceConfigValues
+
+    monkeypatch.setattr(
+        proactive,
+        "get_presence_config_values",
+        lambda db, user_id: PresenceConfigValues(user_id=user_id),
+    )
+    monkeypatch.setattr(
+        presence_config,
+        "get_presence_config_values",
+        lambda db, user_id: PresenceConfigValues(user_id=user_id),
+    )
+    monkeypatch.setattr(
+        proactive, "require_active_task_authority_session", lambda user_id: object()
+    )
+    monkeypatch.setattr(proactive, "list_canonical_tasks", lambda *, session: [])
+    yield
+    cleanup()
+
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n"
@@ -63,12 +93,8 @@ def _embedding(_text: str) -> list[float]:
     return [1.0, *([0.0] * (_TEST_DIM - 1))]
 
 
-def _create_user(db: Session, *, username: str = "proactive-image") -> User:
-    user = User(
-        username=username,
-        password_hash="not-used",
-        display_name="Proactive Image",
-    )
+def _create_user(db: Session, *, username: str = "proactive-image") -> SoulOwner:
+    user = SoulOwner(core_owner_id=str(uuid4()))
     db.add(user)
     db.flush()
     return user
@@ -89,7 +115,7 @@ def _create_image(
     thread = RuntimeThread(user_id=user_id, status="active")
     runtime_db.add(thread)
     runtime_db.flush()
-    stored = register_image_asset(
+    stored = _runtime_image_projection(
         runtime_db,
         user_id=user_id,
         data=PNG_BYTES + byte_suffix,
@@ -195,7 +221,9 @@ def test_select_proactive_image_candidate_uses_indexed_owned_unprompted_assets(
     assert candidate.source_message_id == message.id
     assert candidate.source_thread_id == message.thread_id
     assert candidate.attachment_id == attachment_id
-    assert candidate.attachment_url == f"/api/chat/messages/{message.id}/attachments/{attachment_id}"
+    assert (
+        candidate.attachment_url == f"/api/chat/messages/{message.id}/attachments/{attachment_id}"
+    )
     assert candidate.pills == [
         {"kind": "image_source", "label": "alpha.png", "ref": f"image:{valid_id}"}
     ]

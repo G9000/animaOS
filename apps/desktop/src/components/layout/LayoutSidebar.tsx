@@ -5,6 +5,7 @@ import {
   cn,
 } from "@anima/standard-templates";
 import { useAuth } from "../../context/AuthContext";
+import { accountDisplayName } from "../../lib/userIdentity";
 import { useAgentProfile } from "../../hooks/useAgentProfile";
 import { api } from "../../lib/api";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/events";
@@ -252,7 +253,7 @@ export function LayoutSidebar() {
             </span>
             {!collapsed && (
               <span className="text-ui truncate flex-1 text-left">
-                {user?.name || "User"}
+                {accountDisplayName(user)}
               </span>
             )}
           </button>
@@ -266,7 +267,7 @@ export function LayoutSidebar() {
             >
               <div className="px-3 py-2 border-b border-border">
                 <div className="text-caption text-muted-foreground truncate">
-                  {user?.name || "Guest"}
+                  {accountDisplayName(user)}
                 </div>
               </div>
               <button

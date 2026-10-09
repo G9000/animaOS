@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.services.agent.candidate_ops import create_memory_candidate
 from anima_server.services.agent.evidence_retrieval import RetrievalMode, WideEvidenceResult
 from anima_server.services.agent.tool_context import (
@@ -51,8 +51,8 @@ def _soul_db_session() -> Generator[Session, None, None]:
         engine.dispose()
 
 
-def _add_user(db: Session) -> User:
-    user = User(username="recall-regression", password_hash="x", display_name="Recall")
+def _add_user(db: Session) -> SoulOwner:
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     db.add(user)
     db.flush()
     return user

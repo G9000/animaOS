@@ -264,8 +264,17 @@ def _write(payload: dict[str, Any]) -> None:
     )
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb") as handle:
+        handle = os.fdopen(descriptor, "wb")
+    except BaseException:
+        os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
+    try:
+        with handle:
+            if hasattr(os, "fchmod"):
+                os.fchmod(handle.fileno(), 0o600)
+            else:
+                os.chmod(temporary, 0o600)
             handle.write(encoded)
             handle.flush()
             os.fsync(handle.fileno())

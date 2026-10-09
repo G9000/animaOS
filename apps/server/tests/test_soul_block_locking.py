@@ -7,10 +7,12 @@ landing mid-reflection was silently erased.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import User
+from anima_server.models import SoulOwner
 from anima_server.services.agent.intentions import (
     MAX_PROCEDURAL_RULES,
     merge_learned_rules,
@@ -43,7 +45,7 @@ def soul_db():
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     session = factory()
-    user = User(id=1, username="test", display_name="Test", password_hash="x")
+    user = SoulOwner(id=1, core_owner_id=str(uuid4()))
     session.add(user)
     session.commit()
     yield session
@@ -90,12 +92,8 @@ class TestSoulBlockLocking:
         )
         assert block.version == 1
 
-    def test_expected_absent_conflicts_when_block_exists(
-        self, soul_db: Session
-    ) -> None:
-        set_soul_block(
-            soul_db, user_id=1, section="persona", content="v1", updated_by="test"
-        )
+    def test_expected_absent_conflicts_when_block_exists(self, soul_db: Session) -> None:
+        set_soul_block(soul_db, user_id=1, section="persona", content="v1", updated_by="test")
         with pytest.raises(SoulBlockConflict):
             set_soul_block(
                 soul_db,
@@ -107,9 +105,7 @@ class TestSoulBlockLocking:
             )
 
     def test_matching_version_writes_and_bumps(self, soul_db: Session) -> None:
-        set_soul_block(
-            soul_db, user_id=1, section="persona", content="v1", updated_by="test"
-        )
+        set_soul_block(soul_db, user_id=1, section="persona", content="v1", updated_by="test")
         block = set_soul_block(
             soul_db,
             user_id=1,
@@ -122,9 +118,7 @@ class TestSoulBlockLocking:
         assert _plaintext(1, block) == "v2"
 
     def test_stale_version_refused(self, soul_db: Session) -> None:
-        set_soul_block(
-            soul_db, user_id=1, section="persona", content="v1", updated_by="test"
-        )
+        set_soul_block(soul_db, user_id=1, section="persona", content="v1", updated_by="test")
         set_soul_block(
             soul_db,
             user_id=1,
@@ -144,17 +138,13 @@ class TestSoulBlockLocking:
         assert exc_info.value.expected_version == 1
 
     def test_none_skips_check(self, soul_db: Session) -> None:
-        set_soul_block(
-            soul_db, user_id=1, section="persona", content="v1", updated_by="test"
-        )
+        set_soul_block(soul_db, user_id=1, section="persona", content="v1", updated_by="test")
         block = full_replace_soul_block(
             soul_db, user_id=1, section="persona", content="unversioned write"
         )
         assert block.version == 2
 
-    def test_concurrent_append_survives_stale_full_replace(
-        self, soul_db: Session
-    ) -> None:
+    def test_concurrent_append_survives_stale_full_replace(self, soul_db: Session) -> None:
         """The motivating race: a reflection snapshots the block, a pending
         op appends 'call me Jay' mid-flight, and the reflection's stale
         full-replace must be refused — not silently erase the append."""
@@ -236,9 +226,7 @@ class TestWorkingContextLocking:
                 content="stale",
                 expected_version=0,
             )
-        row = set_active_intentions(
-            runtime_db, user_id=1, content="updated", expected_version=1
-        )
+        row = set_active_intentions(runtime_db, user_id=1, content="updated", expected_version=1)
         assert row.version == 2
 
 
@@ -273,9 +261,7 @@ class TestMergeLearnedRules:
         base = f"# Intentions\n\n## Learned Rules\n{existing}"
         merged = merge_learned_rules(base, ["- brand new rule"])
         rules = [
-            line
-            for line in merged.splitlines()
-            if line.strip().startswith("- ") and "rule" in line
+            line for line in merged.splitlines() if line.strip().startswith("- ") and "rule" in line
         ]
         assert len(rules) == MAX_PROCEDURAL_RULES
         assert "- brand new rule" in merged
@@ -322,7 +308,7 @@ async def test_quick_reflection_reapplies_wm_deltas_after_concurrent_write(
 
     try:
         with soul_factory() as soul_db:
-            user = User(username="wm-race", display_name="WM Race", password_hash="x")
+            user = SoulOwner(core_owner_id=str(uuid4()))
             soul_db.add(user)
             soul_db.commit()
             user_id = user.id
@@ -353,9 +339,7 @@ async def test_quick_reflection_reapplies_wm_deltas_after_concurrent_write(
                 pg_db.commit()
             return json.dumps(
                 {
-                    "working_memory_updates": [
-                        {"action": "add", "item": "follow up on the demo"}
-                    ],
+                    "working_memory_updates": [{"action": "add", "item": "follow up on the demo"}],
                     "quick_take": "ok",
                 }
             )

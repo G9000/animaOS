@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+import pytest
 from anima_server.config import settings
 from anima_server.models.runtime import (
     RuntimeKnowledgeConcept,
@@ -19,6 +20,43 @@ from sqlalchemy.orm import Session
 pytest_plugins = ("conftest_runtime",)
 
 
+def _register_fixture_document(runtime_db, registration):
+    """Mock authenticated original identity; exercise real registration and Runtime writes."""
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import asset_authority
+    from anima_server.services.documents.store import register_document
+
+    session = object()
+
+    def require_session(user_id):
+        assert user_id == registration.user_id
+        return session
+
+    def open_source(*, session: object, object_uri: str, expected_kinds: frozenset[str]):
+        assert session is authority_session
+        assert object_uri == registration.storage_path
+        assert object_uri.startswith("corefs://object/")
+        assert expected_kinds == frozenset({"attachment"})
+        return SimpleNamespace(
+            content_type=registration.mime_type,
+            content_sha256=registration.sha256,
+            size=registration.size_bytes,
+        )
+
+    authority_session = session
+    with pytest.MonkeyPatch.context() as boundary:
+        boundary.setattr(asset_authority, "require_canonical_asset_session", require_session)
+        boundary.setattr(asset_authority, "open_corefs_byte_source", open_source)
+        return register_document(runtime_db, registration)
+
+
+def _document_uri(user_id: int, digest: str) -> str:
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
+
+    return f"corefs://object/{stable_opaque_id('fixture-document', f'{user_id}:{digest}')}"
+
+
 def _sha(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -26,15 +64,14 @@ def _sha(value: str) -> str:
 def _register_owned_document(runtime_db: Session, *, user_id: int = 7) -> int:
     """A real RuntimeDocument row so the ownership gate admits the selection."""
     from anima_server.services.documents.models import DocumentRegistration
-    from anima_server.services.documents.store import register_document
 
-    document = register_document(
+    document = _register_fixture_document(
         runtime_db,
         DocumentRegistration(
             user_id=user_id,
             filename="manual.pdf",
             mime_type="application/pdf",
-            storage_path=f".anima/documents/{user_id}/manual.pdf",
+            storage_path=_document_uri(user_id, "9" * 64),
             sha256="9" * 64,
             size_bytes=100,
         ),
@@ -374,7 +411,7 @@ def test_build_document_context_block_uses_query_matched_compiled_pdf_concept(
     source = RuntimeSource(
         user_id=7,
         kind="document",
-        source_uri=f"runtime-document://{document_id}",
+        source_uri=_document_uri(7, "9" * 64),
         content_hash=_sha("selected"),
         title="manual.pdf",
         media_type="application/pdf",
@@ -534,7 +571,7 @@ def test_build_document_context_block_keeps_raw_excerpts_for_unmatched_chunks(
     source = RuntimeSource(
         user_id=7,
         kind="document",
-        source_uri=f"runtime-document://{document_id}",
+        source_uri=_document_uri(7, "9" * 64),
         content_hash=_sha("selected"),
         title="manual.pdf",
         media_type="application/pdf",
@@ -651,10 +688,35 @@ def test_build_document_context_block_keeps_raw_excerpts_for_unmatched_chunks(
 def test_document_knowledge_hits_are_scoped_to_selected_document(
     runtime_db: Session,
 ) -> None:
+    from anima_server.models.runtime import RuntimeDocument
+
+    runtime_db.add_all(
+        [
+            RuntimeDocument(
+                id=4,
+                user_id=7,
+                filename="manual.pdf",
+                mime_type="application/pdf",
+                storage_path=_document_uri(7, "4" * 64),
+                sha256="4" * 64,
+                size_bytes=100,
+            ),
+            RuntimeDocument(
+                id=5,
+                user_id=7,
+                filename="other.pdf",
+                mime_type="application/pdf",
+                storage_path=_document_uri(7, "5" * 64),
+                sha256="5" * 64,
+                size_bytes=100,
+            ),
+        ]
+    )
+    runtime_db.flush()
     selected_source = RuntimeSource(
         user_id=7,
         kind="document",
-        source_uri="runtime-document://4",
+        source_uri=_document_uri(7, "4" * 64),
         content_hash=_sha("selected"),
         title="manual.pdf",
         media_type="application/pdf",
@@ -663,7 +725,7 @@ def test_document_knowledge_hits_are_scoped_to_selected_document(
     other_source = RuntimeSource(
         user_id=7,
         kind="document",
-        source_uri="runtime-document://5",
+        source_uri=_document_uri(7, "5" * 64),
         content_hash=_sha("other"),
         title="other.pdf",
         media_type="application/pdf",
@@ -749,9 +811,7 @@ def test_build_document_context_block_emits_tool_primer_when_retrieval_is_empty(
     ) -> list[DocumentRagResult]:
         return []
 
-    monkeypatch.setattr(
-        agent_service, "search_document_chunks", fake_search_document_chunks
-    )
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
 
     block = agent_service._build_document_context_block(
         object(),
@@ -800,17 +860,16 @@ def _document_with_chunks(
         ExtractedDocumentChunk,
     )
     from anima_server.services.documents.store import (
-        register_document,
         replace_document_chunks,
     )
 
-    document = register_document(
+    document = _register_fixture_document(
         runtime_db,
         DocumentRegistration(
             user_id=user_id,
             filename=filename,
             mime_type="application/pdf",
-            storage_path=f".anima/documents/{user_id}/{filename}",
+            storage_path=_document_uri(user_id, sha256),
             sha256=sha256,
             size_bytes=100,
         ),
@@ -827,9 +886,7 @@ def _document_with_chunks(
     return document.id
 
 
-def test_small_document_injected_whole(
-    monkeypatch: Any, runtime_db: Session
-) -> None:
+def test_small_document_injected_whole(monkeypatch: Any, runtime_db: Session) -> None:
     document_id = _document_with_chunks(
         runtime_db,
         chunk_texts=[
@@ -859,9 +916,7 @@ def test_small_document_injected_whole(
     assert first_index < second_index
 
 
-def test_oversized_selection_falls_back_to_retrieval(
-    monkeypatch: Any, runtime_db: Session
-) -> None:
+def test_oversized_selection_falls_back_to_retrieval(monkeypatch: Any, runtime_db: Session) -> None:
     monkeypatch.setattr(settings, "document_full_context_char_cap", 50)
     document_id = _document_with_chunks(
         runtime_db,
@@ -1083,9 +1138,7 @@ def test_budget_scales_with_context_window(monkeypatch: Any) -> None:
     assert large_window_budget > small_window_budget
 
 
-def test_full_document_block_survives_prompt_budget(
-    monkeypatch: Any, runtime_db: Session
-) -> None:
+def test_full_document_block_survives_prompt_budget(monkeypatch: Any, runtime_db: Session) -> None:
     """End-to-end: a full-document block above the old static 4000-char
     per-block cap must survive plan_prompt_budget untruncated (the prompt
     assembly path every chat turn runs through)."""
@@ -1127,26 +1180,25 @@ def test_build_document_context_block_ignores_unowned_document_ids(
     monkeypatch: Any, runtime_db: Session
 ) -> None:
     from anima_server.services.documents.models import DocumentRegistration
-    from anima_server.services.documents.store import register_document
 
-    owned = register_document(
+    owned = _register_fixture_document(
         runtime_db,
         DocumentRegistration(
             user_id=7,
             filename="mine.pdf",
             mime_type="application/pdf",
-            storage_path=".anima/documents/7/mine.pdf",
+            storage_path=_document_uri(7, "1" * 64),
             sha256="1" * 64,
             size_bytes=100,
         ),
     )
-    foreign = register_document(
+    foreign = _register_fixture_document(
         runtime_db,
         DocumentRegistration(
             user_id=8,
             filename="theirs.pdf",
             mime_type="application/pdf",
-            storage_path=".anima/documents/8/theirs.pdf",
+            storage_path=_document_uri(8, "2" * 64),
             sha256="2" * 64,
             size_bytes=100,
         ),
@@ -1155,9 +1207,7 @@ def test_build_document_context_block_ignores_unowned_document_ids(
     def fake_search_document_chunks(*args: Any, **kwargs: Any):
         return []
 
-    monkeypatch.setattr(
-        agent_service, "search_document_chunks", fake_search_document_chunks
-    )
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
 
     # Only invalid/foreign ids: behaves like no selection at all.
     none_valid = agent_service._build_document_context_block(
@@ -1231,12 +1281,8 @@ def test_build_document_context_block_falls_back_to_retrieval_when_all_documents
         search_calls.append(list(document_ids))
         return []
 
-    monkeypatch.setattr(
-        agent_service, "get_document_for_user", flaky_get_document_for_user
-    )
-    monkeypatch.setattr(
-        agent_service, "search_document_chunks", fake_search_document_chunks
-    )
+    monkeypatch.setattr(agent_service, "get_document_for_user", flaky_get_document_for_user)
+    monkeypatch.setattr(agent_service, "search_document_chunks", fake_search_document_chunks)
     monkeypatch.setattr(settings, "document_full_context", "auto")
 
     result = agent_service._build_document_context_block(

@@ -5,16 +5,10 @@ from sqlalchemy.orm import Session
 
 from anima_server.models import (
     AgentExperience,
-    AgentMessage,
-    AgentRun,
     AgentSkill,
-    AgentStep,
-    AgentThread,
-    BackgroundTaskRun,
     CoreEmotionalPattern,
     DreamJournal,
     EmotionalSignal,
-    ExperienceClusterState,
     ForesightSignal,
     ForgetAuditLog,
     GrowthLogEntry,
@@ -28,7 +22,6 @@ from anima_server.models import (
     MemoryItem,
     MemoryItemEvidence,
     MemoryItemTag,
-    MemoryVector,
     ReconsolidationLog,
     RuntimeBackgroundTaskRun,
     RuntimeDocument,
@@ -40,7 +33,6 @@ from anima_server.models import (
     RuntimeWorkflowCheckpoint,
     RuntimeWorkflowRun,
     SelfModelBlock,
-    Task,
     TendencyContribution,
     UserProfileField,
     UserProfileFieldEvidence,
@@ -77,7 +69,7 @@ def reset_eval_user_state(
 ) -> dict[str, int]:
     """Delete benchmark-generated state for one user.
 
-    This intentionally preserves the account row and agent profile so a
+    This intentionally preserves the Core owner and authored profile so a
     disposable eval account can be reused across benchmark cases.
     """
 
@@ -248,24 +240,12 @@ def _reset_soul_state(
     user_id: int,
     deleted: dict[str, int],
 ) -> None:
-    agent_thread_ids = select(AgentThread.id).where(AgentThread.user_id == user_id)
+    from anima_server.services.agent.derived_soul_state import clear_derived_soul_state
+
+    clear_derived_soul_state(owner_id=user_id)
     memory_item_ids = select(MemoryItem.id).where(MemoryItem.user_id == user_id)
     memory_claim_ids = select(MemoryClaim.id).where(MemoryClaim.user_id == user_id)
 
-    _delete(
-        db,
-        deleted,
-        "agent_steps",
-        delete(AgentStep).where(AgentStep.thread_id.in_(agent_thread_ids)),
-    )
-    _delete(
-        db,
-        deleted,
-        "agent_messages",
-        delete(AgentMessage).where(AgentMessage.thread_id.in_(agent_thread_ids)),
-    )
-    _delete(db, deleted, "agent_runs", delete(AgentRun).where(AgentRun.user_id == user_id))
-    _delete(db, deleted, "agent_threads", delete(AgentThread).where(AgentThread.user_id == user_id))
     _delete(
         db,
         deleted,
@@ -277,12 +257,6 @@ def _reset_soul_state(
         deleted,
         "agent_experiences",
         delete(AgentExperience).where(AgentExperience.user_id == user_id),
-    )
-    _delete(
-        db,
-        deleted,
-        "experience_cluster_state",
-        delete(ExperienceClusterState).where(ExperienceClusterState.user_id == user_id),
     )
     _delete(
         db,
@@ -317,9 +291,6 @@ def _reset_soul_state(
     )
     _delete(db, deleted, "kg_relations", delete(KGRelation).where(KGRelation.user_id == user_id))
     _delete(db, deleted, "kg_entities", delete(KGEntity).where(KGEntity.user_id == user_id))
-    _delete(
-        db, deleted, "memory_vectors", delete(MemoryVector).where(MemoryVector.user_id == user_id)
-    )
     _delete(
         db,
         deleted,
@@ -378,7 +349,6 @@ def _reset_soul_state(
     )
     _delete(db, deleted, "memory_items", delete(MemoryItem).where(MemoryItem.user_id == user_id))
 
-    _delete(db, deleted, "tasks", delete(Task).where(Task.user_id == user_id))
     _delete(
         db,
         deleted,
@@ -405,12 +375,6 @@ def _reset_soul_state(
         deleted,
         "core_emotional_patterns",
         delete(CoreEmotionalPattern).where(CoreEmotionalPattern.user_id == user_id),
-    )
-    _delete(
-        db,
-        deleted,
-        "background_task_runs",
-        delete(BackgroundTaskRun).where(BackgroundTaskRun.user_id == user_id),
     )
     _delete(
         db,

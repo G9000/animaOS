@@ -10,11 +10,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.catalog_reader import stable_opaque_id
 from anima_server.services.corefs.content_authority import (
     CoreFsAuthorityUnavailable,
     authenticated_content_authority,
 )
-from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.formats import TaskDocument, decode_task_document
 
 _SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -86,6 +86,26 @@ def task_corefs_authority_active(session: object) -> bool:
     return task_authority_selection(session) is not None or core_content_authority_active()
 
 
+def require_active_task_authority_session(user_id: int) -> object:
+    """Require current authenticated CoreFS task authority for an agent consumer."""
+    from anima_server.services.sessions import active_unlock_sessions
+
+    session = next(
+        (
+            item
+            for item in reversed(active_unlock_sessions(user_id))
+            if task_authority_selection(item) is not None
+        ),
+        None,
+    )
+    if session is None:
+        from anima_server.services.corefs.authority import core_authority_state_or_none
+
+        core_authority_state_or_none()
+        raise TaskAuthorityError("Canonical tasks require an unlocked CoreFS session.")
+    return session
+
+
 def list_canonical_tasks(*, session: Any) -> tuple[TaskDocument, ...]:
     return tuple(record.document for record in read_canonical_task_catalog(session=session).tasks)
 
@@ -128,7 +148,7 @@ def read_canonical_task_catalog(*, session: Any) -> CanonicalTaskCatalog:
         ):
             raise TaskAuthorityError("Canonical task identity is invalid.")
         document = decode_task_document(_read_all(session=session, selection=selection, path=path))
-        if document.stable_id != stable_id or document.stable_id != migration_opaque_id(
+        if document.stable_id != stable_id or document.stable_id != stable_opaque_id(
             "task", str(document.legacy_id)
         ):
             raise TaskAuthorityError("Canonical task body does not match its catalog identity.")

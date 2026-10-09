@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from anima_server.db.base import Base
-from anima_server.models import MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.services import anima_core_retrieval as retrieval_module
 from anima_server.services.agent.embedding_integrity import compute_embedding_checksum
 from anima_server.services.agent.memory_store import (
@@ -52,7 +52,7 @@ def _db_session() -> Generator[Session, None, None]:
 
 def test_memory_rebuild_clears_dirty_manifest(tmp_path: Path) -> None:
     with _db_session() as db:
-        user = User(username="retrieval_tester", display_name="Tester", password_hash="x")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
 
@@ -140,7 +140,7 @@ class RecordingMemoryBackend:
 
 def test_memory_rebuild_contract_uses_only_active_canonical_rows() -> None:
     with _db_session() as db:
-        user = User(username="backend_contract", display_name="Backend", password_hash="x")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
 
@@ -234,7 +234,7 @@ def test_store_memory_item_keeps_successful_incremental_index_clean(
     monkeypatch.setattr(retrieval_module, "get_retrieval_root", lambda: root)
 
     with _db_session() as db:
-        user = User(username="incremental_clean", display_name="Tester", password_hash="x")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
 
@@ -263,7 +263,7 @@ def test_store_memory_item_drops_deferred_retrieval_upsert_on_rollback(
     )
 
     with _db_session() as db:
-        user = User(username="rollback_add", display_name="Tester", password_hash="x")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
 
@@ -285,8 +285,8 @@ def test_store_memory_item_drops_deferred_retrieval_upsert_on_rollback(
 
 def test_memory_rebuild_preserves_other_users_index_entries(tmp_path: Path) -> None:
     with _db_session() as db:
-        user_one = User(username="retrieval_tester_1", display_name="Tester 1", password_hash="x")
-        user_two = User(username="retrieval_tester_2", display_name="Tester 2", password_hash="x")
+        user_one = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
+        user_two = SoulOwner(id=2, core_owner_id="00000000-0000-4000-8000-000000000002")
         db.add_all([user_one, user_two])
         db.flush()
 
@@ -346,7 +346,7 @@ def test_memory_rebuild_preserves_other_users_index_entries(tmp_path: Path) -> N
 
 def test_memory_ready_recovers_from_corrupt_manifest(tmp_path: Path) -> None:
     with _db_session() as db:
-        user = User(username="retrieval_tester_corrupt", display_name="Tester", password_hash="x")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
 
@@ -403,7 +403,7 @@ def test_direct_memory_write_rebuilds_stale_bm25_from_canonical(
 
     bm25_module._user_indices.clear()
     with _db_session() as db:
-        user = User(username="bm25_rebuild", display_name="BM25", password_hash="x")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         db.add(user)
         db.flush()
 

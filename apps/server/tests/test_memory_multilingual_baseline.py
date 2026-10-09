@@ -44,10 +44,13 @@ def test_transcript_fallback_scores_multilingual_text() -> None:
 
     assert _text_overlap_score("東京 寿司", "今日は東京で寿司を食べた") > 0
     assert _keyword_overlap_score("東京 寿司", ["東京", "寿司"]) > 0
-    assert _text_overlap_score(
-        "nasi lemak",
-        "Saya rindu nasi lemak dekat Kampung Baru",
-    ) > 0
+    assert (
+        _text_overlap_score(
+            "nasi lemak",
+            "Saya rindu nasi lemak dekat Kampung Baru",
+        )
+        > 0
+    )
 
 
 def test_in_memory_vector_text_similarity_handles_multilingual_text() -> None:
@@ -73,7 +76,6 @@ def test_memory_relation_preserves_one_character_ascii_slot_values() -> None:
 
 def test_degraded_retrieval_preserves_one_character_ascii_identifiers() -> None:
     from anima_server.services.agent.bm25_index import BM25Index
-    from anima_server.services.agent.transcript_archive import _extract_keywords
     from anima_server.services.agent.transcript_search import _text_overlap_score
     from anima_server.services.agent.vector_store import _text_similarity
 
@@ -87,7 +89,6 @@ def test_degraded_retrieval_preserves_one_character_ascii_identifiers() -> None:
     assert _text_similarity("x", "username: x") > 0
     assert _text_overlap_score("x", "username: x") > 0
     assert _text_overlap_score("x", "next extra text") == 0
-    assert "x" in _extract_keywords([{"role": "user", "content": "username: x"}])
 
 
 def test_single_character_cjk_queries_match_longer_non_space_text() -> None:
@@ -116,22 +117,6 @@ def test_bm25_fallback_ranks_cjk_unigram_by_overlap_when_bm25_scores_are_non_pos
 
     assert hits
     assert hits[0][0] == 1
-
-
-def test_transcript_sidecar_keywords_include_multilingual_terms() -> None:
-    from anima_server.services.agent.transcript_archive import _extract_keywords
-
-    keywords = _extract_keywords(
-        [
-            {"role": "user", "content": "今日は東京で寿司を食べた"},
-            {"role": "user", "content": "Saya rindu nasi lemak dekat Kampung Baru"},
-        ]
-    )
-
-    assert "東京" in keywords
-    assert "寿司" in keywords
-    assert "nasi" in keywords
-    assert "lemak" in keywords
 
 
 def test_generic_claim_keys_do_not_collapse_for_non_english_content() -> None:

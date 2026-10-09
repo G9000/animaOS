@@ -28,6 +28,37 @@ replacement rollback, retention, backup, or cryptographic safety.
 
 ## 1. Goal
 
+### Legacy retirement continuation (2026-10-09)
+
+The user explicitly renewed removal of all unsupported pre-release storage
+support and continuation of the remaining CoreFS work. PCF-009 executes the
+greenfield-release amendment above: current-format identity/memory and encrypted
+authored content remain intact, but old shared databases, plaintext Soul files,
+app ORM storage, vault/capsule formats, schema-repair fallbacks, and legacy
+credential upgrades are not compatibility surfaces. Historical Alembic revisions
+remain only where required to evolve the first supported schema losslessly.
+
+For PCF-010 the user selected a **30-day restore window**. HEAD, an authenticated
+last-known-good predecessor, operation pins, and backup dependencies remain
+protected. Permanent purge and key retirement require recent user
+reauthentication, one-use inventory-bound confirmation, complete authenticated
+reachability, and verified active-generation backups. Implementing those flows
+does not authorize running destructive maintenance on the developer's actual
+Core. See the [continuation plan](../plans/2026-10-09-corefs-retirement-maintenance.md).
+
+Supported Soul records may contain historical numeric provenance for disposable
+Runtime rows that no longer exist. Schema evolution preserves those original
+identifiers as explicit historical evidence with `source_unavailable` state;
+it must neither fabricate authenticated Core URIs nor discard meaningful Soul
+records because Runtime was lost. When an authenticated canonical event/thread
+mapping exists, record the real Core URI and revision/hash. Ambiguous or corrupt
+authority remains a blocker. This preservation rule creates no legacy reader.
+
+The catalog format has no authenticated commit timestamp. Existing history with
+unknown age is protected conservatively: a native authenticated first-observed
+retention record starts its 30-day window; filesystem modification times never
+prove expiry. Current trash remains reachable regardless of history age.
+
 Turn `.anima/` into the complete portable identity and user-owned experience, excluding device capabilities and external credentials, with two canonical forms of durable state:
 
 1. **Soul state** in SQLCipher, containing only ANIMA's internal continuity.
@@ -947,6 +978,8 @@ Implementation must update documents that currently say PostgreSQL lives inside 
 - relevant setup, vault, recovery, and developer workflow documentation
 
 ## 19. Acceptance Boundary
+
+Current-format message events retain bounded optional `displayMetadata` for visible source labels and typed citation pills. This metadata is authenticated with the immutable event, preserved by edits, and readable after Runtime loss. It carries no operational traces, credentials, or authority grants. Empty metadata remains valid for existing supported V1 events. Removing the old Runtime content path must preserve this visible conversation behavior.
 
 The redesign is complete only when:
 

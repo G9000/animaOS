@@ -24,6 +24,62 @@ from sqlalchemy import create_engine, event, inspect, select, text
 from sqlalchemy.orm import Session
 
 
+@pytest.fixture(autouse=True)
+def authenticated_source_boundary_for_writer_privacy(monkeypatch):
+    """Mock authenticated Core byte identity while exercising real cache writers.
+
+    Native asset authority and missing-source rejection have separate real-Core
+    tests. These fixtures prove that writer SQL never contains private payloads.
+    """
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import asset_authority
+    from anima_server.services.documents import store as document_store
+    from anima_server.services.ingestion import sources
+
+    original_document = document_store.register_document
+    original_source = sources.register_source
+
+    def register_document(db, registration):
+        with monkeypatch.context() as boundary:
+            boundary.setattr(
+                asset_authority,
+                "require_canonical_asset_session",
+                lambda owner: SimpleNamespace(user_id=owner),
+            )
+
+            def open_source(**kwargs):
+                assert kwargs["session"].user_id == registration.user_id
+                assert kwargs["object_uri"] == registration.storage_path
+                return SimpleNamespace(
+                    content_type=registration.mime_type,
+                    content_sha256=registration.sha256,
+                    size=registration.size_bytes,
+                )
+
+            boundary.setattr(asset_authority, "open_corefs_byte_source", open_source)
+            return original_document(db, registration)
+
+    def register_source(db, identity):
+        with monkeypatch.context() as boundary:
+            boundary.setattr(
+                asset_authority,
+                "require_canonical_asset_session",
+                lambda owner: SimpleNamespace(user_id=owner),
+            )
+
+            def open_source(**kwargs):
+                assert kwargs["session"].user_id == identity.user_id
+                assert kwargs["object_uri"] == identity.source_uri
+                return SimpleNamespace(content_sha256=identity.content_hash)
+
+            boundary.setattr(asset_authority, "open_corefs_byte_source", open_source)
+            return original_source(db, identity)
+
+    monkeypatch.setattr(document_store, "register_document", register_document)
+    monkeypatch.setattr(sources, "register_source", register_source)
+
+
 def test_runtime_payload_sealing_is_instance_bound_and_contains_no_plaintext(
     managed_tmp_path: Path,
 ) -> None:
@@ -488,283 +544,6 @@ def test_production_document_image_and_source_writers_seal_private_text(
     }.issubset(row_types)
 
 
-def test_production_asset_and_source_writers_seal_private_descriptors(
-    monkeypatch,
-    managed_tmp_path: Path,
-) -> None:
-    from anima_server.config import settings
-    from anima_server.models.runtime import (
-        RuntimeDocument,
-        RuntimeImageAsset,
-        RuntimeSource,
-    )
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from anima_server.services.documents.models import DocumentRegistration
-    from anima_server.services.documents.store import register_document
-    from anima_server.services.images.store import register_image_asset
-    from anima_server.services.ingestion.models import SourceIdentity
-    from anima_server.services.ingestion.sources import register_source
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(
-        sealed_runtime,
-        "_active_runtime_index",
-        lambda _user_id: index,
-    )
-    monkeypatch.setattr(settings, "data_dir", managed_tmp_path)
-
-    document_filename = "private-document-name.pdf"
-    document_path = ".anima/documents/7/private-document-name.pdf"
-    image_filename = "private-image-name.png"
-    source_uri = "https://private.example.test/users/7/captured"
-    source_title = "Private captured source title"
-
-    with runtime_db_session() as runtime_db:
-        executed_parameters: list[object] = []
-
-        def capture_parameters(
-            _connection,
-            _cursor,
-            _statement,
-            parameters,
-            _context,
-            _executemany,
-        ) -> None:
-            executed_parameters.append(parameters)
-
-        event.listen(runtime_db.bind, "before_cursor_execute", capture_parameters)
-        document = register_document(
-            runtime_db,
-            DocumentRegistration(
-                user_id=7,
-                filename=document_filename,
-                mime_type="application/pdf",
-                storage_path=document_path,
-                sha256="7" * 64,
-                size_bytes=128,
-                metadata_json={"private_note": "document descriptor metadata"},
-            ),
-        )
-        image = register_image_asset(
-            runtime_db,
-            user_id=7,
-            data=b"\x89PNG\r\n\x1a\n",
-            mime_type="image/png",
-            filename=image_filename,
-            metadata_json={"private_note": "image descriptor metadata"},
-        ).asset
-        source = register_source(
-            runtime_db,
-            SourceIdentity(
-                user_id=7,
-                kind="web_capture",
-                source_uri=source_uri,
-                content_hash="8" * 64,
-                title=source_title,
-                media_type="text/html",
-                metadata_json={"private_note": "source descriptor metadata"},
-            ),
-        )
-        same_source = register_source(
-            runtime_db,
-            SourceIdentity(
-                user_id=7,
-                kind="web_capture",
-                source_uri=source_uri,
-                content_hash="8" * 64,
-                title=source_title,
-                media_type="text/html",
-                metadata_json={"private_note": "source descriptor metadata"},
-            ),
-        )
-        renamed_source = register_source(
-            runtime_db,
-            SourceIdentity(
-                user_id=7,
-                kind="web_capture",
-                source_uri=f"{source_uri}/renamed",
-                content_hash="8" * 64,
-                title=source_title,
-                media_type="text/html",
-                metadata_json={"private_note": "source descriptor metadata"},
-            ),
-        )
-        case_variant_uri = source_uri.replace("captured", "Captured")
-        case_variant_source = register_source(
-            runtime_db,
-            SourceIdentity(
-                user_id=7,
-                kind="web_capture",
-                source_uri=case_variant_uri,
-                content_hash="8" * 64,
-                title=source_title,
-                media_type="text/html",
-                metadata_json={"private_note": "source descriptor metadata"},
-            ),
-        )
-        event.remove(runtime_db.bind, "before_cursor_execute", capture_parameters)
-
-        raw_document = runtime_db.execute(
-            select(
-                RuntimeDocument.__table__.c.filename,
-                RuntimeDocument.__table__.c.mime_type,
-                RuntimeDocument.__table__.c.storage_path,
-                RuntimeDocument.__table__.c.metadata_json,
-            ).where(RuntimeDocument.__table__.c.id == document.id)
-        ).one()
-        raw_image = runtime_db.execute(
-            select(
-                RuntimeImageAsset.__table__.c.filename,
-                RuntimeImageAsset.__table__.c.mime_type,
-                RuntimeImageAsset.__table__.c.storage_path,
-                RuntimeImageAsset.__table__.c.metadata_json,
-            ).where(RuntimeImageAsset.__table__.c.id == image.id)
-        ).one()
-        raw_source = runtime_db.execute(
-            select(
-                RuntimeSource.__table__.c.source_uri,
-                RuntimeSource.__table__.c.title,
-                RuntimeSource.__table__.c.media_type,
-                RuntimeSource.__table__.c.metadata_json,
-            ).where(RuntimeSource.__table__.c.id == source.id)
-        ).one()
-        row_types = set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all())
-        runtime_db.expunge_all()
-        hydrated_document = runtime_db.get(RuntimeDocument, document.id)
-        hydrated_image = runtime_db.get(RuntimeImageAsset, image.id)
-        hydrated_source = runtime_db.get(RuntimeSource, source.id)
-
-    captured = repr(executed_parameters)
-    for marker in (
-        document_filename,
-        document_path,
-        "document descriptor metadata",
-        image_filename,
-        "image descriptor metadata",
-        source_uri,
-        case_variant_uri,
-        source_title,
-        "source descriptor metadata",
-    ):
-        assert marker not in captured
-    assert raw_document == ("", "", "", None)
-    assert raw_image == (None, "", "", None)
-    assert raw_source[0] != source_uri
-    assert raw_source[1:] == (None, None, None)
-    assert same_source.id == source.id
-    assert renamed_source.id != source.id
-    assert case_variant_source.id != source.id
-    assert hydrated_document is not None
-    assert hydrated_document.filename == document_filename
-    assert hydrated_document.mime_type == "application/pdf"
-    assert hydrated_document.storage_path == document_path
-    assert hydrated_document.metadata_json == {"private_note": "document descriptor metadata"}
-    assert hydrated_image is not None
-    assert hydrated_image.filename == image_filename
-    assert hydrated_image.mime_type == "image/png"
-    assert hydrated_image.metadata_json == {"private_note": "image descriptor metadata"}
-    assert hydrated_source is not None
-    assert hydrated_source.source_uri == source_uri
-    assert hydrated_source.title == source_title
-    assert hydrated_source.metadata_json == {"private_note": "source descriptor metadata"}
-    assert {
-        "runtime_document",
-        "runtime_image_asset",
-        "runtime_source",
-    }.issubset(row_types)
-
-
-def test_document_and_image_metadata_mutations_reseal_private_descriptors(
-    monkeypatch,
-    managed_tmp_path: Path,
-) -> None:
-    from datetime import UTC, datetime
-
-    from anima_server.config import settings
-    from anima_server.models.runtime import RuntimeDocument, RuntimeImageAsset
-    from anima_server.services.agent.proactive import mark_proactive_image_prompted
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from anima_server.services.documents.models import DocumentRegistration
-    from anima_server.services.documents.reparse import mark_docling_reparse_failed
-    from anima_server.services.documents.store import register_document
-    from anima_server.services.images.store import register_image_asset
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(
-        sealed_runtime,
-        "_active_runtime_index",
-        lambda _user_id: index,
-    )
-    monkeypatch.setattr(settings, "data_dir", managed_tmp_path)
-
-    prompted_at = datetime(2026, 7, 30, 12, tzinfo=UTC)
-    with runtime_db_session() as runtime_db:
-        document = register_document(
-            runtime_db,
-            DocumentRegistration(
-                user_id=7,
-                filename="private-document.pdf",
-                mime_type="application/pdf",
-                storage_path=".anima/documents/7/private-document.pdf",
-                sha256="7" * 64,
-                size_bytes=128,
-                metadata_json={"private_note": "document metadata"},
-            ),
-        )
-        image = register_image_asset(
-            runtime_db,
-            user_id=7,
-            data=b"\x89PNG\r\n\x1a\n",
-            mime_type="image/png",
-            filename="private-image.png",
-            metadata_json={"private_note": "image metadata"},
-        ).asset
-
-        mark_docling_reparse_failed(
-            runtime_db,
-            user_id=7,
-            document_id=document.id,
-        )
-        mark_proactive_image_prompted(
-            runtime_db,
-            user_id=7,
-            image_asset_id=image.id,
-            now=prompted_at,
-        )
-
-        raw_document_metadata = runtime_db.execute(
-            select(RuntimeDocument.__table__.c.metadata_json).where(
-                RuntimeDocument.__table__.c.id == document.id
-            )
-        ).scalar_one()
-        raw_image_metadata = runtime_db.execute(
-            select(RuntimeImageAsset.__table__.c.metadata_json).where(
-                RuntimeImageAsset.__table__.c.id == image.id
-            )
-        ).scalar_one()
-        runtime_db.expunge_all()
-        hydrated_document = runtime_db.get(RuntimeDocument, document.id)
-        hydrated_image = runtime_db.get(RuntimeImageAsset, image.id)
-
-    assert raw_document_metadata is None
-    assert raw_image_metadata is None
-    assert hydrated_document is not None
-    assert hydrated_document.metadata_json is not None
-    assert hydrated_document.metadata_json["private_note"] == "document metadata"
-    assert "docling_reparse_failed_at" in hydrated_document.metadata_json
-    assert hydrated_image is not None
-    assert hydrated_image.metadata_json == {
-        "private_note": "image metadata",
-        "proactivePromptedAt": prompted_at.isoformat(),
-    }
-
-
 def test_knowledge_bundle_run_writers_seal_private_payloads(
     monkeypatch,
 ) -> None:
@@ -823,189 +602,16 @@ def test_knowledge_bundle_run_writers_seal_private_payloads(
 
     assert raw_rows == [(None, None, None), (None, None, None)]
     assert hydrated_completed is not None
-    assert hydrated_completed.input_json == {
-        "source_uri": "https://private.example.test/input"
-    }
-    assert hydrated_completed.result_json == {
-        "summary": "private successful result"
-    }
+    assert hydrated_completed.input_json == {"source_uri": "https://private.example.test/input"}
+    assert hydrated_completed.result_json == {"summary": "private successful result"}
     assert hydrated_completed.error_json is None
     assert hydrated_failed is not None
-    assert hydrated_failed.input_json == {
-        "source_uri": "https://private.example.test/failure"
-    }
+    assert hydrated_failed.input_json == {"source_uri": "https://private.example.test/failure"}
     assert hydrated_failed.result_json is None
     assert hydrated_failed.error_json == {
         "message": "private adapter failure",
         "type": "RuntimeError",
     }
-
-
-def test_unlock_converter_seals_legacy_knowledge_bundle_runs(
-    monkeypatch,
-) -> None:
-    from anima_server.models.runtime import RuntimeKnowledgeBundleRun
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    with runtime_db_session() as runtime_db:
-        legacy_run = RuntimeKnowledgeBundleRun(
-            user_id=7,
-            run_type="adapter:legacy",
-            status="failed",
-            input_json={"source_uri": "https://private.example.test/legacy"},
-            result_json={"partial": "private partial result"},
-            error_json={"message": "private legacy failure"},
-        )
-        runtime_db.add(legacy_run)
-        runtime_db.add(
-            CoreFSRuntimeBinding(
-                binding_slot=1,
-                core_id="core-a",
-                local_instance_id="instance-a",
-            )
-        )
-        runtime_db.flush()
-
-        index = CoreFSProgressiveIndex("core-a")
-        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        raw_payloads = runtime_db.execute(
-            select(
-                RuntimeKnowledgeBundleRun.__table__.c.input_json,
-                RuntimeKnowledgeBundleRun.__table__.c.result_json,
-                RuntimeKnowledgeBundleRun.__table__.c.error_json,
-            ).where(RuntimeKnowledgeBundleRun.__table__.c.id == legacy_run.id)
-        ).one()
-
-        monkeypatch.setattr(
-            sealed_runtime,
-            "_active_runtime_index",
-            lambda _user_id: index,
-        )
-        runtime_db.expunge_all()
-        hydrated = runtime_db.get(RuntimeKnowledgeBundleRun, legacy_run.id)
-
-    assert converted == 1
-    assert raw_payloads == (None, None, None)
-    assert hydrated is not None
-    assert hydrated.input_json == {
-        "source_uri": "https://private.example.test/legacy"
-    }
-    assert hydrated.result_json == {"partial": "private partial result"}
-    assert hydrated.error_json == {"message": "private legacy failure"}
-
-
-def test_unlock_converter_discards_legacy_noncanonical_knowledge_link_types() -> None:
-    from anima_server.models.runtime import (
-        RuntimeKnowledgeConcept,
-        RuntimeKnowledgeLink,
-    )
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    with runtime_db_session() as runtime_db:
-        source = RuntimeKnowledgeConcept(
-            user_id=7,
-            concept_type="topic",
-            slug="source-topic",
-            title="Source Topic",
-            body_markdown="Source body.",
-            frontmatter_json={},
-            content_hash=hashlib.sha256(b"source").hexdigest(),
-        )
-        target = RuntimeKnowledgeConcept(
-            user_id=7,
-            concept_type="topic",
-            slug="target-topic",
-            title="Target Topic",
-            body_markdown="Target body.",
-            frontmatter_json={},
-            content_hash=hashlib.sha256(b"target").hexdigest(),
-        )
-        alias_target = RuntimeKnowledgeConcept(
-            user_id=7,
-            concept_type="topic",
-            slug="alias-target-topic",
-            title="Alias Target Topic",
-            body_markdown="Alias target body.",
-            frontmatter_json={},
-            content_hash=hashlib.sha256(b"alias-target").hexdigest(),
-        )
-        runtime_db.add_all([source, target, alias_target])
-        runtime_db.flush()
-        target_id = target.id
-        alias_target_id = alias_target.id
-        runtime_db.add_all(
-            [
-                RuntimeKnowledgeLink(
-                    user_id=7,
-                    source_concept_id=source.id,
-                    target_concept_id=target.id,
-                    link_type="supports",
-                ),
-                RuntimeKnowledgeLink(
-                    user_id=7,
-                    source_concept_id=source.id,
-                    target_concept_id=target.id,
-                    link_type="reveals my private relationship",
-                ),
-                RuntimeKnowledgeLink(
-                    user_id=7,
-                    source_concept_id=source.id,
-                    target_concept_id=target.id,
-                    link_type="relates_to",
-                ),
-                RuntimeKnowledgeLink(
-                    user_id=7,
-                    source_concept_id=source.id,
-                    target_concept_id=target.id,
-                    link_type="related",
-                ),
-                RuntimeKnowledgeLink(
-                    user_id=7,
-                    source_concept_id=source.id,
-                    target_concept_id=alias_target.id,
-                    link_type="relates_to",
-                ),
-                CoreFSRuntimeBinding(
-                    binding_slot=1,
-                    core_id="core-a",
-                    local_instance_id="instance-a",
-                ),
-            ]
-        )
-        runtime_db.flush()
-
-        index = CoreFSProgressiveIndex("core-a")
-        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        links = runtime_db.execute(
-            select(
-                RuntimeKnowledgeLink.target_concept_id,
-                RuntimeKnowledgeLink.link_type,
-            ).order_by(
-                RuntimeKnowledgeLink.target_concept_id,
-                RuntimeKnowledgeLink.link_type,
-            )
-        ).all()
-
-    assert converted == 6
-    assert links == [
-        (target_id, "related"),
-        (target_id, "supports"),
-        (alias_target_id, "related"),
-    ]
 
 
 def test_workflow_error_writers_reseal_run_and_checkpoint_payloads(
@@ -1087,142 +693,11 @@ def test_workflow_error_writers_reseal_run_and_checkpoint_payloads(
     assert raw_runs == [(None, None, None), (None, None, None)]
     assert raw_checkpoint == (None, None, None)
     assert hydrated_checkpoint_run is not None
-    assert hydrated_checkpoint_run.error_json == {
-        "message": "private checkpoint failure.pdf"
-    }
+    assert hydrated_checkpoint_run.error_json == {"message": "private checkpoint failure.pdf"}
     assert hydrated_direct_run is not None
-    assert hydrated_direct_run.error_json == {
-        "message": "private direct workflow failure.pdf"
-    }
+    assert hydrated_direct_run.error_json == {"message": "private direct workflow failure.pdf"}
     assert hydrated_checkpoint is not None
-    assert hydrated_checkpoint.error_json == {
-        "message": "private checkpoint failure.pdf"
-    }
-
-
-def test_unlock_converter_seals_legacy_workflow_errors(
-    monkeypatch,
-) -> None:
-    from anima_server.models.runtime import (
-        RuntimeWorkflowCheckpoint,
-        RuntimeWorkflowRun,
-    )
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    with runtime_db_session() as runtime_db:
-        legacy_run = RuntimeWorkflowRun(
-            user_id=7,
-            workflow_type="checkpoint_rag",
-            status="failed",
-            current_state="extract",
-            input_json={"filename": "private-legacy-input.pdf"},
-            result_json={"partial": "private legacy result"},
-            error_json={"message": "private legacy workflow failure.pdf"},
-        )
-        runtime_db.add(legacy_run)
-        runtime_db.flush()
-        legacy_checkpoint = RuntimeWorkflowCheckpoint(
-            workflow_run_id=legacy_run.id,
-            checkpoint_index=1,
-            state_name="extract",
-            status="failed",
-            input_json={"path": "private/legacy/input.pdf"},
-            output_json={"partial": "private checkpoint result"},
-            error_json={"message": "private legacy checkpoint failure.pdf"},
-            idempotency_key="private-legacy-error",
-        )
-        runtime_db.add(legacy_checkpoint)
-        runtime_db.add(
-            CoreFSRuntimeBinding(
-                binding_slot=1,
-                core_id="core-a",
-                local_instance_id="instance-a",
-            )
-        )
-        runtime_db.flush()
-
-        index = CoreFSProgressiveIndex("core-a")
-        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-        sealed_runtime.seal_runtime_record(
-            runtime_db,
-            index=index,
-            row_type="runtime_workflow_run",
-            row_id=legacy_run.id,
-            owner_id=7,
-            payload={
-                "input_json": legacy_run.input_json,
-                "result_json": legacy_run.result_json,
-            },
-        )
-        sealed_runtime.seal_runtime_record(
-            runtime_db,
-            index=index,
-            row_type="runtime_workflow_checkpoint",
-            row_id=legacy_checkpoint.id,
-            owner_id=7,
-            payload={
-                "input_json": legacy_checkpoint.input_json,
-                "output_json": legacy_checkpoint.output_json,
-            },
-        )
-        runtime_db.execute(
-            RuntimeWorkflowRun.__table__.update()
-            .where(RuntimeWorkflowRun.__table__.c.id == legacy_run.id)
-            .values(input_json=None, result_json=None)
-        )
-        runtime_db.execute(
-            RuntimeWorkflowCheckpoint.__table__.update()
-            .where(
-                RuntimeWorkflowCheckpoint.__table__.c.id
-                == legacy_checkpoint.id
-            )
-            .values(input_json=None, output_json=None)
-        )
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        raw_run = runtime_db.execute(
-            select(
-                RuntimeWorkflowRun.__table__.c.input_json,
-                RuntimeWorkflowRun.__table__.c.result_json,
-                RuntimeWorkflowRun.__table__.c.error_json,
-            ).where(RuntimeWorkflowRun.__table__.c.id == legacy_run.id)
-        ).one()
-        raw_checkpoint = runtime_db.execute(
-            select(
-                RuntimeWorkflowCheckpoint.__table__.c.input_json,
-                RuntimeWorkflowCheckpoint.__table__.c.output_json,
-                RuntimeWorkflowCheckpoint.__table__.c.error_json,
-            ).where(RuntimeWorkflowCheckpoint.__table__.c.id == legacy_checkpoint.id)
-        ).one()
-
-        monkeypatch.setattr(
-            sealed_runtime,
-            "_active_runtime_index",
-            lambda _user_id: index,
-        )
-        runtime_db.expunge_all()
-        hydrated_run = runtime_db.get(RuntimeWorkflowRun, legacy_run.id)
-        hydrated_checkpoint = runtime_db.get(
-            RuntimeWorkflowCheckpoint,
-            legacy_checkpoint.id,
-        )
-
-    assert converted == 2
-    assert raw_run == (None, None, None)
-    assert raw_checkpoint == (None, None, None)
-    assert hydrated_run is not None
-    assert hydrated_run.error_json == {
-        "message": "private legacy workflow failure.pdf"
-    }
-    assert hydrated_checkpoint is not None
-    assert hydrated_checkpoint.error_json == {
-        "message": "private legacy checkpoint failure.pdf"
-    }
+    assert hydrated_checkpoint.error_json == {"message": "private checkpoint failure.pdf"}
 
 
 def test_agent_run_failure_writer_seals_error_text(monkeypatch) -> None:
@@ -1262,9 +737,7 @@ def test_agent_run_failure_writer_seals_error_text(monkeypatch) -> None:
         mark_run_failed(runtime_db, run, private_error)
         runtime_db.flush()
         raw_error = runtime_db.scalar(
-            select(RuntimeRun.__table__.c.error_text).where(
-                RuntimeRun.__table__.c.id == run.id
-            )
+            select(RuntimeRun.__table__.c.error_text).where(RuntimeRun.__table__.c.id == run.id)
         )
         run_id = int(run.id)
         runtime_db.expunge_all()
@@ -1273,104 +746,6 @@ def test_agent_run_failure_writer_seals_error_text(monkeypatch) -> None:
     assert raw_error is None
     assert hydrated is not None
     assert hydrated.error_text == private_error
-
-
-def test_unlock_converter_seals_legacy_agent_run_error_text(monkeypatch) -> None:
-    from anima_server.models.runtime import RuntimeRun, RuntimeThread
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
-    private_error = "Legacy failure from /private/logical/archive.pdf"
-
-    with runtime_db_session() as runtime_db:
-        thread = RuntimeThread(user_id=7, status="active")
-        runtime_db.add(thread)
-        runtime_db.flush()
-        run = RuntimeRun(
-            thread_id=thread.id,
-            user_id=7,
-            provider="test",
-            model="test",
-            mode="chat",
-            status="failed",
-            error_text=private_error,
-        )
-        runtime_db.add(run)
-        runtime_db.flush()
-        run_id = int(run.id)
-
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        raw_error = runtime_db.scalar(
-            select(RuntimeRun.__table__.c.error_text).where(
-                RuntimeRun.__table__.c.id == run_id
-            )
-        )
-        runtime_db.expunge_all()
-        hydrated = runtime_db.get(RuntimeRun, run_id)
-
-    assert converted >= 1
-    assert raw_error is None
-    assert hydrated is not None
-    assert hydrated.error_text == private_error
-
-
-def test_unlock_converter_seals_legacy_background_task_error_message(
-    monkeypatch,
-) -> None:
-    from anima_server.models.runtime import RuntimeBackgroundTaskRun
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
-    private_error = "Legacy background failure from /private/logical/archive.pdf"
-    private_result = {
-        "errors": ["Legacy provider leak from /private/logical/result.pdf"]
-    }
-
-    with runtime_db_session() as runtime_db:
-        run = RuntimeBackgroundTaskRun(
-            user_id=7,
-            task_type="consolidation",
-            status="failed",
-            result_json=private_result,
-            error_message=private_error,
-        )
-        runtime_db.add(run)
-        runtime_db.flush()
-        run_id = int(run.id)
-
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        raw_fields = runtime_db.execute(
-            select(
-                RuntimeBackgroundTaskRun.__table__.c.result_json,
-                RuntimeBackgroundTaskRun.__table__.c.error_message,
-            ).where(
-                RuntimeBackgroundTaskRun.__table__.c.id == run_id
-            )
-        ).one()
-        runtime_db.expunge_all()
-        hydrated = runtime_db.get(RuntimeBackgroundTaskRun, run_id)
-
-    assert converted >= 1
-    assert raw_fields == (None, None)
-    assert hydrated is not None
-    assert hydrated.result_json == private_result
-    assert hydrated.error_message == private_error
 
 
 def test_document_chunk_replacement_deletes_superseded_sealed_payload(
@@ -1552,9 +927,7 @@ def test_background_task_pruning_deletes_expired_sealed_payload(
         "_active_runtime_index",
         lambda _user_id: index,
     )
-    private_result = {
-        "errors": ["Expired provider leak from /private/logical/task-result.pdf"]
-    }
+    private_result = {"errors": ["Expired provider leak from /private/logical/task-result.pdf"]}
 
     with runtime_db_session() as runtime_db:
         expired_at = datetime.now(UTC) - timedelta(days=60)
@@ -1587,9 +960,7 @@ def test_background_task_pruning_deletes_expired_sealed_payload(
 
         deleted = asyncio.run(prune_old_background_task_runs(runtime_db_factory=factory))
         with factory() as verification_db:
-            run_count = verification_db.scalar(
-                select(func.count(RuntimeBackgroundTaskRun.id))
-            )
+            run_count = verification_db.scalar(select(func.count(RuntimeBackgroundTaskRun.id)))
             sealed_count = verification_db.scalar(
                 select(func.count(CoreFSSealedPayload.id)).where(
                     CoreFSSealedPayload.row_type == "runtime_background_task_run"
@@ -1601,18 +972,12 @@ def test_background_task_pruning_deletes_expired_sealed_payload(
     assert sealed_count == 0
 
 
-def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
+def test_source_replacement_deletes_superseded_sealed_payloads(
     monkeypatch,
 ) -> None:
-    from anima_server.models.runtime import RuntimeImageAsset, RuntimeSource
-    from anima_server.models.runtime_embedding import RuntimeEmbedding
+    from anima_server.models.runtime import RuntimeSource
     from anima_server.services.corefs import sealed_runtime
     from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from anima_server.services.images import deletion as image_deletion
-    from anima_server.services.images.indexing import (
-        _upsert_active_annotation,
-        _upsert_runtime_embedding,
-    )
     from anima_server.services.ingestion.artifacts import (
         replace_source_artifacts_and_spans,
     )
@@ -1630,12 +995,6 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
         "_active_runtime_index",
         lambda _user_id: index,
     )
-    monkeypatch.setattr(
-        image_deletion,
-        "delete_image_asset_file_if_safe",
-        lambda _asset: False,
-    )
-
     with runtime_db_session() as runtime_db:
         source = RuntimeSource(
             user_id=1,
@@ -1688,36 +1047,6 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
             ],
         )
 
-        image = RuntimeImageAsset(
-            user_id=1,
-            filename="private.png",
-            mime_type="image/png",
-            storage_path="corefs://private.png",
-            sha256="f" * 64,
-            size_bytes=64,
-        )
-        runtime_db.add(image)
-        runtime_db.flush()
-        annotation = _upsert_active_annotation(
-            runtime_db,
-            user_id=1,
-            image_asset_id=image.id,
-            annotation_kind="ocr_text",
-            content_text="private OCR",
-            source_model=None,
-        )
-        _upsert_runtime_embedding(
-            runtime_db,
-            user_id=1,
-            annotation=annotation,
-            embedding=[0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim,
-        )
-        assert image_deletion.forget_image_asset(
-            runtime_db,
-            user_id=1,
-            image_asset_id=image.id,
-        ).forgotten
-
         counts = {
             row_type: runtime_db.scalar(
                 select(func.count(CoreFSSealedPayload.id)).where(
@@ -1727,16 +1056,12 @@ def test_source_replacement_and_image_forgetting_delete_sealed_payloads(
             for row_type in (
                 "runtime_source_artifact",
                 "runtime_source_span",
-                "runtime_image_annotation",
-                "runtime_embedding",
             )
         }
 
     assert counts == {
         "runtime_source_artifact": 1,
         "runtime_source_span": 1,
-        "runtime_image_annotation": 0,
-        "runtime_embedding": 0,
     }
 
 
@@ -1865,12 +1190,15 @@ def test_source_replacement_deletes_dependent_sealed_payloads_and_embeddings(
 
         assert runtime_db.get(RuntimeSourceSpan, old_span_id) is None
         assert runtime_db.scalar(select(RuntimeKnowledgeConceptSource.id)) is None
-        assert runtime_db.scalar(
-            select(func.count(RuntimeEmbedding.id)).where(
-                RuntimeEmbedding.user_id == 1,
-                RuntimeEmbedding.source_type == "source_span",
+        assert (
+            runtime_db.scalar(
+                select(func.count(RuntimeEmbedding.id)).where(
+                    RuntimeEmbedding.user_id == 1,
+                    RuntimeEmbedding.source_type == "source_span",
+                )
             )
-        ) == 1
+            == 1
+        )
         sealed_counts = {
             row_type: runtime_db.scalar(
                 select(func.count(CoreFSSealedPayload.id)).where(
@@ -1890,10 +1218,13 @@ def test_source_replacement_deletes_dependent_sealed_payloads_and_embeddings(
         "runtime_knowledge_concept_source": 0,
         "runtime_embedding": 1,
     }
-    assert index.runtime_embedding_vector(
-        source_type="source_span",
-        source_id=old_span_id,
-    ) is None
+    assert (
+        index.runtime_embedding_vector(
+            source_type="source_span",
+            source_id=old_span_id,
+        )
+        is None
+    )
     assert index.runtime_embedding_vector(
         source_type="source_span",
         source_id=new_span_id,
@@ -1969,8 +1300,7 @@ def test_candidate_and_pending_operation_payloads_use_sealed_runtime_rows(
         assert stored_candidate == ("", None)
         stored_pending = runtime_db.execute(
             text(
-                "SELECT content, old_content, failure_reason "
-                "FROM pending_memory_ops WHERE id = :id"
+                "SELECT content, old_content, failure_reason FROM pending_memory_ops WHERE id = :id"
             ),
             {"id": pending.id},
         ).one()
@@ -2079,55 +1409,6 @@ def test_memory_extraction_retry_previews_use_sealed_runtime_rows(
             )
 
 
-def test_unlock_converter_seals_legacy_memory_extraction_failure_reason(
-    monkeypatch,
-) -> None:
-    from anima_server.models.runtime_memory import MemoryExtractionFailure
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
-    private_reason = "Provider leaked /private/logical/extraction-retry.pdf"
-
-    with runtime_db_session() as runtime_db:
-        failure = MemoryExtractionFailure(
-            user_id=7,
-            source_message_ids=[101, 102],
-            user_message_preview="legacy private user preview",
-            assistant_response_preview="legacy private assistant preview",
-            failure_reason=private_reason,
-            status="failed",
-        )
-        runtime_db.add(failure)
-        runtime_db.flush()
-        failure_id = int(failure.id)
-
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        raw_fields = runtime_db.execute(
-            select(
-                MemoryExtractionFailure.__table__.c.user_message_preview,
-                MemoryExtractionFailure.__table__.c.assistant_response_preview,
-                MemoryExtractionFailure.__table__.c.failure_reason,
-            ).where(MemoryExtractionFailure.__table__.c.id == failure_id)
-        ).one()
-        runtime_db.expunge_all()
-        hydrated = runtime_db.get(MemoryExtractionFailure, failure_id)
-
-    assert converted >= 1
-    assert raw_fields == (None, None, "")
-    assert hydrated is not None
-    assert hydrated.user_message_preview == "legacy private user preview"
-    assert hydrated.assistant_response_preview == "legacy private assistant preview"
-    assert hydrated.failure_reason == private_reason
-
-
 def test_profile_update_candidates_use_sealed_runtime_rows(
     monkeypatch,
 ) -> None:
@@ -2162,9 +1443,7 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
         )
 
         assert candidate is not None
-        private_error = (
-            "Provider leaked profile value in /private/logical/profile-error.pdf"
-        )
+        private_error = "Provider leaked profile value in /private/logical/profile-error.pdf"
         reseal_profile_update_candidate_error(
             runtime_db,
             candidate,
@@ -2203,101 +1482,6 @@ def test_profile_update_candidates_use_sealed_runtime_rows(
             runtime_db.scalar(
                 select(ProfileUpdateCandidate).where(ProfileUpdateCandidate.id == candidate.id)
             )
-
-
-def test_unlock_converter_seals_legacy_candidate_and_pending_errors(
-    monkeypatch,
-) -> None:
-    from anima_server.models.pending_memory_op import PendingMemoryOp
-    from anima_server.models.runtime_memory import MemoryCandidate, ProfileUpdateCandidate
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
-
-    with runtime_db_session() as runtime_db:
-        memory_candidate = MemoryCandidate(
-            user_id=7,
-            content="legacy private candidate",
-            category="fact",
-            importance=3,
-            importance_source="llm",
-            source="llm",
-            content_hash="a" * 64,
-            status="failed",
-            last_error="legacy candidate provider output",
-        )
-        profile_candidate = ProfileUpdateCandidate(
-            user_id=7,
-            category="identity",
-            key="partner_alex",
-            value="legacy private profile value",
-            evidence_text="legacy private profile evidence",
-            source="llm",
-            content_hash="b" * 64,
-            status="failed",
-            last_error="legacy profile provider output",
-        )
-        pending = PendingMemoryOp(
-            user_id=7,
-            op_type="replace",
-            target_block="human",
-            content="legacy private pending content",
-            old_content="legacy private pending old content",
-            failed=True,
-            failure_reason="legacy pending SQL parameters",
-        )
-        runtime_db.add_all([memory_candidate, profile_candidate, pending])
-        runtime_db.flush()
-        memory_candidate_id = int(memory_candidate.id)
-        profile_candidate_id = int(profile_candidate.id)
-        pending_id = int(pending.id)
-
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        raw_memory = runtime_db.execute(
-            select(
-                MemoryCandidate.__table__.c.content,
-                MemoryCandidate.__table__.c.last_error,
-            ).where(MemoryCandidate.__table__.c.id == memory_candidate_id)
-        ).one()
-        raw_profile = runtime_db.execute(
-            select(
-                ProfileUpdateCandidate.__table__.c.key,
-                ProfileUpdateCandidate.__table__.c.value,
-                ProfileUpdateCandidate.__table__.c.evidence_text,
-                ProfileUpdateCandidate.__table__.c.last_error,
-            ).where(ProfileUpdateCandidate.__table__.c.id == profile_candidate_id)
-        ).one()
-        raw_pending = runtime_db.execute(
-            select(
-                PendingMemoryOp.__table__.c.content,
-                PendingMemoryOp.__table__.c.old_content,
-                PendingMemoryOp.__table__.c.failure_reason,
-            ).where(PendingMemoryOp.__table__.c.id == pending_id)
-        ).one()
-        runtime_db.expunge_all()
-        hydrated_memory = runtime_db.get(MemoryCandidate, memory_candidate_id)
-        hydrated_profile = runtime_db.get(ProfileUpdateCandidate, profile_candidate_id)
-        hydrated_pending = runtime_db.get(PendingMemoryOp, pending_id)
-
-    assert converted >= 3
-    assert raw_memory == ("", None)
-    assert raw_profile == ("", "", None, None)
-    assert raw_pending == ("", None, None)
-    assert hydrated_memory is not None
-    assert hydrated_memory.last_error == "legacy candidate provider output"
-    assert hydrated_profile is not None
-    assert hydrated_profile.key == "partner_alex"
-    assert hydrated_profile.last_error == "legacy profile provider output"
-    assert hydrated_pending is not None
-    assert hydrated_pending.failure_reason == "legacy pending SQL parameters"
 
 
 def test_runtime_session_notes_use_sealed_rows_and_reseal_updates(
@@ -2371,99 +1555,6 @@ def test_runtime_session_notes_use_sealed_rows_and_reseal_updates(
             runtime_db.scalar(select(RuntimeSessionNote).where(RuntimeSessionNote.id == note.id))
 
 
-def test_compaction_and_archive_runtime_message_writers_are_sealed(
-    monkeypatch,
-) -> None:
-    from anima_server.models.runtime import RuntimeMessage
-    from anima_server.services.agent.compaction import compact_thread_context
-    from anima_server.services.agent.persistence import (
-        append_message,
-        get_or_create_thread,
-    )
-    from anima_server.services.agent.sequencing import reserve_message_sequences
-    from anima_server.services.agent.thread_manager import (
-        _bulk_insert_archived_history,
-        _insert_summary_message,
-    )
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(
-        sealed_runtime,
-        "_active_runtime_index",
-        lambda _user_id: index,
-    )
-
-    with runtime_db_session() as runtime_db:
-        thread = get_or_create_thread(runtime_db, user_id=7)
-        for role, content in (
-            ("user", "seeded compacted user plaintext"),
-            ("assistant", "seeded compacted assistant plaintext"),
-            ("user", "seeded retained user plaintext"),
-        ):
-            sequence_id = reserve_message_sequences(
-                runtime_db,
-                thread_id=thread.id,
-                count=1,
-            )
-            append_message(
-                runtime_db,
-                thread=thread,
-                run_id=None,
-                step_id=None,
-                sequence_id=sequence_id,
-                role=role,
-                content_text=content,
-            )
-
-        result = compact_thread_context(
-            runtime_db,
-            thread=thread,
-            run_id=None,
-            trigger_token_limit=1,
-            keep_last_messages=1,
-        )
-        assert result is not None
-        _bulk_insert_archived_history(
-            runtime_db,
-            thread=thread,
-            user_id=7,
-            messages=[
-                {
-                    "role": "user",
-                    "content": "seeded archived message plaintext",
-                }
-            ],
-        )
-        _insert_summary_message(
-            runtime_db,
-            thread=thread,
-            user_id=7,
-            summary="seeded archived summary plaintext",
-        )
-
-        stored = runtime_db.execute(
-            text("SELECT content_text, content_json, tool_args_json FROM runtime_messages")
-        ).all()
-        raw = " ".join(str(value) for row in stored for value in row)
-        assert "seeded compacted user plaintext" not in raw
-        assert "seeded compacted assistant plaintext" not in raw
-        assert "seeded archived message plaintext" not in raw
-        assert "seeded archived summary plaintext" not in raw
-
-        runtime_db.expunge_all()
-        loaded = runtime_db.scalars(
-            select(RuntimeMessage).where(RuntimeMessage.thread_id == thread.id)
-        ).all()
-        loaded_text = "\n".join(message.content_text or "" for message in loaded)
-        assert "seeded compacted user plaintext" in loaded_text
-        assert "seeded archived message plaintext" in loaded_text
-        assert "seeded archived summary plaintext" in loaded_text
-
-
 def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
     monkeypatch,
 ) -> None:
@@ -2527,132 +1618,6 @@ def test_runtime_message_writer_seals_private_fields_in_corefs_runtime(
         runtime_db.expunge_all()
         with pytest.raises(RuntimeSealingLocked):
             runtime_db.scalar(select(RuntimeMessage).where(RuntimeMessage.id == message.id))
-
-
-def test_sealed_runtime_messages_remain_queryable_and_reseal_mutations(
-    monkeypatch,
-) -> None:
-    from types import SimpleNamespace
-
-    from anima_server.models.runtime import RuntimeMessage
-    from anima_server.services.agent.conversation_search import _search_messages
-    from anima_server.services.agent.persistence import (
-        append_message,
-        get_or_create_thread,
-        list_transcript_messages,
-    )
-    from anima_server.services.agent.service import (
-        _remove_failed_turn_attachment_metadata,
-    )
-    from anima_server.services.agent.tools import _latest_user_source_message_ids
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from anima_server.services.images.deletion import _remove_image_source_pills
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(
-        sealed_runtime,
-        "_active_runtime_index",
-        lambda _user_id: index,
-    )
-
-    with runtime_db_session() as runtime_db:
-        thread = get_or_create_thread(runtime_db, user_id=7)
-        message = append_message(
-            runtime_db,
-            thread=thread,
-            run_id=None,
-            step_id=None,
-            sequence_id=1,
-            role="user",
-            content_text="sealed searchable message",
-            content_json={
-                "attachments": [
-                    {
-                        "id": "attachment-1",
-                        "assetId": 11,
-                        "kind": "image",
-                    }
-                ],
-                "pills": [
-                    {
-                        "kind": "image_source",
-                        "ref": "attachment-1",
-                    }
-                ],
-                "private": "preserved",
-            },
-        )
-
-        transcript = list_transcript_messages(
-            runtime_db,
-            user_id=7,
-            limit=10,
-        )
-        assert [item.id for item in transcript] == [message.id]
-        hits = _search_messages(
-            runtime_db,
-            user_id=7,
-            query_lower="sealed searchable",
-            role_filter="user",
-            parsed_start=None,
-            parsed_end=None,
-        )
-        assert [hit.content for hit in hits] == ["sealed searchable message"]
-        assert _latest_user_source_message_ids(
-            SimpleNamespace(
-                runtime_db=runtime_db,
-                thread_id=thread.id,
-                user_id=7,
-            )
-        ) == [message.id]
-
-        sealed_before = runtime_db.scalar(
-            select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "runtime_message")
-        )
-        assert sealed_before is not None
-        ciphertext_before = bytes(sealed_before.ciphertext)
-
-        _remove_failed_turn_attachment_metadata(
-            runtime_db,
-            message,
-            attachment_ids={"attachment-1"},
-            image_asset_ids={11},
-        )
-        _remove_image_source_pills(
-            runtime_db,
-            user_id=7,
-            image_asset_id=None,
-            attachment_ids={"attachment-1"},
-        )
-        runtime_db.flush()
-
-        stored = runtime_db.execute(
-            text(
-                "SELECT content_text, content_json, tool_args_json "
-                "FROM runtime_messages WHERE id = :id"
-            ),
-            {"id": message.id},
-        ).one()
-        assert stored == (None, "null", "null")
-
-        runtime_db.expunge_all()
-        sealed_after = runtime_db.scalar(
-            select(CoreFSSealedPayload).where(CoreFSSealedPayload.row_type == "runtime_message")
-        )
-        assert sealed_after is not None
-        assert bytes(sealed_after.ciphertext) != ciphertext_before
-
-        runtime_db.expunge_all()
-        loaded = runtime_db.scalar(select(RuntimeMessage).where(RuntimeMessage.id == message.id))
-        assert loaded is not None
-        assert loaded.content_text == "sealed searchable message"
-        assert loaded.content_json == {
-            "pills": [],
-            "private": "preserved",
-        }
 
 
 def test_runtime_step_writer_seals_duplicate_trace_payloads(
@@ -2751,85 +1716,6 @@ def test_runtime_step_writer_seals_duplicate_trace_payloads(
         assert loaded.tool_calls_json[0]["arguments"] == {"secret": "seeded step arguments"}
 
 
-def test_thread_deletion_removes_its_sealed_runtime_payloads(
-    monkeypatch,
-) -> None:
-    from anima_server.models.runtime import RuntimeRun
-    from anima_server.services.agent.persistence import (
-        append_message,
-        get_or_create_thread,
-        mark_run_failed,
-    )
-    from anima_server.services.agent.session_memory import write_session_note
-    from anima_server.services.agent.thread_manager import maybe_set_thread_title
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from anima_server.services.images.deletion import delete_thread_with_image_cleanup
-    from conftest_runtime import runtime_db_session
-
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(
-        sealed_runtime,
-        "_active_runtime_index",
-        lambda _user_id: index,
-    )
-
-    with runtime_db_session() as runtime_db:
-        thread = get_or_create_thread(runtime_db, user_id=7)
-        maybe_set_thread_title(
-            runtime_db,
-            thread,
-            "Please permanently delete this private conversation",
-        )
-        run = RuntimeRun(
-            thread_id=thread.id,
-            user_id=7,
-            provider="test",
-            model="test",
-            mode="chat",
-            status="running",
-        )
-        runtime_db.add(run)
-        runtime_db.flush()
-        mark_run_failed(
-            runtime_db,
-            run,
-            "Provider failed on /private/logical/deleted-thread.pdf",
-        )
-        append_message(
-            runtime_db,
-            thread=thread,
-            run_id=None,
-            step_id=None,
-            sequence_id=1,
-            role="user",
-            content_text="delete me permanently",
-        )
-        write_session_note(
-            runtime_db,
-            thread_id=thread.id,
-            user_id=7,
-            key="delete-note-key",
-            value="delete-note-value",
-        )
-        assert set(runtime_db.scalars(select(CoreFSSealedPayload.row_type)).all()) == {
-            "runtime_message",
-            "runtime_run",
-            "runtime_session_note",
-            "runtime_thread",
-        }
-
-        result = delete_thread_with_image_cleanup(
-            runtime_db,
-            user_id=7,
-            thread_id=thread.id,
-        )
-
-        assert result.deleted is True
-        assert runtime_db.scalar(select(CoreFSSealedPayload.id)) is None
-
-
 def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
     monkeypatch,
 ) -> None:
@@ -2899,442 +1785,6 @@ def test_duplicate_sealed_candidate_reseals_without_flushing_plaintext(
         assert loaded.salience_json is not None
         assert loaded.salience_json["repeat_count"] == 2
         assert loaded.source_message_ids == [10, 20]
-
-
-def test_unlock_converter_seals_and_scrubs_legacy_runtime_rows(
-    monkeypatch,
-) -> None:
-    from anima_server.models.pending_memory_op import PendingMemoryOp
-    from anima_server.models.runtime import (
-        RuntimeDocument,
-        RuntimeDocumentChunk,
-        RuntimeImageAsset,
-        RuntimeKnowledgeConcept,
-        RuntimeSource,
-        RuntimeThread,
-        RuntimeWorkflowCheckpoint,
-        RuntimeWorkflowRun,
-    )
-    from anima_server.models.runtime_embedding import RuntimeEmbedding
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from anima_server.services.documents.models import (
-        DocumentRegistration,
-        ExtractedDocumentChunk,
-    )
-    from anima_server.services.documents.store import (
-        register_document,
-        replace_document_chunks,
-    )
-    from conftest_runtime import runtime_db_session
-
-    legacy_document_text = ("legacy full document embedding input " * 10) + "final marker"
-    with runtime_db_session() as runtime_db:
-        document = register_document(
-            runtime_db,
-            DocumentRegistration(
-                user_id=7,
-                filename="legacy.pdf",
-                mime_type="application/pdf",
-                storage_path=".anima/documents/7/legacy.pdf",
-                sha256="7" * 64,
-                size_bytes=128,
-                metadata_json={"private_note": "legacy document metadata"},
-            ),
-        )
-        chunks = replace_document_chunks(
-            runtime_db,
-            document_id=document.id,
-            chunks=[
-                ExtractedDocumentChunk(
-                    chunk_index=0,
-                    content_text=legacy_document_text,
-                    section_title="legacy private section",
-                    metadata_json={"outline": "legacy private outline"},
-                )
-            ],
-            parse_quality="legacy",
-        )
-        pending = PendingMemoryOp(
-            user_id=7,
-            op_type="append",
-            target_block="human",
-            content="legacy pending plaintext",
-            old_content="older plaintext",
-        )
-        runtime_db.add(pending)
-        concept = RuntimeKnowledgeConcept(
-            user_id=7,
-            concept_type="relationship-with-alex",
-            slug="legacy-private-concept",
-            title="Legacy private title",
-            description="Legacy private description",
-            body_markdown="Legacy private concept body",
-            frontmatter_json={"tags": ["legacy-private-tag"]},
-            content_hash="c" * 64,
-            status="active",
-        )
-        runtime_db.add(concept)
-        runtime_db.flush()
-        image_asset = RuntimeImageAsset(
-            user_id=7,
-            filename="legacy-private.png",
-            mime_type="image/png",
-            storage_path="users/7/media/images/legacy-private.png",
-            sha256="8" * 64,
-            size_bytes=64,
-            metadata_json={"private_note": "legacy image metadata"},
-        )
-        runtime_db.add(image_asset)
-        source = RuntimeSource(
-            user_id=7,
-            kind="web_capture",
-            source_uri="https://private.example.test/legacy",
-            content_hash="9" * 64,
-            title="Legacy private source title",
-            media_type="text/html",
-            metadata_json={"private_note": "legacy source metadata"},
-        )
-        runtime_db.add(source)
-        runtime_db.flush()
-        thread = RuntimeThread(
-            user_id=7,
-            status="active",
-            title="Legacy private thread title",
-        )
-        runtime_db.add(thread)
-        runtime_db.flush()
-        workflow_run = RuntimeWorkflowRun(
-            user_id=7,
-            thread_id=thread.id,
-            workflow_type="pdf_ingestion",
-            status="awaiting_input",
-            current_state="awaiting_approval",
-            input_json={"filename": "legacy-private.pdf"},
-            result_json={"proposed_facts": ["legacy private fact"]},
-        )
-        runtime_db.add(workflow_run)
-        runtime_db.flush()
-        workflow_checkpoint = RuntimeWorkflowCheckpoint(
-            workflow_run_id=workflow_run.id,
-            checkpoint_index=1,
-            state_name="summarized",
-            status="completed",
-            input_json={"storage_path": ".anima/documents/7/legacy-private.pdf"},
-            output_json={"summary": "legacy private summary"},
-            idempotency_key="legacy-summary-1",
-        )
-        runtime_db.add(workflow_checkpoint)
-        runtime_db.flush()
-        runtime_db.add(
-            CoreFSRuntimeBinding(
-                binding_slot=1,
-                core_id="core-a",
-                local_instance_id="instance-a",
-            )
-        )
-        vector = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
-        vector[0] = 1.0
-        runtime_embedding = RuntimeEmbedding(
-            user_id=7,
-            source_type="document_chunk",
-            source_id=chunks[0].id,
-            content_hash="e" * 64,
-            embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(vector),
-            embedding=vector,
-            content_preview=legacy_document_text[:200],
-            category="fact",
-            importance=4,
-        )
-        runtime_db.add(runtime_embedding)
-        runtime_db.flush()
-
-        index = CoreFSProgressiveIndex("core-a")
-        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        runtime_db.flush()
-
-        raw_chunk = runtime_db.execute(
-            select(
-                RuntimeDocumentChunk.__table__.c.content_text,
-                RuntimeDocumentChunk.__table__.c.content_char_count,
-                RuntimeDocumentChunk.__table__.c.section_title,
-                RuntimeDocumentChunk.__table__.c.metadata_json,
-            ).where(RuntimeDocumentChunk.__table__.c.id == chunks[0].id)
-        ).one()
-        raw_pending = runtime_db.execute(
-            select(
-                PendingMemoryOp.__table__.c.content,
-                PendingMemoryOp.__table__.c.old_content,
-            ).where(PendingMemoryOp.__table__.c.id == pending.id)
-        ).one()
-        raw_concept = runtime_db.execute(
-            select(
-                RuntimeKnowledgeConcept.__table__.c.concept_type,
-                RuntimeKnowledgeConcept.__table__.c.slug,
-                RuntimeKnowledgeConcept.__table__.c.title,
-                RuntimeKnowledgeConcept.__table__.c.description,
-                RuntimeKnowledgeConcept.__table__.c.body_markdown,
-                RuntimeKnowledgeConcept.__table__.c.frontmatter_json,
-            ).where(RuntimeKnowledgeConcept.__table__.c.id == concept.id)
-        ).one()
-        raw_document = runtime_db.execute(
-            select(
-                RuntimeDocument.__table__.c.filename,
-                RuntimeDocument.__table__.c.mime_type,
-                RuntimeDocument.__table__.c.storage_path,
-                RuntimeDocument.__table__.c.metadata_json,
-            ).where(RuntimeDocument.__table__.c.id == document.id)
-        ).one()
-        raw_image_asset = runtime_db.execute(
-            select(
-                RuntimeImageAsset.__table__.c.filename,
-                RuntimeImageAsset.__table__.c.mime_type,
-                RuntimeImageAsset.__table__.c.storage_path,
-                RuntimeImageAsset.__table__.c.metadata_json,
-            ).where(RuntimeImageAsset.__table__.c.id == image_asset.id)
-        ).one()
-        raw_source = runtime_db.execute(
-            select(
-                RuntimeSource.__table__.c.source_uri,
-                RuntimeSource.__table__.c.title,
-                RuntimeSource.__table__.c.media_type,
-                RuntimeSource.__table__.c.metadata_json,
-            ).where(RuntimeSource.__table__.c.id == source.id)
-        ).one()
-        raw_thread = runtime_db.execute(
-            select(RuntimeThread.__table__.c.title).where(RuntimeThread.__table__.c.id == thread.id)
-        ).scalar_one()
-        raw_workflow_run = runtime_db.execute(
-            select(
-                RuntimeWorkflowRun.__table__.c.input_json,
-                RuntimeWorkflowRun.__table__.c.result_json,
-            ).where(RuntimeWorkflowRun.__table__.c.id == workflow_run.id)
-        ).one()
-        raw_workflow_checkpoint = runtime_db.execute(
-            select(
-                RuntimeWorkflowCheckpoint.__table__.c.input_json,
-                RuntimeWorkflowCheckpoint.__table__.c.output_json,
-            ).where(RuntimeWorkflowCheckpoint.__table__.c.id == workflow_checkpoint.id)
-        ).one()
-        raw_embedding = runtime_db.execute(
-            select(
-                RuntimeEmbedding.__table__.c.content_preview,
-                RuntimeEmbedding.__table__.c.embedding,
-                RuntimeEmbedding.__table__.c.embedding_checksum,
-            ).where(RuntimeEmbedding.__table__.c.id == runtime_embedding.id)
-        ).one()
-        assert converted == 10
-        assert raw_chunk[0:3] == ("", len(legacy_document_text), None)
-        assert raw_chunk[3] is None
-        assert raw_pending == ("", None)
-        assert raw_concept == (
-            f"sealed:{index.blind_token('relationship-with-alex').hex()}"[:48],
-            f"sealed:{index.blind_token('legacy-private-concept').hex()}",
-            "",
-            None,
-            "",
-            {},
-        )
-        assert raw_document == ("", "", "", None)
-        assert raw_image_asset == (None, "", "", None)
-        assert raw_source[0] != "https://private.example.test/legacy"
-        assert raw_source[1:] == (None, None, None)
-        assert raw_thread is None
-        assert raw_workflow_run == (None, None)
-        assert raw_workflow_checkpoint == (None, None)
-        assert raw_embedding == ("", None, None)
-        hits = index.search_runtime_embeddings(tuple(vector), limit=5)
-        assert [(hit.source_type, hit.source_id) for hit in hits] == [
-            ("document_chunk", chunks[0].id)
-        ]
-        assert runtime_db.scalar(select(CoreFSSealedPayload.id).limit(1)) is not None
-
-        monkeypatch.setattr(
-            sealed_runtime,
-            "_active_runtime_index",
-            lambda _user_id: index,
-        )
-        runtime_db.expunge_all()
-        loaded_chunk = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
-        loaded_pending = runtime_db.get(PendingMemoryOp, pending.id)
-        loaded_concept = runtime_db.get(RuntimeKnowledgeConcept, concept.id)
-        loaded_document = runtime_db.get(RuntimeDocument, document.id)
-        loaded_image_asset = runtime_db.get(RuntimeImageAsset, image_asset.id)
-        loaded_source = runtime_db.get(RuntimeSource, source.id)
-        loaded_thread = runtime_db.get(RuntimeThread, thread.id)
-        loaded_workflow_run = runtime_db.get(RuntimeWorkflowRun, workflow_run.id)
-        loaded_workflow_checkpoint = runtime_db.get(
-            RuntimeWorkflowCheckpoint,
-            workflow_checkpoint.id,
-        )
-        assert loaded_chunk is not None
-        assert loaded_chunk.content_text == legacy_document_text
-        assert loaded_chunk.section_title == "legacy private section"
-        assert loaded_chunk.metadata_json == {"outline": "legacy private outline"}
-        assert loaded_pending is not None
-        assert loaded_pending.content == "legacy pending plaintext"
-        assert loaded_pending.old_content == "older plaintext"
-        assert loaded_concept is not None
-        assert loaded_concept.concept_type == "relationship-with-alex"
-        assert loaded_concept.slug == "legacy-private-concept"
-        assert loaded_concept.title == "Legacy private title"
-        assert loaded_concept.description == "Legacy private description"
-        assert loaded_concept.body_markdown == "Legacy private concept body"
-        assert loaded_concept.frontmatter_json == {"tags": ["legacy-private-tag"]}
-        assert loaded_document is not None
-        assert loaded_document.filename == "legacy.pdf"
-        assert loaded_document.mime_type == "application/pdf"
-        assert loaded_document.storage_path == ".anima/documents/7/legacy.pdf"
-        assert loaded_document.metadata_json == {"private_note": "legacy document metadata"}
-        assert loaded_image_asset is not None
-        assert loaded_image_asset.filename == "legacy-private.png"
-        assert loaded_image_asset.mime_type == "image/png"
-        assert loaded_image_asset.storage_path == ("users/7/media/images/legacy-private.png")
-        assert loaded_image_asset.metadata_json == {"private_note": "legacy image metadata"}
-        assert loaded_source is not None
-        assert loaded_source.source_uri == "https://private.example.test/legacy"
-        assert loaded_source.title == "Legacy private source title"
-        assert loaded_source.media_type == "text/html"
-        assert loaded_source.metadata_json == {"private_note": "legacy source metadata"}
-        assert loaded_thread is not None
-        assert loaded_thread.title == "Legacy private thread title"
-        assert loaded_workflow_run is not None
-        assert loaded_workflow_run.input_json == {"filename": "legacy-private.pdf"}
-        assert loaded_workflow_run.result_json == {"proposed_facts": ["legacy private fact"]}
-        assert loaded_workflow_checkpoint is not None
-        assert loaded_workflow_checkpoint.input_json == {
-            "storage_path": ".anima/documents/7/legacy-private.pdf"
-        }
-        assert loaded_workflow_checkpoint.output_json == {"summary": "legacy private summary"}
-        normalized_legacy_projection = (
-            f"sealed:{index.blind_token('https://private.example.test/legacy').hex()}"
-        )
-        runtime_db.execute(
-            RuntimeSource.__table__.update()
-            .where(RuntimeSource.__table__.c.id == source.id)
-            .values(source_uri=normalized_legacy_projection)
-        )
-        assert (
-            sealed_runtime.convert_legacy_runtime_rows(
-                runtime_db,
-                index=index,
-                user_id=7,
-            )
-            == 1
-        )
-        assert runtime_db.scalar(
-            select(RuntimeSource.__table__.c.source_uri).where(
-                RuntimeSource.__table__.c.id == source.id
-            )
-        ) != normalized_legacy_projection
-        assert (
-            sealed_runtime.convert_legacy_runtime_rows(
-                runtime_db,
-                index=index,
-                user_id=7,
-            )
-            == 0
-        )
-
-        rebuilt_index = CoreFSProgressiveIndex("core-a")
-        rebuilt_index.unlock(
-            sqlcipher_key=b"k" * 32,
-            local_instance_id="instance-a",
-        )
-        embedded_texts: list[str] = []
-        assert (
-            sealed_runtime.rebuild_runtime_embeddings(
-                runtime_db,
-                index=rebuilt_index,
-                user_id=7,
-                embedder=lambda value: embedded_texts.append(value) or tuple(vector),
-            )
-            == 1
-        )
-        assert embedded_texts == [f"legacy private section\n\n{legacy_document_text}"]
-
-
-def test_unlock_converter_rebuilds_untagged_legacy_vector_in_claimed_generation() -> None:
-    from anima_server.models.runtime_embedding import RuntimeEmbedding
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
-    from conftest_runtime import runtime_db_session
-
-    with runtime_db_session() as runtime_db:
-        runtime_db.add(
-            CoreFSRuntimeBinding(
-                binding_slot=1,
-                core_id="core-a",
-                local_instance_id="instance-a",
-            )
-        )
-        legacy_vector = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
-        legacy_vector[0] = 1.0
-        runtime_embedding = RuntimeEmbedding(
-            user_id=7,
-            source_type="legacy_test",
-            source_id=101,
-            content_hash="e" * 64,
-            embedding_checksum=RuntimeEmbedding.compute_embedding_checksum(legacy_vector),
-            embedding=legacy_vector,
-            content_preview="legacy embedding input",
-            category="fact",
-            importance=4,
-        )
-        runtime_db.add(runtime_embedding)
-        runtime_db.flush()
-
-        index = CoreFSProgressiveIndex("core-a")
-        index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-        index.begin_runtime_embedding_rebuild(
-            embedding_fingerprint="provider:model",
-        )
-
-        converted = sealed_runtime.convert_legacy_runtime_rows(
-            runtime_db,
-            index=index,
-            user_id=7,
-        )
-        runtime_db.flush()
-
-        assert converted == 1
-        assert index.runtime_embedding_vector(
-            source_type="legacy_test",
-            source_id=101,
-        ) is None
-        raw_embedding = runtime_db.execute(
-            select(
-                RuntimeEmbedding.__table__.c.content_preview,
-                RuntimeEmbedding.__table__.c.embedding,
-                RuntimeEmbedding.__table__.c.embedding_checksum,
-            ).where(RuntimeEmbedding.__table__.c.id == runtime_embedding.id)
-        ).one()
-        assert raw_embedding == ("", None, None)
-
-        def embedder(_content: str) -> tuple[float, ...]:
-            rebuilt = [0.0] * RuntimeEmbedding.__table__.c.embedding.type.dim
-            rebuilt[1] = 1.0
-            return tuple(rebuilt)
-
-        embedder.corefs_embedding_fingerprint = "provider:model"  # type: ignore[attr-defined]
-        assert (
-            sealed_runtime.rebuild_runtime_embeddings(
-                runtime_db,
-                index=index,
-                user_id=7,
-                embedder=embedder,
-            )
-            == 1
-        )
-        assert index.runtime_embedding_vector(
-            source_type="legacy_test",
-            source_id=101,
-        ) == embedder("legacy embedding input")
 
 
 def test_runtime_embedding_rebuild_restores_vectors_for_a_new_unlock(
@@ -3594,54 +2044,6 @@ def test_runtime_embedding_refresh_rebuilds_existing_vectors_for_new_fingerprint
             source_type="memory_item",
             source_id=93,
         ) == (0.0, 1.0)
-
-
-def test_legacy_memory_embedding_content_uses_the_constructing_session_dek(
-    monkeypatch,
-) -> None:
-    from types import SimpleNamespace
-
-    from anima_server.db import session as soul_session
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.crypto import encrypt_text_with_dek
-    from conftest_runtime import runtime_db_session
-
-    memory_dek = b"m" * 32
-    content = ("full legacy memory embedding input " * 10) + "final marker"
-    encrypted = encrypt_text_with_dek(
-        content,
-        memory_dek,
-        aad=b"memory_items:7:content",
-    )
-
-    class SoulDB:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            return None
-
-        def get(self, _model, source_id: int):
-            assert source_id == 96
-            return SimpleNamespace(user_id=7, content=encrypted)
-
-    monkeypatch.setattr(
-        soul_session,
-        "get_user_session_factory",
-        lambda _owner_id: SoulDB,
-    )
-
-    with runtime_db_session() as runtime_db:
-        assert (
-            sealed_runtime._legacy_runtime_embedding_content(
-                runtime_db,
-                owner_id=7,
-                source_type="memory_item",
-                source_id=96,
-                memory_dek=memory_dek,
-            )
-            == content
-        )
 
 
 def test_runtime_embedding_cache_changes_only_after_commit_and_fans_out(

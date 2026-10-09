@@ -17,7 +17,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import MemoryItem, ReconsolidationLog, User
+from anima_server.models import MemoryItem, ReconsolidationLog, SoulOwner
 from anima_server.models.runtime_consciousness import AffectStateRow
 from anima_server.models.runtime_memory import MemoryRetrievalFeedback
 from anima_server.services.agent import reconsolidation
@@ -29,7 +29,6 @@ from anima_server.services.agent.reconsolidation import (
     resolve_current_affect_magnitude,
 )
 from anima_server.services.agent.retrieval_feedback import sync_retrieval_feedback
-from anima_server.services.vault import export_database_snapshot, restore_database_snapshot
 from sqlalchemy import create_engine, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -405,46 +404,75 @@ def test_sync_reconsolidates_rendered_items_used_and_ignored_but_not_corrected()
     runtime_factory = _make_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="il6-user", password_hash="x", display_name="IL6 User")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
 
         def _item(content: str) -> MemoryItem:
             it = MemoryItem(
-                user_id=user_id, content=content, category="fact", importance=3,
-                source="extraction", emotional_salience=0.2, stability_class="temporary",
+                user_id=user_id,
+                content=content,
+                category="fact",
+                importance=3,
+                source="extraction",
+                emotional_salience=0.2,
+                stability_class="temporary",
             )
             soul_db.add(it)
             return it
 
-        used_item = _item("Ran a marathon")            # answer cited it
+        used_item = _item("Ran a marathon")  # answer cited it
         ignored_item = _item("Mentioned the weather")  # rendered, answer ignored
-        corrected_item = _item("Lives in Berlin")      # answer corrected it
+        corrected_item = _item("Lives in Berlin")  # answer corrected it
         soul_db.commit()
         used_id, ignored_id, corrected_id = used_item.id, ignored_item.id, corrected_item.id
 
     with runtime_factory() as runtime_db:
-        runtime_db.add(AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC)))
-        runtime_db.add(MemoryRetrievalFeedback(
-            user_id=user_id, run_id=1, memory_item_id=used_id,
-            was_used=True, evidence_score=1.0, synced=False,
-        ))
+        runtime_db.add(
+            AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC))
+        )
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=1,
+                memory_item_id=used_id,
+                was_used=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
         # Run 2: rendered but the answer ignored it → zero_reference (rendered).
-        runtime_db.add(MemoryRetrievalFeedback(
-            user_id=user_id, run_id=2, memory_item_id=ignored_id,
-            was_used=False, evidence_score=0.0, synced=False,
-        ))
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=2,
+                memory_item_id=ignored_id,
+                was_used=False,
+                evidence_score=0.0,
+                synced=False,
+            )
+        )
         # Run 3: the answer corrected it.
-        runtime_db.add(MemoryRetrievalFeedback(
-            user_id=user_id, run_id=3, memory_item_id=corrected_id,
-            was_used=False, was_corrected=True, evidence_score=0.9, synced=False,
-        ))
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=3,
+                memory_item_id=corrected_id,
+                was_used=False,
+                was_corrected=True,
+                evidence_score=0.9,
+                synced=False,
+            )
+        )
         runtime_db.commit()
 
     with runtime_factory() as runtime_db, soul_factory() as soul_db:
         result = sync_retrieval_feedback(
-            user_id=user_id, runtime_db=runtime_db, soul_db=soul_db, dry_run=False,
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+            dry_run=False,
         )
 
         # Both rendered items reconsolidate; the corrected one does not.
@@ -458,12 +486,18 @@ def test_sync_reconsolidates_rendered_items_used_and_ignored_but_not_corrected()
         assert soul_db.get(MemoryItem, corrected_id).stability_class == "temporary"
 
         for mid in (used_id, ignored_id):
-            assert soul_db.scalars(
-                select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == mid)
-            ).all() != []
-        assert soul_db.scalars(
-            select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == corrected_id)
-        ).all() == []
+            assert (
+                soul_db.scalars(
+                    select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == mid)
+                ).all()
+                != []
+            )
+        assert (
+            soul_db.scalars(
+                select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == corrected_id)
+            ).all()
+            == []
+        )
 
     soul_engine.dispose()
     runtime_engine.dispose()
@@ -478,7 +512,7 @@ def test_sync_retrieval_feedback_is_idempotent_within_one_sync_cycle() -> None:
     runtime_factory = _make_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="il6-idempotent", password_hash="x", display_name="Idempotent")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -537,7 +571,7 @@ def test_sync_retrieval_feedback_skips_superseded_and_tombstoned_used_items() ->
     runtime_factory = _make_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="il6-skip", password_hash="x", display_name="Skip")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
@@ -613,57 +647,6 @@ def test_resolve_current_affect_magnitude_none_without_persisted_row() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_vault_round_trip_preserves_reconsolidation_log_full_scope(db: Session) -> None:
-    item = _make_item(db, emotional_salience=0.2, stability_class="temporary")
-    apply_reconsolidation(db, item, current_affect_magnitude=0.9, eta=0.05)
-    db.flush()
-    db.commit()
-
-    snapshot = export_database_snapshot(db, user_id=1)
-    assert len(snapshot["reconsolidationLog"]) == 2  # emotional_salience + stability_class
-
-    restore_database_snapshot(db, snapshot, scope="full")
-    db.commit()
-
-    restored_logs = db.scalars(select(ReconsolidationLog)).all()
-    assert len(restored_logs) == 2
-
-    restored_item = db.get(MemoryItem, item.id)
-    assert restored_item.reconsolidation_drift == item.reconsolidation_drift
-
-    reconstructed = original_salience_from_log(db, item_id=item.id)
-    assert reconstructed is not None
-    assert reconstructed["emotional_salience"] == 0.2
-
-
-def test_vault_memories_scope_export_includes_reconsolidation_log(db: Session) -> None:
-    """The memories-SCOPE export path filters by _MEMORY_TABLES; the log
-    must survive it (not just a full export + memories restore), or exact
-    reversibility is lost through a memories-scoped vault."""
-    from anima_server.services.vault import _build_vault_payload
-    from sqlalchemy import delete
-
-    item = _make_item(db, emotional_salience=0.2, stability_class="temporary")
-    apply_reconsolidation(db, item, current_affect_magnitude=0.9, eta=0.05)
-    db.flush()
-    db.commit()
-
-    # Go through the real memories-scope export (not a full export), which
-    # is where the _MEMORY_TABLES filter would have dropped the log. The
-    # payload nests the filtered snapshot under "database".
-    scoped = _build_vault_payload(db, scope="memories")
-    assert "reconsolidationLog" in scoped["database"]
-    assert len(scoped["database"]["reconsolidationLog"]) == 2
-
-    db.execute(delete(ReconsolidationLog))
-    db.commit()
-
-    restore_database_snapshot(db, scoped["database"], scope="memories")
-    db.commit()
-
-    assert len(db.scalars(select(ReconsolidationLog)).all()) == 2
-
-
 # ---------------------------------------------------------------------------
 # 8. Eval reset clears the ledger before memory_items
 # ---------------------------------------------------------------------------
@@ -731,29 +714,47 @@ def test_sync_reconsolidation_failure_is_isolated_per_item(monkeypatch) -> None:
     runtime_factory = _make_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="il6-iso", password_hash="x", display_name="Iso")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
         boom = MemoryItem(
-            user_id=user_id, content="Will fail", category="fact", importance=3,
-            source="extraction", emotional_salience=0.2, stability_class="temporary",
+            user_id=user_id,
+            content="Will fail",
+            category="fact",
+            importance=3,
+            source="extraction",
+            emotional_salience=0.2,
+            stability_class="temporary",
         )
         ok = MemoryItem(
-            user_id=user_id, content="Will succeed", category="fact", importance=3,
-            source="extraction", emotional_salience=0.2, stability_class="temporary",
+            user_id=user_id,
+            content="Will succeed",
+            category="fact",
+            importance=3,
+            source="extraction",
+            emotional_salience=0.2,
+            stability_class="temporary",
         )
         soul_db.add_all([boom, ok])
         soul_db.commit()
         boom_id, ok_id = boom.id, ok.id
 
     with runtime_factory() as runtime_db:
-        runtime_db.add(AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC)))
+        runtime_db.add(
+            AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC))
+        )
         for mid in (boom_id, ok_id):
-            runtime_db.add(MemoryRetrievalFeedback(
-                user_id=user_id, run_id=1, memory_item_id=mid,
-                was_used=True, evidence_score=1.0, synced=False,
-            ))
+            runtime_db.add(
+                MemoryRetrievalFeedback(
+                    user_id=user_id,
+                    run_id=1,
+                    memory_item_id=mid,
+                    was_used=True,
+                    evidence_score=1.0,
+                    synced=False,
+                )
+            )
         runtime_db.commit()
 
     real_apply = reconsolidation.apply_reconsolidation
@@ -774,7 +775,10 @@ def test_sync_reconsolidation_failure_is_isolated_per_item(monkeypatch) -> None:
 
     with runtime_factory() as runtime_db, soul_factory() as soul_db:
         result = sync_retrieval_feedback(
-            user_id=user_id, runtime_db=runtime_db, soul_db=soul_db, dry_run=False,
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+            dry_run=False,
         )
         # The healthy item still reconsolidated; the failed one did not abort
         # it, and the session survived the poisoning flush to commit.
@@ -792,10 +796,10 @@ def test_forget_memory_clears_reconsolidation_log(db: Session) -> None:
     """Forgetting a reconsolidated memory must delete its reconsolidation_log
     rows — SQLite FK cascades aren't enforced, so orphaned log rows would be
     exported and could reattach to a reused item id (F7 right-to-forget)."""
-    from anima_server.models import User
+    from anima_server.models import SoulOwner
     from anima_server.services.agent.forgetting import forget_memory
 
-    user = User(username="il6-forget", password_hash="x", display_name="F")
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     db.add(user)
     db.flush()
     item = _make_item(db, user_id=user.id, emotional_salience=0.2, stability_class="temporary")
@@ -808,9 +812,12 @@ def test_forget_memory_clears_reconsolidation_log(db: Session) -> None:
 
     forget_memory(db, memory_id=item_id, user_id=user.id)
 
-    assert db.scalars(
-        select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == item_id)
-    ).all() == []
+    assert (
+        db.scalars(
+            select(ReconsolidationLog).where(ReconsolidationLog.memory_item_id == item_id)
+        ).all()
+        == []
+    )
     assert db.get(MemoryItem, item_id) is None
 
 
@@ -826,15 +833,20 @@ def test_ignored_memory_in_mixed_run_still_reconsolidates() -> None:
     runtime_factory = _make_factory(runtime_engine)
 
     with soul_factory() as soul_db:
-        user = User(username="il6-mixed", password_hash="x", display_name="Mixed")
+        user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
         soul_db.add(user)
         soul_db.flush()
         user_id = user.id
 
         def _item(content: str) -> MemoryItem:
             it = MemoryItem(
-                user_id=user_id, content=content, category="fact", importance=3,
-                source="extraction", emotional_salience=0.2, stability_class="temporary",
+                user_id=user_id,
+                content=content,
+                category="fact",
+                importance=3,
+                source="extraction",
+                emotional_salience=0.2,
+                stability_class="temporary",
             )
             soul_db.add(it)
             return it
@@ -845,21 +857,38 @@ def test_ignored_memory_in_mixed_run_still_reconsolidates() -> None:
         used_id, ignored_id = used_item.id, ignored_item.id
 
     with runtime_factory() as runtime_db:
-        runtime_db.add(AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC)))
+        runtime_db.add(
+            AffectStateRow(user_id=user_id, valence=0.6, arousal=0.8, updated_at=datetime.now(UTC))
+        )
         # SAME run_id — a mixed run: one used, one ignored.
-        runtime_db.add(MemoryRetrievalFeedback(
-            user_id=user_id, run_id=1, memory_item_id=used_id,
-            was_used=True, evidence_score=1.0, synced=False,
-        ))
-        runtime_db.add(MemoryRetrievalFeedback(
-            user_id=user_id, run_id=1, memory_item_id=ignored_id,
-            was_used=False, evidence_score=0.0, synced=False,
-        ))
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=1,
+                memory_item_id=used_id,
+                was_used=True,
+                evidence_score=1.0,
+                synced=False,
+            )
+        )
+        runtime_db.add(
+            MemoryRetrievalFeedback(
+                user_id=user_id,
+                run_id=1,
+                memory_item_id=ignored_id,
+                was_used=False,
+                evidence_score=0.0,
+                synced=False,
+            )
+        )
         runtime_db.commit()
 
     with runtime_factory() as runtime_db, soul_factory() as soul_db:
         result = sync_retrieval_feedback(
-            user_id=user_id, runtime_db=runtime_db, soul_db=soul_db, dry_run=False,
+            user_id=user_id,
+            runtime_db=runtime_db,
+            soul_db=soul_db,
+            dry_run=False,
         )
         # Both the used AND the ignored-but-rendered memory reconsolidate.
         assert used_id in result["reconsolidated_items"]
@@ -875,8 +904,11 @@ def test_apply_reconsolidation_refreshes_identity_confidence_and_logs(db: Sessio
     bumped and a provenance log row written (reversible), with no affect or
     stability change."""
     item = _make_item(
-        db, memory_class="identity", content="My name is Alex",
-        emotional_salience=0.3, stability_class="stable",
+        db,
+        memory_class="identity",
+        content="My name is Alex",
+        emotional_salience=0.3,
+        stability_class="stable",
     )
     item.evidence_strength = 0.6
     db.flush()
@@ -912,9 +944,7 @@ def test_mood_congruent_target_positive_valence_contributes_nothing() -> None:
     assert mood_congruent_magnitude(-0.6, 0.1) == pytest.approx(0.35)
     for arousal in (0.0, 0.3, 0.9):
         for v in (0.2, 0.5, 1.0):
-            assert mood_congruent_magnitude(v, arousal) <= mood_congruent_magnitude(
-                -v, arousal
-            )
+            assert mood_congruent_magnitude(v, arousal) <= mood_congruent_magnitude(-v, arousal)
 
 
 def test_mood_congruent_target_joyful_recall_softens_charged_memory() -> None:
@@ -969,9 +999,7 @@ def test_resolve_current_affect_magnitude_uses_mood_congruent_target() -> None:
     runtime_factory = _make_factory(runtime_engine)
     with runtime_factory() as runtime_db:
         runtime_db.add(
-            AffectStateRow(
-                user_id=77, valence=0.9, arousal=0.1, updated_at=datetime.now(UTC)
-            )
+            AffectStateRow(user_id=77, valence=0.9, arousal=0.1, updated_at=datetime.now(UTC))
         )
         runtime_db.commit()
         resolved = resolve_current_affect_magnitude(runtime_db, user_id=77)

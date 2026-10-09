@@ -27,6 +27,13 @@ import type {
   CoreTransferOperation,
   CoreFSRotationResponse,
   CoreFSSecurityStatus,
+  CoreMaintenanceCredentials,
+  CoreMaintenanceInventory,
+  CoreMaintenancePrepareRequest,
+  CoreMaintenanceReview,
+  CoreMaintenanceExecuteRequest,
+  CoreMaintenanceResult,
+  CoreMaintenanceStatus,
   ConfirmRecoveryCredentialResponse,
   PrepareRecoveryCredentialResponse,
   PrepareCorefsRecoveryCredentialResponse,
@@ -715,6 +722,14 @@ export function createApiClient(options: ApiClientOptions) {
         request<DeleteUserResponse>(`/users/${id}`, { method: "DELETE" }),
     },
     corefs: {
+      maintenanceStatus: () =>
+        request<CoreMaintenanceStatus>("/corefs/maintenance/status"),
+      maintenanceInventory: (payload: CoreMaintenanceCredentials) =>
+        request<CoreMaintenanceInventory>("/corefs/maintenance/inventory", { method: "POST", body: payload }),
+      prepareMaintenance: (payload: CoreMaintenancePrepareRequest) =>
+        request<CoreMaintenanceReview>("/corefs/maintenance/prepare", { method: "POST", body: payload }),
+      executeMaintenance: (payload: CoreMaintenanceExecuteRequest) =>
+        request<CoreMaintenanceResult>("/corefs/maintenance/execute", { method: "POST", body: payload }),
       operation: (payload: CoreFsOperationRequest) =>
         request<CoreFsOperationResponse>("/corefs/operation", {
           method: "POST",

@@ -6,7 +6,6 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from contextlib import suppress
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, event, select
@@ -269,11 +268,7 @@ def runtime_private_lookup_value(
         runtime_db,
         user_id=owner_id,
     )
-    return (
-        value
-        if index is None
-        else _sealed_lookup_value(index, value, max_length=max_length)
-    )
+    return value if index is None else _sealed_lookup_value(index, value, max_length=max_length)
 
 
 def runtime_private_exact_lookup_value(
@@ -321,9 +316,7 @@ def persist_runtime_embedding(
         runtime_db,
         user_id=owner_id,
     )
-    embedding_fingerprint = (
-        None if index is None else index.runtime_embedding_fingerprint()
-    )
+    embedding_fingerprint = None if index is None else index.runtime_embedding_fingerprint()
     content_preview = content[:200]
     if index is None:
         row.embedding = list(vector)
@@ -388,19 +381,11 @@ def load_runtime_embedding_vector(
     return tuple(float(value) for value in persisted_embedding)
 
 
-def convert_legacy_runtime_rows(
-    runtime_db: Session,
-    *,
-    index: CoreFSProgressiveIndex,
-    user_id: int,
-    memory_dek: bytes | None = None,
-) -> int:
-    """Seal and scrub legacy plaintext Runtime rows for one unlocked owner.
+class RuntimeCacheRebuildRequired(RuntimeError):
+    """Unsupported disposable Runtime content cannot be used as authority."""
 
-    Alembic cannot perform this conversion because the sealing key only exists
-    inside an unlock session. Each row is sealed and scrubbed in the caller's
-    transaction, and an existing sealed payload makes the pass idempotent.
-    """
+
+def _current_runtime_private_specs():
     from anima_server.models.pending_memory_op import PendingMemoryOp
     from anima_server.models.runtime import (
         RuntimeBackgroundTaskRun,
@@ -411,15 +396,12 @@ def convert_legacy_runtime_rows(
         RuntimeKnowledgeBundleRun,
         RuntimeKnowledgeConcept,
         RuntimeKnowledgeConceptSource,
-        RuntimeKnowledgeLink,
         RuntimeMessage,
         RuntimeRun,
         RuntimeSource,
         RuntimeSourceArtifact,
         RuntimeSourceSpan,
-        RuntimeStep,
         RuntimeThread,
-        RuntimeWorkflowCheckpoint,
         RuntimeWorkflowRun,
     )
     from anima_server.models.runtime_memory import (
@@ -428,7 +410,6 @@ def convert_legacy_runtime_rows(
         ProfileUpdateCandidate,
         RuntimeSessionNote,
     )
-    from anima_server.services.ingestion.compiler import KNOWLEDGE_LINK_TYPES
 
     specifications = (
         (
@@ -628,312 +609,116 @@ def convert_legacy_runtime_rows(
         ),
     )
 
-    converted = _convert_legacy_runtime_embeddings(
-        runtime_db,
-        index=index,
-        user_id=user_id,
-        memory_dek=memory_dek,
-    )
-    link_table = RuntimeKnowledgeLink.__table__
-    legacy_related_links = list(
-        runtime_db.execute(
-            select(
-                link_table.c.id,
-                link_table.c.source_concept_id,
-                link_table.c.target_concept_id,
-            ).where(
-                link_table.c.user_id == user_id,
-                link_table.c.link_type == "relates_to",
-            )
-        )
-        .mappings()
-    )
-    for legacy_link in legacy_related_links:
-        canonical_link_id = runtime_db.scalar(
-            select(link_table.c.id).where(
-                link_table.c.user_id == user_id,
-                link_table.c.source_concept_id
-                == legacy_link["source_concept_id"],
-                link_table.c.target_concept_id
-                == legacy_link["target_concept_id"],
-                link_table.c.link_type == "related",
-            )
-        )
-        if canonical_link_id is None:
-            runtime_db.execute(
-                link_table.update()
-                .where(link_table.c.id == legacy_link["id"])
-                .values(link_type="related")
-            )
-        else:
-            runtime_db.execute(
-                delete(link_table).where(link_table.c.id == legacy_link["id"])
-            )
-        converted += 1
-    discarded_links = runtime_db.execute(
-        delete(RuntimeKnowledgeLink).where(
-            RuntimeKnowledgeLink.user_id == user_id,
-            RuntimeKnowledgeLink.link_type.not_in(tuple(KNOWLEDGE_LINK_TYPES)),
-        )
-    ).rowcount
-    converted += max(int(discarded_links or 0), 0)
-    for table, row_type, payload_columns, placeholders in specifications:
-        statement = select(
-            table.c.id.label("_row_id"),
-            table.c.user_id.label("_owner_id"),
-            *(table.c[column].label(column) for column in payload_columns.values()),
-        ).where(table.c.user_id == user_id)
-        converted += _convert_legacy_statement(
-            runtime_db,
-            index=index,
-            table=table,
-            row_type=row_type,
-            statement=statement,
-            payload_columns=payload_columns,
-            placeholders=placeholders,
-        )
-
-    step_table = RuntimeStep.__table__
-    thread_table = RuntimeThread.__table__
-    converted += _convert_legacy_statement(
-        runtime_db,
-        index=index,
-        table=step_table,
-        row_type="runtime_step",
-        statement=(
-            select(
-                step_table.c.id.label("_row_id"),
-                thread_table.c.user_id.label("_owner_id"),
-                step_table.c.request_json,
-                step_table.c.response_json,
-                step_table.c.tool_calls_json,
-            )
-            .join(thread_table, thread_table.c.id == step_table.c.thread_id)
-            .where(thread_table.c.user_id == user_id)
-        ),
-        payload_columns={
-            "request_json": "request_json",
-            "response_json": "response_json",
-            "tool_calls_json": "tool_calls_json",
-        },
-        placeholders={
-            "request_json": {},
-            "response_json": {},
-            "tool_calls_json": None,
-        },
-    )
-    checkpoint_table = RuntimeWorkflowCheckpoint.__table__
-    workflow_table = RuntimeWorkflowRun.__table__
-    converted += _convert_legacy_statement(
-        runtime_db,
-        index=index,
-        table=checkpoint_table,
-        row_type="runtime_workflow_checkpoint",
-        statement=(
-            select(
-                checkpoint_table.c.id.label("_row_id"),
-                workflow_table.c.user_id.label("_owner_id"),
-                checkpoint_table.c.input_json,
-                checkpoint_table.c.output_json,
-                checkpoint_table.c.error_json,
-            )
-            .join(
-                workflow_table,
-                workflow_table.c.id == checkpoint_table.c.workflow_run_id,
-            )
-            .where(workflow_table.c.user_id == user_id)
-        ),
-        payload_columns={
-            "input_json": "input_json",
-            "output_json": "output_json",
-            "error_json": "error_json",
-        },
-        placeholders={"input_json": None, "output_json": None, "error_json": None},
-    )
-    runtime_db.flush()
-    return converted
+    return specifications
 
 
-def _convert_legacy_runtime_embeddings(
-    runtime_db: Session,
-    *,
-    index: CoreFSProgressiveIndex,
-    user_id: int,
-    memory_dek: bytes | None,
-) -> int:
-    """Move legacy Runtime vectors into unlock memory and scrub PostgreSQL."""
+def _current_runtime_rows(user_id: int):
+    for table, row_type, columns, _placeholders in _current_runtime_private_specs():
+        yield table, row_type, columns, select(table).where(table.c.user_id == user_id)
+    from anima_server.models.runtime import (
+        RuntimeStep,
+        RuntimeThread,
+        RuntimeWorkflowCheckpoint,
+        RuntimeWorkflowRun,
+    )
     from anima_server.models.runtime_embedding import RuntimeEmbedding
 
-    table = RuntimeEmbedding.__table__
-    statement = select(
-        table.c.id,
-        table.c.user_id,
-        table.c.source_type,
-        table.c.source_id,
-        table.c.content_preview,
-        table.c.category,
-        table.c.importance,
-        table.c.embedding,
-        table.c.embedding_checksum,
-    ).where(table.c.user_id == user_id)
-    import_legacy_vectors = index.runtime_embedding_fingerprint() is None
-    converted = 0
-    for row in runtime_db.execute(statement).mappings():
-        row_id = int(row["id"])
-        owner_id = int(row["user_id"])
-        payload = _load_runtime_record_with_index(
-            runtime_db,
-            index=index,
-            row_type="runtime_embedding",
-            row_id=row_id,
-            owner_id=owner_id,
-        )
-        created_payload = payload is None
-        preview = str(
-            row["content_preview"] if payload is None else payload.get("content_preview", "")
-        )
-        if payload is None:
-            embedding_content = _legacy_runtime_embedding_content(
-                runtime_db,
-                owner_id=owner_id,
-                source_type=str(row["source_type"]),
-                source_id=int(row["source_id"]),
-                memory_dek=memory_dek,
-            )
-            payload = {
-                "content_preview": preview,
-                "embedding_content": embedding_content or preview,
-            }
-            seal_runtime_record(
-                runtime_db,
-                index=index,
-                row_type="runtime_embedding",
-                row_id=row_id,
-                owner_id=owner_id,
-                payload=payload,
-            )
-
-        stored_vector = row["embedding"]
-        # Legacy rows do not record the provider/model generation that produced
-        # their vectors. Once the index has claimed a configured generation,
-        # only the scheduled rebuild may populate it from the sealed input.
-        if stored_vector is not None and import_legacy_vectors:
-            index.upsert_runtime_embedding(
-                source_type=str(row["source_type"]),
-                source_id=int(row["source_id"]),
-                vector=tuple(float(value) for value in stored_vector),
-                content=preview,
-                category=str(row["category"]),
-                importance=int(row["importance"]),
-            )
-
-        has_plaintext = bool(row["content_preview"])
-        has_persisted_vector = stored_vector is not None or row["embedding_checksum"] is not None
-        if created_payload or has_plaintext or has_persisted_vector:
-            runtime_db.execute(
-                table.update()
-                .where(table.c.id == row_id)
-                .values(
-                    content_preview="",
-                    embedding=None,
-                    embedding_checksum=None,
-                )
-            )
-            converted += 1
-    return converted
-
-
-def _legacy_runtime_embedding_content(
-    runtime_db: Session,
-    *,
-    owner_id: int,
-    source_type: str,
-    source_id: int,
-    memory_dek: bytes | None,
-) -> str | None:
-    """Recover the original embedding input before legacy source rows are scrubbed."""
-    from anima_server.models.runtime import (
-        RuntimeDocumentChunk,
-        RuntimeImageAnnotation,
-        RuntimeKnowledgeConcept,
-        RuntimeSourceSpan,
+    step = RuntimeStep.__table__
+    thread = RuntimeThread.__table__
+    yield (
+        step,
+        "runtime_step",
+        {field: field for field in ("request_json", "response_json", "tool_calls_json")},
+        select(step)
+        .join(thread, thread.c.id == step.c.thread_id)
+        .where(thread.c.user_id == user_id),
+    )
+    checkpoint = RuntimeWorkflowCheckpoint.__table__
+    workflow = RuntimeWorkflowRun.__table__
+    yield (
+        checkpoint,
+        "runtime_workflow_checkpoint",
+        {field: field for field in ("input_json", "output_json", "error_json")},
+        select(checkpoint)
+        .join(workflow, workflow.c.id == checkpoint.c.workflow_run_id)
+        .where(workflow.c.user_id == user_id),
+    )
+    vectors = RuntimeEmbedding.__table__
+    yield (
+        vectors,
+        "runtime_embedding",
+        {
+            "content_preview": "content_preview",
+            "embedding": "embedding",
+            "embedding_checksum": "embedding_checksum",
+        },
+        select(vectors).where(vectors.c.user_id == user_id),
     )
 
-    if source_type == "document_chunk":
-        row = runtime_db.execute(
-            select(
-                RuntimeDocumentChunk.__table__.c.content_text,
-                RuntimeDocumentChunk.__table__.c.section_title,
-                RuntimeDocumentChunk.__table__.c.metadata_json,
-            ).where(
-                RuntimeDocumentChunk.__table__.c.id == source_id,
-                RuntimeDocumentChunk.__table__.c.user_id == owner_id,
-            )
-        ).one_or_none()
-        if row is not None:
-            from anima_server.services.documents.contextual import chunk_index_text
 
-            return chunk_index_text(
-                SimpleNamespace(
-                    content_text=str(row.content_text),
-                    section_title=row.section_title,
-                    metadata_json=row.metadata_json,
+def _runtime_row_has_private_bytes(row, columns):
+    return any(
+        row[column] not in (None, "", {}, [])
+        and not (
+            column in {"source_uri", "concept_type", "slug"}
+            and isinstance(row[column], str)
+            and row[column].startswith("sealed:")
+        )
+        for column in columns
+    )
+
+
+def validate_current_runtime_rows(
+    runtime_db: Session, *, index: CoreFSProgressiveIndex, user_id: int
+) -> int:
+    """Validate current bound cache without reading, converting, or deleting old content.
+
+    A missing or invalid sealed cache record marks only disposable Runtime as
+    unavailable. Soul unlock and authenticated canonical rebuilding remain usable.
+    """
+    binding = runtime_db.scalar(select(CoreFSRuntimeBinding))
+    if binding is None:
+        return 0
+    if binding.core_id != index.core_id or binding.local_instance_id != index.local_instance_id:
+        raise ValueError("Runtime cache binding does not match the unlocked Core instance")
+    unavailable = set()
+    index.set_runtime_cache_unavailable(())
+    for _table, row_type, columns, statement in _current_runtime_rows(user_id):
+        for row in runtime_db.execute(statement).mappings():
+            key = f"{row_type}:{row['id']}"
+            try:
+                _load_runtime_record_with_index(
+                    runtime_db, index=index, row_type=row_type, row_id=row["id"], owner_id=user_id
                 )
-            )
-    elif source_type == "image_annotation":
-        return runtime_db.scalar(
-            select(RuntimeImageAnnotation.__table__.c.content_text).where(
-                RuntimeImageAnnotation.__table__.c.id == source_id,
-                RuntimeImageAnnotation.__table__.c.user_id == owner_id,
-            )
-        )
-    elif source_type == "source_span":
-        return runtime_db.scalar(
-            select(RuntimeSourceSpan.__table__.c.content_text).where(
-                RuntimeSourceSpan.__table__.c.id == source_id,
-                RuntimeSourceSpan.__table__.c.user_id == owner_id,
-            )
-        )
-    elif source_type == "knowledge_concept":
-        row = runtime_db.execute(
-            select(
-                RuntimeKnowledgeConcept.__table__.c.title,
-                RuntimeKnowledgeConcept.__table__.c.description,
-                RuntimeKnowledgeConcept.__table__.c.body_markdown,
-            ).where(
-                RuntimeKnowledgeConcept.__table__.c.id == source_id,
-                RuntimeKnowledgeConcept.__table__.c.user_id == owner_id,
-            )
-        ).one_or_none()
-        if row is not None:
-            return "\n\n".join(
-                value
-                for value in (str(row.title), row.description, str(row.body_markdown))
-                if isinstance(value, str) and value.strip()
-            )
-    elif source_type == "memory_item":
-        try:
-            from anima_server.db.session import get_user_session_factory
-            from anima_server.models import MemoryItem
-            from anima_server.services.crypto import decrypt_text_with_dek
+                if _runtime_row_has_private_bytes(row, columns.values()):
+                    unavailable.add(key)
+            except (ValueError, RuntimeSealingLocked):
+                unavailable.add(key)
+            except Exception as exc:
+                from cryptography.exceptions import InvalidTag
 
-            with get_user_session_factory(owner_id)() as soul_db:
-                memory = soul_db.get(MemoryItem, source_id)
-                if memory is not None and memory.user_id == owner_id:
-                    if memory_dek is None:
-                        return memory.content
-                    return decrypt_text_with_dek(
-                        memory.content,
-                        memory_dek,
-                        aad=f"memory_items:{owner_id}:content".encode(),
-                    )
-        except Exception:
-            logger.exception(
-                "Unable to recover legacy memory embedding input for %s:%s",
-                owner_id,
-                source_id,
+                if not isinstance(exc, InvalidTag):
+                    raise
+                unavailable.add(key)
+    index.set_runtime_cache_unavailable(tuple(sorted(unavailable)))
+    return len(unavailable)
+
+
+def _reject_unsealed_private_runtime_row(
+    runtime_db: Session, *, row_type: str, row_id: int, owner_id: int
+):
+    binding = runtime_db.scalar(select(CoreFSRuntimeBinding.binding_slot).limit(1))
+    if binding != 1:
+        return
+    for table, candidate_type, columns, statement in _current_runtime_rows(owner_id):
+        if candidate_type != row_type:
+            continue
+        row = runtime_db.execute(statement.where(table.c.id == row_id)).mappings().one_or_none()
+        if row is not None and _runtime_row_has_private_bytes(row, columns.values()):
+            raise RuntimeCacheRebuildRequired(
+                "Unsupported Runtime cache requires rebuild from authenticated Core content"
             )
-    return None
+        return
 
 
 def rebuild_runtime_embeddings(
@@ -975,6 +760,9 @@ def rebuild_runtime_embeddings(
             )
             is not None
         ):
+            continue
+        if index.runtime_cache_row_unavailable(f"runtime_embedding:{row['id']}"):
+            index.mark_runtime_embedding_failure(source_type=source_type, source_id=source_id)
             continue
         payload = _load_runtime_record_with_index(
             runtime_db,
@@ -1027,111 +815,6 @@ def rebuild_runtime_embeddings(
     return rebuilt
 
 
-def _convert_legacy_statement(
-    runtime_db: Session,
-    *,
-    index: CoreFSProgressiveIndex,
-    table: Any,
-    row_type: str,
-    statement: Any,
-    payload_columns: dict[str, str],
-    placeholders: dict[str, object],
-) -> int:
-    converted = 0
-    for row in runtime_db.execute(statement).mappings():
-        row_id = int(row["_row_id"])
-        owner_id = int(row["_owner_id"])
-        already_sealed = runtime_db.scalar(
-            select(CoreFSSealedPayload.id).where(
-                CoreFSSealedPayload.core_id == index.core_id,
-                CoreFSSealedPayload.local_instance_id == index.local_instance_id,
-                CoreFSSealedPayload.row_type == row_type,
-                CoreFSSealedPayload.row_id_hash == _digest(str(row_id)),
-            )
-        )
-        row_payload = {
-            payload_name: row[column_name]
-            for payload_name, column_name in payload_columns.items()
-        }
-        if already_sealed is not None:
-            existing_payload = _load_runtime_record_with_index(
-                runtime_db,
-                index=index,
-                row_type=row_type,
-                row_id=row_id,
-                owner_id=owner_id,
-            )
-            if existing_payload is None:
-                raise ValueError("sealed Runtime payload is missing")
-            missing_fields = row_payload.keys() - existing_payload.keys()
-            if not missing_fields:
-                if row_type == "runtime_source":
-                    source_uri = existing_payload.get("source_uri")
-                    if not isinstance(source_uri, str):
-                        raise ValueError("legacy Runtime source URI is invalid")
-                    expected_lookup = _sealed_exact_lookup_value(
-                        index,
-                        source_uri,
-                        namespace="runtime_source.source_uri",
-                    )
-                    if row_payload.get("source_uri") != expected_lookup:
-                        runtime_db.execute(
-                            table.update()
-                            .where(table.c.id == row_id)
-                            .values(source_uri=expected_lookup)
-                        )
-                        converted += 1
-                continue
-            payload = dict(existing_payload)
-            payload.update(
-                {
-                    field: row_payload[field]
-                    for field in missing_fields
-                }
-            )
-        else:
-            payload = row_payload
-        seal_runtime_record(
-            runtime_db,
-            index=index,
-            row_type=row_type,
-            row_id=row_id,
-            owner_id=owner_id,
-            payload=payload,
-        )
-        scrubbed = dict(placeholders)
-        if row_type == "runtime_document_chunk":
-            content_text = payload["content_text"]
-            if not isinstance(content_text, str):
-                raise ValueError("legacy Runtime document chunk text is invalid")
-            scrubbed["content_char_count"] = len(content_text)
-        elif row_type == "runtime_source":
-            source_uri = payload["source_uri"]
-            if not isinstance(source_uri, str):
-                raise ValueError("legacy Runtime source URI is invalid")
-            scrubbed["source_uri"] = _sealed_exact_lookup_value(
-                index,
-                source_uri,
-                namespace="runtime_source.source_uri",
-            )
-        elif row_type == "runtime_knowledge_concept":
-            concept_type = payload["concept_type"]
-            slug = payload["slug"]
-            if not isinstance(concept_type, str):
-                raise ValueError("legacy Runtime knowledge concept type is invalid")
-            if not isinstance(slug, str):
-                raise ValueError("legacy Runtime knowledge concept slug is invalid")
-            scrubbed["concept_type"] = _sealed_lookup_value(
-                index,
-                concept_type,
-                max_length=48,
-            )
-            scrubbed["slug"] = _sealed_lookup_value(index, slug)
-        runtime_db.execute(table.update().where(table.c.id == row_id).values(**scrubbed))
-        converted += 1
-    return converted
-
-
 def reseal_runtime_message(
     runtime_db: Session,
     message: RuntimeMessage,
@@ -1155,8 +838,7 @@ def reseal_runtime_message(
         return
 
     # These assignments happen before any sealing query can autoflush. Existing
-    # sealed rows already contain these placeholders; legacy plaintext rows are
-    # scrubbed as they are first mutated under an active CoreFS binding.
+    # sealed rows already contain these placeholders.
     message.content_text = None
     message.content_json = None
     message.tool_args_json = None
@@ -1429,7 +1111,15 @@ def load_runtime_record(
             CoreFSSealedPayload.owner_id_hash == _digest(str(owner_id)),
         )
     )
+    index = _active_runtime_index(owner_id)
+    if index is not None and index.runtime_cache_row_unavailable(f"{row_type}:{row_id}"):
+        raise RuntimeCacheRebuildRequired(
+            "Unsupported Runtime cache requires rebuild from authenticated Core content"
+        )
     if sealed_id is None:
+        _reject_unsealed_private_runtime_row(
+            runtime_db, row_type=row_type, row_id=row_id, owner_id=owner_id
+        )
         return None
     index = _active_runtime_index(owner_id)
     if index is None:
@@ -1451,6 +1141,10 @@ def _load_runtime_record_with_index(
     row_id: int,
     owner_id: int,
 ) -> dict[str, Any] | None:
+    if index.runtime_cache_row_unavailable(f"{row_type}:{row_id}"):
+        raise RuntimeCacheRebuildRequired(
+            "Unsupported Runtime cache requires rebuild from authenticated Core content"
+        )
     aad = RuntimePayloadAAD(
         row_type=row_type,
         row_id=str(row_id),

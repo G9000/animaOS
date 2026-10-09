@@ -10,11 +10,11 @@ from threading import RLock
 from typing import Any
 
 from anima_server.services.corefs import logical
+from anima_server.services.corefs.catalog_reader import stable_opaque_id
 from anima_server.services.corefs.content_authority import (
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
 )
-from anima_server.services.corefs.diary_migration import migration_opaque_id
 from anima_server.services.corefs.formats import (
     TASK_CONTENT_TYPE,
     TaskDocument,
@@ -56,7 +56,7 @@ def create_canonical_task(
             catalog = read_canonical_task_catalog(session=session)
             existing_ids = {record.document.legacy_id for record in catalog.tasks}
             legacy_id = _new_legacy_id(existing_ids)
-            stable_id = migration_opaque_id("task", str(legacy_id))
+            stable_id = stable_opaque_id("task", str(legacy_id))
             now = _timestamp()
             document = TaskDocument(
                 format_version=1,

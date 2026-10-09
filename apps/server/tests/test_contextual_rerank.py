@@ -29,6 +29,43 @@ from anima_server.services.documents.store import (
 
 pytest_plugins = ("conftest_runtime",)
 
+
+def _register_fixture_document(runtime_db, registration):
+    """Mock authenticated original identity; exercise real registration and Runtime writes."""
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import asset_authority
+
+    session = object()
+
+    def require_session(user_id):
+        assert user_id == registration.user_id
+        return session
+
+    def open_source(*, session: object, object_uri: str, expected_kinds: frozenset[str]):
+        assert session is authority_session
+        assert object_uri == registration.storage_path
+        assert object_uri.startswith("corefs://object/")
+        assert expected_kinds == frozenset({"attachment"})
+        return SimpleNamespace(
+            content_type=registration.mime_type,
+            content_sha256=registration.sha256,
+            size=registration.size_bytes,
+        )
+
+    authority_session = session
+    with pytest.MonkeyPatch.context() as boundary:
+        boundary.setattr(asset_authority, "require_canonical_asset_session", require_session)
+        boundary.setattr(asset_authority, "open_corefs_byte_source", open_source)
+        return register_document(runtime_db, registration)
+
+
+def _document_uri(user_id: int, digest: str) -> str:
+    from anima_server.services.corefs.catalog_reader import stable_opaque_id
+
+    return f"corefs://object/{stable_opaque_id('fixture-document', f'{user_id}:{digest}')}"
+
+
 # Dim derived from the actual bound column rather than hardcoded: the pgvector
 # column dimension is fixed once per process (baked in at first import of
 # RuntimeEmbedding from the then-current default embedding provider), so a
@@ -71,13 +108,13 @@ class _LoopAffineClient(_ScriptedClient):
 
 
 def _document_with_chunks(runtime_db, texts: list[str], *, indexed: bool = True):
-    document = register_document(
+    document = _register_fixture_document(
         runtime_db,
         DocumentRegistration(
             user_id=USER_ID,
             filename="manual.pdf",
             mime_type="application/pdf",
-            storage_path=f".anima/documents/{USER_ID}/manual.pdf",
+            storage_path=_document_uri(USER_ID, "e" * 64),
             sha256="e" * 64,
             size_bytes=512,
         ),
@@ -96,33 +133,25 @@ def _document_with_chunks(runtime_db, texts: list[str], *, indexed: bool = True)
         parse_quality="docling",
     )
     if indexed:
-        set_document_status(
-            runtime_db, document_id=document.id, status="indexed", indexed=True
-        )
+        set_document_status(runtime_db, document_id=document.id, status="indexed", indexed=True)
     return document, chunks
 
 
 # ── Contextual blurbs ────────────────────────────────────────────────
 
 
-def test_blurb_generation_is_noop_when_flag_off(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_blurb_generation_is_noop_when_flag_off(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "contextual_chunks", "off")
     document, chunks = _document_with_chunks(runtime_db, ["alpha body"])
 
-    written = generate_document_chunk_blurbs(
-        runtime_db, user_id=USER_ID, document_id=document.id
-    )
+    written = generate_document_chunk_blurbs(runtime_db, user_id=USER_ID, document_id=document.id)
 
     assert written == 0
     refreshed = runtime_db.get(RuntimeDocumentChunk, chunks[0].id)
     assert not (refreshed.metadata_json or {}).get(CONTEXT_BLURB_METADATA_KEY)
 
 
-def test_blurb_generation_stores_metadata_and_skips_existing(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_blurb_generation_stores_metadata_and_skips_existing(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "contextual_chunks", "on")
     document, chunks = _document_with_chunks(
         runtime_db, ["relay housing details", "coil resistance details"]
@@ -184,9 +213,7 @@ def test_blurb_generation_owns_default_client_on_its_event_loop(
     document, _chunks = _document_with_chunks(runtime_db, ["alpha", "beta"])
 
     cached_client = _LoopAffineClient("cache warmup")
-    asyncio.run(
-        cached_client.ainvoke([SimpleNamespace(content="bind to a closed loop")])
-    )
+    asyncio.run(cached_client.ainvoke([SimpleNamespace(content="bind to a closed loop")]))
     owned_client = _LoopAffineClient("alpha context", "beta context")
     monkeypatch.setattr(llm_module, "create_llm", lambda: cached_client)
     monkeypatch.setattr(
@@ -239,9 +266,7 @@ def test_blurb_generation_survives_model_failure(runtime_db, monkeypatch: Any) -
     assert not (refreshed.metadata_json or {}).get(CONTEXT_BLURB_METADATA_KEY)
 
 
-def test_blurbs_prefix_embedding_text_but_not_stored_content(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_blurbs_prefix_embedding_text_but_not_stored_content(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "contextual_chunks", "on")
     document, chunks = _document_with_chunks(runtime_db, ["relay housing body"])
     chunk = chunks[0]
@@ -272,15 +297,11 @@ def test_blurbs_prefix_embedding_text_but_not_stored_content(
         embedding_fn=embedding_fn,
     )
 
-    assert embedded_texts == [
-        "Context line about relays.\n\nSection 0\n\nrelay housing body"
-    ]
+    assert embedded_texts == ["Context line about relays.\n\nSection 0\n\nrelay housing body"]
     assert stored[0]["content"] == "relay housing body"
 
 
-def test_chunk_index_text_ignores_blurbs_when_flag_off(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_chunk_index_text_ignores_blurbs_when_flag_off(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "contextual_chunks", "off")
     _document, chunks = _document_with_chunks(runtime_db, ["body text"])
     chunk = chunks[0]
@@ -290,13 +311,9 @@ def test_chunk_index_text_ignores_blurbs_when_flag_off(
     assert chunk_index_text(chunk) == "Section 0\n\nbody text"
 
 
-def test_section_titles_join_lexical_index_without_blurb_flag(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_section_titles_join_lexical_index_without_blurb_flag(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "contextual_chunks", "off")
-    document, chunks = _document_with_chunks(
-        runtime_db, ["first body text", "second body text"]
-    )
+    document, chunks = _document_with_chunks(runtime_db, ["first body text", "second body text"])
     target = chunks[1]
     target.section_title = "Calibration"
     runtime_db.add(target)
@@ -315,17 +332,11 @@ def test_section_titles_join_lexical_index_without_blurb_flag(
     assert ranking[0][0] == target.id
 
 
-def test_blurbs_join_lexical_index_but_not_evidence(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_blurbs_join_lexical_index_but_not_evidence(runtime_db, monkeypatch: Any) -> None:
     monkeypatch.setattr(settings, "contextual_chunks", "on")
-    document, chunks = _document_with_chunks(
-        runtime_db, ["first body text", "second body text"]
-    )
+    document, chunks = _document_with_chunks(runtime_db, ["first body text", "second body text"])
     target = chunks[1]
-    target.metadata_json = {
-        CONTEXT_BLURB_METADATA_KEY: "Covers zephyrblade configuration."
-    }
+    target.metadata_json = {CONTEXT_BLURB_METADATA_KEY: "Covers zephyrblade configuration."}
     runtime_db.add(target)
     runtime_db.flush()
 
@@ -659,9 +670,7 @@ def test_search_uses_reranker_order(runtime_db, monkeypatch: Any) -> None:
     from anima_server.services.agent.vector_store import VectorSearchResult
     from anima_server.services.documents.rag import search_document_chunks
 
-    document, chunks = _document_with_chunks(
-        runtime_db, ["alpha relay body", "beta coil body"]
-    )
+    document, chunks = _document_with_chunks(runtime_db, ["alpha relay body", "beta coil body"])
     for chunk in chunks:
         vector = [1.0] + [0.0] * (_EMBED_DIM - 1)
         runtime_db.add(
@@ -712,9 +721,7 @@ def test_search_uses_reranker_order(runtime_db, monkeypatch: Any) -> None:
             ),
         ]
 
-    monkeypatch.setattr(
-        pgvec_module.PgVecStore, "search_by_vector", fake_search_by_vector
-    )
+    monkeypatch.setattr(pgvec_module.PgVecStore, "search_by_vector", fake_search_by_vector)
 
     def fake_embedding(text: str):
         return [1.0] + [0.0] * (_EMBED_DIM - 1)
@@ -757,9 +764,7 @@ def test_search_uses_reranker_order(runtime_db, monkeypatch: Any) -> None:
     assert search_limits[-1] == 1
 
 
-def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(runtime_db, monkeypatch: Any) -> None:
     from anima_server.models.runtime_embedding import RuntimeEmbedding
     from anima_server.services.agent import pgvec_store as pgvec_module
     from anima_server.services.agent.embedding_integrity import (
@@ -807,9 +812,7 @@ def test_hybrid_fusion_tie_prefers_exact_token_lexical_hit(
             )
         ]
 
-    monkeypatch.setattr(
-        pgvec_module.PgVecStore, "search_by_vector", fake_search_by_vector
-    )
+    monkeypatch.setattr(pgvec_module.PgVecStore, "search_by_vector", fake_search_by_vector)
     monkeypatch.setattr(
         rag_module,
         "_lexical_document_chunk_ranking",
@@ -914,9 +917,7 @@ def test_search_surfaces_full_section_path_from_metadata(runtime_db) -> None:
     assert _result_section_title(chunk) == long_path
 
 
-def test_blurb_generation_invalidates_stale_chunk_vectors(
-    runtime_db, monkeypatch: Any
-) -> None:
+def test_blurb_generation_invalidates_stale_chunk_vectors(runtime_db, monkeypatch: Any) -> None:
     from anima_server.models.runtime_embedding import RuntimeEmbedding
     from anima_server.services.agent.embedding_integrity import (
         compute_embedding_checksum,
@@ -976,9 +977,7 @@ def test_reranker_load_model_returns_its_own_model_not_a_clobbered_global(
 
     class _ClobberingFailed(dict):
         def __contains__(self, key: object) -> bool:
-            reranker_module._loaded = reranker_module._Loaded(
-                name="other-model", model=other_model
-            )
+            reranker_module._loaded = reranker_module._Loaded(name="other-model", model=other_model)
             return False
 
     monkeypatch.setattr(reranker_module, "_failed", _ClobberingFailed())

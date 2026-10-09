@@ -84,7 +84,9 @@ DISTILLED_AUDIT_SCOPE = "distilled"
 #    with the floor rebuilt from the item's actual salience fields via the
 #    same two functions ``compute_heat`` uses, so the comparison is
 #    bit-exact against what the decay pass just wrote.
-_MAX_ITEM_HEAT_FLOOR: float = importance_heat_floor(MAX_IMPORTANCE) * salience_heat_floor_multiplier(
+_MAX_ITEM_HEAT_FLOOR: float = importance_heat_floor(
+    MAX_IMPORTANCE
+) * salience_heat_floor_multiplier(
     emotional_salience=1.0,
     relationship_proximity=1.0,
     evidence_strength=1.0,
@@ -232,9 +234,7 @@ def _distill_one_item(
     # Scrub tag junction rows too: get_all_tags reads memory_item_tags
     # directly (user filter only), so a leftover tag would keep revealing
     # the distilled topic that item retrieval correctly hides.
-    db.execute(
-        delete(MemoryItemTag).where(MemoryItemTag.item_id == item.id)
-    )
+    db.execute(delete(MemoryItemTag).where(MemoryItemTag.item_id == item.id))
 
     # Collect evidence ids BEFORE deleting anything — the profile cleanup
     # below matches UserProfileField/Evidence by these source ids.
@@ -255,9 +255,7 @@ def _distill_one_item(
     # (The new tendency claim is linked with memory_item_id=None, so it is
     # never caught here.)
     linked_claim_ids = list(
-        db.scalars(
-            select(MemoryClaim.id).where(MemoryClaim.memory_item_id == item.id)
-        ).all()
+        db.scalars(select(MemoryClaim.id).where(MemoryClaim.memory_item_id == item.id)).all()
     )
     claim_evidence_ids = (
         list(
@@ -284,21 +282,22 @@ def _distill_one_item(
         source_memory_ids=[item.id],
         source_evidence_ids=memory_evidence_ids,
         source_claim_evidence_ids=claim_evidence_ids,
-        runtime_contexts=[],
+        source_contexts=[],
     )
 
-    evidence_deleted = db.execute(
-        delete(MemoryItemEvidence).where(
-            MemoryItemEvidence.user_id == user_id,
-            MemoryItemEvidence.memory_item_id == item.id,
-        )
-    ).rowcount or 0
+    evidence_deleted = (
+        db.execute(
+            delete(MemoryItemEvidence).where(
+                MemoryItemEvidence.user_id == user_id,
+                MemoryItemEvidence.memory_item_id == item.id,
+            )
+        ).rowcount
+        or 0
+    )
 
     if linked_claim_ids:
         db.execute(
-            delete(MemoryClaimEvidence).where(
-                MemoryClaimEvidence.claim_id.in_(linked_claim_ids)
-            )
+            delete(MemoryClaimEvidence).where(MemoryClaimEvidence.claim_id.in_(linked_claim_ids))
         )
         db.execute(delete(MemoryClaim).where(MemoryClaim.id.in_(linked_claim_ids)))
 
@@ -384,11 +383,7 @@ def distill_due_items(
     # Exact per-item check: "fully decayed" means heat has landed on the
     # item's OWN floor (compute_heat clamps there once the recency/access
     # contribution is gone).
-    due = [
-        item
-        for item in candidates
-        if item.heat <= item_heat_floor(item) + _FLOOR_EPSILON
-    ][:cap]
+    due = [item for item in candidates if item.heat <= item_heat_floor(item) + _FLOOR_EPSILON][:cap]
 
     for item in due:
         try:

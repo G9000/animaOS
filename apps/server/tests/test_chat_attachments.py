@@ -98,83 +98,19 @@ def test_chat_request_rejects_empty_message_without_attachments() -> None:
         ChatRequest(message="", userId=7)
 
 
-def test_prepare_chat_attachments_saves_metadata_and_file(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from anima_server.services.agent.attachments import prepare_chat_attachments
-
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    prepared = prepare_chat_attachments(
-        user_id=7,
-        attachments=[
-            ChatRequestAttachment(
-                kind="image",
-                filename="pixel.png",
-                mimeType="image/png",
-                data=_b64(PNG_BYTES),
-            )
-        ],
-    )
-
-    assert len(prepared) == 1
-    attachment = prepared[0]
-    assert attachment.id.startswith("img_")
-    assert attachment.kind == "image"
-    assert attachment.mime_type == "image/png"
-    assert attachment.filename == "pixel.png"
-    assert attachment.size_bytes == len(PNG_BYTES)
-    assert attachment.sha256
-    assert attachment.storage_path.startswith("users/7/attachments/chat/img_")
-    assert "storagePath" not in attachment.to_public_dict(message_id=123)
-    assert (tmp_path / attachment.storage_path).read_bytes() == PNG_BYTES
-
-
-def test_prepare_chat_attachments_uses_high_entropy_attachment_ids(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from anima_server.services.agent import attachments as attachments_module
-
-    requested_bytes: list[int] = []
-
-    def fake_token_hex(num_bytes: int) -> str:
-        requested_bytes.append(num_bytes)
-        return "a" * (num_bytes * 2)
-
-    monkeypatch.setattr(settings, "data_dir", tmp_path)
-    monkeypatch.setattr(attachments_module.secrets, "token_hex", fake_token_hex)
-
-    prepared = attachments_module.prepare_chat_attachments(
-        user_id=7,
-        attachments=[
-            ChatRequestAttachment(
-                kind="image",
-                filename="pixel.png",
-                mimeType="image/png",
-                data=_b64(PNG_BYTES),
-            )
-        ],
-    )
-
-    assert requested_bytes == [8]
-    assert prepared[0].id == "img_" + ("a" * 16)
-
-
-def test_prepare_chat_attachments_rejects_mime_spoofing(
+def test_validate_chat_attachment_inputs_rejects_mime_spoofing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from anima_server.services.agent.attachments import (
         AttachmentValidationError,
-        prepare_chat_attachments,
+        validate_chat_attachment_inputs,
     )
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
 
     with pytest.raises(AttachmentValidationError, match="does not match"):
-        prepare_chat_attachments(
-            user_id=7,
+        validate_chat_attachment_inputs(
             attachments=[
                 ChatRequestAttachment(
                     kind="image",
@@ -186,20 +122,19 @@ def test_prepare_chat_attachments_rejects_mime_spoofing(
         )
 
 
-def test_prepare_chat_attachments_rejects_svg(
+def test_validate_chat_attachment_inputs_rejects_svg(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from anima_server.services.agent.attachments import (
         AttachmentValidationError,
-        prepare_chat_attachments,
+        validate_chat_attachment_inputs,
     )
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
 
     with pytest.raises(AttachmentValidationError, match="Unsupported image type"):
-        prepare_chat_attachments(
-            user_id=7,
+        validate_chat_attachment_inputs(
             attachments=[
                 ChatRequestAttachment(
                     kind="image",
@@ -211,21 +146,20 @@ def test_prepare_chat_attachments_rejects_svg(
         )
 
 
-def test_prepare_chat_attachments_rejects_too_large(
+def test_validate_chat_attachment_inputs_rejects_too_large(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from anima_server.services.agent.attachments import (
         AttachmentTooLargeError,
-        prepare_chat_attachments,
+        validate_chat_attachment_inputs,
     )
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "chat_image_max_size_bytes", 4)
 
     with pytest.raises(AttachmentTooLargeError, match="too large"):
-        prepare_chat_attachments(
-            user_id=7,
+        validate_chat_attachment_inputs(
             attachments=[
                 ChatRequestAttachment(
                     kind="image",
@@ -237,21 +171,20 @@ def test_prepare_chat_attachments_rejects_too_large(
         )
 
 
-def test_prepare_chat_attachments_rejects_too_many(
+def test_validate_chat_attachment_inputs_rejects_too_many(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from anima_server.services.agent.attachments import (
         AttachmentValidationError,
-        prepare_chat_attachments,
+        validate_chat_attachment_inputs,
     )
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(settings, "chat_image_max_count", 1)
 
     with pytest.raises(AttachmentValidationError, match="at most 1 image"):
-        prepare_chat_attachments(
-            user_id=7,
+        validate_chat_attachment_inputs(
             attachments=[
                 ChatRequestAttachment(
                     kind="image",
@@ -484,9 +417,7 @@ def test_chat_history_returns_attachment_urls_and_file_endpoint(
     assert attachment["sizeBytes"] == len(PNG_BYTES)
     # Canonical CoreFS attachments use opaque stable IDs rather than the
     # legacy img_ prefix; the message-scoped download route is the contract.
-    assert attachment["url"].startswith(
-        f"/api/chat/messages/{user_message['id']}/attachments/"
-    )
+    assert attachment["url"].startswith(f"/api/chat/messages/{user_message['id']}/attachments/")
     assert "storagePath" not in attachment
     assert file_response.status_code == 200
     assert file_response.headers["content-type"].startswith("image/png")

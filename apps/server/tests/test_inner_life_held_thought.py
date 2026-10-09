@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import ForesightSignal, User
+from anima_server.models import ForesightSignal, SoulOwner
 from anima_server.models.runtime_consciousness import DriveStateRow
 from anima_server.services.agent import proactive
 from anima_server.services.agent.proactive import (
@@ -22,7 +22,7 @@ from anima_server.services.agent.proactive import (
     _resolve_held_thought,
     build_static_greeting,
 )
-from anima_server.services.presence_config import get_or_create_presence_config
+from anima_server.services.presence_config import PresenceConfigValues
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -57,6 +57,55 @@ def runtime_db():
     engine.dispose()
 
 
+_presence_values: dict[int, object] = {}
+
+
+def _presence_preferences(_db: Session, user_id: int):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    return _presence_values.setdefault(
+        user_id, SimpleNamespace(**asdict(PresenceConfigValues(user_id=user_id)))
+    )
+
+
+@pytest.fixture(autouse=True)
+def _canonical_presence_boundary(monkeypatch):
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import preferences
+
+    _presence_values.clear()
+    monkeypatch.setattr(
+        preferences,
+        "active_preference_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(
+        preferences,
+        "read_canonical_presence_values",
+        lambda *, session: PresenceConfigValues(
+            **vars(_presence_preferences(None, session.user_id))
+        ),
+    )
+    from anima_server.services.corefs import conversation_authority
+
+    monkeypatch.setattr(
+        proactive,
+        "require_active_task_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(proactive, "list_canonical_tasks", lambda *, session: ())
+    monkeypatch.setattr(
+        conversation_authority,
+        "active_conversation_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(conversation_authority, "list_canonical_threads", lambda *, session: ())
+    yield
+    _presence_values.clear()
+
+
 @pytest.fixture(autouse=True)
 def _crypto_passthrough(monkeypatch: pytest.MonkeyPatch):
     """df passthrough + an active DEK — individual tests override the DEK."""
@@ -74,10 +123,10 @@ def _seed_all_conditions(
     pressure: float = 0.6,
     content: str = "the gallery opening they were nervous about",
 ) -> int:
-    user = User(username="il011", password_hash="x", display_name="IL011")
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     soul_db.add(user)
     soul_db.flush()
-    cfg = get_or_create_presence_config(soul_db, user.id)
+    cfg = _presence_preferences(soul_db, user.id)
     cfg.home_greeting_context_enabled = consent
     soul_db.add(
         ForesightSignal(
@@ -127,7 +176,7 @@ def test_no_held_thought_without_greeting_consent(soul_db, runtime_db) -> None:
 
 def test_no_held_thought_when_presence_master_switch_off(soul_db, runtime_db) -> None:
     user_id = _seed_all_conditions(soul_db, runtime_db)
-    cfg = get_or_create_presence_config(soul_db, user_id)
+    cfg = _presence_preferences(soul_db, user_id)
     cfg.enabled = False
     soul_db.commit()
     assert (
@@ -144,16 +193,12 @@ def test_no_held_thought_for_short_gap_or_first_meeting(soul_db, runtime_db) -> 
     # theater, not memory.
     recent = NOW - timedelta(hours=2)
     assert (
-        _resolve_held_thought(
-            soul_db, runtime_db, user_id=user_id, last_message_at=recent, now=NOW
-        )
+        _resolve_held_thought(soul_db, runtime_db, user_id=user_id, last_message_at=recent, now=NOW)
         is None
     )
     # First meeting: nothing was ever left open.
     assert (
-        _resolve_held_thought(
-            soul_db, runtime_db, user_id=user_id, last_message_at=None, now=NOW
-        )
+        _resolve_held_thought(soul_db, runtime_db, user_id=user_id, last_message_at=None, now=NOW)
         is None
     )
 
@@ -210,10 +255,7 @@ def test_no_held_thought_without_active_dek(
 
 def test_no_held_thought_without_runtime_db(soul_db) -> None:
     assert (
-        _resolve_held_thought(
-            soul_db, None, user_id=1, last_message_at=LONG_AGO, now=NOW
-        )
-        is None
+        _resolve_held_thought(soul_db, None, user_id=1, last_message_at=LONG_AGO, now=NOW) is None
     )
 
 
@@ -226,20 +268,14 @@ def test_held_thought_is_truncated_to_200_chars(soul_db, runtime_db) -> None:
 
 
 def test_static_greeting_renders_held_thought(soul_db, runtime_db) -> None:
-    ctx = GreetingContext(
-        days_since_last_chat=3, held_thought="the trip you were planning"
-    )
+    ctx = GreetingContext(days_since_last_chat=3, held_thought="the trip you were planning")
     message = build_static_greeting(ctx)
     assert "the trip you were planning" in message
     # And absent when there is no held thought.
-    assert "stayed with me" not in build_static_greeting(
-        GreetingContext(days_since_last_chat=3)
-    )
+    assert "stayed with me" not in build_static_greeting(GreetingContext(days_since_last_chat=3))
 
 
-def test_no_held_thought_when_pressure_predates_the_latest_user_turn(
-    soul_db, runtime_db
-) -> None:
+def test_no_held_thought_when_pressure_predates_the_latest_user_turn(soul_db, runtime_db) -> None:
     """Regression (PR #128 review round 2): a user turn hard-resets
     unresolved_thread, but only when a tick processes it. Pressure whose
     last_user_turn_at is older than the latest message (or missing entirely)
@@ -342,7 +378,7 @@ def test_held_thought_from_the_users_final_pre_gap_message(soul_db, runtime_db) 
     this scenario can never surface a held thought."""
     user_id = _seed_all_conditions(soul_db, runtime_db)
     fs = soul_db.query(ForesightSignal).one()
-    fs.observed_at = LONG_AGO                        # the final message itself
+    fs.observed_at = LONG_AGO  # the final message itself
     fs.created_at = LONG_AGO + timedelta(minutes=7)  # extracted after they left
     soul_db.commit()
     thought = _resolve_held_thought(
@@ -351,9 +387,7 @@ def test_held_thought_from_the_users_final_pre_gap_message(soul_db, runtime_db) 
     assert thought == "the gallery opening they were nervous about"
 
 
-def test_no_held_thought_for_a_signal_out_of_horizon_at_gap_start(
-    soul_db, runtime_db
-) -> None:
+def test_no_held_thought_for_a_signal_out_of_horizon_at_gap_start(soul_db, runtime_db) -> None:
     """Regression (PR #128 review round 6): offline gaps are backfilled by
     the first tick against the CURRENT horizon, so a signal that only slid
     into the window mid-gap can inherit the whole gap's aggregate pressure.

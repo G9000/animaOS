@@ -5,14 +5,12 @@ from datetime import date, datetime
 from sqlalchemy import (
     JSON,
     Boolean,
-    CheckConstraint,
     Date,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
-    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -22,167 +20,11 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from anima_server.db.base import Base
+from anima_server.models.provenance import core_source_reference
+from anima_server.services.agent.derived_soul_state import DerivedSoulEmbedding
 
 
-class AgentThread(Base):
-    __tablename__ = "agent_threads"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        unique=True,
-    )
-    status: Mapped[str] = mapped_column(String(24), nullable=False, default="active")
-    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    last_message_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    next_message_sequence: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        default=1,
-        server_default=text("1"),
-    )
-
-    messages: Mapped[list[AgentMessage]] = relationship(
-        back_populates="thread",
-        cascade="all, delete-orphan",
-        order_by="AgentMessage.sequence_id",
-    )
-    runs: Mapped[list[AgentRun]] = relationship(
-        back_populates="thread",
-        cascade="all, delete-orphan",
-        order_by="AgentRun.started_at",
-    )
-
-
-class AgentRun(Base):
-    __tablename__ = "agent_runs"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    thread_id: Mapped[int] = mapped_column(
-        ForeignKey("agent_threads.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    provider: Mapped[str] = mapped_column(String(32), nullable=False)
-    model: Mapped[str] = mapped_column(String(255), nullable=False)
-    mode: Mapped[str] = mapped_column(String(24), nullable=False)
-    status: Mapped[str] = mapped_column(String(24), nullable=False, default="running")
-    stop_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    total_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    pending_approval_message_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_messages.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    thread: Mapped[AgentThread] = relationship(back_populates="runs")
-    steps: Mapped[list[AgentStep]] = relationship(
-        back_populates="run",
-        cascade="all, delete-orphan",
-        order_by="AgentStep.step_index",
-    )
-
-
-class AgentStep(Base):
-    __tablename__ = "agent_steps"
-    __table_args__ = (
-        UniqueConstraint("run_id", "step_index", name="uq_agent_steps_run_id_step_index"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    run_id: Mapped[int] = mapped_column(
-        ForeignKey("agent_runs.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    thread_id: Mapped[int] = mapped_column(
-        ForeignKey("agent_threads.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(24), nullable=False)
-    request_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    response_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False)
-    tool_calls_json: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
-    usage_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
-    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    run: Mapped[AgentRun] = relationship(back_populates="steps")
-
-
-class AgentMessage(Base):
-    __tablename__ = "agent_messages"
-    __table_args__ = (
-        UniqueConstraint(
-            "thread_id", "sequence_id", name="uq_agent_messages_thread_id_sequence_id"
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    thread_id: Mapped[int] = mapped_column(
-        ForeignKey("agent_threads.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    run_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_runs.id", ondelete="CASCADE"),
-        nullable=True,
-    )
-    step_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_steps.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    sequence_id: Mapped[int] = mapped_column(Integer, nullable=False)
-    role: Mapped[str] = mapped_column(String(24), nullable=False)
-    content_text: Mapped[str | None] = mapped_column(Text, nullable=True)
-    content_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
-    tool_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    tool_call_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    tool_args_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
-    is_in_context: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    token_estimate: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    thread: Mapped[AgentThread] = relationship(back_populates="messages")
-
-
-class MemoryItem(Base):
+class MemoryItem(DerivedSoulEmbedding, Base):
     __tablename__ = "memory_items"
     __table_args__ = (
         Index("ix_memory_items_user_category_active", "user_id", "category", "superseded_by"),
@@ -193,7 +35,7 @@ class MemoryItem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -223,14 +65,6 @@ class MemoryItem(Base):
         Integer,
         nullable=False,
         default=0,
-    )
-    embedding_json: Mapped[list[float] | None] = mapped_column(
-        JSON,
-        nullable=True,
-    )
-    embedding_checksum: Mapped[str | None] = mapped_column(
-        String(64),
-        nullable=True,
     )
     tags_json: Mapped[list[str] | None] = mapped_column(
         JSON,
@@ -333,13 +167,11 @@ class MemoryEpisode(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
-    thread_id: Mapped[int | None] = mapped_column(
-        ForeignKey("agent_threads.id", ondelete="SET NULL"),
-        nullable=True,
-    )
+    source_thread_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    thread_id = core_source_reference("source_thread_uri", "thread_id", "thread", many=False)
     date: Mapped[str] = mapped_column(String(10), nullable=False)  # YYYY-MM-DD
     time: Mapped[str | None] = mapped_column(String(8), nullable=True)  # HH:MM:SS
     topics_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
@@ -361,7 +193,8 @@ class MemoryEpisode(Base):
         default="sequential",
         server_default=text("'sequential'"),
     )  # "sequential" or "batch_llm"
-    transcript_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_transcript_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transcript_ref = core_source_reference("source_transcript_uri", "transcript_ref", "transcript")
     needs_regeneration: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -374,6 +207,8 @@ class MemoryEpisode(Base):
         server_default=func.now(),
     )
 
+    provenance_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+
 
 class ForesightSignal(Base):
     """Evidence-backed future-oriented memory signal."""
@@ -382,12 +217,12 @@ class ForesightSignal(Base):
     __table_args__ = (
         Index("ix_foresight_signals_user_status", "user_id", "status"),
         Index("ix_foresight_signals_user_start", "user_id", "start_date"),
-        Index("ix_foresight_signals_user_thread", "user_id", "source_thread_id"),
+        Index("ix_foresight_signals_user_thread", "user_id", "source_thread_uri"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
@@ -408,8 +243,14 @@ class ForesightSignal(Base):
         default=0.8,
         server_default=text("0.8"),
     )
-    source_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source_message_ids_json: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    source_thread_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_thread_id = core_source_reference(
+        "source_thread_uri", "source_thread_id", "thread", many=False
+    )
+    source_message_uris: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    source_message_ids_json = core_source_reference(
+        "source_message_uris", "source_message_ids_json", "message", many=True
+    )
     observed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
@@ -429,8 +270,10 @@ class ForesightSignal(Base):
         server_default=func.now(),
     )
 
+    provenance_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
-class AgentExperience(Base):
+
+class AgentExperience(DerivedSoulEmbedding, Base):
     """Durable procedural memory of the agent's own problem solving."""
 
     __tablename__ = "agent_experiences"
@@ -442,17 +285,20 @@ class AgentExperience(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     task_intent: Mapped[str] = mapped_column(Text, nullable=False)
     approach: Mapped[str] = mapped_column(Text, nullable=False)
     quality_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
-    source_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    source_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_thread_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_thread_id = core_source_reference(
+        "source_thread_uri", "source_thread_id", "thread", many=False
+    )
+    source_run_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_run_id = core_source_reference("source_run_uri", "source_run_id", "run", many=False)
     tool_names_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     cluster_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     superseded_by: Mapped[int | None] = mapped_column(
         ForeignKey("agent_experiences.id", ondelete="SET NULL"),
@@ -469,34 +315,10 @@ class AgentExperience(Base):
         server_default=func.now(),
     )
 
-
-class ExperienceClusterState(Base):
-    """Serialized incremental centroid state for procedural experiences."""
-
-    __tablename__ = "experience_cluster_state"
-    __table_args__ = (
-        UniqueConstraint("user_id", name="uq_experience_cluster_state_user"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    state_json: Mapped[dict[str, object]] = mapped_column(JSON, nullable=False, default=dict)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
+    provenance_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
 
-class AgentSkill(Base):
+class AgentSkill(DerivedSoulEmbedding, Base):
     """Distilled reusable procedure derived from clustered agent experiences."""
 
     __tablename__ = "agent_skills"
@@ -507,7 +329,7 @@ class AgentSkill(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     cluster_id: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -520,7 +342,6 @@ class AgentSkill(Base):
         DateTime(timezone=True),
         nullable=True,
     )
-    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
     superseded_by: Mapped[int | None] = mapped_column(
         ForeignKey("agent_skills.id", ondelete="SET NULL"),
         nullable=True,
@@ -535,122 +356,6 @@ class AgentSkill(Base):
         nullable=False,
         server_default=func.now(),
     )
-
-
-class DiaryFolder(Base):
-    """User-defined grouping ("notebook") for diary entries."""
-
-    __tablename__ = "diary_folders"
-    __table_args__ = (
-        Index("ix_diary_folders_user_id", "user_id"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    name: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-
-class CoreFSWritingSourceState(Base):
-    """Monotonic legacy-writing inventory generation maintained by SQLite triggers."""
-
-    __tablename__ = "corefs_writing_source_state"
-    __table_args__ = (CheckConstraint("generation >= 1", name="generation_positive"),)
-
-    user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
-    generation: Mapped[int] = mapped_column(Integer, nullable=False)
-
-
-class DiaryEntry(Base):
-    """User-authored private daily diary/log entry."""
-
-    __tablename__ = "diary_entries"
-    __table_args__ = (
-        Index("ix_diary_entries_user_date", "user_id", "entry_date"),
-        Index("ix_diary_entries_user_created", "user_id", "created_at"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    entry_date: Mapped[str] = mapped_column(String(10), nullable=False)
-    title: Mapped[str | None] = mapped_column(Text, nullable=True)
-    body: Mapped[str] = mapped_column(Text, nullable=False)
-    mood: Mapped[str | None] = mapped_column(Text, nullable=True)
-    source: Mapped[str] = mapped_column(
-        String(24),
-        nullable=False,
-        default="user",
-        server_default=text("'user'"),
-    )
-    cover_attachment_id: Mapped[int | None] = mapped_column(
-        ForeignKey("diary_attachments.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    folder_id: Mapped[int | None] = mapped_column(
-        ForeignKey("diary_folders.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    attachments: Mapped[list[DiaryAttachment]] = relationship(
-        back_populates="entry",
-        foreign_keys="[DiaryAttachment.entry_id]",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-        order_by="DiaryAttachment.created_at",
-    )
-
-
-class DiaryAttachment(Base):
-    """Encrypted local blob attached to a diary entry."""
-
-    __tablename__ = "diary_attachments"
-    __table_args__ = (
-        Index("ix_diary_attachments_user_entry", "user_id", "entry_id"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    entry_id: Mapped[int] = mapped_column(
-        ForeignKey("diary_entries.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
-    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
-    storage_path: Mapped[str] = mapped_column(String(512), nullable=False, unique=True)
-    original_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
-    caption: Mapped[str | None] = mapped_column(Text, nullable=True)
-    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-    entry: Mapped[DiaryEntry] = relationship(back_populates="attachments", foreign_keys=[entry_id])
 
 
 class MemoryItemTag(Base):
@@ -671,7 +376,7 @@ class MemoryItemTag(Base):
         index=True,
     )
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -695,13 +400,13 @@ class MemoryItemEvidence(Base):
             "source_kind",
             "observed_at",
         ),
-        Index("ix_memory_item_evidence_runtime_message", "runtime_message_id"),
-        Index("ix_memory_item_evidence_transcript_ref", "transcript_ref"),
+        Index("ix_memory_item_evidence_source_message", "source_message_uri"),
+        Index("ix_memory_item_evidence_source_transcript", "source_transcript_uri"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     memory_item_id: Mapped[int] = mapped_column(
@@ -712,10 +417,20 @@ class MemoryItemEvidence(Base):
         String(32),
         nullable=False,
     )
-    runtime_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    runtime_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    runtime_message_ids_json: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
-    transcript_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_thread_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    runtime_thread_id = core_source_reference(
+        "source_thread_uri", "runtime_thread_id", "thread", many=False
+    )
+    source_message_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    runtime_message_id = core_source_reference(
+        "source_message_uri", "runtime_message_id", "message", many=False
+    )
+    source_message_uris: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    runtime_message_ids_json = core_source_reference(
+        "source_message_uris", "runtime_message_ids_json", "message", many=True
+    )
+    source_transcript_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    transcript_ref = core_source_reference("source_transcript_uri", "transcript_ref", "transcript")
     sequence_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     speaker: Mapped[str | None] = mapped_column(String(24), nullable=True)
     observed_at: Mapped[datetime | None] = mapped_column(
@@ -743,6 +458,8 @@ class MemoryItemEvidence(Base):
 
     memory_item: Mapped[MemoryItem] = relationship(back_populates="evidence")
 
+    provenance_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+
 
 class MemoryClaim(Base):
     """Canonical structured claim extracted from user memory.
@@ -756,7 +473,7 @@ class MemoryClaim(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -877,7 +594,7 @@ class UserProfileField(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -967,7 +684,7 @@ class UserProfileFieldEvidence(Base):
         index=True,
     )
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -984,8 +701,14 @@ class UserProfileFieldEvidence(Base):
         ForeignKey("memory_claim_evidence.id", ondelete="SET NULL"),
         nullable=True,
     )
-    runtime_thread_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    runtime_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_thread_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    runtime_thread_id = core_source_reference(
+        "source_thread_uri", "runtime_thread_id", "thread", many=False
+    )
+    source_message_uri: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    runtime_message_id = core_source_reference(
+        "source_message_uri", "runtime_message_id", "message", many=False
+    )
     evidence_text: Mapped[str] = mapped_column(Text, nullable=False)
     observed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -1002,24 +725,7 @@ class UserProfileFieldEvidence(Base):
         foreign_keys=[profile_field_id],
     )
 
-
-
-class MemoryVector(Base):
-    __tablename__ = "memory_vectors"
-
-    item_id: Mapped[int] = mapped_column(
-        ForeignKey("memory_items.id", ondelete="CASCADE"),
-        primary_key=True,
-    )
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    category: Mapped[str] = mapped_column(String(24), nullable=False, default="fact")
-    importance: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
-    embedding: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    provenance_metadata: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
 
 
 class ForgetAuditLog(Base):
@@ -1033,7 +739,7 @@ class ForgetAuditLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -1062,44 +768,7 @@ class ForgetAuditLog(Base):
     )
 
 
-class BackgroundTaskRun(Base):
-    """Tracked background task execution for debugging and monitoring."""
-
-    __tablename__ = "background_task_runs"
-    __table_args__ = (Index("ix_bg_task_runs_user_status", "user_id", "status"),)
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    task_type: Mapped[str] = mapped_column(
-        String(50),
-        nullable=False,
-    )  # consolidation, graph_ingestion, heat_decay, episode_gen, etc.
-    status: Mapped[str] = mapped_column(
-        String(20),
-        nullable=False,
-        server_default=text("'pending'"),
-    )  # pending, running, completed, failed
-    result_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
-    )
-
-
-class KGEntity(Base):
+class KGEntity(DerivedSoulEmbedding, Base):
     """Knowledge graph entity: a person, place, organization, project, or concept."""
 
     __tablename__ = "kg_entities"
@@ -1109,7 +778,9 @@ class KGEntity(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("soul_owners.id", ondelete="CASCADE"), nullable=False
+    )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     name_normalized: Mapped[str] = mapped_column(String(200), nullable=False)
     entity_type: Mapped[str] = mapped_column(
@@ -1118,8 +789,6 @@ class KGEntity(Base):
     description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
     mentions: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     aliases_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
-    embedding_json: Mapped[list[float] | None] = mapped_column(JSON, nullable=True)
-    embedding_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -1144,7 +813,9 @@ class KGRelation(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("soul_owners.id", ondelete="CASCADE"), nullable=False
+    )
     source_id: Mapped[int] = mapped_column(
         ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False
     )
@@ -1206,14 +877,16 @@ class LatentTrace(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     topic_key: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(
         String(32), nullable=False, default="observation", server_default=text("'observation'")
     )
-    weight: Mapped[float] = mapped_column(Float, nullable=False, default=0.0, server_default=text("0.0"))
+    weight: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default=text("0.0")
+    )
     evidence_refs: Mapped[list[dict[str, object]] | None] = mapped_column(JSON, nullable=True)
     first_seen: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -1261,7 +934,7 @@ class TendencyContribution(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     tombstone_item_id: Mapped[int] = mapped_column(
@@ -1308,7 +981,7 @@ class ReconsolidationLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     memory_item_id: Mapped[int] = mapped_column(
@@ -1348,13 +1021,11 @@ class InitiativeLog(Base):
     """
 
     __tablename__ = "initiative_log"
-    __table_args__ = (
-        Index("ix_initiative_log_user_fired", "user_id", "fired_at"),
-    )
+    __table_args__ = (Index("ix_initiative_log_user_fired", "user_id", "fired_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     fired_at: Mapped[datetime] = mapped_column(
@@ -1395,13 +1066,11 @@ class DreamJournal(Base):
     a rolling 30 rows per user in the write path (no schema-level cap)."""
 
     __tablename__ = "dream_journal"
-    __table_args__ = (
-        Index("ix_dream_journal_user_dreamt", "user_id", "dreamt_at"),
-    )
+    __table_args__ = (Index("ix_dream_journal_user_dreamt", "user_id", "dreamt_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+        ForeignKey("soul_owners.id", ondelete="CASCADE"),
         nullable=False,
     )
     dreamt_at: Mapped[datetime] = mapped_column(

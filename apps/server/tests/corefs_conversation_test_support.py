@@ -10,15 +10,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from anima_server.services.corefs.diary_migration import (
-    InactiveFolder,
-    migration_opaque_id,
-)
 from anima_server.services.corefs.messages import (
     MESSAGE_SEGMENT_CONTENT_TYPE,
     THREAD_CONTENT_TYPE,
@@ -31,10 +23,16 @@ from anima_server.services.corefs.messages import (
     merge_conversation_sources,
     message_segment_references,
 )
-from anima_server.services.corefs.writing_source import (
+from corefs_catalog_test_support import (
+    InactiveFolder,
+    migration_opaque_id,
+)
+from corefs_writing_fixture_support import (
     WritingSourceBody,
     WritingSourceObjectDescriptor,
 )
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -114,13 +112,9 @@ def build_conversation_shadow_catalog(
         by_sequence: dict[int, list[CanonicalMessageRecord]] = defaultdict(list)
         for record in records:
             by_sequence[record.sequence].append(record)
-        collided = {
-            sequence: values for sequence, values in by_sequence.items() if len(values) > 1
-        }
+        collided = {sequence: values for sequence, values in by_sequence.items() if len(values) > 1}
         if collided:
-            rejected_ids = {
-                record.message_id for values in collided.values() for record in values
-            }
+            rejected_ids = {record.message_id for values in collided.values() for record in values}
             for sequence, values in sorted(collided.items()):
                 conflicts.append(
                     ConversationConflict(
@@ -301,198 +295,6 @@ def build_conversation_shadow_catalog(
     )
 
 
-def load_archived_conversation_sources(
-    *,
-    transcripts_dir: Path,
-    user_id: int,
-    dek: bytes | None,
-) -> ArchivedConversationSources:
-    """Decrypt legacy transcript sources without treating host paths as authority."""
-    from anima_server.services.agent.transcript_archive import (
-        decrypt_transcript,
-        load_transcript_sidecar,
-        resolve_transcript_path,
-    )
-
-    threads: list[dict[str, object]] = []
-    messages: list[dict[str, object]] = []
-    conflicts: list[ConversationConflict] = []
-    if not transcripts_dir.exists():
-        return ArchivedConversationSources((), (), ())
-    for meta_path in sorted(transcripts_dir.glob("*.meta.json")):
-        sidecar = load_transcript_sidecar(meta_path)
-        raw_thread_id = sidecar.get("thread_id") if sidecar is not None else None
-        identity = str(raw_thread_id) if raw_thread_id is not None else meta_path.name
-        try:
-            if sidecar is None or int(sidecar.get("user_id", -1)) != user_id:
-                raise ValueError("transcript sidecar owner is invalid")
-            thread_id = int(sidecar["thread_id"])
-            path = resolve_transcript_path(meta_path)
-            if path is None:
-                raise ValueError("transcript body is missing")
-            decoded = decrypt_transcript(path, dek=dek, thread_id=thread_id)
-            for row in decoded:
-                if not isinstance(row, dict):
-                    raise ValueError("transcript message is invalid")
-                normalized = dict(row)
-                normalized.setdefault("thread_id", thread_id)
-                messages.append(normalized)
-            threads.append(
-                {
-                    "id": thread_id,
-                    "title": None,
-                    "status": "archived",
-                    "created_at": _archive_created_at(sidecar, decoded),
-                    "updated_at": str(sidecar.get("archived_at")),
-                    "last_message_at": _archive_last_message_at(decoded),
-                    "closed_at": str(sidecar.get("archived_at")),
-                    "is_archived": True,
-                }
-            )
-        except (KeyError, OSError, TypeError, ValueError) as exc:
-            conflicts.append(
-                ConversationConflict(
-                    reason="invalid_archive",
-                    source="archived",
-                    identity=identity,
-                    detail=str(exc),
-                )
-            )
-    return ArchivedConversationSources(
-        tuple(threads),
-        tuple(messages),
-        tuple(conflicts),
-    )
-
-
-def collect_conversation_shadow_sources(
-    *,
-    soul_db: Session,
-    runtime_db: Session,
-    user_id: int,
-    transcripts_dir: Path,
-    dek: bytes | None,
-    attachment_resolver: Callable[[object], str | None] | None = None,
-    include_runtime_attachment_objects: bool = True,
-) -> ConversationShadowCatalog:
-    """Read all three legacy source families into one inactive snapshot."""
-    from anima_server.models.agent_runtime import AgentMessage, AgentThread
-    from anima_server.models.runtime import RuntimeMessage, RuntimeThread
-
-    active_threads = tuple(
-        runtime_db.scalars(
-            select(RuntimeThread).where(RuntimeThread.user_id == user_id)
-        ).all()
-    )
-    active_messages = tuple(
-        runtime_db.scalars(
-            select(RuntimeMessage)
-            .where(RuntimeMessage.user_id == user_id)
-            .order_by(RuntimeMessage.thread_id, RuntimeMessage.sequence_id)
-        ).all()
-    )
-    legacy_threads = tuple(
-        soul_db.scalars(select(AgentThread).where(AgentThread.user_id == user_id)).all()
-    )
-    legacy_thread_ids = [thread.id for thread in legacy_threads]
-    legacy_messages = (
-        tuple(
-            soul_db.scalars(
-                select(AgentMessage)
-                .where(AgentMessage.thread_id.in_(legacy_thread_ids))
-                .order_by(AgentMessage.thread_id, AgentMessage.sequence_id)
-            ).all()
-        )
-        if legacy_thread_ids
-        else ()
-    )
-    archived = load_archived_conversation_sources(
-        transcripts_dir=transcripts_dir,
-        user_id=user_id,
-        dek=dek,
-    )
-    if include_runtime_attachment_objects:
-        attachment_objects, resolved_attachment = _collect_runtime_message_attachments(
-            runtime_db=runtime_db,
-            user_id=user_id,
-            messages=[*active_messages, *archived.messages, *legacy_messages],
-        )
-    else:
-        if attachment_resolver is None:
-            raise ValueError("External attachment inventory requires a resolver.")
-        attachment_objects = ()
-
-        def resolved_attachment(_value: object) -> str | None:
-            return None
-
-    def resolve_attachment(value: object) -> str | None:
-        if attachment_resolver is not None:
-            resolved = attachment_resolver(value)
-            if resolved is not None:
-                return resolved
-        return resolved_attachment(value)
-
-    return build_conversation_shadow_catalog(
-        user_id=user_id,
-        active_threads=active_threads,
-        active_messages=active_messages,
-        archived_threads=archived.threads,
-        archived_messages=archived.messages,
-        legacy_threads=legacy_threads,
-        legacy_messages=legacy_messages,
-        attachment_resolver=resolve_attachment,
-        attachment_objects=attachment_objects,
-        additional_conflicts=archived.conflicts,
-    )
-
-
-def prepare_conversation_validation_catalog(
-    *,
-    session: Any,
-    soul_db: Session,
-    runtime_db: Session,
-    transcripts_dir: Path,
-    attachment_resolver: Callable[[object], str | None] | None = None,
-) -> tuple[Any, ConversationShadowCatalog]:
-    """Merge conversations into the shared inactive writing preparation."""
-    from anima_server.services.corefs.writing_source import prepare_writing_source_catalog
-
-    shadow = collect_conversation_shadow_sources(
-        soul_db=soul_db,
-        runtime_db=runtime_db,
-        user_id=session.user_id,
-        transcripts_dir=transcripts_dir,
-        dek=session.deks.get("conversations"),
-        attachment_resolver=attachment_resolver,
-    )
-    result = prepare_writing_source_catalog(
-        session=session,
-        db=soul_db,
-        supplemental_folders=shadow.folders,
-        supplemental_objects=shadow.objects,
-    )
-    return result, shadow
-
-
-def record_conversation_migration_failure(*, user_id: int, error: Exception) -> None:
-    """Journal a private-text-free PCF-005 retry marker."""
-    from anima_server.services.core import update_core_manifest
-
-    def update(manifest: dict[str, object]) -> None:
-        checkpoints = manifest.setdefault("migration_checkpoints", {})
-        if not isinstance(checkpoints, dict):
-            return
-        checkpoints[f"pcf005:{user_id}"] = {
-            "state": "retry-required",
-            "errorCode": type(error).__name__,
-            "errorDigest": hashlib.sha256(str(error).encode()).hexdigest(),
-            "attemptedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "authoritative": False,
-        }
-
-    update_core_manifest(update)
-
-
 def _merge_thread_sources(
     *,
     active: Iterable[object],
@@ -524,9 +326,7 @@ def _thread_source(value: object) -> ConversationThreadSource:
     if status not in {"active", "closed", "archived", "deleted"}:
         status = "archived" if bool(_source_value(value, "is_archived", "isArchived")) else "closed"
     created_at = _timestamp(_source_value(value, "created_at", "createdAt"))
-    updated_at = _timestamp(
-        _source_value(value, "updated_at", "updatedAt") or created_at
-    )
+    updated_at = _timestamp(_source_value(value, "updated_at", "updatedAt") or created_at)
     last_raw = _source_value(value, "last_message_at", "lastMessageAt")
     closed_raw = _source_value(value, "closed_at", "closedAt")
     return ConversationThreadSource(
@@ -634,9 +434,7 @@ def _collect_runtime_message_attachments(
     from anima_server.services.images.store import resolve_image_storage_path
 
     raw_attachments = [
-        attachment
-        for message in messages
-        for attachment in _message_attachments(message)
+        attachment for message in messages for attachment in _message_attachments(message)
     ]
     raw_asset_ids = {
         int(value)
@@ -662,9 +460,7 @@ def _collect_runtime_message_attachments(
         else ()
     )
     asset_id_by_attachment = {
-        str(link.attachment_id): int(link.image_asset_id)
-        for link in links
-        if link.attachment_id
+        str(link.attachment_id): int(link.image_asset_id) for link in links if link.attachment_id
     }
     asset_ids = raw_asset_ids | set(asset_id_by_attachment.values())
     assets = tuple(

@@ -32,6 +32,7 @@ from sqlalchemy.engine import Engine
 SERVER_ROOT = Path(__file__).resolve().parents[1]
 PRE_KEYSLOT_REVISION = "20260704_0001"
 WRITING_GENERATION_REVISION = "20260812_0001"
+RETIREMENT_REVISION = "20261009_0001"
 
 
 def _migrate(engine: Engine, revision: str, *, downgrade: bool = False) -> None:
@@ -44,18 +45,22 @@ def _migrate(engine: Engine, revision: str, *, downgrade: bool = False) -> None:
             command.upgrade(config, revision)
 
 
-def test_core_migration_chain_has_one_writing_generation_head() -> None:
+def test_core_migration_chain_has_one_supported_retirement_head() -> None:
     config = Config(str(SERVER_ROOT / "alembic_core.ini"))
-    assert ScriptDirectory.from_config(config).get_heads() == [WRITING_GENERATION_REVISION]
+    scripts = ScriptDirectory.from_config(config)
+    assert scripts.get_heads() == [RETIREMENT_REVISION]
+    assert scripts.get_revision(RETIREMENT_REVISION).down_revision == WRITING_GENERATION_REVISION
 
 
-def test_soul_keyslot_migration_roundtrips_without_touching_legacy_keys(
+def test_historical_soul_keyslot_revision_preserves_prior_rows(
     managed_tmp_path: Path,
 ) -> None:
     database = managed_tmp_path / "corefs-keyslots-migration.db"
     engine = create_engine(f"sqlite:///{database.as_posix()}", future=True)
 
-    _migrate(engine, "head")
+    # Historical revisions remain required for fresh-schema construction. The
+    # current retirement head intentionally does not permit downgrade.
+    _migrate(engine, WRITING_GENERATION_REVISION)
     head_inspector = inspect(engine)
     assert head_inspector.has_table("soul_keyslots")
     unique_constraints = {
@@ -92,7 +97,7 @@ def test_soul_keyslot_migration_roundtrips_without_touching_legacy_keys(
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT wrapped_dek FROM user_keys WHERE id = 1")) == "dek"
 
-    _migrate(engine, "head")
+    _migrate(engine, WRITING_GENERATION_REVISION)
     assert inspect(engine).has_table("soul_keyslots")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT wrapped_dek FROM user_keys WHERE id = 1")) == "dek"
@@ -695,16 +700,14 @@ def test_terminal_non_text_objects_preserve_errors_across_transient_retry(
         assert snapshot.families["note"].failed == 1
         assert snapshot.families["note"].degraded is True
         assert snapshot.families["attachment"].unavailable_object_ids == ()
-        assert snapshot.families["note"].unavailable_object_ids == (
-            "note-oversized",
-        )
+        assert snapshot.families["note"].unavailable_object_ids == ("note-oversized",)
         assert index.search_text("okay") == ("note-searchable",)
         assert index.search_text("go") == ("note-transient",)
         assert index.search_text("12345") == ()
-        assert {
-            entry.status
-            for entry in runtime_db.scalars(select(CoreFSIndexEntry)).all()
-        } == {"text_indexed", "text_skipped"}
+        assert {entry.status for entry in runtime_db.scalars(select(CoreFSIndexEntry)).all()} == {
+            "text_indexed",
+            "text_skipped",
+        }
         checkpoints = runtime_db.scalars(
             select(CoreFSIndexCheckpoint).where(
                 CoreFSIndexCheckpoint.family != corefs_migration._BLIND_CHECKPOINT_FAMILY

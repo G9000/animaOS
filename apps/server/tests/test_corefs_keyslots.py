@@ -6,7 +6,6 @@ from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Event, Lock
-from uuid import UUID
 
 import anima_core
 import pytest
@@ -14,14 +13,11 @@ from anima_server.api.routes import auth as auth_routes
 from anima_server.config import settings
 from anima_server.db import dispose_all_user_engines
 from anima_server.db.session import get_user_session_factory
-from anima_server.models import SoulKeyslot, User, UserKey
+from anima_server.models import SoulKeyslot, SoulOwner
 from anima_server.services.core import (
-    ensure_core_manifest,
     get_manifest_path,
     get_owner_id,
     get_owner_user_id,
-    get_recovery_sqlcipher_key,
-    get_wrapped_sqlcipher_key,
     update_core_manifest,
 )
 from anima_server.services.corefs.credentials import (
@@ -224,63 +220,6 @@ def _make_soul_only(*, password: str, recovery_phrase: str) -> None:
         value["degraded_state"] = "filesystem_missing"
 
     update_core_manifest(publish)
-
-
-def test_legacy_manifest_gets_one_stable_opaque_owner_before_keyslots(
-    managed_tmp_path,
-) -> None:
-    original = settings.data_dir
-    settings.data_dir = managed_tmp_path
-    try:
-        managed_tmp_path.mkdir(parents=True, exist_ok=True)
-        get_manifest_path().write_text(
-            json.dumps({"core_id": "legacy-core", "owner_user_id": 7}),
-            encoding="utf-8",
-        )
-
-        first = ensure_core_manifest()
-        second = ensure_core_manifest()
-
-        assert UUID(str(first["owner_id"]))
-        assert first["owner_id"] == second["owner_id"] == get_owner_id()
-        assert first["owner_binding"] == {"legacy_user_id": 7}
-        assert not get_manifest_path().with_suffix(".json.tmp").exists()
-    finally:
-        settings.data_dir = original
-
-
-def test_manifest_retains_legacy_sqlcipher_compatibility_without_profile_fields(
-    managed_tmp_path,
-) -> None:
-    original = settings.data_dir
-    settings.data_dir = managed_tmp_path
-    try:
-        managed_tmp_path.mkdir(parents=True, exist_ok=True)
-        get_manifest_path().write_text(
-            json.dumps(
-                {
-                    "core_id": "legacy-core",
-                    "owner_user_id": 7,
-                    "wrapped_sqlcipher_key": _wrapped_record(),
-                    "user_index": {"alice": 7},
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        ensure_core_manifest()
-        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-
-        assert get_wrapped_sqlcipher_key() == _wrapped_record()
-        assert "user_index" not in manifest
-        new_structures = json.dumps(
-            {"owner_binding": manifest["owner_binding"], "keyslots": manifest["keyslots"]}
-        )
-        assert "alice" not in new_structures
-        assert "raw_key" not in new_structures
-        assert "display_name" not in new_structures
-    finally:
-        settings.data_dir = original
 
 
 def test_keyslot_contract_rejects_unknown_algorithms_versions_and_enums() -> None:
@@ -692,9 +631,7 @@ def test_scoped_password_change_clears_corefs_session_keys(
         original = unlock_session_store.resolve(registered["unlockToken"])
         assert original is not None
         assert isinstance(original.corefs_keys, anima_core.CorefsSubkeys)
-        expected_deks = {
-            domain: bytes(bytearray(dek)) for domain, dek in original.deks.items()
-        }
+        expected_deks = {domain: bytes(bytearray(dek)) for domain, dek in original.deks.items()}
         make_scoped = _make_soul_only if scope == "soul" else _make_filesystem_only
         make_scoped(
             password="password-123",
@@ -716,116 +653,6 @@ def test_scoped_password_change_clears_corefs_session_keys(
         assert replacement is not None
         assert replacement.deks == expected_deks
         assert replacement.corefs_keys is None
-
-
-def test_registration_publishes_legacy_locators_before_hierarchy_activation(
-    monkeypatch,
-) -> None:
-    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-    monkeypatch.setattr(
-        "anima_server.services.recovery.generate_recovery_phrase",
-        lambda: phrase,
-    )
-    monkeypatch.setattr(
-        "anima_server.services.corefs.keyslots.provision_initial_key_hierarchy",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("before activation")),
-    )
-
-    with managed_test_client("anima-registration-before-activation-") as client:
-        response = client.post(
-            "/api/auth/register",
-            json={"username": "alice", "password": "password-123", "name": "Alice"},
-        )
-        assert response.status_code == 503
-        assert get_owner_user_id() == 0
-        assert "user_index" not in json.loads(
-            get_manifest_path().read_text(encoding="utf-8")
-        )
-        assert get_recovery_sqlcipher_key() is not None
-
-        login = client.post(
-            "/api/auth/login",
-            json={"username": "alice", "password": "password-123"},
-        )
-        assert login.status_code == 200
-        recovery = client.post(
-            "/api/auth/recover",
-            json={
-                "recoveryPhrase": phrase,
-                "newPassword": "recovered-password-123",
-                "scope": "full",
-            },
-        )
-        assert recovery.status_code == 200
-
-
-def test_registration_backfill_crash_allows_password_change_before_recovery_upgrade(
-    monkeypatch,
-) -> None:
-    from anima_server.services.corefs import keyslots
-
-    phrase = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
-    monkeypatch.setattr(
-        "anima_server.services.recovery.generate_recovery_phrase",
-        lambda: phrase,
-    )
-    publish_manifest = keyslots.update_core_manifest
-
-    def crash_after_soul_backfill(_mutator) -> None:
-        raise RuntimeError("crash after Soul backfill")
-
-    monkeypatch.setattr(keyslots, "update_core_manifest", crash_after_soul_backfill)
-    with managed_test_client("anima-registration-backfill-crash-") as client:
-        response = client.post(
-            "/api/auth/register",
-            json={"username": "alice", "password": "password-123", "name": "Alice"},
-        )
-        assert response.status_code == 503
-        manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
-        assert manifest["keyslots"] == []
-        assert "active_recovery_credential_generation" not in manifest
-
-        with get_user_session_factory(0)() as db:
-            stranded = db.query(SoulKeyslot).all()
-            assert len(stranded) == len(ALL_DOMAINS) * 2
-            assert {row.status for row in stranded} == {"active"}
-
-        login = client.post(
-            "/api/auth/login",
-            json={"username": "alice", "password": "password-123"},
-        )
-        assert login.status_code == 200
-        monkeypatch.setattr(keyslots, "update_core_manifest", publish_manifest)
-
-        changed = client.post(
-            "/api/auth/change-password",
-            headers={"x-anima-unlock": login.json()["unlockToken"]},
-            json={"oldPassword": "password-123", "newPassword": "password-456"},
-        )
-        assert changed.status_code == 200
-
-        prepared = client.post(
-            "/api/auth/recovery-credential/prepare",
-            headers={"x-anima-unlock": changed.json()["unlockToken"]},
-            json={
-                "currentRecoveryPhrase": phrase,
-                "currentPassword": "password-456",
-                "scope": "full",
-            },
-        )
-        assert prepared.status_code == 200
-        payload = prepared.json()
-        confirmed = client.post(
-            "/api/auth/recovery-credential/confirm",
-            headers={"x-anima-unlock": changed.json()["unlockToken"]},
-            json={
-                "recoveryPhrase": payload["recoveryPhrase"],
-                "pendingGeneration": payload["pendingGeneration"],
-                "scope": payload["scope"],
-                "currentPassword": "password-456",
-            },
-        )
-        assert confirmed.status_code == 200
 
 
 def test_registration_crash_after_hierarchy_activation_keeps_account_locator(
@@ -850,7 +677,18 @@ def test_registration_crash_after_hierarchy_activation_keeps_account_locator(
         assert manifest["active_password_credential_generation"] == 1
         assert get_owner_user_id() == 0
         assert "user_index" not in manifest
-        assert get_recovery_sqlcipher_key() is not None
+        assert any(slot["wrapping_path"] == "recovery" for slot in manifest["keyslots"])
+        unlock_session_store.clear()
+        clear_sqlcipher_key()
+        dispose_all_user_engines()
+        login = client.post(
+            "/api/auth/login",
+            json={
+                "username": "alice",
+                "password": "password-123",
+            },
+        )
+        assert login.status_code == 200, login.text
 
 
 def test_versioned_login_never_falls_back_to_legacy_wrappers() -> None:
@@ -1000,10 +838,10 @@ def test_legacy_login_and_recovery_reject_abusive_persisted_profiles() -> None:
             manifest.pop("active_password_credential_generation", None)
             manifest.pop("active_recovery_credential_generation", None)
             manifest.pop("frk_rotation", None)
-            password_wrapper = dict(manifest["wrapped_sqlcipher_key"])
+            password_wrapper = _wrapped_record()
             password_wrapper["kdf_memory_cost_kib"] = 2**31
             manifest["wrapped_sqlcipher_key"] = password_wrapper
-            recovery_wrapper = dict(manifest["recovery_sqlcipher_key"])
+            recovery_wrapper = _wrapped_record()
             recovery_wrapper["kdf_memory_cost_kib"] = 2**31
             manifest["recovery_sqlcipher_key"] = recovery_wrapper
 
@@ -1028,39 +866,6 @@ def test_legacy_login_and_recovery_reject_abusive_persisted_profiles() -> None:
         assert recovery.status_code == 401
 
 
-def test_legacy_login_rejects_abusive_user_key_profile() -> None:
-    with managed_test_client("anima-legacy-user-key-bounds-") as client:
-        assert (
-            client.post(
-                "/api/auth/register",
-                json={"username": "alice", "password": "password-123", "name": "Alice"},
-            ).status_code
-            == 201
-        )
-        with get_user_session_factory(0)() as db:
-            row = db.query(UserKey).filter_by(user_id=0).first()
-            assert row is not None
-            row.kdf_memory_cost_kib = 2**31
-            db.commit()
-
-        def make_legacy(manifest: dict[str, object]) -> None:
-            manifest["keyslots"] = []
-            manifest.pop("active_password_credential_generation", None)
-            manifest.pop("active_recovery_credential_generation", None)
-            manifest.pop("frk_rotation", None)
-
-        update_core_manifest(make_legacy)
-        unlock_session_store.clear()
-        clear_sqlcipher_key()
-        dispose_all_user_engines()
-
-        response = client.post(
-            "/api/auth/login",
-            json={"username": "alice", "password": "password-123"},
-        )
-        assert response.status_code == 401
-
-
 def test_soul_scoped_manifest_activation_crash_finalizes_during_login() -> None:
     with managed_test_client("anima-soul-login-finalize-") as client:
         registered = client.post(
@@ -1074,7 +879,7 @@ def test_soul_scoped_manifest_activation_crash_finalizes_during_login() -> None:
             recovery_phrase=str(registered.json()["recoveryPhrase"]),
         )
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             with pytest.raises(RuntimeError, match="manifest-activated"):
                 change_password_credential_generation(
@@ -1100,6 +905,15 @@ def test_soul_scoped_manifest_activation_crash_finalizes_during_login() -> None:
         )
         assert login.status_code == 200
         assert login.json()["unlockToken"]
+        assert login.json()["profileAvailable"] is False
+        assert login.json()["filesystemAvailable"] is False
+        assert login.json()["username"] == ""
+        assert login.json()["name"] == ""
+        session = unlock_session_store.resolve(login.json()["unlockToken"])
+        assert session is not None and session.corefs_keys is None
+        assert session.deks
+        with get_user_session_factory(0)() as db:
+            assert all(row.status != "pending" for row in db.query(SoulKeyslot).all())
 
 
 def test_fs_only_credentials_rotate_without_soul_database_or_unlock_session() -> None:
@@ -1204,13 +1018,23 @@ def test_fs_recovery_confirm_maps_invalid_pending_phrase_to_unauthorized() -> No
 
 
 def test_fs_recovery_prepare_rejects_unversioned_manifest(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "core_passphrase", "agent-managed-core-passphrase")
 
     with managed_test_client("anima-fs-prepare-unversioned-") as client:
         registered = client.post(
             "/api/auth/register",
             json={"username": "alice", "password": "password-123", "name": "Alice"},
         ).json()
+
+        def remove_current_hierarchy(value):
+            value["keyslots"] = []
+            for field in (
+                "active_password_credential_generation",
+                "active_recovery_credential_generation",
+                "frk_rotation",
+            ):
+                value.pop(field, None)
+
+        update_core_manifest(remove_current_hierarchy)
         manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
         assert not manifest_has_versioned_key_hierarchy(manifest)
 
@@ -1227,13 +1051,23 @@ def test_fs_recovery_prepare_rejects_unversioned_manifest(monkeypatch) -> None:
 
 
 def test_fs_recovery_confirm_rejects_unversioned_manifest(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "core_passphrase", "agent-managed-core-passphrase")
 
     with managed_test_client("anima-fs-confirm-unversioned-") as client:
         client.post(
             "/api/auth/register",
             json={"username": "alice", "password": "password-123", "name": "Alice"},
         )
+
+        def remove_current_hierarchy(value):
+            value["keyslots"] = []
+            for field in (
+                "active_password_credential_generation",
+                "active_recovery_credential_generation",
+                "frk_rotation",
+            ):
+                value.pop(field, None)
+
+        update_core_manifest(remove_current_hierarchy)
         manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
         assert not manifest_has_versioned_key_hierarchy(manifest)
 
@@ -1450,7 +1284,8 @@ def test_registration_persists_owner_binding_before_keyslot_publication(monkeypa
         manifest = json.loads(get_manifest_path().read_text(encoding="utf-8"))
         assert manifest["owner_user_id"] == 0
         assert manifest["owner_binding"] == {"legacy_user_id": 0}
-        assert manifest["keyslots"] == []
+        assert len(manifest["keyslots"]) == 4
+        assert all(slot["status"] == "pending" for slot in manifest["keyslots"])
         raise RuntimeError("crash after owner binding")
 
     with managed_test_client("anima-owner-binding-boundary-") as client:
@@ -1558,7 +1393,7 @@ def test_change_password_rejects_duplicate_for_missing_retained_frk_before_activ
             update_core_manifest(duplicate_active_pending_slot)
 
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             with pytest.raises(ValueError):
                 change_password_credential_generation(
@@ -1607,7 +1442,7 @@ def test_change_password_respects_degraded_compartment_scope(scope) -> None:
         session = unlock_session_store.resolve(registered["unlockToken"])
         assert session is not None
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             before_rows = db.query(SoulKeyslot).count()
             change_password_credential_generation(
@@ -1653,7 +1488,7 @@ def test_password_generation_recovers_at_every_durable_boundary(boundary) -> Non
                 raise RuntimeError(f"injected crash after {current.value}")
 
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             with pytest.raises(RuntimeError, match="injected crash"):
                 change_password_credential_generation(
@@ -1700,7 +1535,7 @@ def test_password_generation_retry_replaces_pre_activation_pending_rows() -> Non
         assert session is not None
 
         with get_user_session_factory(0)() as db:
-            user = db.get(User, 0)
+            user = db.get(SoulOwner, 0)
             assert user is not None
             with pytest.raises(RuntimeError):
                 change_password_credential_generation(

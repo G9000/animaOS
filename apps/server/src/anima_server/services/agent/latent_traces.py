@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from anima_server.config import settings
 from anima_server.models import LatentTrace, MemoryItem
@@ -54,22 +54,49 @@ def get_latent_config() -> LatentConfig:
 # ── Fold ─────────────────────────────────────────────────────────────
 
 
-def evidence_ref_for_candidate(candidate: object) -> dict[str, object]:
+def evidence_ref_for_candidate(candidate: object, *, user_id: int) -> dict[str, object]:
     """Build the evidence-ref identifier stored on a trace for one folded
     candidate — identifiers only (candidate id, content hash, source
     message ids), never copied content; see ``LatentTrace`` docstring."""
+    from anima_server.services.corefs.soul_provenance import (
+        current_source_proof,
+        preserve_live_source_reference,
+        runtime_source_transaction,
+    )
+
     observed_at = getattr(candidate, "created_at", None)
     candidate_id = getattr(candidate, "id", None)
+    source_ids = [
+        int(message_id)
+        for message_id in (getattr(candidate, "source_message_ids", None) or [])
+        if message_id is not None
+    ]
+    proof = (
+        current_source_proof(user_id) if getattr(candidate, "user_id", None) == user_id else None
+    )
+    runtime_db = (
+        object_session(candidate) if getattr(candidate, "_sa_instance_state", None) else None
+    )
+    with runtime_source_transaction(runtime_db):
+        source_uris, provenance = preserve_live_source_reference(
+            proof=proof,
+            user_id=user_id,
+            field="source_message_ids",
+            family="message",
+            value=source_ids,
+            many=True,
+        )
     return {
         "candidate_id": int(candidate_id) if candidate_id is not None else None,
         "content_hash": getattr(candidate, "content_hash", None),
-        "source_message_ids": [
-            int(message_id)
-            for message_id in (getattr(candidate, "source_message_ids", None) or [])
-            if message_id is not None
-        ],
+        # Original Runtime IDs are historical evidence only. Forgetting joins
+        # persisted authenticated URIs, never these reusable numeric IDs.
+        "source_message_ids": source_ids,
+        "source_message_uris": source_uris,
+        **provenance,
         "observed_at": observed_at.isoformat() if observed_at is not None else None,
-        "extractor": getattr(candidate, "extraction_model", None) or getattr(candidate, "source", None),
+        "extractor": getattr(candidate, "extraction_model", None)
+        or getattr(candidate, "source", None),
     }
 
 
@@ -132,7 +159,7 @@ def fold_candidate_into_trace(
     repeats = max(1, min(10, int(salience.get("repeat_count", 1) or 1)))
     for _ in range(repeats):
         trace.weight = fold_weight(trace.weight, score, cfg)
-    refs.append(evidence_ref_for_candidate(candidate))
+    refs.append(evidence_ref_for_candidate(candidate, user_id=user_id))
     # Weight caps at 1.0 but refs would otherwise append forever on a
     # recurring topic that never crystallizes (e.g. scaffold provider) —
     # keep the newest window only.
@@ -174,11 +201,7 @@ def decay_and_cap_traces(
     enforce the per-user cap by dropping the lowest-weight surplus."""
     cfg = config or get_latent_config()
 
-    traces = list(
-        soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user_id)
-        ).all()
-    )
+    traces = list(soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user_id)).all())
     decayed = 0
     pruned = 0
     for trace in traces:
@@ -211,21 +234,22 @@ def decay_and_cap_traces(
 # ── F7 right-to-forget integration ──────────────────────────────────
 
 
-def _ref_message_ids(ref: dict[str, object]) -> set[int]:
-    ids: set[int] = set()
-    for raw in ref.get("source_message_ids") or []:
-        try:
-            ids.add(int(raw))
-        except (TypeError, ValueError):
-            continue
-    return ids
+def _ref_message_uris(ref: dict[str, object]) -> set[str]:
+    return {
+        uri
+        for uri in ref.get("source_message_uris") or []
+        if isinstance(uri, str)
+        and uri.startswith("corefs://object/")
+        and "#message=" in uri
+        and uri.partition("#message=")[2]
+    }
 
 
 def scrub_latent_traces_for_forgotten_sources(
     soul_db: Session,
     *,
     user_id: int,
-    source_message_ids: Iterable[int],
+    source_message_uris: Iterable[str],
 ) -> set[str]:
     """Remove evidence_refs pointing at forgotten sources; delete traces
     left with no surviving evidence. Returns the set of affected traces'
@@ -233,25 +257,19 @@ def scrub_latent_traces_for_forgotten_sources(
     IL7 dream built on those topics; ``len()`` of the result is the count.
 
     Called from ``forgetting.forget_memory`` with the same
-    ``source_message_ids`` it already computes for its own derived-reference
+    durable ``source_message_uris`` it already collects for its derived-reference
     cleanup, so a single-item forget also scrubs any latent trace an
     evidence event of the forgotten memory's sources contributed to.
     """
-    forgotten = {int(mid) for mid in source_message_ids if mid is not None}
+    forgotten = _ref_message_uris({"source_message_uris": list(source_message_uris)})
     if not forgotten:
         return set()
 
-    traces = list(
-        soul_db.scalars(
-            select(LatentTrace).where(LatentTrace.user_id == user_id)
-        ).all()
-    )
+    traces = list(soul_db.scalars(select(LatentTrace).where(LatentTrace.user_id == user_id)).all())
     affected_keys: set[str] = set()
     for trace in traces:
         refs = trace.evidence_refs or []
-        surviving = [
-            ref for ref in refs if not forgotten.intersection(_ref_message_ids(ref))
-        ]
+        surviving = [ref for ref in refs if not forgotten.intersection(_ref_message_uris(ref))]
         if len(surviving) == len(refs):
             continue
         affected_keys.add(trace.topic_key)
@@ -307,7 +325,9 @@ def _resolve_trace_evidence(
     stale = 0
     for ref in refs:
         candidate_id = ref.get("candidate_id")
-        candidate = rt_db.get(MemoryCandidate, int(candidate_id)) if candidate_id is not None else None
+        candidate = (
+            rt_db.get(MemoryCandidate, int(candidate_id)) if candidate_id is not None else None
+        )
         if candidate is None or candidate.user_id != user_id:
             stale += 1
             continue
@@ -458,9 +478,7 @@ async def _synthesize_and_store_crystallized_memory(
             evidence_text=parsed["content"],
         )
     except Exception:
-        logger.debug(
-            "upsert_claim failed for crystallized item %s", item.id, exc_info=True
-        )
+        logger.debug("upsert_claim failed for crystallized item %s", item.id, exc_info=True)
 
     return "stored", item
 
@@ -522,7 +540,9 @@ async def crystallize_due_traces(
         for trace in due:
             with rt_factory() as rt_db:
                 evidence_texts, surviving_refs, stale = _resolve_trace_evidence(
-                    trace, rt_db=rt_db, user_id=user_id,
+                    trace,
+                    rt_db=rt_db,
+                    user_id=user_id,
                 )
             dropped_stale += stale
 

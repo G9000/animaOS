@@ -13,14 +13,14 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from anima_server.db.base import Base
-from anima_server.models import DreamJournal, User
+from anima_server.models import DreamJournal, SoulOwner
 from anima_server.services.agent import proactive
 from anima_server.services.agent.proactive import (
     GreetingContext,
     _resolve_ambient_dream,
     build_static_greeting,
 )
-from anima_server.services.presence_config import get_or_create_presence_config
+from anima_server.services.presence_config import PresenceConfigValues
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -44,6 +44,55 @@ def soul_db(soul_factory):
         yield session
 
 
+_presence_values: dict[int, object] = {}
+
+
+def _presence_preferences(_db: Session, user_id: int):
+    from dataclasses import asdict
+    from types import SimpleNamespace
+
+    return _presence_values.setdefault(
+        user_id, SimpleNamespace(**asdict(PresenceConfigValues(user_id=user_id)))
+    )
+
+
+@pytest.fixture(autouse=True)
+def _canonical_presence_boundary(monkeypatch):
+    from types import SimpleNamespace
+
+    from anima_server.services.corefs import preferences
+
+    _presence_values.clear()
+    monkeypatch.setattr(
+        preferences,
+        "active_preference_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(
+        preferences,
+        "read_canonical_presence_values",
+        lambda *, session: PresenceConfigValues(
+            **vars(_presence_preferences(None, session.user_id))
+        ),
+    )
+    from anima_server.services.corefs import conversation_authority
+
+    monkeypatch.setattr(
+        proactive,
+        "require_active_task_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(proactive, "list_canonical_tasks", lambda *, session: ())
+    monkeypatch.setattr(
+        conversation_authority,
+        "active_conversation_authority_session",
+        lambda user_id: SimpleNamespace(user_id=user_id),
+    )
+    monkeypatch.setattr(conversation_authority, "list_canonical_threads", lambda *, session: ())
+    yield
+    _presence_values.clear()
+
+
 @pytest.fixture(autouse=True)
 def _crypto_passthrough(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(proactive, "df", lambda user_id, v, **kw: v)
@@ -60,10 +109,10 @@ def _seed(
     surfaced: bool = False,
     narrative: str = "a blurred dream about the boat you restored",
 ) -> int:
-    user = User(username="il010", password_hash="x", display_name="IL010")
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     soul_db.add(user)
     soul_db.flush()
-    cfg = get_or_create_presence_config(soul_db, user.id)
+    cfg = _presence_preferences(soul_db, user.id)
     cfg.dream_sharing = dream_sharing
     soul_db.add(
         DreamJournal(
@@ -114,7 +163,7 @@ def test_on_ask_and_off_modes_never_touch_the_dream(soul_db) -> None:
     neither returns a dream nor marks anything surfaced."""
     user_id = _seed(soul_db, dream_sharing="on_ask")
     assert _resolve_ambient_dream(soul_db, user_id=user_id) is None
-    cfg = get_or_create_presence_config(soul_db, user_id)
+    cfg = _presence_preferences(soul_db, user_id)
     cfg.dream_sharing = "off"
     soul_db.commit()
     assert _resolve_ambient_dream(soul_db, user_id=user_id) is None
@@ -123,16 +172,14 @@ def test_on_ask_and_off_modes_never_touch_the_dream(soul_db) -> None:
 
 def test_presence_master_switch_off_suppresses_ambient(soul_db) -> None:
     user_id = _seed(soul_db)
-    cfg = get_or_create_presence_config(soul_db, user_id)
+    cfg = _presence_preferences(soul_db, user_id)
     cfg.enabled = False
     soul_db.commit()
     assert _resolve_ambient_dream(soul_db, user_id=user_id) is None
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is False
 
 
-def test_no_dek_means_no_dream_and_no_consumption(
-    soul_db, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_no_dek_means_no_dream_and_no_consumption(soul_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """df fails open: without a DEK the narrative read would return
     ciphertext into the greeting — and the dream must NOT be burned."""
     user_id = _seed(soul_db)
@@ -299,15 +346,11 @@ def test_ambient_surfacing_resets_dream_residue_pressure(
         rt.commit()
 
     with rt_factory() as rt:
-        result = asyncio.run(
-            generate_greeting(soul_db, user_id=user_id, runtime_db=rt)
-        )
+        result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=rt))
     assert "I dreamt about something recently" in result.message
 
     with rt_factory() as rt:
-        row = rt.scalars(
-            select(DriveStateRow).where(DriveStateRow.user_id == user_id)
-        ).one()
+        row = rt.scalars(select(DriveStateRow).where(DriveStateRow.user_id == user_id)).one()
         assert row.dream_residue == 0.0  # drained like the fire path
         assert row.starvation_losses == {"relational": 1}  # history cleared
     rt_engine.dispose()
@@ -335,7 +378,7 @@ def test_optout_during_the_greeting_blocks_the_claim(
         if not flipped["done"]:
             flipped["done"] = True
             with soul_factory() as other:
-                cfg = get_or_create_presence_config(other, uid)
+                cfg = _presence_preferences(other, uid)
                 cfg.dream_sharing = "off"
                 other.commit()
         return out
@@ -394,9 +437,7 @@ def _pill_context_fields(ctx) -> str:
     )
 
 
-def test_dream_never_reaches_the_pill_llm_request(
-    soul_db, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_dream_never_reaches_the_pill_llm_request(soul_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression (PR #130 round 7, P1): generate_thought_pills issues a
     SECOND LLM request. Appending the dream before that call shipped the
     decrypted narrative to whatever provider is configured — including cloud
@@ -493,13 +534,11 @@ def test_optout_during_generation_releases_the_claim_unvoiced(
     def optout_mid_generation(runtime_db, *, user_id):
         # Runs between the claim commit and the consent revalidation — the
         # same position the greeting/pill LLM calls occupy in real requests.
-        cfg = get_or_create_presence_config(soul_db, user_id)
+        cfg = _presence_preferences(soul_db, user_id)
         cfg.dream_sharing = "off"
         soul_db.commit()
 
-    monkeypatch.setattr(
-        proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation
-    )
+    monkeypatch.setattr(proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation)
     result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
 
     assert "boat you restored" not in result.message  # never voiced
@@ -543,13 +582,11 @@ def test_optout_between_recheck_and_append_cannot_voice_the_dream(
     user_id = _seed(soul_db)
 
     def optout_mid_generation(runtime_db, *, user_id):
-        cfg = get_or_create_presence_config(soul_db, user_id)
+        cfg = _presence_preferences(soul_db, user_id)
         cfg.dream_sharing = "off"
         soul_db.commit()
 
-    monkeypatch.setattr(
-        proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation
-    )
+    monkeypatch.setattr(proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation)
     result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
 
     assert "boat you restored" not in result.message
@@ -573,10 +610,15 @@ def test_acknowledgement_surfaces_the_dream_and_clears_the_claim(soul_db) -> Non
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
 
-    assert acknowledge_dream(
-        soul_db, user_id=user_id, dream_id=claim.dream_id,
-        token=claim_token(claim.claimed_at),
-    ) is True
+    assert (
+        acknowledge_dream(
+            soul_db,
+            user_id=user_id,
+            dream_id=claim.dream_id,
+            token=claim_token(claim.claimed_at),
+        )
+        is True
+    )
     soul_db.commit()
     row = soul_db.scalars(select(DreamJournal)).one()
     assert row.surfaced is True
@@ -594,22 +636,37 @@ def test_acknowledgement_is_idempotent_and_ownership_scoped(soul_db) -> None:
     user_id = _seed(soul_db)
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
-    assert acknowledge_dream(
-        soul_db, user_id=user_id, dream_id=claim.dream_id,
-        token=claim_token(claim.claimed_at),
-    ) is True
+    assert (
+        acknowledge_dream(
+            soul_db,
+            user_id=user_id,
+            dream_id=claim.dream_id,
+            token=claim_token(claim.claimed_at),
+        )
+        is True
+    )
     soul_db.commit()
 
     # Second ack: already surfaced, nothing to do.
-    assert acknowledge_dream(
-        soul_db, user_id=user_id, dream_id=claim.dream_id,
-        token=claim_token(claim.claimed_at),
-    ) is False
+    assert (
+        acknowledge_dream(
+            soul_db,
+            user_id=user_id,
+            dream_id=claim.dream_id,
+            token=claim_token(claim.claimed_at),
+        )
+        is False
+    )
     # Another user's ack must never touch this row.
-    assert acknowledge_dream(
-        soul_db, user_id=user_id + 99, dream_id=claim.dream_id,
-        token=claim_token(claim.claimed_at),
-    ) is False
+    assert (
+        acknowledge_dream(
+            soul_db,
+            user_id=user_id + 99,
+            dream_id=claim.dream_id,
+            token=claim_token(claim.claimed_at),
+        )
+        is False
+    )
     soul_db.commit()
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is True
 
@@ -629,9 +686,7 @@ def test_unacknowledged_claim_expires_and_the_dream_is_offered_again(soul_db) ->
 
     # Age the claim past the TTL: the response demonstrably never landed.
     row = soul_db.scalars(select(DreamJournal)).one()
-    row.claimed_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1
-    )
+    row.claimed_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
     soul_db.commit()
 
     second = _resolve_ambient_dream(soul_db, user_id=user_id)
@@ -652,15 +707,15 @@ def test_acknowledged_dream_is_never_offered_again_even_after_the_ttl(soul_db) -
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
     acknowledge_dream(
-        soul_db, user_id=user_id, dream_id=claim.dream_id,
+        soul_db,
+        user_id=user_id,
+        dream_id=claim.dream_id,
         token=claim_token(claim.claimed_at),
     )
     soul_db.commit()
 
     row = soul_db.scalars(select(DreamJournal)).one()
-    row.claimed_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1000
-    )
+    row.claimed_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1000)
     soul_db.commit()
     assert _resolve_ambient_dream(soul_db, user_id=user_id) is None
 
@@ -720,7 +775,10 @@ def test_initiative_cannot_consume_a_live_greeting_claim(soul_db) -> None:
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is False  # claim only
     assert (
         il.gather_drive_material(
-            soul_db, user_id=user_id, drive="dream_residue", now=now,
+            soul_db,
+            user_id=user_id,
+            drive="dream_residue",
+            now=now,
             dream_sharing="ambient",
         )
         == ""
@@ -729,9 +787,7 @@ def test_initiative_cannot_consume_a_live_greeting_claim(soul_db) -> None:
     # Once the claim expires (the greeting never landed), the initiative may
     # speak it — the dream isn't lost to the failed delivery.
     row = soul_db.scalars(select(DreamJournal)).one()
-    row.claimed_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1
-    )
+    row.claimed_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
     soul_db.commit()
     assert il.gather_drive_material(
         soul_db, user_id=user_id, drive="dream_residue", now=now, dream_sharing="ambient"
@@ -751,23 +807,26 @@ def test_acknowledged_dream_is_invisible_to_the_initiative_path(soul_db) -> None
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
     acknowledge_dream(
-        soul_db, user_id=user_id, dream_id=claim.dream_id,
+        soul_db,
+        user_id=user_id,
+        dream_id=claim.dream_id,
         token=claim_token(claim.claimed_at),
     )
     soul_db.commit()
 
     assert (
         il.gather_drive_material(
-            soul_db, user_id=user_id, drive="dream_residue",
-            now=datetime(2026, 7, 30, 12, 0, tzinfo=UTC), dream_sharing="ambient",
+            soul_db,
+            user_id=user_id,
+            drive="dream_residue",
+            now=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+            dream_sharing="ambient",
         )
         == ""
     )
 
 
-def test_greeting_states_when_its_claim_expires(
-    soul_db, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_greeting_states_when_its_claim_expires(soul_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression (PR #135 review, P1): the client may STORE a dream-bearing
     greeting for a later mount, and that stored copy must die with the claim
     behind it — past the deadline the same dream becomes offerable again, so
@@ -856,9 +915,7 @@ def test_no_dream_means_no_expiry(soul_db, monkeypatch: pytest.MonkeyPatch) -> N
     assert result.ambient_dream_claim_token is None
 
 
-def test_released_claim_reports_no_expiry(
-    soul_db, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_released_claim_reports_no_expiry(soul_db, monkeypatch: pytest.MonkeyPatch) -> None:
     """Consent withdrawn mid-generation releases the claim unvoiced — there
     is nothing for the client to store, so there is no deadline either."""
     import asyncio
@@ -870,13 +927,11 @@ def test_released_claim_reports_no_expiry(
     user_id = _seed(soul_db)
 
     def optout_mid_generation(runtime_db, *, user_id):
-        cfg = get_or_create_presence_config(soul_db, user_id)
+        cfg = _presence_preferences(soul_db, user_id)
         cfg.dream_sharing = "off"
         soul_db.commit()
 
-    monkeypatch.setattr(
-        proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation
-    )
+    monkeypatch.setattr(proactive, "_reset_dream_residue_after_surfacing", optout_mid_generation)
     result = asyncio.run(generate_greeting(soul_db, user_id=user_id, runtime_db=None))
 
     assert result.ambient_dream_id is None
@@ -900,7 +955,11 @@ def test_confirm_renews_a_live_claim_and_hands_back_a_new_token(soul_db) -> None
     token = claim_token(claim.claimed_at)
 
     confirmed = confirm_claim(
-        soul_db, user_id=user_id, dream_id=claim.dream_id, token=token
+        soul_db,
+        user_id=user_id,
+        dream_id=claim.dream_id,
+        token=token,
+        now=claim.claimed_at + timedelta(seconds=1),
     )
     soul_db.commit()
     assert confirmed is not None
@@ -910,13 +969,10 @@ def test_confirm_renews_a_live_claim_and_hands_back_a_new_token(soul_db) -> None
     assert confirmed.token != token
     assert confirmed.expires_at > claim_expires_at(claim.claimed_at)
     # The old token is spent — a replay of the pre-confirm state cannot voice.
-    assert (
-        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
-        is None
-    )
+    assert confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token) is None
 
 
-def test_confirm_refuses_a_claim_the_server_already_re_offered(soul_db) -> None:
+def test_confirm_refuses_a_claim_the_server_already_re_offered(soul_db, monkeypatch) -> None:
     """THE duplicate-disclosure guard. A stashed greeting whose claim lapsed
     while the user was away — and which a second greeting has since claimed —
     must not voice its copy, however the device clock reads."""
@@ -926,6 +982,16 @@ def test_confirm_refuses_a_claim_the_server_already_re_offered(soul_db) -> None:
         confirm_claim,
     )
 
+    reference = datetime.now(UTC)
+    step = timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
+    instants = iter((reference, reference + step))
+
+    class ProtocolClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(instants)
+
+    monkeypatch.setattr(proactive, "datetime", ProtocolClock)
     user_id = _seed(soul_db)
     first = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert first is not None
@@ -933,9 +999,7 @@ def test_confirm_refuses_a_claim_the_server_already_re_offered(soul_db) -> None:
 
     # The user never saw it; the claim lapses and a later greeting takes it.
     row = soul_db.scalars(select(DreamJournal)).one()
-    row.claimed_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1
-    )
+    row.claimed_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
     soul_db.commit()
     second = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert second is not None
@@ -944,21 +1008,16 @@ def test_confirm_refuses_a_claim_the_server_already_re_offered(soul_db) -> None:
 
     # The first client returns and tries to voice its copy: refused.
     assert (
-        confirm_claim(
-            soul_db, user_id=user_id, dream_id=first.dream_id, token=stale_token
-        )
-        is None
+        confirm_claim(soul_db, user_id=user_id, dream_id=first.dream_id, token=stale_token) is None
     )
     # And the live claim is untouched — the second greeting still owns it.
     assert (
-        confirm_claim(
-            soul_db, user_id=user_id, dream_id=second.dream_id, token=second_token
-        )
+        confirm_claim(soul_db, user_id=user_id, dream_id=second.dream_id, token=second_token)
         is not None
     )
 
 
-def test_a_stale_ack_cannot_surface_the_dream_or_clear_a_newer_claim(soul_db) -> None:
+def test_a_stale_ack_cannot_surface_the_dream_or_clear_a_newer_claim(soul_db, monkeypatch) -> None:
     """Regression (PR #135 review, P1): the ack used to check only
     user/id/surfaced, so a client whose claim had lapsed could mark the dream
     surfaced and wipe the claim of the greeting currently disclosing it."""
@@ -968,23 +1027,32 @@ def test_a_stale_ack_cannot_surface_the_dream_or_clear_a_newer_claim(soul_db) ->
         claim_token,
     )
 
+    # Advance the protocol clock when simulating claim expiry. Fast in-memory
+    # preference fixtures can otherwise take both claims in one Windows tick.
+    reference = datetime.now(UTC)
+    instants = iter(
+        (reference, reference + timedelta(minutes=settings.dream_claim_ttl_minutes + 1))
+    )
+
+    class ProtocolClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(instants)
+
+    monkeypatch.setattr(proactive, "datetime", ProtocolClock)
     user_id = _seed(soul_db)
     first = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert first is not None
     stale_token = claim_token(first.claimed_at)
 
     row = soul_db.scalars(select(DreamJournal)).one()
-    row.claimed_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1
-    )
+    row.claimed_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
     soul_db.commit()
     second = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert second is not None
 
     assert (
-        acknowledge_dream(
-            soul_db, user_id=user_id, dream_id=first.dream_id, token=stale_token
-        )
+        acknowledge_dream(soul_db, user_id=user_id, dream_id=first.dream_id, token=stale_token)
         is False
     )
     soul_db.commit()
@@ -1016,26 +1084,16 @@ def test_confirm_refuses_after_acknowledgement_and_on_garbage_tokens(soul_db) ->
     token = claim_token(claim.claimed_at)
 
     assert (
-        confirm_claim(
-            soul_db, user_id=user_id, dream_id=claim.dream_id, token="not-a-timestamp"
-        )
+        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token="not-a-timestamp")
         is None
     )
     assert (
-        confirm_claim(
-            soul_db, user_id=user_id + 99, dream_id=claim.dream_id, token=token
-        )
-        is None
+        confirm_claim(soul_db, user_id=user_id + 99, dream_id=claim.dream_id, token=token) is None
     )
-    acknowledge_dream(
-        soul_db, user_id=user_id, dream_id=claim.dream_id, token=token
-    )
+    acknowledge_dream(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
     soul_db.commit()
     # Acknowledged dreams are gone for good — no confirmation revives them.
-    assert (
-        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
-        is None
-    )
+    assert confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token) is None
 
 
 def test_confirming_extends_the_window_the_dream_stays_unofferable(soul_db) -> None:
@@ -1072,9 +1130,7 @@ def test_confirming_extends_the_window_the_dream_stays_unofferable(soul_db) -> N
     )
     assert (
         soul_db.scalars(
-            offerable_dream_query(
-                user_id, now=confirmed.expires_at + timedelta(microseconds=1)
-            )
+            offerable_dream_query(user_id, now=confirmed.expires_at + timedelta(microseconds=1))
         ).first()
         is not None
     )
@@ -1095,14 +1151,11 @@ def test_confirm_refuses_after_consent_is_withdrawn(soul_db) -> None:
     assert claim is not None
     token = claim_token(claim.claimed_at)
 
-    cfg = get_or_create_presence_config(soul_db, user_id)
+    cfg = _presence_preferences(soul_db, user_id)
     cfg.dream_sharing = "off"
     soul_db.commit()
 
-    assert (
-        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
-        is None
-    )
+    assert confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token) is None
     # Not surfaced and still claimed: the claim lapses on its own rather than
     # being cleared, since clearing unconditionally would also drop a NEWER
     # greeting's claim.
@@ -1113,10 +1166,7 @@ def test_confirm_refuses_after_consent_is_withdrawn(soul_db) -> None:
     # Re-enabling ambient makes the very same claim voiceable again.
     cfg.dream_sharing = "ambient"
     soul_db.commit()
-    assert (
-        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token)
-        is not None
-    )
+    assert confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=token) is not None
 
 
 def test_confirm_refuses_when_the_presence_master_switch_is_off(soul_db) -> None:
@@ -1129,7 +1179,7 @@ def test_confirm_refuses_when_the_presence_master_switch_is_off(soul_db) -> None
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
 
-    cfg = get_or_create_presence_config(soul_db, user_id)
+    cfg = _presence_preferences(soul_db, user_id)
     cfg.enabled = False
     soul_db.commit()
 
@@ -1179,9 +1229,7 @@ def test_confirm_refuses_an_expired_claim_generation(soul_db) -> None:
 
     # The claim lapses; nothing has re-claimed it yet, so the token still
     # matches the stored value exactly.
-    expired_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1
-    )
+    expired_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
     row = soul_db.scalars(select(DreamJournal)).one()
     row.claimed_at = expired_at
     soul_db.commit()
@@ -1189,10 +1237,7 @@ def test_confirm_refuses_an_expired_claim_generation(soul_db) -> None:
     assert soul_db.scalars(offerable_dream_query(user_id)).first() is not None
 
     assert (
-        confirm_claim(
-            soul_db, user_id=user_id, dream_id=claim.dream_id, token=stale_token
-        )
-        is None
+        confirm_claim(soul_db, user_id=user_id, dream_id=claim.dream_id, token=stale_token) is None
     )
     # And the row is untouched, so whoever claims it next still can.
     row = soul_db.scalars(select(DreamJournal)).one()
@@ -1217,9 +1262,7 @@ def test_a_late_acknowledgement_is_still_honoured(soul_db) -> None:
     claim = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert claim is not None
 
-    expired_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1
-    )
+    expired_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
     row = soul_db.scalars(select(DreamJournal)).one()
     row.claimed_at = expired_at
     soul_db.commit()
@@ -1237,7 +1280,7 @@ def test_a_late_acknowledgement_is_still_honoured(soul_db) -> None:
     assert soul_db.scalars(select(DreamJournal)).one().surfaced is True
 
 
-def test_release_cannot_clear_a_newer_greetings_claim(soul_db) -> None:
+def test_release_cannot_clear_a_newer_greetings_claim(soul_db, monkeypatch) -> None:
     """Regression (PR #135 review, P1): the release was id-only. Generation
     can outlast the TTL — it is configurable and two LLM calls are involved
     — so by the time a request reaches its consent check another greeting
@@ -1250,6 +1293,16 @@ def test_release_cannot_clear_a_newer_greetings_claim(soul_db) -> None:
         release_claim,
     )
 
+    reference = datetime.now(UTC)
+    step = timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
+    instants = iter((reference, reference + step))
+
+    class ProtocolClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(instants)
+
+    monkeypatch.setattr(proactive, "datetime", ProtocolClock)
     user_id = _seed(soul_db)
     first = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert first is not None
@@ -1258,9 +1311,7 @@ def test_release_cannot_clear_a_newer_greetings_claim(soul_db) -> None:
     # The first greeting is still generating when its claim lapses and a
     # second greeting takes the dream.
     row = soul_db.scalars(select(DreamJournal)).one()
-    row.claimed_at = datetime.now(UTC) - timedelta(
-        minutes=settings.dream_claim_ttl_minutes + 1
-    )
+    row.claimed_at = datetime.now(UTC) - timedelta(minutes=settings.dream_claim_ttl_minutes + 1)
     soul_db.commit()
     second = _resolve_ambient_dream(soul_db, user_id=user_id)
     assert second is not None
@@ -1268,10 +1319,7 @@ def test_release_cannot_clear_a_newer_greetings_claim(soul_db) -> None:
     # The first request's consent check fails and it releases — its OWN
     # generation, which no longer holds the row.
     assert (
-        release_claim(
-            soul_db, dream_id=first.dream_id, user_id=user_id, token=stale_token
-        )
-        is False
+        release_claim(soul_db, dream_id=first.dream_id, user_id=user_id, token=stale_token) is False
     )
     soul_db.commit()
     assert soul_db.scalars(select(DreamJournal)).one().claimed_at is not None

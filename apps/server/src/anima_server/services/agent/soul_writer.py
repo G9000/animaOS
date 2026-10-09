@@ -49,13 +49,9 @@ def _extraction_retry_wait_seconds() -> float:
     from anima_server.config import settings
 
     attempts = settings.agent_llm_retry_limit + 1
-    max_backoff_total = (
-        settings.agent_llm_retry_limit * settings.agent_llm_retry_max_delay
-    )
+    max_backoff_total = settings.agent_llm_retry_limit * settings.agent_llm_retry_max_delay
     return (
-        attempts * settings.agent_llm_timeout
-        + max_backoff_total
-        + EXTRACTION_RETRY_TIMEOUT_BUFFER
+        attempts * settings.agent_llm_timeout + max_backoff_total + EXTRACTION_RETRY_TIMEOUT_BUFFER
     )
 
 
@@ -136,11 +132,9 @@ async def _embed_and_index_item(
             soul_db.commit()
 
         invalidate_index(user_id)
-        logger.debug(
-            "Embedded and indexed promoted item %d for user %s", item_id, user_id)
+        logger.debug("Embedded and indexed promoted item %d for user %s", item_id, user_id)
     except Exception:
-        logger.debug("Failed to embed promoted item %d",
-                     item_id, exc_info=True)
+        logger.debug("Failed to embed promoted item %d", item_id, exc_info=True)
 
 
 async def run_soul_writer(
@@ -161,8 +155,7 @@ async def run_soul_writer(
 
     # Non-blocking acquire — if another run is in progress, skip
     if lock.locked():
-        logger.debug(
-            "Soul Writer already running for user %s, skipping", user_id)
+        logger.debug("Soul Writer already running for user %s, skipping", user_id)
         return result
 
     async with lock:
@@ -394,9 +387,7 @@ def _run_soul_writer_inner(
                     .limit(remaining)
                 ).all()
             )
-            candidates.extend(
-                c for c in failed_retryable if c.content_hash not in active_hashes
-            )
+            candidates.extend(c for c in failed_retryable if c.content_hash not in active_hashes)
 
         for candidate in candidates:
             candidate.status = "queued"
@@ -421,7 +412,8 @@ def _run_soul_writer_inner(
                 except _IE:
                     logger.debug(
                         "Skipping candidate %s: active duplicate hash %s",
-                        candidate.id, candidate.content_hash,
+                        candidate.id,
+                        candidate.content_hash,
                     )
                     candidate.status = "failed"
                     reseal_memory_candidate_error(
@@ -443,8 +435,7 @@ def _run_soul_writer_inner(
                     event_loop=event_loop,
                 )
             except Exception as e:
-                logger.exception(
-                    "Soul Writer candidate %s failed", candidate.id)
+                logger.exception("Soul Writer candidate %s failed", candidate.id)
                 candidate.status = "failed"
                 reseal_memory_candidate_error(
                     runtime_db,
@@ -478,6 +469,7 @@ def _run_soul_writer_inner(
             try:
                 _process_profile_update_candidate(
                     candidate,
+                    runtime_db=runtime_db,
                     soul_db_factory=soul_factory,
                     result=result,
                 )
@@ -487,9 +479,7 @@ def _run_soul_writer_inner(
                     last_error=None,
                 )
             except Exception as e:
-                logger.exception(
-                    "Soul Writer profile update candidate %s failed", candidate.id
-                )
+                logger.exception("Soul Writer profile update candidate %s failed", candidate.id)
                 candidate.status = "failed"
                 reseal_profile_update_candidate_error(
                     runtime_db,
@@ -671,9 +661,7 @@ def _retry_memory_extraction_failures(
                 source="llm",
                 source_message_ids=list(failure.source_message_ids or []),
                 extraction_model=failure.extraction_model,
-                salience=item.get("salience")
-                if isinstance(item.get("salience"), dict)
-                else None,
+                salience=item.get("salience") if isinstance(item.get("salience"), dict) else None,
             )
 
         create_profile_update_candidates_from_payload(
@@ -797,8 +785,7 @@ def _process_pending_op(
 
     # Idempotency check 2: content-based check against current block state
     with soul_db_factory() as soul_db:
-        block = _get_soul_block(soul_db, user_id=user_id,
-                                section=op.target_block)
+        block = _get_soul_block(soul_db, user_id=user_id, section=op.target_block)
         if block is not None:
             current_content = df(
                 user_id,
@@ -871,6 +858,7 @@ def _process_pending_op(
 def _process_profile_update_candidate(
     candidate,
     *,
+    runtime_db: Session,
     soul_db_factory: Callable,
     result: SoulWriterResult,
 ) -> None:
@@ -878,7 +866,7 @@ def _process_profile_update_candidate(
     from anima_server.services.agent.user_profile import promote_profile_update_candidate
 
     with soul_db_factory() as soul_db:
-        promote_profile_update_candidate(soul_db, candidate=candidate)
+        promote_profile_update_candidate(soul_db, candidate=candidate, runtime_db=runtime_db)
         soul_db.commit()
 
     candidate.status = "promoted"
@@ -1018,8 +1006,7 @@ def _process_candidate(
                     evidence_text=candidate.content,
                 )
             except Exception:
-                logger.debug(
-                    "upsert_claim failed for candidate %s", candidate.id)
+                logger.debug("upsert_claim failed for candidate %s", candidate.id)
 
             from anima_server.services.agent.provenance import (
                 add_candidate_memory_item_evidence,
@@ -1196,8 +1183,7 @@ def _process_candidate(
                     evidence_text=candidate.content,
                 )
             except Exception:
-                logger.debug(
-                    "upsert_claim failed for candidate %s", candidate.id)
+                logger.debug("upsert_claim failed for candidate %s", candidate.id)
 
             from anima_server.services.agent.provenance import (
                 add_candidate_memory_item_evidence,

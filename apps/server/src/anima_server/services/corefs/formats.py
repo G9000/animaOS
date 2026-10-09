@@ -148,16 +148,9 @@ MediaReferenceFactory = Callable[[str, bytes, str], str]
 def canonicalize_diary_html(
     source: str,
     *,
-    legacy_plain_text: bool = False,
     media_reference_factory: MediaReferenceFactory | None = None,
     max_inline_media_bytes: int = MAX_INLINE_MEDIA_BYTES,
 ) -> CanonicalDiaryHtml:
-    if legacy_plain_text:
-        source = "".join(
-            f"<p>{html.escape(paragraph, quote=False)}</p>"
-            for paragraph in re.split(r"(?:\r?\n){2,}", source)
-            if paragraph
-        )
     parser = _DiarySanitizer(max_inline_media_bytes=max_inline_media_bytes)
     try:
         parser.feed(source)
@@ -193,7 +186,6 @@ def encode_diary_document(
     cover_uri: str | None,
     attachment_uris: tuple[str, ...] = (),
     media_reference_factory: MediaReferenceFactory | None = None,
-    legacy_plain_text: bool = False,
     legacy_id: int | None = None,
     legacy_folder_id: int | None = None,
     source: str | None = None,
@@ -204,7 +196,6 @@ def encode_diary_document(
     _validate_writing_body_length(html)
     canonical = canonicalize_diary_html(
         html,
-        legacy_plain_text=legacy_plain_text,
         media_reference_factory=media_reference_factory,
     )
     _validate_stable_id(stable_id)

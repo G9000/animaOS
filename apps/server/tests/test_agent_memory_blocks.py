@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import SimpleNamespace
+from uuid import uuid4
 
+import pytest
 from anima_server.db.base import Base
-from anima_server.models import AgentThread, MemoryItem, User
+from anima_server.models import MemoryItem, SoulOwner
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.memory_blocks import build_runtime_memory_blocks
 from anima_server.services.agent.persistence import load_thread_history
@@ -13,6 +16,20 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+@pytest.fixture(autouse=True)
+def _portable_content_boundaries(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These unit tests exercise block composition; account/trash authority has
+    # dedicated native CoreFS integration coverage. No profile lives in Soul.
+    from anima_server.services.agent import memory_blocks
+
+    profile = SimpleNamespace(display_name="Alice", gender=None, age=30, birthday=None)
+    monkeypatch.setattr(memory_blocks, "read_active_account_profile", lambda user_id: profile)
+    monkeypatch.setattr(
+        memory_blocks, "require_active_task_authority_session", lambda user_id: object()
+    )
+    monkeypatch.setattr(memory_blocks, "list_canonical_tasks", lambda *, session: [])
 
 
 @contextmanager
@@ -41,18 +58,8 @@ def _db_session() -> Generator[Session, None, None]:
 
 def test_build_runtime_memory_blocks_includes_human_and_thread_summary() -> None:
     with _db_session() as session, runtime_db_session() as rt_session:
-        user = User(
-            username="alice-memory",
-            password_hash="not-used",
-            display_name="Alice",
-            age=30,
-            birthday="1995-03-15",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
-        session.flush()
-
-        thread = AgentThread(user_id=user.id, status="active")
-        session.add(thread)
         session.flush()
 
         # Insert summary into runtime DB (P2: summaries live in PG)
@@ -90,18 +97,14 @@ def test_build_runtime_memory_blocks_includes_human_and_thread_summary() -> None
 
 
 def test_build_runtime_memory_blocks_includes_facts_and_preferences() -> None:
-    with _db_session() as session:
-        user = User(
-            username="facts-prefs",
-            password_hash="not-used",
-            display_name="Facts Prefs",
-        )
+    with _db_session() as session, runtime_db_session() as rt_session:
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
         session.flush()
 
-        thread = AgentThread(user_id=user.id, status="active")
-        session.add(thread)
-        session.flush()
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.flush()
 
         session.add_all(
             [
@@ -127,6 +130,7 @@ def test_build_runtime_memory_blocks_includes_facts_and_preferences() -> None:
             session,
             user_id=user.id,
             thread_id=thread.id,
+            runtime_db=rt_session,
         )
 
     labels = [block.label for block in blocks]
@@ -139,18 +143,14 @@ def test_build_runtime_memory_blocks_includes_facts_and_preferences() -> None:
 
 
 def test_build_runtime_memory_blocks_includes_current_focus_from_db() -> None:
-    with _db_session() as session:
-        user = User(
-            username="focus-memory",
-            password_hash="not-used",
-            display_name="Focus Memory",
-        )
+    with _db_session() as session, runtime_db_session() as rt_session:
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
         session.flush()
 
-        thread = AgentThread(user_id=user.id, status="active")
-        session.add(thread)
-        session.flush()
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.flush()
 
         session.add(
             MemoryItem(
@@ -167,6 +167,7 @@ def test_build_runtime_memory_blocks_includes_current_focus_from_db() -> None:
             session,
             user_id=user.id,
             thread_id=thread.id,
+            runtime_db=rt_session,
         )
 
     labels = [block.label for block in blocks]
@@ -176,24 +177,21 @@ def test_build_runtime_memory_blocks_includes_current_focus_from_db() -> None:
 
 
 def test_build_runtime_memory_blocks_omits_empty_focus() -> None:
-    with _db_session() as session:
-        user = User(
-            username="no-focus",
-            password_hash="not-used",
-            display_name="No Focus",
-        )
+    with _db_session() as session, runtime_db_session() as rt_session:
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
         session.flush()
 
-        thread = AgentThread(user_id=user.id, status="active")
-        session.add(thread)
-        session.flush()
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.flush()
         session.commit()
 
         blocks = build_runtime_memory_blocks(
             session,
             user_id=user.id,
             thread_id=thread.id,
+            runtime_db=rt_session,
         )
 
     labels = [block.label for block in blocks]
@@ -239,18 +237,14 @@ def test_load_thread_history_excludes_summary_messages() -> None:
 def test_semantic_block_items_excluded_from_category_blocks() -> None:
     """Items rendered in relevant_memories must not be duplicated in the
     facts/preferences category blocks."""
-    with _db_session() as session:
-        user = User(
-            username="dedup-blocks",
-            password_hash="not-used",
-            display_name="Dedup Blocks",
-        )
+    with _db_session() as session, runtime_db_session() as rt_session:
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
         session.flush()
 
-        thread = AgentThread(user_id=user.id, status="active")
-        session.add(thread)
-        session.flush()
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.flush()
 
         shown = MemoryItem(
             user_id=user.id,
@@ -273,8 +267,8 @@ def test_semantic_block_items_excluded_from_category_blocks() -> None:
             session,
             user_id=user.id,
             thread_id=thread.id,
-            semantic_results=[
-                (shown.id, "Works as a software engineer", 0.92)],
+            runtime_db=rt_session,
+            semantic_results=[(shown.id, "Works as a software engineer", 0.92)],
         )
 
     semantic_block = next(b for b in blocks if b.label == "relevant_memories")
@@ -293,17 +287,13 @@ def test_static_and_turn_block_partition() -> None:
         build_turn_memory_blocks,
     )
 
-    with _db_session() as session:
-        user = User(
-            username="partition",
-            password_hash="not-used",
-            display_name="Partition",
-        )
+    with _db_session() as session, runtime_db_session() as rt_session:
+        user = SoulOwner(core_owner_id=str(uuid4()))
         session.add(user)
         session.flush()
-        thread = AgentThread(user_id=user.id, status="active")
-        session.add(thread)
-        session.flush()
+        thread = RuntimeThread(user_id=user.id, status="active")
+        rt_session.add(thread)
+        rt_session.flush()
         session.add(
             MemoryItem(
                 user_id=user.id,
@@ -315,11 +305,13 @@ def test_static_and_turn_block_partition() -> None:
         )
         session.commit()
 
-        static = build_static_memory_blocks(session, user_id=user.id)
+        static = build_static_memory_blocks(session, user_id=user.id, runtime_db=rt_session)
         turn = build_turn_memory_blocks(
-            session, user_id=user.id, thread_id=thread.id)
+            session, user_id=user.id, thread_id=thread.id, runtime_db=rt_session
+        )
         full = build_runtime_memory_blocks(
-            session, user_id=user.id, thread_id=thread.id)
+            session, user_id=user.id, thread_id=thread.id, runtime_db=rt_session
+        )
 
     static_labels = {b.label for b in static}
     turn_labels = {b.label for b in turn}
@@ -336,7 +328,11 @@ def test_static_and_turn_block_partition() -> None:
     # (self-model, emotional patterns, current focus, episodes) MUST stay
     # per-turn or they go stale — this guards against that regression.
     SAFE_STATIC = {
-        "soul", "persona", "human", "world_context", "user_directive",
+        "soul",
+        "persona",
+        "human",
+        "world_context",
+        "user_directive",
     }
     assert static_labels <= SAFE_STATIC, (
         f"unsafe blocks cached as static: {static_labels - SAFE_STATIC}"

@@ -101,9 +101,7 @@ def _newest_episode_at(db: Any, user_id: int) -> datetime | None:
 
     return _as_utc(
         db.scalar(
-            select(sa_func.max(MemoryEpisode.created_at)).where(
-                MemoryEpisode.user_id == user_id
-            )
+            select(sa_func.max(MemoryEpisode.created_at)).where(MemoryEpisode.user_id == user_id)
         )
     )
 
@@ -178,6 +176,7 @@ def _inputs_changed_since_last_run(
 
 # ── Task tracking ────────────────────────────────────────────────────
 
+
 async def _issue_background_task(
     *,
     user_id: int,
@@ -212,10 +211,16 @@ async def _issue_background_task(
         rt_db.commit()
         run_id = run.id
 
-    health_emit("background", "task_start", "trace", user_id=user_id, data={
-        "task_type": task_type,
-        "run_id": run_id,
-    })
+    health_emit(
+        "background",
+        "task_start",
+        "trace",
+        user_id=user_id,
+        data={
+            "task_type": task_type,
+            "run_id": run_id,
+        },
+    )
 
     # Mark running
     status = "running"
@@ -249,10 +254,16 @@ async def _issue_background_task(
             **task_kwargs,
         )
         status = "completed"
-        health_emit("background", "task_complete", "trace", user_id=user_id, data={
-            "task_type": task_type,
-            "run_id": run_id,
-        })
+        health_emit(
+            "background",
+            "task_complete",
+            "trace",
+            user_id=user_id,
+            data={
+                "task_type": task_type,
+                "run_id": run_id,
+            },
+        )
         if isinstance(result, dict):
             result_json = result
     except Exception as exc:
@@ -264,11 +275,17 @@ async def _issue_background_task(
             run_id,
             user_id,
         )
-        health_emit("background", "task_failed", "error", user_id=user_id, data={
-            "task_type": task_type,
-            "run_id": run_id,
-            "error": str(exc),
-        })
+        health_emit(
+            "background",
+            "task_failed",
+            "error",
+            user_id=user_id,
+            data={
+                "task_type": task_type,
+                "run_id": run_id,
+                "error": str(exc),
+            },
+        )
 
     # Always update final status
     try:
@@ -572,8 +589,7 @@ async def run_sleeptime_agents(
         if companion is not None:
             companion.invalidate_memory()
     except Exception:
-        logger.debug(
-            "Companion cache invalidation failed for user %s", user_id)
+        logger.debug("Companion cache invalidation failed for user %s", user_id)
 
     return run_ids
 
@@ -693,9 +709,7 @@ def _runtime_message_cursor(
         if thread_id is not None:
             filters.append(RuntimeMessage.thread_id == thread_id)
 
-        latest_message_id = rt_db.scalar(
-            select(func.max(RuntimeMessage.id)).where(*filters)
-        )
+        latest_message_id = rt_db.scalar(select(func.max(RuntimeMessage.id)).where(*filters))
         if latest_message_id is None:
             return None
 
@@ -732,10 +746,7 @@ def _has_unprocessed_memory_backlog(
     )
     backlog_message_ids: set[int] = set()
     for candidate in candidates:
-        if (
-            candidate.status == "failed"
-            and (candidate.retry_count or 0) >= MAX_RETRY_COUNT
-        ):
+        if candidate.status == "failed" and (candidate.retry_count or 0) >= MAX_RETRY_COUNT:
             continue
         for message_id in candidate.source_message_ids or []:
             try:
@@ -879,22 +890,20 @@ async def _task_embedding_backfill(
             # still stale (re-embed is per-user; soul stores are per-user
             # encrypted so there is no global reset).
             with factory() as db:
-                from sqlalchemy import func as sa_func
                 from sqlalchemy import select
 
                 from anima_server.models import MemoryItem
+                from anima_server.services.agent.derived_soul_state import _entry
 
-                remaining = db.scalar(
-                    select(sa_func.count())
-                    .select_from(MemoryItem)
-                    .where(
-                        MemoryItem.user_id == user_id,
-                        MemoryItem.superseded_by.is_(None),
-                        MemoryItem.embedding_json.is_(None),
-                        # IL5 tombstones never get an embedding — excluding
-                        # them lets the re-embed completion check reach zero.
-                        MemoryItem.distilled_at.is_(None),
-                    )
+                remaining = any(
+                    _entry(item, rebuild=False) is None
+                    for item in db.scalars(
+                        select(MemoryItem).where(
+                            MemoryItem.user_id == user_id,
+                            MemoryItem.superseded_by.is_(None),
+                            MemoryItem.distilled_at.is_(None),
+                        )
+                    ).all()
                 )
             if not remaining:
                 mark_user_reembed_complete(user_id)
@@ -909,8 +918,7 @@ async def _task_embedding_backfill(
             with factory() as db:
                 resynced = sync_to_vector_store(db, user_id=user_id)
             logger.info(
-                "Re-synced %d embeddings to the vector store for user %s "
-                "after a failed upsert",
+                "Re-synced %d embeddings to the vector store for user %s after a failed upsert",
                 resynced,
                 user_id,
             )
@@ -919,8 +927,7 @@ async def _task_embedding_backfill(
             sweep_orphaned_runtime_embeddings(db, user_id=user_id)
     except Exception:
         logger.debug(
-            "Embedding maintenance (contract/re-sync/orphan sweep) failed "
-            "for user %s",
+            "Embedding maintenance (contract/re-sync/orphan sweep) failed for user %s",
             user_id,
             exc_info=True,
         )
@@ -1088,9 +1095,7 @@ async def _task_knowledge_autocompile(
 # let a single pathological file, which sorts first by document id and stays
 # an indexed preview candidate, head-of-line-block every document behind it
 # forever. Such a file is skipped and the loop continues.
-_REPARSE_ABORT_STATUSES = frozenset(
-    {"pack_not_ready", "parser_unavailable", "upgraded_unembedded"}
-)
+_REPARSE_ABORT_STATUSES = frozenset({"pack_not_ready", "parser_unavailable", "upgraded_unembedded"})
 
 
 async def _task_reparse_pending_documents(
@@ -1161,8 +1166,7 @@ async def _task_reparse_pending_documents(
                     # cycle — and, since candidates are id-ordered, crash it
                     # again every run, starving every document behind it.
                     logger.warning(
-                        "Auto-reparse raised for document %s; recording failure "
-                        "and skipping",
+                        "Auto-reparse raised for document %s; recording failure and skipping",
                         document_id,
                         exc_info=True,
                     )
@@ -1219,16 +1223,10 @@ async def _task_reparse_pending_documents(
         if not candidates:
             return "no documents pending reparse"
         if embeddings_unavailable:
-            return (
-                f"reparsed {reparsed} documents "
-                f"(embeddings unavailable, {pending} pending)"
-            )
+            return f"reparsed {reparsed} documents (embeddings unavailable, {pending} pending)"
         degraded_note = f", {degraded} could not be parsed" if degraded else ""
         if pending or degraded:
-            return (
-                f"reparsed {reparsed} documents "
-                f"({pending} pending{degraded_note})"
-            )
+            return f"reparsed {reparsed} documents ({pending} pending{degraded_note})"
         return f"reparsed {reparsed} documents"
 
     return await asyncio.to_thread(_reparse_cycle)

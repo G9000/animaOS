@@ -5,13 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 from anima_server.api.routes import knowledge as knowledge_route
-from anima_server.services.corefs.asset_migration import (
-    PortableKnowledgeSource,
-    build_portable_asset_shadow,
-)
 from anima_server.services.corefs.indexer import (
     CoreFSKnowledgeSourceProjection,
     CoreFSProgressiveIndex,
+)
+from corefs_asset_test_support import (
+    PortableKnowledgeSource,
+    build_portable_asset_shadow,
 )
 
 
@@ -55,12 +55,11 @@ def test_web_capture_preserves_raw_html_and_exact_normalized_snapshot() -> None:
     by_kind = {item.descriptor.metadata["artifactKind"]: item for item in sources}
     assert by_kind["raw_html"].body == raw_html
     assert by_kind["normalized_markdown"].body == normalized
-    assert by_kind["raw_html"].descriptor.content_sha256 == hashlib.sha256(
-        raw_html
-    ).hexdigest()
-    assert by_kind["normalized_markdown"].descriptor.content_sha256 == hashlib.sha256(
-        normalized
-    ).hexdigest()
+    assert by_kind["raw_html"].descriptor.content_sha256 == hashlib.sha256(raw_html).hexdigest()
+    assert (
+        by_kind["normalized_markdown"].descriptor.content_sha256
+        == hashlib.sha256(normalized).hexdigest()
+    )
     assert not any(
         item.descriptor.kind in {"document-chunk", "source-span", "knowledge-concept"}
         for item in shadow.objects

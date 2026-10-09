@@ -5,11 +5,12 @@ from collections.abc import Generator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta, tzinfo
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 from anima_server.db.base import Base
 from anima_server.db.runtime_base import RuntimeBase
-from anima_server.models import AgentProfile, MemoryEpisode, User
+from anima_server.models import AgentProfile, MemoryEpisode, SoulOwner
 from anima_server.models.runtime import RuntimeMessage, RuntimeThread
 from anima_server.services.agent.episodes import maybe_generate_episode
 from sqlalchemy import BigInteger, create_engine
@@ -146,11 +147,7 @@ async def test_maybe_generate_episode_uses_user_scoped_soul_factory_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with _dual_db_sessions() as (soul_session, soul_factory, _rt_session, rt_factory):
-        user = User(
-            username="episode-default-factory",
-            password_hash="not-used",
-            display_name="Episode Default Factory",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -184,11 +181,7 @@ async def test_maybe_generate_episode_uses_user_scoped_soul_factory_by_default(
 @pytest.mark.asyncio
 async def test_maybe_generate_episode_requires_minimum_turns() -> None:
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-test",
-            password_hash="not-used",
-            display_name="Episode Test",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -217,11 +210,7 @@ async def test_maybe_generate_episode_requires_minimum_turns() -> None:
 @pytest.mark.asyncio
 async def test_maybe_generate_episode_creates_episode_with_enough_turns() -> None:
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-gen",
-            password_hash="not-used",
-            display_name="Episode Gen",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -238,8 +227,7 @@ async def test_maybe_generate_episode_creates_episode_with_enough_turns() -> Non
             message_pairs=[
                 ("I'm working on a project.", "Tell me more about it!"),
                 ("It's an AI companion.", "Sounds fascinating."),
-                ("I want it to remember things.",
-                 "Memory is crucial for companionship."),
+                ("I want it to remember things.", "Memory is crucial for companionship."),
             ],
         )
 
@@ -255,8 +243,7 @@ async def test_maybe_generate_episode_creates_episode_with_enough_turns() -> Non
         assert result.summary
 
         with soul_factory() as db2:
-            episodes = db2.query(MemoryEpisode).filter_by(
-                user_id=user.id).all()
+            episodes = db2.query(MemoryEpisode).filter_by(user_id=user.id).all()
             assert len(episodes) == 1
 
 
@@ -268,11 +255,7 @@ async def test_maybe_generate_episode_uses_preview_when_llm_summary_is_missing(
     from anima_server.services.data_crypto import df
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-missing-summary",
-            password_hash="not-used",
-            display_name="Episode Missing Summary",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -314,11 +297,7 @@ async def test_maybe_generate_episode_uses_preview_when_llm_summary_is_missing(
 @pytest.mark.asyncio
 async def test_maybe_generate_episode_skips_already_episoded_turns() -> None:
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-dedup",
-            password_hash="not-used",
-            display_name="Episode Dedup",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -330,10 +309,7 @@ async def test_maybe_generate_episode_skips_already_episoded_turns() -> None:
             rt_session,
             user_id=user.id,
             thread_id=thread.id,
-            message_pairs=[
-                (f"Message {i}", f"Response {i}")
-                for i in range(4)
-            ],
+            message_pairs=[(f"Message {i}", f"Response {i}") for i in range(4)],
         )
 
         first = await maybe_generate_episode(
@@ -445,13 +421,16 @@ async def test_maybe_generate_episode_passes_timestamp_names_and_preserves_detai
         datetime(2026, 6, 29, 12, 0, tzinfo=UTC),
     )
 
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        episodes_module,
+        "read_active_account_profile",
+        lambda _: SimpleNamespace(display_name="Leo"),
+    )
     first_turn_at = datetime(2026, 6, 29, 2, 15, 30, tzinfo=UTC)
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-details",
-            password_hash="not-used",
-            display_name="Leo",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.flush()
         soul_session.add(
@@ -543,11 +522,7 @@ async def test_maybe_generate_episode_preserves_multilingual_user_details(
     )
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-multilingual-details",
-            password_hash="not-used",
-            display_name="Leo",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -623,11 +598,7 @@ async def test_maybe_generate_episode_uses_grounded_llm_salient_details(
     )
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-llm-grounded-details",
-            password_hash="not-used",
-            display_name="Leo",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -716,11 +687,7 @@ async def test_maybe_generate_episode_does_not_append_ordinary_turns_without_sal
     )
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-no-ordinary-fallback",
-            password_hash="not-used",
-            display_name="Leo",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -789,11 +756,7 @@ async def test_maybe_generate_episode_resolves_relative_dates_in_summary(
 
     first_turn_at = datetime(2026, 6, 29, 9, 0, tzinfo=UTC)
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-relative-date",
-            password_hash="not-used",
-            display_name="Leo",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 
@@ -861,11 +824,7 @@ async def test_maybe_generate_episode_resolves_relative_dates_from_matching_turn
     )
 
     with _dual_db_sessions() as (soul_session, soul_factory, rt_session, rt_factory):
-        user = User(
-            username="episode-relative-date-cross-midnight",
-            password_hash="not-used",
-            display_name="Leo",
-        )
+        user = SoulOwner(core_owner_id=str(uuid4()))
         soul_session.add(user)
         soul_session.commit()
 

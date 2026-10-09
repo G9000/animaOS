@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from anima_server.services.corefs.diary_migration import (
-    read_prepared_writing_body,
-    read_prepared_writing_snapshot,
-)
 from anima_server.services.corefs.formats import decode_task_document
 from anima_server.services.sessions import unlock_session_store
 from conftest import managed_test_client
+from corefs_catalog_test_support import (
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
 from fastapi.testclient import TestClient
 
 

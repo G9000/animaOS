@@ -43,14 +43,26 @@ def _core(managed_tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     try:
         soul.execute("PRAGMA journal_mode = WAL")
         soul.execute("CREATE TABLE alembic_version (version_num TEXT PRIMARY KEY)")
-        soul.execute("INSERT INTO alembic_version VALUES ('202608130001')")
-        soul.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, username TEXT NOT NULL)")
-        soul.execute("INSERT INTO users VALUES (7, 'owner')")
-        soul.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT NOT NULL)")
-        soul.execute("INSERT INTO memories VALUES (1, 'portable memory')")
+        soul.execute("INSERT INTO alembic_version VALUES ('20261009_0001')")
         soul.commit()
     finally:
         soul.close()
+    # This unit fixture mocks native encrypted inventory/writing, while exercising
+    # the actual current Soul schema and SQLite online WAL snapshot boundary.
+    from anima_server.db.base import Base
+    from anima_server.models import AgentProfile, SoulOwner
+    from sqlalchemy import create_engine
+
+    engine = create_engine(f"sqlite:///{(root / 'soul' / 'soul.db').as_posix()}")
+    try:
+        Base.metadata.create_all(engine)
+        with engine.begin() as connection:
+            connection.execute(SoulOwner.__table__.insert().values(id=7, core_owner_id=OWNER_ID))
+            connection.execute(
+                AgentProfile.__table__.insert().values(user_id=7, agent_name="portable profile")
+            )
+    finally:
+        engine.dispose()
     (root / "fs" / "HEAD").write_bytes(b"authenticated-head")
     catalog = "catalog-00000000000000000007-" + ("a" * 64) + ".acore"
     (root / "fs" / "catalogs" / catalog).write_bytes(b"encrypted-catalog")
@@ -177,9 +189,7 @@ def test_multipart_export_publishes_verified_native_parts_and_controller_last(
     def writer(path: str, _passphrase: bytes, request_json: str) -> dict[str, object]:
         request = json.loads(request_json)
         sources = request["sources"]
-        selected_bytes = sum(
-            Path(source["sourcePath"]).stat().st_size for source in sources
-        )
+        selected_bytes = sum(Path(source["sourcePath"]).stat().st_size for source in sources)
         summary = {
             "version": 2,
             "archiveId": request["archiveId"],
@@ -365,7 +375,9 @@ def test_live_export_snapshots_committed_wal_and_cleans_temporary_database(
     captured_snapshot: Path | None = None
     try:
         live.execute("PRAGMA wal_autocheckpoint = 0")
-        live.execute("INSERT INTO memories VALUES (2, 'committed only in WAL')")
+        live.execute(
+            "UPDATE agent_profile SET agent_name = 'committed only in WAL' WHERE user_id = 7"
+        )
         live.commit()
         wal_path = root / "soul" / "soul.db-wal"
         assert wal_path.is_file() and wal_path.stat().st_size > 0
@@ -379,9 +391,9 @@ def test_live_export_snapshots_committed_wal_and_cleans_temporary_database(
             assert captured_snapshot != root / "soul" / "soul.db"
             snapshot = sqlite3.connect(captured_snapshot)
             try:
-                assert snapshot.execute("SELECT content FROM memories WHERE id = 2").fetchone() == (
-                    "committed only in WAL",
-                )
+                assert snapshot.execute(
+                    "SELECT agent_name FROM agent_profile WHERE user_id = 7"
+                ).fetchone() == ("committed only in WAL",)
                 assert snapshot.execute("PRAGMA integrity_check").fetchone() == ("ok",)
             finally:
                 snapshot.close()
@@ -868,11 +880,28 @@ def test_stage_archive_failure_removes_all_staging_residue(
 
 def test_stage_archive_rejects_symbolic_link_source(
     managed_tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive = managed_tmp_path / "source.anima"
     archive.write_bytes(b"archive")
     alias = managed_tmp_path / "alias.anima"
-    alias.symlink_to(archive)
+    try:
+        alias.symlink_to(archive)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) != 1314:
+            raise
+        # Windows runners without symlink privilege still exercise the exact
+        # source-type rejection boundary, with no archive extractor invoked.
+        alias.write_bytes(b"alias boundary fixture")
+        original_is_symlink = Path.is_symlink
+        monkeypatch.setattr(
+            Path, "is_symlink", lambda path: path == alias or original_is_symlink(path)
+        )
+    monkeypatch.setattr(
+        anima_core_bindings,
+        "require_binding",
+        lambda _name: pytest.fail("symlink source reached extraction"),
+    )
 
     with pytest.raises(CoreArchiveTransferError, match="regular file"):
         stage_core_archive_v2(
@@ -880,3 +909,26 @@ def test_stage_archive_rejects_symbolic_link_source(
             passphrase="correct horse battery staple",
             staging_path=managed_tmp_path / ".restore.partial",
         )
+
+
+def test_archive_freezes_current_snapshot_recovery_pointers_together(managed_tmp_path: Path):
+    head = managed_tmp_path / "HEAD"
+    head.write_bytes(b"authenticated current HeadRecord serialization")
+    snapshots = managed_tmp_path / "snapshots"
+    snapshots.mkdir()
+    sources = [
+        {"recordType": "catalog", "recordPath": pointer, "sourcePath": str(head)}
+        for pointer in (
+            "fs/HEAD",
+            "fs/CUTOVER_RECEIPT",
+            "fs/CUTOVER_COMPLETE",
+            "fs/VALIDATION_HEAD",
+        )
+    ]
+    frozen = archive_transfer._freeze_filesystem_pointer(sources, snapshot_root=snapshots)
+    head.write_bytes(b"later generation")
+    assert len({source["sourcePath"] for source in frozen}) == 1
+    assert all(
+        Path(source["sourcePath"]).read_bytes() == b"authenticated current HeadRecord serialization"
+        for source in frozen
+    )

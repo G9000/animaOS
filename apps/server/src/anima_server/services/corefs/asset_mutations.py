@@ -13,12 +13,13 @@ from anima_server.services.corefs.asset_authority import (
     open_corefs_byte_source,
     read_canonical_asset_catalog,
 )
-from anima_server.services.corefs.asset_migration import MAX_PORTABLE_ASSET_BYTES
+
+MAX_PORTABLE_ASSET_BYTES = 100 * 1024 * 1024
+from anima_server.services.corefs.catalog_reader import portable_catalog_component
 from anima_server.services.corefs.content_authority import (
     invalidate_active_catalog_indexes,
     publish_content_authority_after_mutation,
 )
-from anima_server.services.corefs.diary_migration import portable_catalog_component
 
 _locks_guard = RLock()
 _locks: dict[int, RLock] = {}
@@ -151,11 +152,7 @@ def _execute(
             ),
         )
         changes = result.get("changes")
-        if (
-            not isinstance(changes, list)
-            or len(changes) != 1
-            or not isinstance(changes[0], dict)
-        ):
+        if not isinstance(changes, list) or len(changes) != 1 or not isinstance(changes[0], dict):
             raise AssetMutationError("Native CoreFS asset mutation result is invalid.")
         publish_content_authority_after_mutation(
             session,

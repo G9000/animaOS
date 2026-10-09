@@ -51,6 +51,7 @@ def add_memory_item_evidence(
     memory_item_id: int,
     evidence_text: str,
     source_kind: str,
+    runtime_db: Session | None = None,
     runtime_thread_id: int | None = None,
     runtime_message_id: int | None = None,
     runtime_message_ids: list[int] | None = None,
@@ -67,28 +68,31 @@ def add_memory_item_evidence(
     if not text:
         return None
 
-    evidence = MemoryItemEvidence(
-        user_id=user_id,
-        memory_item_id=memory_item_id,
-        source_kind=source_kind,
-        runtime_thread_id=runtime_thread_id,
-        runtime_message_id=runtime_message_id,
-        runtime_message_ids_json=runtime_message_ids or None,
-        transcript_ref=transcript_ref,
-        sequence_id=sequence_id,
-        speaker=speaker,
-        observed_at=observed_at,
-        source_created_at=source_created_at,
-        confidence=max(0.0, min(1.0, float(confidence))),
-        extractor=extractor,
-        evidence_text=ef(
-            user_id,
-            text,
-            table="memory_item_evidence",
-            field="evidence_text",
-        ),
-        metadata_json=metadata,
-    )
+    from anima_server.services.corefs.soul_provenance import runtime_source_transaction
+
+    with runtime_source_transaction(runtime_db):
+        evidence = MemoryItemEvidence(
+            user_id=user_id,
+            memory_item_id=memory_item_id,
+            source_kind=source_kind,
+            runtime_thread_id=runtime_thread_id,
+            runtime_message_id=runtime_message_id,
+            runtime_message_ids_json=runtime_message_ids or None,
+            transcript_ref=transcript_ref,
+            sequence_id=sequence_id,
+            speaker=speaker,
+            observed_at=observed_at,
+            source_created_at=source_created_at,
+            confidence=max(0.0, min(1.0, float(confidence))),
+            extractor=extractor,
+            evidence_text=ef(
+                user_id,
+                text,
+                table="memory_item_evidence",
+                field="evidence_text",
+            ),
+            metadata_json=metadata,
+        )
     db.add(evidence)
     db.flush()
     return evidence
@@ -111,6 +115,7 @@ def add_candidate_memory_item_evidence(
 
     return add_memory_item_evidence(
         soul_db,
+        runtime_db=runtime_db,
         user_id=memory_item.user_id,
         memory_item_id=memory_item.id,
         evidence_text=evidence_text,
@@ -220,12 +225,7 @@ def audit_memory_item_evidence(
         )
         .exists()
     )
-    total_active = (
-        db.scalar(
-            select(func.count(MemoryItem.id)).where(*active_filter)
-        )
-        or 0
-    )
+    total_active = db.scalar(select(func.count(MemoryItem.id)).where(*active_filter)) or 0
     if total_active == 0:
         return EvidenceCoverageReport()
 

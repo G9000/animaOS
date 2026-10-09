@@ -19,21 +19,17 @@ from anima_server.services.ingestion.retrieval import EmbeddingFn
 def register_source(db: Session, identity: SourceIdentity) -> RuntimeSource:
     from anima_server.services.corefs.asset_authority import (
         CoreFsSourceError,
-        canonical_asset_session_or_legacy,
         open_corefs_byte_source,
-        require_legacy_asset_mutation_allowed,
+        require_canonical_asset_session,
     )
 
-    session = canonical_asset_session_or_legacy(identity.user_id)
-    if session is not None:
-        source = open_corefs_byte_source(
-            session=session,
-            object_uri=identity.source_uri,
-        )
-        if source.content_sha256 != identity.content_hash:
-            raise CoreFsSourceError("Canonical Runtime source projection changed identity.")
-    else:
-        require_legacy_asset_mutation_allowed(identity.user_id)
+    session = require_canonical_asset_session(identity.user_id)
+    source = open_corefs_byte_source(
+        session=session,
+        object_uri=identity.source_uri,
+    )
+    if source.content_sha256 != identity.content_hash:
+        raise CoreFsSourceError("Canonical Runtime source projection changed identity.")
     source_uri = runtime_private_exact_lookup_value(
         db,
         owner_id=identity.user_id,

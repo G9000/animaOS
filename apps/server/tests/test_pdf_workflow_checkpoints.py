@@ -48,6 +48,7 @@ from anima_server.services.workflows import (
     mark_workflow_failed,
     start_workflow,
 )
+from corefs_document_test_support import CanonicalDocumentOriginals, canonical_document_uri
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -90,7 +91,7 @@ def _request(
         user_id=user_id,
         filename="manual.pdf",
         mime_type="application/pdf",
-        storage_path=f".anima/documents/{user_id}/manual.pdf",
+        storage_path=canonical_document_uri(user_id, sha256),
         sha256=sha256,
         size_bytes=2048,
         thread_id=thread_id,
@@ -150,6 +151,11 @@ def _patch_pgvec_upsert(monkeypatch: Any) -> None:
             row.content_preview = content[:200]
             row.category = category
             row.importance = importance
+        from anima_server.services.corefs.sealed_runtime import persist_runtime_embedding
+
+        persist_runtime_embedding(
+            self._db, row=row, owner_id=user_id, embedding=embedding, content=content
+        )
         self._db.flush()
 
     monkeypatch.setattr(pgvec_module.PgVecStore, "upsert_source", fake_upsert_source)
@@ -169,11 +175,13 @@ def _dependencies(
     calls.embedded = []
     embedding_fn_override = embedding_override
 
-    def extract_text(path: str) -> ExtractionOutcome:
+    def extract_text(source: Any) -> ExtractionOutcome:
         if fail_extract:
             raise AssertionError("extract_text should not run")
         calls.extracted += 1
-        filename = Path(path).name
+        assert source.object_kind == "attachment"
+        assert source.content_type == "application/pdf"
+        filename = source.name
         return ExtractionOutcome(
             pages=[
                 PageText(page_number=1, text=f"{filename} alpha"),
@@ -263,11 +271,7 @@ def _checkpoint_names(runtime_db: Session, workflow_run_id: int) -> list[str]:
 
 
 def _candidate_rows(runtime_db: Session) -> list[MemoryCandidate]:
-    return list(
-        runtime_db.scalars(
-            select(MemoryCandidate).order_by(MemoryCandidate.id)
-        ).all()
-    )
+    return list(runtime_db.scalars(select(MemoryCandidate).order_by(MemoryCandidate.id)).all())
 
 
 def _embedding_count(runtime_db: Session, source_type: str) -> int:
@@ -305,7 +309,40 @@ def _assert_pdf_embedding_calls(
         assert chunk_text in compiled_texts[index]
 
 
+@pytest.fixture(autouse=True)
+def canonical_pdf_originals(monkeypatch):
+    """Only original identity lookup is mocked; workflow and source processing stay real."""
+    import sys
+
+    from anima_server.services.corefs import asset_authority
+
+    originals = CanonicalDocumentOriginals()
+    originals.native_open_source = asset_authority.open_corefs_byte_source
+    originals.install(monkeypatch)
+    monkeypatch.setattr(pdf_workflow, "register_document", originals.register)
+    monkeypatch.setattr(sys.modules[__name__], "register_document", originals.register)
+    return originals
+
+
+@pytest.fixture
+def current_bound_pdf_runtime(runtime_db, monkeypatch):
+    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
+    from anima_server.services.corefs import sealed_runtime
+    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
+
+    index = CoreFSProgressiveIndex("core-a")
+    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
+    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
+    runtime_db.add(
+        CoreFSRuntimeBinding(binding_slot=1, core_id="core-a", local_instance_id="instance-a")
+    )
+    runtime_db.commit()
+    yield index
+    index.clear_unlocked_state()
+
+
 def test_pdf_workflow_syncs_indexed_document_chunks_to_source_spans(
+    canonical_pdf_originals,
     runtime_db: Session,
     monkeypatch: Any,
     tmp_path: Path,
@@ -341,6 +378,7 @@ def test_pdf_workflow_syncs_indexed_document_chunks_to_source_spans(
 
 
 def test_pdf_workflow_compiles_indexed_document_source_to_knowledge(
+    canonical_pdf_originals,
     runtime_db: Session,
     monkeypatch: Any,
     tmp_path: Path,
@@ -371,9 +409,7 @@ def test_pdf_workflow_compiles_indexed_document_source_to_knowledge(
     compile_run = runtime_db.scalar(select(RuntimeKnowledgeBundleRun))
     assert result.status == "awaiting_input"
     assert source is not None
-    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {
-        source.id
-    }
+    assert {concept.metadata_json["compiled_from_source_id"] for concept in concepts} == {source.id}
     assert {concept.concept_type for concept in concepts} >= {"source_summary", "topic"}
     assert any(concept.title == "manual.pdf" for concept in concepts)
     assert any("manual.pdf alpha" in concept.body_markdown for concept in concepts)
@@ -643,13 +679,13 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
 ) -> None:
     _patch_pgvec_upsert(monkeypatch)
     request = _request()
-    extracted_paths: list[str] = []
+    extracted_sources: list[Any] = []
     embedded_texts: list[str] = []
     page_one_text = " ".join(["alpha"] * 280)
     page_two_text = " ".join(["beta"] * 50)
 
-    def fake_extract_pdf_text(path: str) -> ExtractionOutcome:
-        extracted_paths.append(path)
+    def fake_extract_pdf_text(source: Any) -> ExtractionOutcome:
+        extracted_sources.append(source)
         return ExtractionOutcome(
             pages=[
                 PageText(page_number=1, text=page_one_text),
@@ -701,9 +737,11 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
     chunk_rows = runtime_db.scalars(
         select(RuntimeDocumentChunk).order_by(RuntimeDocumentChunk.chunk_index)
     ).all()
-    expected_extract_path = str((settings.data_dir / request.storage_path).resolve())
     assert result.status == "awaiting_input"
-    assert extracted_paths == [expected_extract_path]
+    assert len(extracted_sources) == 1
+    assert extracted_sources[0].stable_id == request.storage_path.removeprefix("corefs://object/")
+    assert extracted_sources[0].content_sha256 == request.sha256
+    assert extracted_sources[0].name == request.filename
     # Chunk two starts with the 200-char overlap tail carried from page one.
     expected_overlap_tail = " ".join(["alpha"] * 33)
     expected_chunk_two = f"{expected_overlap_tail}\n\n{page_two_text}"
@@ -743,9 +781,7 @@ def test_default_pdf_dependencies_wire_document_services_end_to_end(
         runtime_db,
         workflow_run_id=run.id,
         dependencies=pdf_workflow.default_pdf_ingestion_dependencies(
-            embedding_fn=lambda _text: pytest.fail(
-                "rerun should not write duplicate embeddings"
-            ),
+            embedding_fn=lambda _text: pytest.fail("rerun should not write duplicate embeddings"),
             summarize=lambda _document, _chunks: pytest.fail(
                 "rerun should reuse summarized checkpoint"
             ),
@@ -810,12 +846,10 @@ def test_resume_from_approval_reembeds_unindexed_document(
 
 
 def test_approve_pdf_memory_proposals_reembeds_bound_corefs_document(
+    current_bound_pdf_runtime,
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
-    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
 
     request = _request()
     run = start_pdf_ingestion_workflow(runtime_db, request)
@@ -832,16 +866,7 @@ def test_approve_pdf_memory_proposals_reembeds_bound_corefs_document(
         runtime_db.delete(embedding)
     document.status = "registered"
     document.indexed_at = None
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
-    runtime_db.add(
-        CoreFSRuntimeBinding(
-            binding_slot=1,
-            core_id="core-a",
-            local_instance_id="instance-a",
-        )
-    )
+    index = current_bound_pdf_runtime
     runtime_db.commit()
     embedding_calls: list[str] = []
 
@@ -863,9 +888,7 @@ def test_approve_pdf_memory_proposals_reembeds_bound_corefs_document(
     assert document.status == "indexed"
     rows = list(runtime_db.scalars(select(RuntimeEmbedding)).all())
     assert rows
-    assert all(
-        row.embedding is None and row.embedding_checksum is None for row in rows
-    )
+    assert all(row.embedding is None and row.embedding_checksum is None for row in rows)
     runtime_db.commit()
     assert all(
         index.runtime_embedding_vector(
@@ -1049,12 +1072,10 @@ def test_resume_original_duplicate_owner_reuses_existing_index(
 
 
 def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
+    current_bound_pdf_runtime,
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
-    from anima_server.models.corefs_runtime import CoreFSRuntimeBinding
-    from anima_server.services.corefs import sealed_runtime
-    from anima_server.services.corefs.indexer import CoreFSProgressiveIndex
     from anima_server.services.corefs.sealed_runtime import load_runtime_record
 
     _patch_pgvec_upsert(monkeypatch)
@@ -1073,16 +1094,6 @@ def test_resume_reused_text_checkpoint_reextracts_before_rechunking(
         chunk.id for chunk in list_document_chunks(runtime_db, document_id=document.id)
     ]
 
-    index = CoreFSProgressiveIndex("core-a")
-    index.unlock(sqlcipher_key=b"k" * 32, local_instance_id="instance-a")
-    monkeypatch.setattr(sealed_runtime, "_active_runtime_index", lambda _user_id: index)
-    runtime_db.add(
-        CoreFSRuntimeBinding(
-            binding_slot=1,
-            core_id="core-a",
-            local_instance_id="instance-a",
-        )
-    )
     runtime_db.commit()
 
     duplicate_run = start_pdf_ingestion_workflow(runtime_db, request)
@@ -1290,7 +1301,8 @@ def test_partial_embedding_success_does_not_checkpoint_or_continue(
     assert runtime_db.scalar(select(func.count(RuntimeEmbedding.id))) == 1
 
 
-def test_registered_pdf_storage_path_must_stay_under_data_dir(
+def test_registered_pdf_source_must_be_canonical_without_host_file_fallback(
+    canonical_pdf_originals,
     runtime_db: Session,
     monkeypatch: Any,
 ) -> None:
@@ -1301,7 +1313,12 @@ def test_registered_pdf_storage_path_must_stay_under_data_dir(
     runtime_db.flush()
     calls = _Calls()
 
-    with pytest.raises(ValueError, match="Invalid document storage path"):
+    from anima_server.services.corefs import asset_authority
+
+    monkeypatch.setattr(
+        asset_authority, "open_corefs_byte_source", canonical_pdf_originals.native_open_source
+    )
+    with pytest.raises(asset_authority.CoreFsSourceError, match="Canonical source"):
         resume_pdf_ingestion_workflow(
             runtime_db,
             workflow_run_id=workflow_run_id,
@@ -1399,9 +1416,7 @@ def test_resume_terminal_pdf_workflow_returns_without_reopening(
     previous_current_state = run.current_state
     previous_result_json = run.result_json
     previous_error_json = run.error_json
-    previous_checkpoint_count = runtime_db.scalar(
-        select(func.count(RuntimeWorkflowCheckpoint.id))
-    )
+    previous_checkpoint_count = runtime_db.scalar(select(func.count(RuntimeWorkflowCheckpoint.id)))
 
     resumed = run_pdf_ingestion_until_wait_or_done(
         runtime_db,
@@ -1494,8 +1509,7 @@ def test_resume_from_text_extracted_reuses_staged_pages(
     assert calls.extracted == 0
     assert calls.chunked == 1
     chunk_texts = [
-        chunk.content_text
-        for chunk in list_document_chunks(runtime_db, document_id=document.id)
+        chunk.content_text for chunk in list_document_chunks(runtime_db, document_id=document.id)
     ]
     assert chunk_texts == [
         "seed alpha",
@@ -1515,9 +1529,7 @@ def test_resume_from_text_extracted_reuses_staged_pages(
         "seed beta",
     ]
     assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConcept.id))) == 0
-    assert (
-        runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
-    )
+    assert runtime_db.scalar(select(func.count(RuntimeKnowledgeConceptSource.id))) == 0
 
 
 def test_resume_from_chunked_reuses_stored_chunks(

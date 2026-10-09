@@ -43,16 +43,7 @@ def _create_runtime_index(
     if not settings.runtime_instance_data_dir:
         return None
     if sqlcipher_key is None:
-        passphrase = settings.core_passphrase.strip()
-        if not passphrase:
-            return None
-        from anima_server.services.core import get_sqlcipher_kdf_salt
-        from anima_server.services.crypto import derive_sqlcipher_key
-
-        sqlcipher_key = derive_sqlcipher_key(
-            passphrase,
-            get_sqlcipher_kdf_salt(),
-        )
+        return None
     local_instance_id = Path(settings.runtime_instance_data_dir).name
     index = CoreFSProgressiveIndex(get_core_id())
     index.unlock(
@@ -120,7 +111,7 @@ class UnlockSessionStore:
         on_session_published: Callable[[UnlockSession], None] | None = None,
     ) -> None:
         self._lock = RLock()
-        self._runtime_conversion_lock = RLock()
+        self._runtime_validation_lock = RLock()
         self._construction_condition = Condition(self._lock)
         self._snapshot = snapshot
         self._corefs_session_factory = corefs_session_factory or _create_native_corefs_session
@@ -265,7 +256,7 @@ class UnlockSessionStore:
         token: str,
     ) -> UnlockSession | None:
         """Attach a Runtime index after startup prerequisites become available."""
-        with self._runtime_conversion_lock:
+        with self._runtime_validation_lock:
             with self._lock:
                 session = self._sessions.get(token)
                 if session is None or session.expires_at <= self._now():
@@ -282,10 +273,9 @@ class UnlockSessionStore:
                 return session
 
             try:
-                self._convert_runtime_index_rows(
+                self._validate_runtime_index_rows(
                     runtime_index,
                     user_id=session.user_id,
-                    memory_dek=session.deks.get(DEFAULT_DOMAIN),
                 )
                 repaired = replace(session, runtime_index=runtime_index)
                 with self._lock:
@@ -534,6 +524,7 @@ class UnlockSessionStore:
             for session in self._sessions.values()
             if id(session) not in retained_session_ids
         }.values()
+        previous_owner_ids = {session.user_id for session in self._sessions.values()}
         previous_sqlcipher_key = self._sqlcipher_key
         cleanup = _CleanupBatch()
 
@@ -553,6 +544,14 @@ class UnlockSessionStore:
             if token in next_sessions
         }
         self._rebuild_latest_deks_locked()
+        retired_owner_ids = previous_owner_ids - {
+            session.user_id for session in next_sessions.values()
+        }
+        if retired_owner_ids:
+            from anima_server.services.agent.derived_soul_state import clear_derived_soul_state
+
+            for owner_id in retired_owner_ids:
+                clear_derived_soul_state(owner_id=owner_id)
 
         if previous_sqlcipher_key is not None and previous_sqlcipher_key is not next_sqlcipher_key:
             cleanup.sqlcipher_keys.append(previous_sqlcipher_key)
@@ -589,11 +588,10 @@ class UnlockSessionStore:
                 corefs_keys,
                 sqlcipher_key,
             )
-            with self._runtime_conversion_lock:
-                self._convert_runtime_index_rows(
+            with self._runtime_validation_lock:
+                self._validate_runtime_index_rows(
                     runtime_index,
                     user_id=user_id,
-                    memory_dek=copied_deks.get(DEFAULT_DOMAIN),
                 )
         except Exception:
             if runtime_index is not None:
@@ -619,17 +617,16 @@ class UnlockSessionStore:
         )
 
     @staticmethod
-    def _convert_runtime_index_rows(
+    def _validate_runtime_index_rows(
         runtime_index: CoreFSProgressiveIndex | None,
         *,
         user_id: int,
-        memory_dek: bytes | None,
     ) -> bool:
         if runtime_index is None:
             return True
         from anima_server.db.runtime import get_runtime_session_factory
         from anima_server.services.corefs.sealed_runtime import (
-            convert_legacy_runtime_rows,
+            validate_current_runtime_rows,
         )
 
         try:
@@ -639,13 +636,11 @@ class UnlockSessionStore:
             # initializes Runtime. The startup handoff retries after Alembic.
             return False
         with factory() as runtime_db:
-            convert_legacy_runtime_rows(
+            validate_current_runtime_rows(
                 runtime_db,
                 index=runtime_index,
                 user_id=user_id,
-                memory_dek=memory_dek,
             )
-            runtime_db.commit()
         return True
 
     def initialize_runtime_indexes(self) -> None:
@@ -657,7 +652,7 @@ class UnlockSessionStore:
         replacements: dict[str, UnlockSession] = {}
         created_indexes: list[CoreFSProgressiveIndex] = []
         try:
-            with self._runtime_conversion_lock:
+            with self._runtime_validation_lock:
                 for token, session in sessions.items():
                     runtime_index = session.runtime_index
                     if runtime_index is None:
@@ -667,10 +662,9 @@ class UnlockSessionStore:
                         )
                         if runtime_index is not None:
                             created_indexes.append(runtime_index)
-                    self._convert_runtime_index_rows(
+                    self._validate_runtime_index_rows(
                         runtime_index,
                         user_id=session.user_id,
-                        memory_dek=session.deks.get(DEFAULT_DOMAIN),
                     )
                     replacements[token] = replace(
                         session,

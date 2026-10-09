@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -131,10 +131,33 @@ async def test_anthropic_chat_client_serializes_messages_tools_and_usage() -> No
 
 @pytest.mark.asyncio
 async def test_anthropic_chat_client_serializes_image_content_blocks(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    image_path = tmp_path / "pixel.png"
-    image_path.write_bytes(b"\x89PNG\r\n\x1a\nimage-bytes")
+    from anima_server.services.corefs import asset_authority
+
+    session = object()
+    image_path = "corefs-user://7/object/01J00000000000000000000006"
+    image_bytes = b"\x89PNG\r\n\x1a\nimage-bytes"
+    reads: list[int] = []
+
+    def open_source(*, session: object, object_uri: str, expected_kinds: frozenset[str]):
+        assert session is authority_session
+        assert object_uri == "corefs://object/01J00000000000000000000006"
+        assert expected_kinds == frozenset({"attachment", "gallery-asset"})
+
+        def read_all(*, max_bytes: int) -> bytes:
+            reads.append(max_bytes)
+            return image_bytes
+
+        return SimpleNamespace(read_all=read_all)
+
+    authority_session = session
+    monkeypatch.setattr(
+        asset_authority,
+        "require_canonical_asset_session",
+        lambda user_id: session if user_id == 7 else None,
+    )
+    monkeypatch.setattr(asset_authority, "open_corefs_byte_source", open_source)
     captured_payload: dict[str, object] = {}
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -166,12 +189,14 @@ async def test_anthropic_chat_client_serializes_image_content_blocks(
                     {
                         "type": "image",
                         "mime_type": "image/png",
-                        "path": str(image_path),
+                        "path": image_path,
                     },
                 ]
             )
         ]
     )
+
+    assert reads and all(bound > len(image_bytes) for bound in reads)
 
     assert captured_payload["messages"] == [
         {
@@ -192,14 +217,26 @@ async def test_anthropic_chat_client_serializes_image_content_blocks(
 
 
 @pytest.mark.asyncio
-async def test_anthropic_chat_client_reports_unreadable_image_attachment() -> None:
+async def test_anthropic_chat_client_reports_unreadable_image_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anima_server.services.corefs import asset_authority
+
+    monkeypatch.setattr(
+        asset_authority, "require_canonical_asset_session", lambda user_id: object()
+    )
+
+    def unavailable(**kwargs):
+        raise asset_authority.CoreFsSourceError("Authenticated original is unavailable")
+
+    monkeypatch.setattr(asset_authority, "open_corefs_byte_source", unavailable)
     client = AnthropicChatClient(
         model="claude-haiku-4-5-20251001",
         base_url="https://anthropic.test/v1",
         headers={"x-api-key": "test-key"},
     )
 
-    with pytest.raises(RuntimeError, match="Unable to read image attachment"):
+    with pytest.raises(RuntimeError, match="Canonical image attachment is unavailable"):
         await client.ainvoke(
             [
                 HumanMessage(
@@ -207,7 +244,7 @@ async def test_anthropic_chat_client_reports_unreadable_image_attachment() -> No
                         {
                             "type": "image",
                             "mime_type": "image/png",
-                            "path": "missing-image.png",
+                            "path": "corefs-user://7/object/01J00000000000000000000006",
                         },
                     ]
                 )
@@ -341,3 +378,29 @@ def test_extract_usage_metadata_folds_cache_tokens_into_total() -> None:
     plain = _extract_usage_metadata({"usage": {"input_tokens": 10, "output_tokens": 5}})
     assert plain is not None
     assert plain["total_tokens"] == 15
+
+
+@pytest.mark.asyncio
+async def test_provider_rejects_existing_physical_image_fallback(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from anima_server.services.corefs import asset_authority
+
+    image = tmp_path / "private-original.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\nprivate-bytes")
+
+    def unexpected_source(**kwargs):
+        pytest.fail("A noncanonical path must not reach authenticated source resolution")
+
+    monkeypatch.setattr(asset_authority, "open_corefs_byte_source", unexpected_source)
+    client = AnthropicChatClient(
+        model="claude-haiku-4-5-20251001", base_url="https://anthropic.test/v1"
+    )
+    with pytest.raises(RuntimeError, match="Only canonical CoreFS image attachments"):
+        await client.ainvoke(
+            [
+                HumanMessage(
+                    content=[{"type": "image", "mime_type": "image/png", "path": str(image)}]
+                )
+            ]
+        )

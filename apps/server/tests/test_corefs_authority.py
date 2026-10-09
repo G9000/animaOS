@@ -13,7 +13,7 @@ from anima_server.services.corefs.authority import (
     read_authority_record,
     reconcile_content_authority,
 )
-from anima_server.services.corefs.diary_migration import (
+from corefs_catalog_test_support import (
     build_inactive_diary_catalog,
     migration_opaque_id,
 )
@@ -207,6 +207,7 @@ def test_startup_latches_authority_from_an_already_activated_manifest(
         json.dumps(
             {
                 "core_id": "01930000000000000000000000",
+                "owner_id": "01930000000000000000000001",
                 "portable_core_release": 1,
                 "corefs_authority": {
                     "version": 1,

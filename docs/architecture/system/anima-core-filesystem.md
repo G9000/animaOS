@@ -2,13 +2,13 @@
 title: ANIMA CORE Filesystem Architecture
 description: Implemented end-to-end architecture for Soul, CoreFS, Runtime, tools, permissions, cutover, and local transfer
 category: architecture
-status: planned
-last_edited: 2026-08-14
+status: implemented
+last_edited: 2026-10-09
 ---
 
 # ANIMA CORE Filesystem Architecture
 
-> **Status: implementation complete, first-release activation gated.** The topology, domain adapters, migration coordinator, transfer/recovery paths, and restart transactions below are implemented and locally validated. The document intentionally retains `status: planned` until the mandatory final signed Windows/macOS/DEB/RPM package evidence passes and the separately authorized irreversible first-write cutover is exercised. No current release may infer that gate from local tests.
+> **Current-format architecture.** The approved greenfield release initializes Soul and CoreFS directly. Pre-release storage layouts and archive formats have no supported migration path. Supported encrypted Souls can receive verified schema upgrades; local validation does not establish signed Windows/macOS/Linux package readiness.
 
 **Normative sources:** [Portable Core Filesystem design](../../superpowers/specs/2026-07-12-portable-core-filesystem-design.md), [key hierarchy design](../../superpowers/specs/2026-07-12-portable-core-key-hierarchy-design.md), and [implementation plan](../../superpowers/plans/2026-07-12-portable-core-filesystem.md).
 
@@ -28,7 +28,7 @@ flowchart TB
     subgraph Python["Python product and orchestration layer"]
         API["FastAPI routes<br/>auth, domain APIs, CoreFS API"]
         Domains["Domain services<br/>Journal, Notes, Threads, Gallery, Tasks"]
-        CoreFacade["CoreFS Python facade<br/>schemas, migration, authority gate"]
+        CoreFacade["CoreFS Python facade<br/>schemas, current-format authority, maintenance"]
         Indexer["Progressive indexer<br/>catalog, text, semantic readiness"]
         SoulWriter["Consolidation and Soul Writer"]
         Broker["Device-local capability broker"]
@@ -131,7 +131,7 @@ There is deliberately no CoreFS-to-host-files edge and no Runtime-to-canonical-c
 | memory, claims, episodes, self-model | SQLCipher Soul through the Soul Writer/consolidation boundary | candidates, promotion journal, retrieval caches |
 | `/api/corefs/transfer` | pinned Soul/CoreFS snapshot and authenticated V2 archive | operation progress only; paths/passphrases excluded |
 
-Legacy Soul/Runtime app rows remain physically available only for reversible migration or rebuild inputs. Once the authenticated first-write marker commits, every migrated route fails closed rather than falling back to them.
+`SoulOwner` retains the local numeric owner ID and opaque Core owner UUID. Private account fields live in the encrypted CoreFS profile. App tables and disposable vector columns are retired from supported Soul schemas; content routes cannot fall back to them. A valid Soul-only restore unlocks with an unavailable profile and `filesystem_missing` recovery state.
 
 ## 2. Unlock, Startup, and Progressive Reindexing
 
@@ -182,56 +182,15 @@ sequenceDiagram
     Note over Auth,Index: Lock, logout, expiry, or shutdown revokes streams and clears FRKs, DEKs, plaintext indexes, vectors, and query state.
 ```
 
-### Reversible migration and restart-coordinated cutover
+### Current-format bootstrap and supported Soul schema retirement
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant UI as Core Transfer settings
-    participant API as Migration API/coordinator
-    participant Legacy as Legacy Soul + Runtime sources
-    participant Core as Validation CoreFS
-    participant Manifest as Core manifest/cutover state
-    participant Startup as Pre-resource startup
+Registration durably wraps pending Soul/Filesystem roots before writing encrypted content. Interrupted registration resumes with those authenticated roots; it cannot silently generate different keys over an existing Soul.
 
-    User->>UI: Prepare migration
-    UI->>API: POST migration/run
-    API->>Manifest: legacy-authoritative → migrating-write-frozen
-    API->>Legacy: Collect exact portable sources
-    API->>Core: Resume preparation and publish validation catalog
-    API->>Legacy: WAL checkpoint + copy/verify Soul to soul/soul.db
-    API->>Manifest: Publish active Soul route + validation-readonly
-    API-->>UI: Awaiting explicit acceptance
+An existing supported Soul at revision `20260812_0001` upgrades to `20261009_0001` only after manifest credentials authenticate its owner and an independently reopened SQLCipher original verifies table hashes and counts. The encrypted original is retained in a sibling `<Core-name>.schema-recovery` directory outside the active Core. The new Soul records an opaque archive receipt, not a host path.
 
-    alt Reject before first write
-        User->>UI: Reject
-        UI->>API: confirmed rejection
-        API->>Manifest: Restore legacy Soul route
-        API->>Core: Roll back validation authority
-        API-->>UI: legacy-authoritative
-    else Accept
-        User->>UI: Accept
-        UI->>API: confirmed acceptance
-        API->>Manifest: approved-pending-first-write
-        API-->>UI: Restart required
-        User->>Startup: Restart
-        Startup->>Legacy: PostgreSQL stopped; create/refresh encrypted recovery bundle
-        Startup-->>UI: First write ready
-        UI->>Core: Next authored mutation
-        Core->>Core: Publish objects + catalog + HEAD + cutover markers atomically
-        Core->>Manifest: Reconcile forward-only authority
-        Core-->>UI: x-anima-restart-required: corefs-cutover
-        Note over Core,UI: Further portable writes fail closed.
-        User->>Startup: Restart immediately
-        Startup->>Legacy: Refresh exact stopped-source recovery bundle
-        Startup->>Manifest: Verify active Soul; remove only verified legacy Soul copy
-        Startup->>Startup: Start/schema-bind fresh Runtime
-        Startup->>Legacy: Remove exact plaintext legacy Runtime source
-    end
-```
+The forward revision replaces account mappings with `SoulOwner`, rebuilds retained ownership FKs, removes app tables and disposable vectors, and validates retained records plus `PRAGMA foreign_key_check`. Authenticated CoreFS source identities become stable Core URIs. Unavailable historical sources retain their original IDs with explicit `source_unavailable` provenance; numeric Runtime IDs never establish CoreFS authority.
 
-The runtime migration journal stores state, count, and typed error class only. Content-derived source/catalog digests, body hashes, paths, and exception text are not persisted or returned. A repeated pending restart can refresh a valid stale encrypted Runtime bundle through an authenticated previous/current swap without ever leaving no recovery copy.
+A supported Soul without CoreFS remains unlockable. Its original encrypted app bytes are preserved in the verified recovery copy, while the active schema contains only Soul records and a missing-source receipt. No pre-release importer or legacy content service is enabled.
 
 ## 3. Explicit HostFS and CoreFS Tool Routing
 
@@ -416,7 +375,7 @@ Normal deletion moves content into encrypted trash. `purge(trash_id, expected_tr
 
 One versioned streaming container supports complete, Soul-only, and CoreFS-only local artifacts. Cloud upload and sync remain out of scope.
 
-The V2 exporter pins one coherent Soul/CoreFS snapshot, streams at most 8 MiB per source/ciphertext buffer, and excludes Runtime, device state, grants, credentials, and host paths. A destination probe chooses a verified single file or an authenticated controller-last multipart set. Import never activates directly: full restore and retained-Core rollback create authenticated restart intents consumed before Core locks, databases, or Runtime start. Legacy JSON and `ANMA` V1 readers are import-only and refuse every non-legacy cutover state before decrypting or mutating.
+The V2 exporter pins one coherent Soul/CoreFS snapshot, streams at most 8 MiB per source/ciphertext buffer, and excludes Runtime, device state, grants, credentials, and host paths. A destination probe chooses a verified single file or an authenticated controller-last multipart set. Import never activates directly: full restore and retained-Core rollback create authenticated restart intents consumed before Core locks, databases, or Runtime start. Legacy JSON and `ANMA` V1 archives are unsupported.
 
 ```mermaid
 flowchart TD
@@ -464,7 +423,25 @@ flowchart TD
 
 Whole-account deletion follows the same restart-only principle. The live API validates the canonical owner and complete active/retained Cores, records an authenticated intent, and revokes unlock sessions without deleting storage. Pre-resource startup requires the exact Runtime binding to be stopped, journals each active-Core/retained-Core/Runtime quarantine and removal boundary, retires registry pointers and credentials, then creates a new empty Core. It never recursively targets a broad home/workspace path and never deletes a running Runtime.
 
-## 7. Cross-Graph Invariants
+A current-generation archive is self-contained: its HEAD, receipt, completion, and validation pointers all name the same captured authenticated current catalog with the existing cutover epoch. Export freezes those pointer bytes together and rejects a changed checkpoint. Live Core pointers remain untouched. Restoring a rotated Core therefore opens its current content without requiring historical catalogs omitted from the current-generation archive.
+
+## 7. Restore History and Local Maintenance
+
+Security settings expose owner-only inventory, history pruning, explicit trash purge, checkpoint refresh, and decrypt-only FRK retirement through `/api/corefs/maintenance`. ANIMA and installed clients cannot authorize these actions.
+
+The default restore window is 30 days. Live entries and current encrypted trash never expire automatically. Authenticated operation/preparation references pin their catalogs, objects, and key versions. Catalogs without authenticated age metadata receive a conservative authenticated first-observed time rather than a filesystem modification time. Corrupt, unavailable, or incomplete reference sources block destructive maintenance.
+
+Inventory bounds are 100,000 catalog files and 200,000 object files. Each catalog is limited to 16 MiB; aggregate authenticated work is bounded at 128 GiB of catalog bytes and 500 million decoded entries. Runtime journals are limited to 128 MiB and the authenticated first-observed registry to 64 MiB. Exceeding a bound blocks maintenance without deletion. Historical catalog visits and object-body authentication stream through bounded buffers; inventory keeps only the current decoded catalog in memory.
+
+Completed preparation archives become eligible only after their terminal receipts, final snapshots, published catalog coverage, and conservative retention age verify. Incomplete or quarantined preparations keep their references pinned. Quarantine moves whole preparation directories before bounded leaf sweeps so interruption cannot make incomplete metadata appear safe.
+
+Preparation requires the current passphrase and recovery phrase, a verified full backup outside the active Core matching its generation and owner, and a one-use confirmation bound to the exact inventory and action. Confirmations expire after two minutes. The native Core-wide lock coordinates authenticated mark, quarantine, bounded sweep, and crash-safe continuation; pending maintenance excludes authored writes, transfer activation, and rotation.
+
+Permanent purge accepts only an already-trashed stable ID at its expected revision and the confirmed recursive inventory. Removing its wrapped Object DEKs requires exact history waivers and zero retained references. Decrypt-only FRK retirement separately proves no retained catalog, object wrapper, checkpoint, preparation, or pending operation needs that key, and reopens active password/recovery slots before and after manifest removal under the held lock.
+
+Checkpoint refresh reanchors authenticated current-format bootstrap metadata under the active FRK. It does not waive restore history. Local removal cannot promise erasure from SSD media or external backups; the Security UI states that limit explicitly.
+
+## 8. Cross-Graph Invariants
 
 1. SQLCipher Soul contains ANIMA's internal continuity, not canonical app-feature records.
 2. CoreFS catalogs and objects are the only canonical authority for portable user content.
@@ -478,6 +455,6 @@ Whole-account deletion follows the same restart-only principle. The live API val
 10. Memory promotion from CoreFS into Soul occurs only through the existing candidate, consolidation, and Soul Writer boundary with stable provenance.
 11. The transfer container derives an archive-specific key from bounded KDF parameters; it never reuses the Soul key, FRK, catalog key, or Object DEKs as its archive payload key.
 12. FRK activation publishes one complete next catalog/HEAD generation; old FRKs remain decrypt-only until authenticated retention and backup gates permit PCF-010 retirement.
-13. Reversible migration keeps legacy Soul/Runtime sources until authenticated first-write authority; rejection restores both Soul routing and legacy catalog authority.
-14. The first irreversible write requires a verified stopped-source Runtime recovery bundle, signals restart, and blocks later portable writes until fresh Runtime transition completes.
+13. Supported Soul schema retirement requires an independently reopened encrypted original and deterministic retained-record checks; unsupported pre-release schemas fail closed.
+14. Garbage collection retains live content, current trash, the restore window, and authenticated operation pins. Unknown history age is protected conservatively; corrupt or incomplete reference inventories block deletion.
 15. Whole-Core activation, retained-Core rollback, and whole-account deletion are restart-only authenticated transactions; live requests cannot swap or delete active resources.

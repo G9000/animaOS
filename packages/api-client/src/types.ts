@@ -1261,3 +1261,92 @@ export interface CreateThreadResponse {
   status: string;
   thread?: Thread;
 }
+
+export interface CoreMaintenanceCredentials {
+  currentPassword: string;
+  recoveryPhrase: string;
+}
+
+export interface CoreMaintenanceParameters {
+  action: "prune" | "resume" | "cancel" | "purge" | "retire-key" | "refresh-checkpoint";
+  targetStableId?: string | null;
+  expectedRevision?: number | null;
+  retiringFrkVersion?: number | null;
+  waiveRestoreHistory?: boolean;
+  acknowledgeBackupCopies?: boolean;
+}
+
+export interface CoreMaintenanceInventory {
+  version: number;
+  retentionDays: number;
+  headGeneration: number;
+  headCatalogHash: string;
+  inventoryDigest: string;
+  retainedCatalogCount: number;
+  catalogCount: number;
+  objectCount: number;
+  candidateCatalogCount: number;
+  candidateObjectCount: number;
+  candidatePreparationCount: number;
+  candidateBytes: number;
+  retainedUnknownAgeCount: number;
+  requiredFrkVersions: number[];
+  blockers: string[];
+  warnings: string[];
+  operation: {
+    id: string;
+    state: string;
+    quarantinedCount: number;
+    sweptCount: number;
+    totalCount: number;
+    sourceHeadGeneration?: number | null;
+    sourceHeadCatalogHash?: string | null;
+    kind?: "prune" | "purge" | "reanchor" | null;
+    expectedInventoryDigest?: string | null;
+  } | null;
+  trashExpiresAutomatically: false;
+  resumeAuthorized: boolean;
+  cancelAuthorized: boolean;
+  externalCopiesErased: false;
+  deletionLimits: string;
+  targetStableId?: string | null;
+  expectedRevision?: number | null;
+  recursiveInventoryDigest?: string | null;
+  waivedGenerations?: number[];
+  targetObjectCount?: number | null;
+}
+
+export interface CoreMaintenancePrepareRequest extends CoreMaintenanceCredentials {
+  parameters: CoreMaintenanceParameters;
+  backupPath: string;
+  backupPassphrase: string;
+}
+
+export interface CoreMaintenanceReview {
+  confirmation: string;
+  expiresInSeconds: number;
+  expiresAtMs: number;
+  inventory: CoreMaintenanceInventory;
+  observedAtMs: number;
+  parameters: CoreMaintenanceParameters;
+  backupVerified: boolean;
+}
+
+export interface CoreMaintenanceExecuteRequest extends CoreMaintenancePrepareRequest {
+  confirmation: string;
+  inventoryDigest: string;
+  observedAtMs: number;
+}
+
+export interface CoreMaintenanceResult {
+  success: boolean;
+  inventory: CoreMaintenanceInventory;
+  unlockToken?: string | null;
+  retiredFrkVersion?: number | null;
+}
+
+export interface CoreMaintenanceStatus {
+  retentionDays: number;
+  unlockRequired: boolean;
+  lastRun: CoreMaintenanceInventory | null;
+}

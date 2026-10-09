@@ -89,7 +89,6 @@ def test_chat_requires_unlocked_session() -> None:
 
 
 def test_chat_rejects_missing_runtime_index_before_opening_stream(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "core_passphrase", "test-core-passphrase")
     with _scaffold_agent_settings(), _client() as client:
         user = _register_user(client, username="missing-runtime-index")
         token = str(user["unlockToken"])
@@ -454,6 +453,7 @@ async def test_chat_stream_closes_service_stream_when_transport_stops(
     )
 
     assert isinstance(response, StreamingResponse)
+
     async def receive() -> dict[str, str]:
         return {"type": "http.disconnect"}
 
@@ -543,6 +543,7 @@ async def test_approval_stream_closes_service_stream_when_transport_stops(
             status="awaiting_approval",
         )
     )
+
     async def _unlocked_ok(*_args: object) -> None:
         return None
 
@@ -564,6 +565,7 @@ async def test_approval_stream_closes_service_stream_when_transport_stops(
     )
 
     assert isinstance(response, StreamingResponse)
+
     async def receive() -> dict[str, str]:
         return {"type": "http.disconnect"}
 
@@ -700,119 +702,34 @@ async def test_chat_returns_retrieval_metadata_when_present(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_chat_history_returns_persisted_retrieval_metadata(monkeypatch) -> None:
+async def test_chat_history_projects_the_authenticated_canonical_thread(monkeypatch) -> None:
+    from unittest.mock import AsyncMock
+
+    session = SimpleNamespace(user_id=42)
+    message = SimpleNamespace(
+        legacy_message_id=101,
+        message_id="canonical-message",
+        role="assistant",
+        content="Canonical reply",
+        created_at="2026-10-09T00:00:00+00:00",
+        sequence=1,
+        attachment_uris=(),
+    )
+    monkeypatch.setattr(chat_routes, "require_unlocked_user_async", AsyncMock(return_value=session))
+    monkeypatch.setattr(chat_routes, "conversation_corefs_authority_active", lambda session: True)
     monkeypatch.setattr(
         chat_routes,
-        "list_agent_history",
-        lambda *args, **kwargs: [
-            SimpleNamespace(
-                id=101,
-                role="tool",
-                content_text="retrieval-aware reply",
-                created_at=None,
-                source="chat",
-                content_json={
-                    "retrieval": {
-                        "retriever": "hybrid",
-                        "citations": [
-                            {
-                                "index": 1,
-                                "memoryItemId": 7,
-                                "uri": "memory://items/7",
-                                "score": 0.91,
-                                "category": "fact",
-                            }
-                        ],
-                        "contextFragments": [
-                            {
-                                "rank": 1,
-                                "memoryItemId": 7,
-                                "uri": "memory://items/7",
-                                "text": "Important remembered detail.",
-                                "score": 0.91,
-                                "category": "fact",
-                            }
-                        ],
-                        "stats": {
-                            "retrievalMs": 12.5,
-                            "totalConsidered": 4,
-                            "returned": 1,
-                            "cutoffIndex": 1,
-                            "cutoffScore": 0.91,
-                            "topScore": 0.91,
-                            "cutoffRatio": 1.0,
-                            "triggeredBy": "adaptive_ratio",
-                        },
-                    }
-                },
-            )
-        ],
+        "get_active_canonical_thread",
+        lambda **kwargs: SimpleNamespace(messages=(message,)),
     )
-    token = unlock_session_store.create(42, {"memories": b"unit-test-dek"})
-    request = Request(
-        {
-            "type": "http",
-            "headers": [(b"x-anima-unlock", token.encode("utf-8"))],
-        }
-    )
-
-    try:
-        history = await chat_routes.get_chat_history(
-            request,
-            userId=42,
-            limit=10,
-            runtime_db=None,
-        )
-    finally:
-        unlock_session_store.revoke(token)
-
-    payload = [message.model_dump(mode="json") for message in history]
-    assert payload == [
-        {
-            "id": 101,
-            "userId": 42,
-            "role": "assistant",
-            "content": "retrieval-aware reply",
-            "model": None,
-            "provider": None,
-            "createdAt": None,
-            "source": "chat",
-            "retrieval": {
-                "retriever": "hybrid",
-                "citations": [
-                    {
-                        "index": 1,
-                        "memoryItemId": 7,
-                        "uri": "memory://items/7",
-                        "score": 0.91,
-                        "category": "fact",
-                    }
-                ],
-                "contextFragments": [
-                    {
-                        "rank": 1,
-                        "memoryItemId": 7,
-                        "uri": "memory://items/7",
-                        "text": "Important remembered detail.",
-                        "score": 0.91,
-                        "category": "fact",
-                    }
-                ],
-                "stats": {
-                    "retrievalMs": 12.5,
-                    "totalConsidered": 4,
-                    "returned": 1,
-                    "cutoffIndex": 1,
-                    "cutoffScore": 0.91,
-                    "topScore": 0.91,
-                    "cutoffRatio": 1.0,
-                    "triggeredBy": "adaptive_ratio",
-                },
-            },
-            "attachments": [],
-            "pills": [],
-        }
-    ]
+    history = await chat_routes.get_chat_history(SimpleNamespace(), userId=42, limit=10)
+    assert len(history) == 1
+    payload = history[0].model_dump(mode="json")
+    assert payload["id"] == 101
+    assert payload["role"] == "assistant"
+    assert payload["content"] == "Canonical reply"
+    assert payload["retrieval"] is None
+    assert payload["attachments"] == []
 
 
 def test_chat_stream_ollama_emits_live_chunks(monkeypatch) -> None:
@@ -1080,9 +997,7 @@ def test_chat_compacts_thread_context_into_summary() -> None:
             ("user", "third message with enough text to trigger compaction later"),
             ("assistant", "third reply with enough text to trigger compaction later"),
         ]
-        sequence_id = reserve_message_sequences(
-            runtime_db, thread_id=thread.id, count=len(texts)
-        )
+        sequence_id = reserve_message_sequences(runtime_db, thread_id=thread.id, count=len(texts))
         for offset, (role, text) in enumerate(texts):
             append_message(
                 runtime_db,
@@ -1106,9 +1021,7 @@ def test_chat_compacts_thread_context_into_summary() -> None:
         assert result is not None
         runtime_db.commit()
 
-        all_messages = (
-            runtime_db.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
-        )
+        all_messages = runtime_db.query(RuntimeMessage).order_by(RuntimeMessage.sequence_id).all()
         in_context_messages = [m for m in all_messages if m.is_in_context]
         compacted_messages = [m for m in all_messages if not m.is_in_context]
 
@@ -1171,9 +1084,7 @@ def test_sleep_endpoint_maps_task_run_results_to_counts() -> None:
             "anima_server.services.agent.sleep_agent.run_sleeptime_agents",
             new=AsyncMock(return_value=fake_ids),
         ):
-            response = client.post(
-                "/api/chat/sleep", headers=headers, json={"userId": user_id}
-            )
+            response = client.post("/api/chat/sleep", headers=headers, json={"userId": user_id})
 
         assert response.status_code == 200
         body = response.json()

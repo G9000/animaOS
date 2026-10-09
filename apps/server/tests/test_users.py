@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from anima_server.services.corefs.diary_migration import (
-    migration_opaque_id,
-    read_prepared_writing_body,
-    read_prepared_writing_snapshot,
-)
 from anima_server.services.corefs.formats import decode_account_profile_document
 from anima_server.services.sessions import unlock_session_store
 from anima_server.services.storage import get_user_data_dir
 from conftest import managed_test_client
+from corefs_catalog_test_support import (
+    migration_opaque_id,
+    read_prepared_writing_body,
+    read_prepared_writing_snapshot,
+)
 from fastapi.testclient import TestClient
 
 

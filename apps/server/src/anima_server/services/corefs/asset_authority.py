@@ -166,15 +166,6 @@ def active_asset_authority_session(user_id: int) -> object | None:
     )
 
 
-def require_legacy_asset_mutation_allowed(user_id: int) -> None:
-    from anima_server.services.corefs.content_authority import core_content_authority_active
-
-    if active_asset_authority_session(user_id) is not None or core_content_authority_active():
-        raise CoreFsAssetAuthorityLocked(
-            "Legacy asset mutation is disabled after CoreFS cutover."
-        )
-
-
 def asset_corefs_authority_active(session: object) -> bool:
     """True when canonical CoreFS is the required asset authority.
 
@@ -188,26 +179,14 @@ def asset_corefs_authority_active(session: object) -> bool:
     return asset_authority_selection(session) is not None or core_content_authority_active()
 
 
-def canonical_asset_session_or_legacy(user_id: int) -> Any | None:
-    """Return the canonical asset session, or None while legacy reads remain.
-
-    Reads must fail closed rather than fall through to Runtime rows and
-    plaintext files once the Core is activated (PR #148 review, P1): a session
-    without canonical asset capability would otherwise resurface assets,
-    documents, or knowledge sources that canonical state has superseded or
-    deleted. None is returned only before activation, where legacy storage is
-    still the authority.
-    """
-    from anima_server.services.corefs.content_authority import core_content_authority_active
-
+def require_canonical_asset_session(user_id: int) -> Any:
+    """Require unlocked canonical asset authority; unsupported storage is never read."""
     session = active_asset_authority_session(user_id)
-    if session is not None:
-        return session
-    if core_content_authority_active():
+    if session is None:
         raise CoreFsAssetAuthorityLocked(
             "Canonical asset authority is unavailable for this session."
         )
-    return None
+    return session
 
 
 def read_canonical_asset_catalog(*, session: Any) -> CanonicalAssetCatalog:

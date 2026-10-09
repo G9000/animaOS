@@ -13,13 +13,13 @@ from sqlalchemy.pool import StaticPool
 def soul_db() -> Session:
     """In-memory SQLite session with soul tables."""
     import anima_server.models.soul_consciousness  # noqa: F401
-    from anima_server.models.user import User
+    from anima_server.models.soul_owner import SoulOwner
 
     engine = create_engine("sqlite://", poolclass=StaticPool)
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     session = factory()
-    user = User(id=1, username="test", display_name="Test", password_hash="x")
+    user = SoulOwner(id=1, core_owner_id="00000000-0000-4000-8000-000000000001")
     session.add(user)
     session.commit()
     yield session

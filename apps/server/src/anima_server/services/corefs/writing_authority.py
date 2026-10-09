@@ -8,15 +8,15 @@ from dataclasses import dataclass
 from typing import Any
 
 from anima_server.services.corefs import logical
-from anima_server.services.corefs.content_authority import (
-    CoreFsAuthorityUnavailable,
-    authenticated_content_authority,
-)
-from anima_server.services.corefs.diary_migration import (
+from anima_server.services.corefs.catalog_reader import (
     PreparedWritingFolder,
     PreparedWritingObject,
     read_prepared_writing_body,
     read_prepared_writing_snapshot,
+)
+from anima_server.services.corefs.content_authority import (
+    CoreFsAuthorityUnavailable,
+    authenticated_content_authority,
 )
 from anima_server.services.corefs.formats import (
     DIARY_CONTENT_TYPE,
